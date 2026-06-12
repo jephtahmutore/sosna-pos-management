@@ -1,0 +1,103 @@
+name: Build Mobile APK and Release
+
+# Triggers on any tag starting with "mobile-v" (e.g. mobile-v1.0.0).
+# Distinct prefix so it doesn't clash with the Electron release flow which
+# fires on push to main.
+
+on:
+  push:
+    tags:
+      - 'mobile-v*'
+
+jobs:
+  build-apk:
+    name: Build Android APK
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Install frontend dependencies
+        run: npm install --legacy-peer-deps
+        working-directory: frontend
+
+      - name: Add Android platform
+        run: |
+          if [ ! -d "android" ]; then
+            npx cap add android
+          fi
+        working-directory: frontend
+
+      - name: Sync Capacitor (copies mobile-shell into the Android project)
+        run: npx cap sync android
+        working-directory: frontend
+
+      - name: Install ImageMagick
+        run: sudo apt-get update && sudo apt-get install -y imagemagick
+
+      - name: Inject launcher icon into every Android density bucket
+        # @capacitor/assets silently fell back to the default Capacitor swirl
+        # in the Butchery build, so we stamp the icon directly into each
+        # density bucket. Overrides BOTH the legacy bitmap launchers and the
+        # adaptive-icon foreground so Android 8+ devices use our icon instead
+        # of the template placeholder.
+        run: |
+          ICON=../assets/icon.png
+          RES=app/src/main/res
+          declare -A LEGACY=( [mdpi]=48 [hdpi]=72 [xhdpi]=96 [xxhdpi]=144 [xxxhdpi]=192 )
+          declare -A FG=( [mdpi]=108 [hdpi]=162 [xhdpi]=216 [xxhdpi]=324 [xxxhdpi]=432 )
+          for d in mdpi hdpi xhdpi xxhdpi xxxhdpi; do
+            mkdir -p "$RES/mipmap-$d"
+            convert "$ICON" -resize ${LEGACY[$d]}x${LEGACY[$d]} "$RES/mipmap-$d/ic_launcher.png"
+            convert "$ICON" -resize ${LEGACY[$d]}x${LEGACY[$d]} "$RES/mipmap-$d/ic_launcher_round.png"
+            convert "$ICON" -resize ${FG[$d]}x${FG[$d]}         "$RES/mipmap-$d/ic_launcher_foreground.png"
+          done
+          ls -la $RES/mipmap-xxxhdpi/
+        working-directory: frontend/android
+
+      - name: Inject splash screen into every Android density bucket
+        # Same approach as the icon — stamp splash.png into each drawable
+        # folder. Capacitor's SplashScreen plugin reads @drawable/splash.
+        run: |
+          SPLASH=../assets/splash.png
+          RES=app/src/main/res
+          declare -A SPLASH_SIZE=( [mdpi]=320 [hdpi]=480 [xhdpi]=720 [xxhdpi]=1080 [xxxhdpi]=1440 )
+          for d in mdpi hdpi xhdpi xxhdpi xxxhdpi; do
+            mkdir -p "$RES/drawable-$d" "$RES/drawable-port-$d" "$RES/drawable-land-$d"
+            S=${SPLASH_SIZE[$d]}
+            convert "$SPLASH" -resize ${S}x${S} "$RES/drawable-$d/splash.png"
+            convert "$SPLASH" -resize ${S}x${S} "$RES/drawable-port-$d/splash.png"
+            convert "$SPLASH" -resize ${S}x${S} "$RES/drawable-land-$d/splash.png"
+          done
+          mkdir -p "$RES/drawable"
+          convert "$SPLASH" -resize 480x480 "$RES/drawable/splash.png"
+          ls -la $RES/drawable-xxxhdpi/
+        working-directory: frontend/android
+
+      - name: Grant gradlew permission
+        run: chmod +x gradlew
+        working-directory: frontend/android
+
+      - name: Build debug APK
+        run: ./gradlew assembleDebug
+        working-directory: frontend/android
+
+      - name: Rename APK
+        run: cp frontend/android/app/build/outputs/apk/debug/app-debug.apk SosnaMobile-${{ github.ref_name }}.apk
+
+      - name: Upload to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: SosnaMobile-${{ github.ref_name }}.apk
+          generate_release_notes: true
+          name: Sosna Mobile ${{ github.ref_name }}

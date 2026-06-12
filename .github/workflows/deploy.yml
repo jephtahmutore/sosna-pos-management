@@ -1,0 +1,43 @@
+name: Deploy
+
+# Pull-deploy model: CI only builds + publishes the Electron app and
+# packages the web bundle as a release artifact. The VPS runs a cron job
+# (`/usr/local/bin/sosna-deploy.sh`) that pulls from this repo every minute
+# and restarts PM2 / reloads nginx if anything changed.
+#
+# Reason: GitHub Actions runner IPs were being silently filtered at
+# Hostinger's network edge, causing every SCP attempt to time out at the
+# TCP layer (logged as "Connection timed out") regardless of password,
+# firewall rules, or sshd config. Pull-deploy bypasses the inbound-SSH
+# problem entirely and also removes the VPS password from CI secrets.
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  build-electron:
+    name: Build & Publish Electron App
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install backend dependencies
+        run: npm install --production
+        working-directory: backend
+
+      - name: Install frontend dependencies
+        run: npm install
+        working-directory: frontend
+
+      - name: Build & Publish
+        run: npm run dist:publish
+        working-directory: frontend
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

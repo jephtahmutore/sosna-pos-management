@@ -1,0 +1,17 @@
+{
+  "name": "sosna-pro",
+  "version": "1.0.0",
+  "description": "Sosna - Management System for sosna distribution",
+  "private": true,
+  "scripts": {
+    "start:backend": "npm --prefix backend start",
+    "start:frontend": "npm --prefix frontend start",
+    "start:electron": "npm --prefix frontend run electron",
+    "build": "npm --prefix frontend run build",
+    "dev": "concurrently \"npm run start:backend\" \"npm run start:frontend\"",
+    "desktop": "concurrently \"npm run start:backend\" \"cd frontend && electron .\""
+  },
+  "keywords": ["sosna", "distribution", "pos", "management", "desktop"],
+  "author": "Sosna",
+  "license": "MIT"
+}

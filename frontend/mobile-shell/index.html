@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+<meta name="theme-color" content="#1e40af" />
+<title>Sosna</title>
+<style>
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body {
+    margin: 0; padding: 0; height: 100%;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background: linear-gradient(135deg, #1e40af 0%, #172554 100%);
+    color: #fff;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .spinner {
+    width: 48px; height: 48px;
+    border: 4px solid rgba(255,255,255,0.3);
+    border-top-color: #fff;
+    border-radius: 50%;
+    animation: spin 0.7s linear infinite;
+    margin: 0 auto 16px;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .label { font-size: 14px; opacity: 0.9; text-align: center; }
+</style>
+</head>
+<body>
+  <!--
+    Sosna is single-tenant — no slug / license entry needed. Capacitor's
+    server.url (in capacitor.config.json) points the WebView straight at
+    https://sosnazm.com, so this fallback is only seen for a split second
+    on cold start while the WebView is initialising. The bridge stays
+    available on the live page (unlike Liquor's redirect pattern, which
+    lost the bridge on the redirected origin).
+  -->
+  <div style="text-align:center">
+    <div class="spinner"></div>
+    <div class="label">Sosna</div>
+  </div>
+</body>
+</html>

@@ -1,0 +1,26 @@
+node_modules/
+*.db
+*.db-shm
+*.db-wal
+*.db-journal
+*.db.backup*
+.env
+backend/uploads/
+frontend/build/
+frontend/dist/
+tenants/
+
+# Personal docs / dev artifacts (not part of the app)
+*.pdf
+*.xls
+*.xlsx
+*.docx
+pole-display-test.ps1
+
+# Local archive artifacts
+*.tar
+*.tar.gz
+
+# Capacitor (Android)
+frontend/android/
+frontend/apk-release/

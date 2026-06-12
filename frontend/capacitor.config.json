@@ -1,0 +1,39 @@
+{
+  "appId": "com.sidanit.sosna.mobile",
+  "appName": "Sosna",
+  "webDir": "mobile-shell",
+  "backgroundColor": "#1e40af",
+  "android": {
+    "backgroundColor": "#1e40af",
+    "allowMixedContent": false,
+    "captureInput": true,
+    "webContentsDebuggingEnabled": false,
+    "appendUserAgent": "SosnaMobileApp"
+  },
+  "server": {
+    "url": "https://sosnazm.com",
+    "androidScheme": "https",
+    "allowNavigation": [
+      "sosnazm.com"
+    ],
+    "cleartext": false
+  },
+  "plugins": {
+    "SplashScreen": {
+      "launchShowDuration": 1800,
+      "launchAutoHide": true,
+      "launchFadeOutDuration": 300,
+      "backgroundColor": "#1e40af",
+      "androidSplashResourceName": "splash",
+      "androidScaleType": "CENTER_CROP",
+      "showSpinner": false,
+      "splashFullScreen": true,
+      "splashImmersive": true
+    },
+    "StatusBar": {
+      "style": "DARK",
+      "backgroundColor": "#1e40af",
+      "overlaysWebView": false
+    }
+  }
+}
