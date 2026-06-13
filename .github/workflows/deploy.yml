@@ -28,6 +28,13 @@ jobs:
         with:
           node-version: 20
 
+      # node-gyp needs Python to build better-sqlite3 from source when the
+      # prebuilt binary download fails. The Windows runner doesn't have
+      # Python wired up for node-gyp by default, so set it explicitly.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
       - name: Install backend dependencies
         run: npm install --production
         working-directory: backend
