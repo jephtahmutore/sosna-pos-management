@@ -95,7 +95,22 @@ app.use((err, req, res, next) => {
   res.status(500).json({ error: 'Internal server error' });
 });
 
+// ─── Central admin activation ────────────────────────────────────────────────
+// Phones home to sidanitsolutions.com/admin/clientbased/activate on first
+// boot to claim our license key + receive a tenant_id. Cached locally after
+// the first successful activation; subsequent restarts skip the round trip.
+// If CB_LICENSE_KEY isn't in .env we log a warning and start anyway so a
+// fresh VPS can be brought up before a key is issued.
+const { activateOnStartup } = require('./services/centralActivation');
+
 const PORT = process.env.TENANT_PORT || 5300;
-app.listen(PORT, () => {
-  console.log(`Sosna tenant server running on port ${PORT}`);
-});
+activateOnStartup()
+  .catch((err) => {
+    console.error(err.message);
+    process.exit(1);
+  })
+  .then(() => {
+    app.listen(PORT, () => {
+      console.log(`Sosna tenant server running on port ${PORT}`);
+    });
+  });
