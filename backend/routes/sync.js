@@ -35,6 +35,10 @@ const SYNC_TABLES = [
   // Discount approval requests — pending/approved/rejected rows so an admin
   // approving on one device propagates to the requesting cashier's device.
   'discount_requests',
+  // Phase 1 multi-currency (Sosna only — Branch 1/2 K-only, Branch 3 USD/FRA).
+  // Both tables must sync so per-branch prices + FX rates stay consistent
+  // across devices. KEEP IN SYNC with syncService.js.
+  'branches', 'product_branch_prices',
 ];
 
 // ─── POST /api/sync/register ─────────────────────────────────────────────────

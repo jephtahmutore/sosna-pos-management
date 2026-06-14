@@ -1234,6 +1234,111 @@ function initTenantDb(db) {
     }
     db.prepare(`CREATE UNIQUE INDEX IF NOT EXISTS idx_cash_reports_date_cashier ON cash_reports(date, cashier_id)`).run();
   } catch (_) { /* migration is idempotent and best-effort */ }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Phase 1 — Multi-currency, per-branch
+  // ─────────────────────────────────────────────────────────────────────────
+  // Sosna runs three branches with different currency setups:
+  //   • Branch 1 & 2 (K-only)         — single-currency, behaves like Liquor
+  //   • Branch 3     (USD + FRA)      — Sirak-POS-style dual-currency at POS
+  //
+  // Naming uses the SHOP-side convention (matches Sirak-POS):
+  //   • selling_rate — used when shop RECEIVES FRA from customer.
+  //                    paidFRA_as_primary = paidFRA / selling_rate
+  //   • buying_rate  — used when shop GIVES FRA back as change.
+  //                    changeFRA = changePrimary × buying_rate
+  //
+  // Spread `selling_rate − buying_rate` per primary unit = FX margin for shop.
+  // (Branch 3 default seed: selling 2,900  buying 2,600  →  300 FRA / USD margin)
+  //
+  // Orders snapshot the rates used at sale time so historical receipts always
+  // reproduce, even when admin updates the rates later. K-only branches leave
+  // the FRA fields at zero.
+  try {
+    // Branches — meta info about each physical location. The `id` here is
+    // the same TEXT UUID the sync layer already stamps on rows as branch_id.
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS branches (
+        id                 TEXT PRIMARY KEY,
+        name               TEXT NOT NULL,
+        primary_currency   TEXT NOT NULL DEFAULT 'K',
+        secondary_currency TEXT,
+        selling_rate       REAL,
+        buying_rate        REAL,
+        status             TEXT NOT NULL DEFAULT 'Active',
+        sync_id            TEXT,
+        tenant_id          TEXT,
+        device_id          TEXT,
+        synced             INTEGER NOT NULL DEFAULT 0,
+        deleted_at         TEXT,
+        created_at         TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at         TEXT NOT NULL DEFAULT (datetime('now'))
+      )
+    `);
+
+    // Per-branch product price overrides. When a row exists for a given
+    // (product_id, branch_id) pair, POS / receipts at that branch use these
+    // values instead of products.cost_price / products.selling_price. When
+    // missing, the fallback is the legacy single-price columns — so Branches
+    // 1 & 2 keep working without any data entry.
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS product_branch_prices (
+        id              INTEGER PRIMARY KEY AUTOINCREMENT,
+        product_id      INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+        product_sync_id TEXT,
+        branch_id       TEXT NOT NULL,
+        cost_price      REAL NOT NULL DEFAULT 0,
+        selling_price   REAL NOT NULL DEFAULT 0,
+        currency        TEXT NOT NULL DEFAULT 'K',
+        sync_id         TEXT,
+        tenant_id       TEXT,
+        device_id       TEXT,
+        synced          INTEGER NOT NULL DEFAULT 0,
+        deleted_at      TEXT,
+        created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at      TEXT NOT NULL DEFAULT (datetime('now')),
+        UNIQUE(product_id, branch_id)
+      )
+    `);
+    db.prepare(`CREATE INDEX IF NOT EXISTS idx_pbp_product ON product_branch_prices(product_id)`).run();
+    db.prepare(`CREATE INDEX IF NOT EXISTS idx_pbp_branch  ON product_branch_prices(branch_id)`).run();
+
+    // ── Orders: frozen FX snapshot + FRA payment buckets ──────────────────
+    // currency           = the branch's primary at sale time ('K' or 'USD')
+    // fra_received       = how much FRA the cashier physically took
+    // fra_change_given   = how much FRA the cashier physically returned
+    // selling_rate_used  = FRA→primary rate frozen at sale  (used for receive)
+    // buying_rate_used   = primary→FRA rate frozen at sale  (used for change)
+    addCol('orders', 'currency',          "TEXT DEFAULT 'K'");
+    addCol('orders', 'fra_received',      'REAL DEFAULT 0');
+    addCol('orders', 'fra_change_given',  'REAL DEFAULT 0');
+    addCol('orders', 'selling_rate_used', 'REAL');
+    addCol('orders', 'buying_rate_used',  'REAL');
+
+    // ── Seed Sosna's three branches the first time the table is empty ──────
+    // Idempotent: re-running this migration does nothing once rows exist.
+    // The IDs are stable UUIDs derived from sync-friendly randomness; the
+    // existing device's sync_config.branch_id may point at a different UUID
+    // — that's fine, we leave that untouched and the device can be assigned
+    // to a branch later through the Settings UI (Phase 2).
+    const branchCount = db.prepare('SELECT COUNT(*) AS n FROM branches').get().n;
+    if (branchCount === 0) {
+      const tenantRow = db.prepare("SELECT value FROM sync_config WHERE key = 'tenant_id'").get();
+      const tenantId  = tenantRow ? tenantRow.value : null;
+      const ins = db.prepare(`
+        INSERT INTO branches (id, name, primary_currency, secondary_currency,
+                              selling_rate, buying_rate, sync_id, tenant_id, synced)
+        VALUES (?,?,?,?,?,?,?,?,0)
+      `);
+      const u = () => crypto.randomUUID();
+      ins.run(u(), 'Branch 1',  'K',   null,  null,  null,  u(), tenantId);
+      ins.run(u(), 'Branch 2',  'K',   null,  null,  null,  u(), tenantId);
+      ins.run(u(), 'Branch 3',  'USD', 'FRA', 2900,  2600,  u(), tenantId);
+    }
+  } catch (e) {
+    console.error('[migrations] phase-1 multi-currency failed:', e.message);
+    // best-effort; later phases can re-attempt
+  }
 }
 
 module.exports = { initTenantDb };

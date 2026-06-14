@@ -38,6 +38,10 @@ const SYNC_TABLES = [
   // Discount approval requests — admin verdict needs to reach the cashier's
   // PC even if approver is on another device. KEEP IN SYNC with sync.js.
   'discount_requests',
+  // Phase 1 multi-currency (Sosna's whole reason for forking from Liquor).
+  // KEEP IN SYNC with sync.js list — adding to only one will cause one-way
+  // sync gaps that are hard to spot later.
+  'branches', 'product_branch_prices',
 ];
 
 const DEFAULT_VPS_URL = (process.env.VPS_URL || 'https://sosnazm.com').replace(/\/$/, '');
