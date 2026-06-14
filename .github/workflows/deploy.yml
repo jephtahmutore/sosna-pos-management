@@ -18,7 +18,13 @@ on:
 jobs:
   build-electron:
     name: Build & Publish Electron App
-    runs-on: windows-latest
+    # Pinned to windows-2022 because GitHub's windows-latest image now ships
+    # Visual Studio 18, which node-gyp@10.1.0 (bundled with Node 20.20.2)
+    # can't parse — the VS finder fails with `unknown version "undefined"
+    # found at C:\Program Files\Microsoft Visual Studio\18\Enterprise` and
+    # better-sqlite3's native build aborts. windows-2022 still has VS 2022
+    # which node-gyp recognises.
+    runs-on: windows-2022
     permissions:
       contents: write
     steps:
