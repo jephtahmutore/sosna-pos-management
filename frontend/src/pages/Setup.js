@@ -229,7 +229,7 @@ const Setup = ({ onComplete, startAtCreateAdmin = false }) => {
           </div>
           <div style={{ background: '#f9fafb', borderRadius: 10, padding: '4px 16px', marginBottom: 20 }}>
             <div style={rowStyle}><span style={keyStyle}>Business Email</span><span style={valStyle}>{identity?.email ?? '—'}</span></div>
-            <div style={rowStyle}><span style={keyStyle}>Subdomain</span><span style={valStyle}>{subdomain ? `${subdomain}.sosnazm.com` : '—'}</span></div>
+            <div style={rowStyle}><span style={keyStyle}>Subdomain</span><span style={valStyle}>{subdomain || '—'}</span></div>
             <div style={rowStyle}><span style={keyStyle}>Branch</span><span style={valStyle}>{identity?.branchName ?? '—'}</span></div>
             <div style={rowStyle}>
               <span style={keyStyle}>License Expires</span>
@@ -308,10 +308,7 @@ const Setup = ({ onComplete, startAtCreateAdmin = false }) => {
           <form onSubmit={handleNewBranch}>
             <div style={{ marginBottom: 16 }}>
               <label style={labelStyle}>Your Subdomain</label>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 0 }}>
-                <input type="text" required value={slug} onChange={e => setSlug(e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, ''))} placeholder="mybusiness" style={{ ...inputStyle, borderRadius: '8px 0 0 8px', flex: 1 }} />
-                <span style={{ padding: '10px 12px', background: '#f3f4f6', border: '1px solid #d1d5db', borderLeft: 'none', borderRadius: '0 8px 8px 0', fontSize: 13, color: '#6b7280', whiteSpace: 'nowrap' }}>.sosnazm.com</span>
-              </div>
+              <input type="text" required value={slug} onChange={e => setSlug(e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, ''))} placeholder="sosna" style={inputStyle} />
               <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 4 }}>Lowercase letters, numbers and hyphens only</div>
             </div>
             <div style={{ marginBottom: 16 }}>
@@ -432,7 +429,6 @@ const Setup = ({ onComplete, startAtCreateAdmin = false }) => {
               <label style={labelStyle}>Your Subdomain</label>
               <div style={{ display: 'flex', alignItems: 'center', gap: 0 }}>
                 <input type="text" required value={joinSlug} onChange={e => setJoinSlug(e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, ''))} placeholder="mybusiness" style={{ ...inputStyle, borderRadius: '8px 0 0 8px', flex: 1 }} />
-                <span style={{ padding: '10px 12px', background: '#f3f4f6', border: '1px solid #d1d5db', borderLeft: 'none', borderRadius: '0 8px 8px 0', fontSize: 13, color: '#6b7280', whiteSpace: 'nowrap' }}>.sosnazm.com</span>
               </div>
               <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 4 }}>Same subdomain as the other PC in this branch</div>
             </div>

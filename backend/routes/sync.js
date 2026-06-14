@@ -1,4 +1,7 @@
 const router = require('express').Router();
+const https = require('https');
+const http = require('http');
+const { URL } = require('url');
 const db = require('../config/database');
 const syncConfig = require('../config/syncConfig');
 const { randomUUID } = require('crypto');
@@ -6,6 +9,103 @@ const bcrypt = require('bcrypt');
 const { auth } = require('../middleware/auth');
 const { getLicense, activateLicense, registerBranch, getTenant } = require('../config/masterDb');
 const masterDb = require('../config/masterDb').masterDb;
+
+// Central admin lives on Butchery's VPS — it owns the CB- prefix license
+// pool for bespoke deployments. Overridable via env for local dev.
+const CB_ACTIVATE_URL = process.env.CB_ACTIVATE_URL
+  || 'https://sidanitsolutions.com/admin/clientbased/activate';
+
+// Minimal POST helper using node's built-in https — no axios pull-in
+// just for one call on the activation path. 15s ceiling so a hung
+// central admin can't block the Cloud Sync Setup form forever.
+function postJSON(urlString, body, timeoutMs = 15000) {
+  return new Promise((resolve, reject) => {
+    let u;
+    try { u = new URL(urlString); }
+    catch (e) { return reject(new Error('Invalid CB_ACTIVATE_URL')); }
+    const data = JSON.stringify(body);
+    const client = u.protocol === 'http:' ? http : https;
+    const req = client.request({
+      method: 'POST',
+      hostname: u.hostname,
+      port: u.port || (u.protocol === 'http:' ? 80 : 443),
+      path: u.pathname + (u.search || ''),
+      headers: {
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(data),
+      },
+      timeout: timeoutMs,
+    }, (res) => {
+      let chunks = '';
+      res.setEncoding('utf8');
+      res.on('data', (d) => { chunks += d; });
+      res.on('end', () => {
+        let parsed = null;
+        try { parsed = chunks ? JSON.parse(chunks) : null; } catch {}
+        resolve({ status: res.statusCode, body: parsed });
+      });
+    });
+    req.on('timeout', () => { req.destroy(new Error('Request timed out')); });
+    req.on('error', reject);
+    req.write(data);
+    req.end();
+  });
+}
+
+// For CB- prefix keys (Client Based), validate against the central admin
+// at sidanitsolutions.com and cache the result in our own master.db's
+// licenses table. After the first successful activation, subsequent
+// branches activate offline against the cache — phone-home happens once.
+//
+// Returns { ok, license? , error? } where `license` matches the shape of
+// getLicense() so the rest of register-branch can treat it the same as a
+// natively-issued key.
+async function ensureCbLicenseCached(licenseKey, slug, businessName, email) {
+  const key = licenseKey.trim().toUpperCase();
+
+  // Cache hit — skip the network call entirely.
+  const cached = getLicense(key);
+  if (cached) return { ok: true, license: cached };
+
+  // Cache miss — phone home.
+  let resp;
+  try {
+    resp = await postJSON(CB_ACTIVATE_URL, {
+      key, slug, businessName, email,
+    });
+  } catch (e) {
+    return { ok: false, error: `Could not reach central admin (${e.message}). Check the VPS internet connection.` };
+  }
+
+  if (resp.status < 200 || resp.status >= 300) {
+    const msg = (resp.body && resp.body.error) || `Central admin returned HTTP ${resp.status}`;
+    return { ok: false, error: msg };
+  }
+
+  const { tenant_id, expires_at, max_branches } = resp.body || {};
+  if (!tenant_id || !expires_at) {
+    return { ok: false, error: 'Central admin response missing tenant_id or expires_at.' };
+  }
+
+  // Cache the license info in Sosna's own master.db so register-branch
+  // can run its existing logic unchanged from this point on. tenant_email
+  // doubles as a "claimed by" marker — set to the slug so the existing
+  // line-67 check ("This license key is already registered to a different
+  // account") works correctly for retries.
+  try {
+    masterDb.prepare(
+      `INSERT INTO licenses (key, max_branches, expires_at, notes, tenant_email, tenant_id, activated_at)
+       VALUES (?, ?, ?, ?, ?, ?, datetime('now'))`
+    ).run(key, max_branches || 1, expires_at, 'Client Based — issued by central admin', slug, tenant_id);
+  } catch (e) {
+    // Likely a UNIQUE constraint race; try to re-read.
+    const again = getLicense(key);
+    if (again) return { ok: true, license: again };
+    return { ok: false, error: `Failed to cache license: ${e.message}` };
+  }
+
+  return { ok: true, license: getLicense(key) };
+}
 
 // All tables that participate in sync
 const SYNC_TABLES = [
@@ -44,7 +144,7 @@ const SYNC_TABLES = [
 // ─── POST /api/sync/register ─────────────────────────────────────────────────
 // Called by a new device to get/create a tenant + branch
 // Requires: branchName + licenseKey. Subdomain must be pre-registered by admin.
-router.post('/register', (req, res) => {
+router.post('/register', async (req, res) => {
   try {
     const { branchName, licenseKey } = req.body;
     if (!branchName || !licenseKey) {
@@ -56,6 +156,18 @@ router.post('/register', (req, res) => {
     const tenant = getTenant(slug);
     if (!tenant) {
       return res.status(403).json({ error: 'Subdomain not registered. Please contact SIDAN IT & Business Solutions.' });
+    }
+
+    // ── Resolve license: CB- keys go through central admin first ──────────
+    // Client Based keys (CB- prefix) are owned by the central admin at
+    // sidanitsolutions.com. First time we see one, phone home to validate
+    // and cache the result in our own master.db. Locally-issued keys
+    // (SOSNA- etc.) skip this and go straight to the existing local
+    // master.db lookup below.
+    const key = licenseKey.trim().toUpperCase();
+    if (key.startsWith('CB-')) {
+      const cb = await ensureCbLicenseCached(key, slug, tenant.business_name, tenant.email);
+      if (!cb.ok) return res.status(403).json({ error: cb.error });
     }
 
     // ── Validate license from master.db ───────────────────────────────────
