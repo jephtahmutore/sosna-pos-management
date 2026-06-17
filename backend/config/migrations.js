@@ -895,6 +895,18 @@ function initTenantDb(db) {
     db.prepare(`UPDATE business_settings SET currencies_json = ? WHERE currencies_json IS NULL OR currencies_json = ''`).run(defaultCurrencies);
   } catch { /* fresh DB — no row yet, defaults applied on first save */ }
 
+  // ── Currency mode (per-branch UI gate) ─────────────────────────────────────
+  // Switches dual-currency UI features on/off PER TENANT (which now maps to
+  // PER BRANCH in the new subdomain-per-branch architecture):
+  //   'K'       — Kwacha only. Standard flow. Used for lusaka1, mansa1.
+  //   'USD+FRA' — Dual currency. Unlocks: sell/buy FX rates, dual-currency
+  //               payment modal, USD+FRA receipt lines, FX columns on orders.
+  //               Used for kasumbalesa1.
+  // Default 'K' so every existing tenant keeps the same behaviour it has
+  // today; only kasumbalesa1's tenant DB needs to flip the setting to
+  // 'USD+FRA' (via Settings UI later, or one-off UPDATE for now).
+  addCol('business_settings', 'currency_mode', "TEXT NOT NULL DEFAULT 'K'");
+
   // Multi-unit support — JSON array of { name, conv, price, is_base } stored on the product.
   // The base unit (conv=1) is always the smallest packaging (e.g. PCS for sosna).
   // Other rows are larger packagings: { name:"Box", conv:24, price:40 } means 1 box = 24 base units.
