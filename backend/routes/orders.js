@@ -38,7 +38,17 @@ router.post('/', auth, (req, res) => {
       customer_name, customer_id, customer_sync_id, items, payment_method,
       subtotal, tax_amount, total_amount, discount, amount_received, change_amount,
       cash_received, momo_received, bank_received, sale_date,
+      // Phase 4 dual-currency FX bucket (kassumbalesa1). K-only branches send
+      // nothing here, so the COALESCEs below preserve historical row shape.
+      currency, fra_received, fra_change_given, selling_rate_used, buying_rate_used,
     } = req.body;
+    const orderCurrency  = (typeof currency === 'string' && currency.trim()) ? currency.trim() : 'K';
+    const fraReceived    = parseFloat(fra_received     || 0) || 0;
+    const fraChangeGiven = parseFloat(fra_change_given || 0) || 0;
+    const sellingRateUsed = selling_rate_used !== undefined && selling_rate_used !== null
+      ? parseFloat(selling_rate_used) || null : null;
+    const buyingRateUsed  = buying_rate_used  !== undefined && buying_rate_used  !== null
+      ? parseFloat(buying_rate_used)  || null : null;
     // Administrator-only back-dating: when the POS Pay modal sends an explicit
     // sale_date (YYYY-MM-DD), an Administrator can override the server clock.
     // For any other role we silently ignore it.
@@ -116,12 +126,15 @@ router.post('/', auth, (req, res) => {
       const orderSyncId = randomUUID();
       const ordSql = `INSERT INTO orders (order_number, customer_name, customer_id, customer_sync_id, subtotal, tax_amount, total_amount, discount,
           amount_received, cash_received, momo_received, bank_received,
-          change_amount, payment_method, created_by, sync_id, tenant_id, branch_id, device_id, synced, created_at, updated_at)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,${tsExpr},${tsExpr})`;
+          change_amount, payment_method, created_by,
+          currency, fra_received, fra_change_given, selling_rate_used, buying_rate_used,
+          sync_id, tenant_id, branch_id, device_id, synced, created_at, updated_at)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,${tsExpr},${tsExpr})`;
       const ordArgs = [orderNum, customer_name, customer_id || null, customer_sync_id || null,
             subtotal, tax_amount, total_amount, discount || 0,
             finalAmountReceived, cashIn, momoIn, bankIn,
             change_amount || 0, payment_method || 'Cash', req.user.id,
+            orderCurrency, fraReceived, fraChangeGiven, sellingRateUsed, buyingRateUsed,
             orderSyncId, tenantId, branchId, deviceId];
       if (overrideTs) ordArgs.push(overrideTs, overrideTs);
       const info = db.prepare(ordSql).run(...ordArgs);

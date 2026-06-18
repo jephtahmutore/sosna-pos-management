@@ -73,6 +73,22 @@ const POS = () => {
   // tapping out-of-stock products and overcharging the cart qty edit modal
   // are both blocked. Default false preserves the legacy oversell flow.
   const [blockOversell, setBlockOversell] = useState(false);
+  // Currency mode (Phase 2 gate). 'K' = single Kwacha flow (lusaka1, mansa1).
+  // 'USD+FRA' = dual-currency flow (kassumbalesa1) — unlocks the Cash FRA
+  // receive field and the Change USD / Change FRA split on the Pay modal.
+  // Loaded from business_settings.currency_mode on mount; defaults to 'K'
+  // so a fresh tenant or older API stays single-currency.
+  const [currencyMode, setCurrencyMode] = useState('K');
+  const isDual = currencyMode === 'USD+FRA';
+  // Hardcoded FX rates for now — user will describe the rate-config flow
+  // later (per-day? admin only? from where?). Both rates match the Phase 1
+  // schema seed (branches.selling_rate = 2900, branches.buying_rate = 2600).
+  //   SELL_RATE = FRA shop RECEIVES from customer
+  //     paidFRAasUSD = paidFRA / SELL_RATE
+  //   BUY_RATE  = FRA shop GIVES BACK as change
+  //     changeFRAasUSD = changeFRA / BUY_RATE
+  const SELL_RATE = 2900;
+  const BUY_RATE  = 2600;
   const [businessPhone, setBusinessPhone] = useState('');
   const [businessAddress, setBusinessAddress] = useState('');
   const [showReceipt, setShowReceipt] = useState(false);
@@ -352,6 +368,8 @@ const POS = () => {
         if (res.data?.business?.business_phone)   setBusinessPhone(res.data.business.business_phone);
         if (res.data?.business?.business_address) setBusinessAddress(res.data.business.business_address);
         setBlockOversell(!!res.data?.business?.block_oversell);
+        const cm = String(res.data?.business?.currency_mode || 'K').toUpperCase();
+        setCurrencyMode(cm === 'USD+FRA' ? 'USD+FRA' : 'K');
       } catch (err) { /* use default */ }
       try {
         const res = await getQuickItems();
@@ -637,7 +655,10 @@ const POS = () => {
       if (selectedCustomer) {
         setCreditModal({ cash: initialCash, momo: '0', bank: '0' });
       } else {
-        setPayModal({ cash: initialCash, momo: '0', bank: '0' });
+        // cashFRA, changeUSDgiven, changeFRAgiven default to '0' so the Pay
+        // modal's dual-currency section starts clean even on K-only branches
+        // (where those keys are simply unused/hidden).
+        setPayModal({ cash: initialCash, momo: '0', bank: '0', cashFRA: '0', changeUSDgiven: '0', changeFRAgiven: '0' });
       }
     };
     const cancelOpenModal = () => {
@@ -702,7 +723,13 @@ const POS = () => {
       const cashAmt = hasOverride ? parseFloat(override.cash || 0) : parseFloat(cashIn || 0);
       const momoAmt = hasOverride ? parseFloat(override.momo || 0) : parseFloat(momoIn || 0);
       const bankAmt = hasOverride ? parseFloat(override.bank || 0) : parseFloat(bankIn || 0);
-      const effectiveAmountReceived = cashAmt + momoAmt + bankAmt;
+      // Dual-currency FX inputs come straight off the Pay modal — the credit
+      // modal does not carry them yet. K-only branches always end up with
+      // zeros here, leaving the order unchanged.
+      const fraReceived   = isDual && payModal ? Math.max(0, parseFloat(payModal.cashFRA        || 0)) : 0;
+      const fraChangeGiven= isDual && payModal ? Math.max(0, parseFloat(payModal.changeFRAgiven || 0)) : 0;
+      const fraReceivedAsUSD = isDual && SELL_RATE > 0 ? fraReceived / SELL_RATE : 0;
+      const effectiveAmountReceived = cashAmt + momoAmt + bankAmt + fraReceivedAsUSD;
       const effectiveUnpaid = Math.max(0, total - effectiveAmountReceived);
       const effectiveChange = Math.max(0, effectiveAmountReceived - total);
       // Credit-sale detection: if a registered customer is selected and amount paid < total,
@@ -726,6 +753,15 @@ const POS = () => {
         bank_received: bankAmt,
         change_amount: effectiveChange,
         payment_method: paymentMethod,
+        // Dual-currency FX bucket — orders.fra_received / fra_change_given /
+        // selling_rate_used / buying_rate_used. Rates are snapshotted at sale
+        // time so historical receipts always reproduce even if admin updates
+        // them later. K-only sales send zeros, leaving columns untouched.
+        currency: isDual ? 'USD' : 'K',
+        fra_received: fraReceived,
+        fra_change_given: fraChangeGiven,
+        selling_rate_used: isDual ? SELL_RATE : null,
+        buying_rate_used:  isDual ? BUY_RATE  : null,
         // Only sent when an Administrator picked a non-today date in the Pay modal.
         // Backend re-validates the role before honouring it.
         sale_date: (isAdmin && saleDate && saleDate !== todayStr()) ? saleDate : null,
@@ -1309,7 +1345,7 @@ const POS = () => {
               ) : (
                 <button
                   className="btn-checkout"
-                  onClick={() => setPayModal({ cash: '', momo: '', bank: '' })}
+                  onClick={() => setPayModal({ cash: '', momo: '', bank: '', cashFRA: '0', changeUSDgiven: '0', changeFRAgiven: '0' })}
                   disabled={cart.length === 0}
                   title={cart.length === 0 ? 'Cart is empty' : ''}
                 >
@@ -1454,9 +1490,20 @@ const POS = () => {
         const cashNow = Math.max(0, parseFloat(payModal.cash || 0));
         const momoNow = Math.max(0, parseFloat(payModal.momo || 0));
         const bankNow = Math.max(0, parseFloat(payModal.bank || 0));
-        const payNow = cashNow + momoNow + bankNow;
-        const changeNow = Math.max(0, payNow - total);
-        const balanceDue = Math.max(0, total - payNow);
+        // Dual-currency math (kassumbalesa1) — matches the Sirak-POS formulas
+        // saved in memory. The K-only branches set cashFRA=0 / change=0 so
+        // these collapse back to the legacy single-currency arithmetic.
+        const cashFRANow      = isDual ? Math.max(0, parseFloat(payModal.cashFRA || 0))       : 0;
+        const cashFRAasUSD    = isDual && SELL_RATE > 0 ? cashFRANow / SELL_RATE              : 0;
+        const payNow          = cashNow + momoNow + bankNow + cashFRAasUSD;
+        const changeNow       = Math.max(0, payNow - total);
+        const balanceDue      = Math.max(0, total - payNow);
+        // Change actually handed back: cashier may split between USD and FRA.
+        const changeUSDgiven  = isDual ? Math.max(0, parseFloat(payModal.changeUSDgiven  || 0)) : 0;
+        const changeFRAgiven  = isDual ? Math.max(0, parseFloat(payModal.changeFRAgiven  || 0)) : 0;
+        const changeFRAasUSD  = isDual && BUY_RATE > 0 ? changeFRAgiven / BUY_RATE              : 0;
+        const totalChangeGiven= changeUSDgiven + changeFRAasUSD;
+        const netRemaining    = Math.max(0, changeNow - totalChangeGiven);
         const enoughPaid = payNow >= total - 0.001;
         return (
           <Portal>
@@ -1549,6 +1596,29 @@ const POS = () => {
                       <button onClick={() => setPayModal({ ...payModal, cash: '0', momo: '0', bank: total.toFixed(2) })}
                         style={{ padding: '4px 12px', border: '1px solid #d1d5db', borderRadius: 6, background: '#fff', fontSize: 12, cursor: 'pointer' }}>Pay full in Bank</button>
                     </div>
+                    {/* Cash FRA — only on dual-currency branches (kassumbalesa1).
+                        Customer pays in FRA, we convert to the primary currency
+                        at the SELL_RATE so it adds to "Paying Now Total" cleanly. */}
+                    {isDual && (
+                      <div style={{ marginTop: 12, padding: 10, background: '#fef9c3', border: '1px solid #fde68a', borderRadius: 8 }}>
+                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
+                          <div style={{ flex: 1 }}>
+                            <div style={{ fontSize: 11, color: '#a16207', fontWeight: 700, textTransform: 'uppercase', marginBottom: 3 }}>Cash FRA</div>
+                            <input
+                              type="number" min="0" step="1"
+                              value={payModal.cashFRA}
+                              onChange={e => setPayModal({ ...payModal, cashFRA: e.target.value })}
+                              placeholder="0"
+                              style={{ width: '100%', padding: '8px 10px', border: `2px solid ${cashFRANow > 0 ? '#a16207' : '#d1d5db'}`, borderRadius: 6, fontSize: 14, fontWeight: 600, color: cashFRANow > 0 ? '#a16207' : '#374151', boxSizing: 'border-box' }} />
+                          </div>
+                          <div style={{ minWidth: 130, textAlign: 'right', fontSize: 12, color: '#92400e' }}>
+                            <div>≈ {money(cashFRAasUSD)}</div>
+                            <div style={{ fontSize: 10, color: '#a16207', marginTop: 2 }}>at sell rate {SELL_RATE.toLocaleString()}</div>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+
                     <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 8, padding: '6px 10px', background: '#fff', borderRadius: 6, fontSize: 13 }}>
                       <span style={{ color: '#6b7280' }}>Paying Now Total</span>
                       <span style={{ fontWeight: 800, color: payNow > 0 ? '#1d4ed8' : '#9ca3af' }}>{money(payNow)}</span>
@@ -1556,14 +1626,54 @@ const POS = () => {
                   </div>
                 </div>
 
-                {/* Change or balance due */}
+                {/* Change or balance due. K-only: single line. USD+FRA: split into
+                    Change USD and Change FRA inputs so the cashier records what
+                    was physically handed back. Net Remaining surfaces under-given
+                    change (e.g. customer wants it kept on account). */}
                 <div style={{ background: enoughPaid ? '#f0fdf4' : '#fef2f2', borderRadius: 10, padding: 14, fontSize: 13, border: `1px solid ${enoughPaid ? '#bbf7d0' : '#fecaca'}` }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', padding: '4px 0' }}>
-                    <span style={{ fontWeight: 700, color: enoughPaid ? '#166534' : '#991b1b' }}>{enoughPaid ? 'Change' : 'Balance Due'}</span>
+                    <span style={{ fontWeight: 700, color: enoughPaid ? '#166534' : '#991b1b' }}>{enoughPaid ? 'Change Due' : 'Balance Due'}</span>
                     <span style={{ fontWeight: 800, fontSize: 16, color: enoughPaid ? '#16a34a' : '#dc2626' }}>
                       {money(enoughPaid ? changeNow : balanceDue)}
                     </span>
                   </div>
+
+                  {isDual && enoughPaid && changeNow > 0.001 && (
+                    <div style={{ marginTop: 10, paddingTop: 10, borderTop: '1px dashed #bbf7d0' }}>
+                      <div style={{ fontSize: 11, fontWeight: 700, color: '#166534', textTransform: 'uppercase', marginBottom: 6 }}>Give back as</div>
+                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+                        <div>
+                          <div style={{ fontSize: 11, color: '#16a34a', fontWeight: 700, marginBottom: 3 }}>Change USD</div>
+                          <input
+                            type="number" min="0" step="0.01"
+                            value={payModal.changeUSDgiven}
+                            onChange={e => setPayModal({ ...payModal, changeUSDgiven: e.target.value })}
+                            placeholder="0.00"
+                            style={{ width: '100%', padding: '8px 10px', border: `2px solid ${changeUSDgiven > 0 ? '#16a34a' : '#d1d5db'}`, borderRadius: 6, fontSize: 14, fontWeight: 600, color: changeUSDgiven > 0 ? '#16a34a' : '#374151', boxSizing: 'border-box' }} />
+                        </div>
+                        <div>
+                          <div style={{ fontSize: 11, color: '#a16207', fontWeight: 700, marginBottom: 3 }}>Change FRA</div>
+                          <input
+                            type="number" min="0" step="1"
+                            value={payModal.changeFRAgiven}
+                            onChange={e => setPayModal({ ...payModal, changeFRAgiven: e.target.value })}
+                            placeholder="0"
+                            style={{ width: '100%', padding: '8px 10px', border: `2px solid ${changeFRAgiven > 0 ? '#a16207' : '#d1d5db'}`, borderRadius: 6, fontSize: 14, fontWeight: 600, color: changeFRAgiven > 0 ? '#a16207' : '#374151', boxSizing: 'border-box' }} />
+                          <div style={{ fontSize: 10, color: '#a16207', marginTop: 3, textAlign: 'right' }}>≈ {money(changeFRAasUSD)} at buy {BUY_RATE.toLocaleString()}</div>
+                        </div>
+                      </div>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 8, padding: '6px 10px', background: '#fff', borderRadius: 6, fontSize: 12 }}>
+                        <span style={{ color: '#6b7280' }}>Total given</span>
+                        <span style={{ fontWeight: 700, color: '#16a34a' }}>{money(totalChangeGiven)}</span>
+                      </div>
+                      {netRemaining > 0.001 && (
+                        <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 4, padding: '6px 10px', background: '#fef2f2', borderRadius: 6, fontSize: 12, border: '1px solid #fecaca' }}>
+                          <span style={{ color: '#991b1b', fontWeight: 700 }}>Net remaining (not handed back)</span>
+                          <span style={{ fontWeight: 700, color: '#dc2626' }}>{money(netRemaining)}</span>
+                        </div>
+                      )}
+                    </div>
+                  )}
                 </div>
               </div>
 
