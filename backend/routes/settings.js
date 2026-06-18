@@ -62,7 +62,7 @@ router.put('/business', auth, (req, res) => {
   try {
     const { business_name, business_phone, business_email, business_address, tax_rate, single_location_mode, block_oversell, currencies,
             receipt_printer_type, receipt_printer_name, receipt_printer_ip, receipt_printer_port,
-            default_crate_deposit } = req.body;
+            default_crate_deposit, currency_mode } = req.body;
     // Only update currencies if the caller explicitly sent them; otherwise leave whatever's stored.
     const currenciesJson = currencies !== undefined ? JSON.stringify(normaliseCurrencies(currencies)) : null;
     const existing = db.prepare('SELECT * FROM business_settings LIMIT 1').get();
@@ -96,6 +96,14 @@ router.put('/business', auth, (req, res) => {
       if (receipt_printer_ip   !== undefined) { sets.push('receipt_printer_ip=?');   vals.push(receipt_printer_ip   || null); }
       if (receipt_printer_port !== undefined) { sets.push('receipt_printer_port=?'); vals.push(parseInt(receipt_printer_port) || 9100); }
       if (default_crate_deposit !== undefined) { sets.push('default_crate_deposit=?'); vals.push(parseFloat(default_crate_deposit) || 0); }
+      // currency_mode is a per-branch feature gate. 'K' = Kwacha only (lusaka1,
+      // mansa1); 'USD+FRA' = dual currency, unlocks FX rate inputs, dual-
+      // currency payment modal, USD+FRA receipt lines (kassumbalesa1).
+      // Anything else is normalised to 'K' to avoid bad string slipping through.
+      if (currency_mode !== undefined) {
+        const cm = String(currency_mode || 'K').toUpperCase() === 'USD+FRA' ? 'USD+FRA' : 'K';
+        sets.push('currency_mode=?'); vals.push(cm);
+      }
       if (sets.length === 0) return res.json(existing); // nothing to update
       sets.push("updated_at=datetime('now')", 'synced=0');
       vals.push(existing.id);

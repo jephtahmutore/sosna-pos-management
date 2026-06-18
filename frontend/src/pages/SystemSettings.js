@@ -31,6 +31,10 @@ const SystemSettings = () => {
     receiptPrinterIp:   '',
     receiptPrinterPort: 9100,
     defaultCrateDeposit: 57,
+    // Currency mode controls the dual-currency UI gate. 'K' hides the FX
+    // rate / dual-currency payment / USD+FRA receipt features (default for
+    // lusaka1, mansa1). 'USD+FRA' unlocks them (kassumbalesa1).
+    currencyMode: 'K',
   });
   const [saving, setSaving] = useState(false);
 
@@ -86,6 +90,7 @@ const SystemSettings = () => {
         receiptPrinterIp:   b.receipt_printer_ip   || '',
         receiptPrinterPort: parseInt(b.receipt_printer_port) || 9100,
         defaultCrateDeposit: parseFloat(b.default_crate_deposit) || 57,
+        currencyMode: (String(b.currency_mode || 'K').toUpperCase() === 'USD+FRA') ? 'USD+FRA' : 'K',
       });
     }).catch(() => {});
   }, []);
@@ -112,6 +117,7 @@ const SystemSettings = () => {
         receipt_printer_ip:   form.receiptPrinterIp,
         receipt_printer_port: form.receiptPrinterPort,
         default_crate_deposit: form.defaultCrateDeposit,
+        currency_mode: form.currencyMode,
       });
       refreshCurrency();
       alert('System settings saved.');
@@ -195,6 +201,43 @@ const SystemSettings = () => {
 
       <div className="profile-form-card">
         <form onSubmit={handleSave}>
+
+          {/* ── Currency Mode (per-branch dual-currency gate) ───────────── */}
+          {/* Drives whether the FX rate inputs, dual-currency payment modal, */}
+          {/* and USD+FRA receipt lines appear in this tenant's UI. K-only    */}
+          {/* branches (lusaka1, mansa1) keep the current Kwacha flow. The    */}
+          {/* dual-currency branch (kassumbalesa1) flips to 'USD+FRA' so the  */}
+          {/* extra UI surfaces. Stored on business_settings.currency_mode.   */}
+          <div className="form-section">
+            <h3 className="form-section-title"><FiDollarSign /> Currency Mode</h3>
+            <p style={{ fontSize: 13, color: '#6b7280', marginBottom: 14 }}>
+              Controls dual-currency features for this branch. Most branches keep <strong>Kwacha only</strong>.
+              Switch to <strong>USD + FRA</strong> only on the branch that accepts foreign currency at the till.
+            </p>
+            <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+              {[
+                { val: 'K',       label: 'Kwacha only',       sub: 'Single-currency POS (default)' },
+                { val: 'USD+FRA', label: 'USD + FRA (dual)',  sub: 'Unlocks FX rates, dual-currency payment, USD+FRA receipt' },
+              ].map(opt => (
+                <label key={opt.val}
+                       style={{ flex: '1 1 240px', display: 'flex', alignItems: 'flex-start', gap: 10,
+                                padding: '12px 14px',
+                                border: `1.5px solid ${form.currencyMode === opt.val ? '#2563eb' : '#e5e7eb'}`,
+                                borderRadius: 10,
+                                background: form.currencyMode === opt.val ? '#eff6ff' : '#fff',
+                                cursor: 'pointer' }}>
+                  <input type="radio" name="currency-mode" value={opt.val}
+                         checked={form.currencyMode === opt.val}
+                         onChange={() => setForm(f => ({ ...f, currencyMode: opt.val }))}
+                         style={{ marginTop: 3 }} />
+                  <div>
+                    <div style={{ fontWeight: 700, fontSize: 13, color: '#0f172a' }}>{opt.label}</div>
+                    <div style={{ fontSize: 11, color: '#64748b', marginTop: 2 }}>{opt.sub}</div>
+                  </div>
+                </label>
+              ))}
+            </div>
+          </div>
 
           {/* ── Currencies ──────────────────────────────────────────────── */}
           <div className="form-section">
