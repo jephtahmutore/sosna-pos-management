@@ -31,6 +31,96 @@ router.get('/', auth, readOnlyGuard, (req, res) => {
   }
 });
 
+// Dispatch inbox — list orders that the Cashier has collected payment on
+// and that are now waiting to be physically released by the Dispatch
+// station. Same FIFO ordering as the Cashier inbox so the oldest order
+// gets handed over first.
+router.get('/dispatch-inbox', auth, readOnlyGuard, (req, res) => {
+  try {
+    const rows = db.prepare(
+      `SELECT o.id, o.order_number, o.customer_name, o.total_amount, o.subtotal, o.discount,
+              o.paid_at, o.sales_at, o.cashier_user_id, o.currency,
+              TRIM(COALESCE(uc.first_name, '') || ' ' || COALESCE(uc.last_name, '')) AS cashier_name,
+              (SELECT COUNT(*) FROM order_items oi WHERE oi.order_sync_id = o.sync_id AND oi.deleted_at IS NULL) AS item_count
+       FROM orders o
+       LEFT JOIN users uc ON uc.id = o.cashier_user_id
+       WHERE o.deleted_at IS NULL
+         AND o.status = 'PAID'
+         AND o.tenant_id = ?
+       ORDER BY COALESCE(o.paid_at, o.created_at) ASC`
+    ).all(req.user.tenantId);
+    res.json(rows);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Dispatch confirms goods released — 3-station flow's final step.
+// This is the point at which stock physically leaves and we mint the
+// stock_movements rows that the rest of the system (Bin Card, profit, etc.)
+// reads. Also stamps dispatch_user_id + dispatched_at and triggers profit
+// recalc so the day's revenue lines up with the day's COGS.
+router.put('/:id/confirm-dispatch', auth, (req, res) => {
+  try {
+    const result = db.transaction(() => {
+      const order = db.prepare('SELECT * FROM orders WHERE id = ? AND deleted_at IS NULL AND tenant_id = ?')
+        .get(req.params.id, req.user.tenantId);
+      if (!order) throw Object.assign(new Error('Order not found'), { status: 404 });
+      if (order.status !== 'PAID') {
+        throw Object.assign(new Error('Order is not awaiting dispatch'), { status: 400 });
+      }
+
+      // Pull line items and decrement stock the same way POST /orders does
+      // (see the single_pos checkout block above) — keeps Bin Card / profit
+      // calculations identical regardless of which workflow created the row.
+      const items = db.prepare(
+        `SELECT oi.product_id, oi.product_sync_id, oi.quantity, oi.unit, oi.product_name
+         FROM order_items oi
+         WHERE oi.order_sync_id = ? AND oi.deleted_at IS NULL`
+      ).all(order.sync_id);
+
+      const tenantId = syncConfig.getTenantId(req);
+      const { branchId, deviceId } = syncConfig.getConfig();
+      const movSql = `INSERT INTO stock_movements (product_id, product_sync_id, location, movement_type, quantity, reference_id, reference_type, created_by, sync_id, tenant_id, branch_id, device_id, synced, created_at, updated_at, reference_sync_id)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,0,datetime('now'),datetime('now'),?)`;
+      const movStmt = db.prepare(movSql);
+
+      for (const it of items) {
+        const prod = db.prepare('SELECT sync_id, unit, alt_unit, conversion_factor, units_json FROM products WHERE id = ?').get(it.product_id);
+        const productSyncId = it.product_sync_id || prod?.sync_id || null;
+        const lineUnit = (it.unit || '').trim() || prod?.unit || null;
+        const baseQty = parseFloat(it.quantity) * conversionToBase(prod, lineUnit);
+        movStmt.run(
+          it.product_id, productSyncId, 'sales', 'sale', -baseQty,
+          order.id, 'order', req.user.id,
+          randomUUID(), tenantId, branchId, deviceId,
+          order.sync_id
+        );
+      }
+
+      db.prepare(`
+        UPDATE orders
+           SET status            = 'DISPATCHED',
+               dispatch_user_id  = ?,
+               dispatched_at     = datetime('now'),
+               synced            = 0,
+               updated_at        = datetime('now')
+         WHERE id = ?
+      `).run(req.user.id, req.params.id);
+
+      return db.prepare('SELECT * FROM orders WHERE id = ?').get(req.params.id);
+    })();
+
+    // Sale is now fully realised: revenue (collected at Cashier) + COGS
+    // (just minted above). Recalc the daily profit row.
+    const orderDate = (result.created_at || '').split(' ')[0] || new Date().toISOString().split('T')[0];
+    recalculateDailyProfit(db, orderDate, req.user.tenantId);
+    res.json(result);
+  } catch (error) {
+    res.status(error.status || 500).json({ error: error.message });
+  }
+});
+
 // Cashier inbox — list orders awaiting payment in the 3-station flow.
 // The Sales station POSTs orders with status='PENDING_PAYMENT'; this endpoint
 // is what the Cashier page polls. Sorted by sales_at ASC so the oldest pending

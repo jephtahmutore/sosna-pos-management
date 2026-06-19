@@ -199,6 +199,7 @@ const Layout = () => {
       '/pos/sales-bin-card': 'Sales Bin Card',
       '/pos/sales-stock-card': 'Sales Stock Card',
       '/pos/cashier': 'Cashier',
+      '/pos/dispatch': 'Dispatch',
       '/stock/items': t('itemDetails'), '/stock/grn': t('grn'), '/stock/siv': t('siv'),
       '/stock/sales-damages': 'Sales Damages',
       '/stock/inventory': t('inventory'), '/stock/adjustments': t('stockAdjustment'),
@@ -270,6 +271,12 @@ const Layout = () => {
                   {workflowMode === 'three_station' && hasPageAccess('POS') && (
                     <div className={`nav-item ${isActive('/pos/cashier') ? 'active' : ''}`} onClick={() => navigate('/pos/cashier')}>
                       <FiCreditCard className="nav-icon" /> <span>Cashier</span>
+                    </div>
+                  )}
+                  {/* Dispatch — same gate. Releases goods on PAID orders. */}
+                  {workflowMode === 'three_station' && hasPageAccess('POS') && (
+                    <div className={`nav-item ${isActive('/pos/dispatch') ? 'active' : ''}`} onClick={() => navigate('/pos/dispatch')}>
+                      <FiPackage className="nav-icon" /> <span>Dispatch</span>
                     </div>
                   )}
                   {hasPageAccess('SalesReport') && (

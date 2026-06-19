@@ -10,6 +10,7 @@ import LicenseBanner from './components/LicenseBanner';
 import Dashboard from './pages/Dashboard';
 import POS from './pages/POS';
 import Cashier from './pages/Cashier';
+import Dispatch from './pages/Dispatch';
 import ItemDetails from './pages/ItemDetails';
 import GRN from './pages/GRN';
 import EmptyReturns from './pages/EmptyReturns';
@@ -228,6 +229,7 @@ function AppRoutes() {
         <Route path="dashboard" element={<PermRoute allAccessOnly><Dashboard /></PermRoute>} />
         <Route path="pos" element={<PermRoute perms={['POS','Sales','POS:View','POS:Add','POS:Edit','POS:Delete']}><POS /></PermRoute>} />
         <Route path="pos/cashier" element={<PermRoute perms={['POS','Sales','POS:View','POS:Add','POS:Edit','POS:Delete']}><Cashier /></PermRoute>} />
+        <Route path="pos/dispatch" element={<PermRoute perms={['POS','Sales','POS:View','POS:Add','POS:Edit','POS:Delete']}><Dispatch /></PermRoute>} />
         <Route path="pos/sales-report" element={<PermRoute perms={['Sales','Reports','SalesReport:View','SalesReport:Add','SalesReport:Edit','SalesReport:Delete']}><SalesReport /></PermRoute>} />
         <Route path="pos/sales-inventory" element={<PermRoute perms={['Sales','Reports','SalesInventory:View','SalesInventory:Add','SalesInventory:Edit','SalesInventory:Delete']}><SalesInventory /></PermRoute>} />
         <Route path="pos/sales-stock-card" element={<PermRoute perms={['Sales','Reports','SalesInventory:View','Inventory:View']}><Inventory viewLocation="sales" /></PermRoute>} />
