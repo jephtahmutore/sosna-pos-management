@@ -14,6 +14,11 @@ const CurrencyContext = createContext({
   primary: DEFAULTS[0],
   symbol: '$',
   money: (n) => `$${parseFloat(n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
+  // Per-branch feature gates loaded from business_settings:
+  //   workflowMode — 'single_pos' | 'three_station' (drives Cashier/Dispatch sidebar)
+  //   currencyMode — 'K' | 'USD+FRA' (drives dual-currency UI)
+  workflowMode: 'single_pos',
+  currencyMode: 'K',
   refresh: () => {},
 });
 
@@ -28,6 +33,8 @@ function parseCurrencies(raw) {
 
 export const CurrencyProvider = ({ children }) => {
   const [currencies, setCurrencies] = useState(DEFAULTS);
+  const [workflowMode, setWorkflowMode] = useState('single_pos');
+  const [currencyMode, setCurrencyMode] = useState('K');
 
   const refresh = useCallback(async () => {
     // Skip the API call when the user isn't logged in — otherwise the 401 response
@@ -37,6 +44,10 @@ export const CurrencyProvider = ({ children }) => {
       const res = await getSettings();
       const biz = res.data?.business || {};
       setCurrencies(parseCurrencies(biz.currencies_json));
+      const wm = String(biz.workflow_mode || 'single_pos').toLowerCase();
+      setWorkflowMode(wm === 'three_station' ? 'three_station' : 'single_pos');
+      const cm = String(biz.currency_mode || 'K').toUpperCase();
+      setCurrencyMode(cm === 'USD+FRA' ? 'USD+FRA' : 'K');
     } catch { /* keep defaults */ }
   }, []);
 
@@ -47,7 +58,7 @@ export const CurrencyProvider = ({ children }) => {
   const money = (n) => `${symbol}${parseFloat(n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
   return (
-    <CurrencyContext.Provider value={{ currencies, primary, symbol, money, refresh }}>
+    <CurrencyContext.Provider value={{ currencies, primary, symbol, money, workflowMode, currencyMode, refresh }}>
       {children}
     </CurrencyContext.Provider>
   );

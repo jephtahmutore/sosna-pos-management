@@ -107,6 +107,8 @@ export const getOrders = () => api.get('/orders');
 export const createOrder = (data) => api.post('/orders', data);
 export const getOrder = (id) => api.get(`/orders/${id}`);
 export const reverseOrder = (id) => api.put(`/orders/${id}/reverse`);
+export const getCashierInbox = () => api.get('/orders/cashier-inbox');
+export const collectOrderPayment = (id, data) => api.put(`/orders/${id}/collect-payment`, data);
 export const reverseOrderItem = (orderId, itemId, quantity, unit) => {
   const body = {};
   if (quantity != null) body.quantity = quantity;

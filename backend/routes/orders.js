@@ -31,6 +31,30 @@ router.get('/', auth, readOnlyGuard, (req, res) => {
   }
 });
 
+// Cashier inbox — list orders awaiting payment in the 3-station flow.
+// The Sales station POSTs orders with status='PENDING_PAYMENT'; this endpoint
+// is what the Cashier page polls. Sorted by sales_at ASC so the oldest pending
+// order is processed first (FIFO — fair to the customer who arrived earliest).
+router.get('/cashier-inbox', auth, readOnlyGuard, (req, res) => {
+  try {
+    const rows = db.prepare(
+      `SELECT o.id, o.order_number, o.customer_name, o.total_amount, o.subtotal, o.discount,
+              o.sales_at, o.sales_user_id, o.currency,
+              TRIM(COALESCE(u.first_name, '') || ' ' || COALESCE(u.last_name, '')) AS sales_by_name,
+              (SELECT COUNT(*) FROM order_items oi WHERE oi.order_sync_id = o.sync_id AND oi.deleted_at IS NULL) AS item_count
+       FROM orders o
+       LEFT JOIN users u ON u.id = o.sales_user_id
+       WHERE o.deleted_at IS NULL
+         AND o.status = 'PENDING_PAYMENT'
+         AND o.tenant_id = ?
+       ORDER BY COALESCE(o.sales_at, o.created_at) ASC`
+    ).all(req.user.tenantId);
+    res.json(rows);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // Create order (POS checkout)
 router.post('/', auth, (req, res) => {
   try {
@@ -301,6 +325,84 @@ router.get('/:id', auth, readOnlyGuard, (req, res) => {
     res.json({ ...order, items });
   } catch (error) {
     res.status(500).json({ error: error.message });
+  }
+});
+
+// Cashier collects payment on a PENDING_PAYMENT order — 3-station flow.
+// Records the FX-style payment (USD + FRA buckets like Sirak-POS), flips
+// status to 'PAID', stamps cashier_user_id + paid_at. Stock movements are
+// STILL skipped here — they happen at Dispatch (see memory
+// [[project-sosna-stock-deduction-timing]]).
+router.put('/:id/collect-payment', auth, (req, res) => {
+  try {
+    const {
+      paid_usd, paid_fra, given_usd, given_fra,
+      buy_rate, sell_rate,
+    } = req.body;
+    const paidUSD = parseFloat(paid_usd || 0) || 0;
+    const paidFRA = parseFloat(paid_fra || 0) || 0;
+    const givenUSD = parseFloat(given_usd || 0) || 0;
+    const givenFRA = parseFloat(given_fra || 0) || 0;
+    const sellRate = parseFloat(sell_rate || 0) || 0;
+    const buyRate  = parseFloat(buy_rate  || 0) || 0;
+
+    const result = db.transaction(() => {
+      const order = db.prepare('SELECT * FROM orders WHERE id = ? AND deleted_at IS NULL AND tenant_id = ?')
+        .get(req.params.id, req.user.tenantId);
+      if (!order) throw Object.assign(new Error('Order not found'), { status: 404 });
+      if (order.status !== 'PENDING_PAYMENT') {
+        throw Object.assign(new Error('Order is not awaiting payment'), { status: 400 });
+      }
+
+      // Sirak math, mirrored exactly:
+      //   totalAmountPaid = paid_usd + paid_fra / sell_rate
+      //   unpaidBalance   = max(0, total_due - totalAmountPaid)
+      //   change          = max(0, totalAmountPaid - total_due)
+      const paidFRAasUSD = sellRate > 0 ? paidFRA / sellRate : 0;
+      const totalAmountPaid = paidUSD + paidFRAasUSD;
+      const totalDue = parseFloat(order.total_amount || 0);
+      const change   = Math.max(0, totalAmountPaid - totalDue);
+      const unpaid   = Math.max(0, totalDue - totalAmountPaid);
+      if (unpaid > 0.001) {
+        throw Object.assign(new Error(`Payment is short by ${unpaid.toFixed(2)} ${order.currency || 'USD'}`), { status: 400 });
+      }
+
+      db.prepare(`
+        UPDATE orders
+           SET status            = 'PAID',
+               cashier_user_id   = ?,
+               paid_at           = datetime('now'),
+               amount_received   = ?,
+               cash_received     = ?,
+               momo_received     = 0,
+               bank_received     = 0,
+               change_amount     = ?,
+               fra_received      = ?,
+               fra_change_given  = ?,
+               selling_rate_used = ?,
+               buying_rate_used  = ?,
+               payment_method    = 'Cash',
+               synced            = 0,
+               updated_at        = datetime('now')
+         WHERE id = ?
+      `).run(
+        req.user.id,
+        totalAmountPaid,
+        paidUSD,
+        change,
+        paidFRA,
+        givenFRA,
+        sellRate || null,
+        buyRate  || null,
+        req.params.id
+      );
+
+      return db.prepare('SELECT * FROM orders WHERE id = ?').get(req.params.id);
+    })();
+
+    res.json(result);
+  } catch (error) {
+    res.status(error.status || 500).json({ error: error.message });
   }
 });
 

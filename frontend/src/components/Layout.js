@@ -4,6 +4,7 @@ const { version } = pkg;
 import { Outlet, useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { useLanguage } from '../context/LanguageContext';
+import { useCurrency } from '../context/CurrencyContext';
 import SyncStatus from './SyncStatus';
 import { getDiscountRequestsPendingCount } from '../services/api';
 import { FiGrid, FiShoppingCart, FiPackage, FiFileText, FiDollarSign, FiUsers, FiSettings,
@@ -30,6 +31,8 @@ const Layout = () => {
       'CashReceipt', 'PaymentVoucher', 'CashBook', 'AccountPayables', 'AccountReceivables', 'ProfitReport',
       'Suppliers', 'Customers', 'Sales', 'Reports');
   const { language, changeLanguage, t } = useLanguage();
+  // 3-station gate — only kassumbalesa1 sees the Cashier sidebar entry.
+  const { workflowMode } = useCurrency();
   const navigate = useNavigate();
   const location = useLocation();
   const [collapsed, setCollapsed] = useState(false);
@@ -195,6 +198,7 @@ const Layout = () => {
       '/pos/sales-inventory': t('salesInventory'), '/pos/cash-report': t('cashReport'),
       '/pos/sales-bin-card': 'Sales Bin Card',
       '/pos/sales-stock-card': 'Sales Stock Card',
+      '/pos/cashier': 'Cashier',
       '/stock/items': t('itemDetails'), '/stock/grn': t('grn'), '/stock/siv': t('siv'),
       '/stock/sales-damages': 'Sales Damages',
       '/stock/inventory': t('inventory'), '/stock/adjustments': t('stockAdjustment'),
@@ -259,6 +263,13 @@ const Layout = () => {
                   {hasPageAccess('POS') && (
                     <div className={`nav-item ${isActive('/pos') ? 'active' : ''}`} onClick={() => navigate('/pos')}>
                       <FiShoppingCart className="nav-icon" /> <span>{t('pos')}</span>
+                    </div>
+                  )}
+                  {/* Cashier — only shown when this branch is on the 3-station workflow.
+                      Single-screen branches (lusaka1, mansa1) hide it entirely. */}
+                  {workflowMode === 'three_station' && hasPageAccess('POS') && (
+                    <div className={`nav-item ${isActive('/pos/cashier') ? 'active' : ''}`} onClick={() => navigate('/pos/cashier')}>
+                      <FiCreditCard className="nav-icon" /> <span>Cashier</span>
                     </div>
                   )}
                   {hasPageAccess('SalesReport') && (

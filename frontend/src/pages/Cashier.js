@@ -1,0 +1,425 @@
+// Cashier — 3-station workflow station (kassumbalesa1, workflow_mode='three_station').
+//
+// Left pane:   Pending Payments queue (orders status='PENDING_PAYMENT').
+// Right pane:  Selected order details + Sirak-POS-style payment panel.
+//
+// Payment math mirrors Sirak-POS Cashier.js exactly — the reference build the
+// user explicitly told us to copy:
+//   paidFRAasUSD     = paidFRA / sellRate
+//   totalAmountPaid  = paidUSD + paidFRAasUSD
+//   unpaidBalance    = max(0, totalDue - totalAmountPaid)
+//   changeUSD        = max(0, totalAmountPaid - totalDue)
+//   changeFRA        = changeUSD * buyRate
+//   totalChangeGiven = givenUSD + givenFRA / buyRate
+//   netRemaining     = changeUSD - totalChangeGiven
+//
+// FX rates: hardcoded SELL=2900, BUY=2600 for now — user will describe the
+// rate-config flow later. Snapshot stored on the order at collect-payment time.
+import React, { useEffect, useState } from 'react';
+import { FiRefreshCw, FiClock, FiUser, FiShoppingCart } from 'react-icons/fi';
+import {
+  getCashierInbox,
+  getOrder,
+  collectOrderPayment,
+} from '../services/api';
+
+const SELL_RATE = 2900;
+const BUY_RATE  = 2600;
+
+const fmtUSD = (n) => `$${parseFloat(n || 0).toFixed(2)}`;
+const fmtFRA = (n) => Math.round(parseFloat(n || 0)).toLocaleString('en-US');
+
+export default function Cashier() {
+  const [inbox, setInbox] = useState([]);
+  const [loadingInbox, setLoadingInbox] = useState(false);
+  const [selected, setSelected] = useState(null);
+  const [loadingDetail, setLoadingDetail] = useState(false);
+  const [amountPaidUSD, setAmountPaidUSD] = useState('');
+  const [amountPaidFRA, setAmountPaidFRA] = useState('');
+  const [changeGivenUSD, setChangeGivenUSD] = useState('');
+  const [changeGivenFRA, setChangeGivenFRA] = useState('');
+  const [confirm, setConfirm] = useState(null);   // { ...calc }
+  const [submitting, setSubmitting] = useState(false);
+  const [toast, setToast] = useState(null);
+
+  const refreshInbox = async () => {
+    setLoadingInbox(true);
+    try {
+      const res = await getCashierInbox();
+      setInbox(Array.isArray(res.data) ? res.data : []);
+    } catch { /* ignore */ }
+    setLoadingInbox(false);
+  };
+
+  useEffect(() => {
+    refreshInbox();
+    // Poll every 5s so newly-confirmed orders from the Sales station appear
+    // automatically. Light enough on a small queue.
+    const id = setInterval(refreshInbox, 5000);
+    return () => clearInterval(id);
+  }, []);
+
+  const openOrder = async (id) => {
+    setLoadingDetail(true);
+    setAmountPaidUSD(''); setAmountPaidFRA('');
+    setChangeGivenUSD(''); setChangeGivenFRA('');
+    try {
+      const res = await getOrder(id);
+      setSelected(res.data);
+    } catch { setSelected(null); }
+    setLoadingDetail(false);
+  };
+
+  // Sirak math, single source of truth for the right panel.
+  const computePayment = () => {
+    if (!selected) return null;
+    const totalDue = parseFloat(selected.total_amount || 0);
+    const paidUSD  = parseFloat(amountPaidUSD || 0) || 0;
+    const paidFRA  = parseFloat(amountPaidFRA || 0) || 0;
+    const paidFRAasUSD    = SELL_RATE > 0 ? paidFRA / SELL_RATE : 0;
+    const totalAmountPaid = paidUSD + paidFRAasUSD;
+    const unpaidBalance   = Math.max(0, totalDue - totalAmountPaid);
+    const unpaidBalanceFRA= SELL_RATE > 0 ? unpaidBalance * SELL_RATE : 0;
+    const changeUSD       = Math.max(0, totalAmountPaid - totalDue);
+    const changeFRA       = BUY_RATE > 0 ? changeUSD * BUY_RATE : 0;
+    const isOverpaid      = changeUSD > 0.001;
+    const givenUSD        = parseFloat(changeGivenUSD || 0) || 0;
+    const givenFRA        = parseFloat(changeGivenFRA || 0) || 0;
+    const totalChangeGiven= givenUSD + (BUY_RATE > 0 ? givenFRA / BUY_RATE : 0);
+    const netRemaining    = changeUSD - totalChangeGiven;
+    const netRemainingFRA = BUY_RATE > 0 ? netRemaining * BUY_RATE : 0;
+    return {
+      totalDue, paidUSD, paidFRA, paidFRAasUSD, totalAmountPaid,
+      unpaidBalance, unpaidBalanceFRA,
+      changeUSD, changeFRA, isOverpaid,
+      givenUSD, givenFRA, totalChangeGiven, netRemaining, netRemainingFRA,
+    };
+  };
+
+  const handleConfirm = () => {
+    const data = computePayment();
+    if (!data) return;
+    setConfirm(data);
+  };
+
+  const processPayment = async () => {
+    if (!selected || !confirm) return;
+    setSubmitting(true);
+    try {
+      await collectOrderPayment(selected.id, {
+        paid_usd:  confirm.paidUSD,
+        paid_fra:  confirm.paidFRA,
+        given_usd: confirm.givenUSD,
+        given_fra: confirm.givenFRA,
+        buy_rate:  BUY_RATE,
+        sell_rate: SELL_RATE,
+      });
+      setSelected(null);
+      setConfirm(null);
+      setAmountPaidUSD(''); setAmountPaidFRA('');
+      setChangeGivenUSD(''); setChangeGivenFRA('');
+      setToast({ text: 'Payment recorded — order moved to Dispatch.', type: 'success' });
+      setTimeout(() => setToast(null), 3000);
+      refreshInbox();
+    } catch (err) {
+      const msg = err?.response?.data?.error || err?.message || 'Payment failed';
+      setToast({ text: msg, type: 'error' });
+      setTimeout(() => setToast(null), 4500);
+    }
+    setSubmitting(false);
+  };
+
+  const calc = computePayment();
+  // Match Sirak: enable as soon as any payment is entered. Backend rejects
+  // short payments (see /collect-payment guard) — UI also shows the unpaid
+  // banner so the cashier sees it before clicking.
+  const canConfirm = !!selected && !!calc && (calc.paidUSD > 0 || calc.paidFRA > 0);
+
+  return (
+    <div className="page-content">
+      <div className="page-header">
+        <div>
+          <h1>Cashier</h1>
+          <p>Collect payment on orders sent from Sales</p>
+        </div>
+        <button onClick={refreshInbox}
+          style={{ padding: '8px 14px', background: '#0ea5e9', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+          <FiRefreshCw /> Refresh
+        </button>
+      </div>
+
+      {toast && (
+        <div style={{
+          position: 'fixed', top: 80, right: 20, zIndex: 999,
+          padding: '12px 18px', borderRadius: 8, color: '#fff', fontWeight: 600,
+          background: toast.type === 'error' ? '#dc2626' : '#16a34a',
+        }}>{toast.text}</div>
+      )}
+
+      <div style={{ display: 'grid', gridTemplateColumns: '340px 1fr', gap: 16, height: 'calc(100vh - 200px)' }}>
+        {/* ── LEFT: Inbox queue ───────────────────────────────────────── */}
+        <div style={{ background: '#fff', border: '1px solid #e5e7eb', borderRadius: 10, padding: 14, overflowY: 'auto' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+            <h3 style={{ margin: 0, fontSize: 15, color: '#0f172a' }}>Pending Payments</h3>
+            <span style={{ fontSize: 12, color: '#64748b', background: '#f1f5f9', padding: '2px 8px', borderRadius: 12 }}>
+              {inbox.length}
+            </span>
+          </div>
+          {loadingInbox && inbox.length === 0 ? (
+            <p style={{ color: '#64748b', fontSize: 13 }}>Loading…</p>
+          ) : inbox.length === 0 ? (
+            <p style={{ color: '#94a3b8', fontSize: 13, fontStyle: 'italic' }}>No pending payments</p>
+          ) : (
+            <div style={{ display: 'grid', gap: 8 }}>
+              {inbox.map(o => (
+                <div key={o.id}
+                  onClick={() => openOrder(o.id)}
+                  style={{
+                    padding: '10px 12px',
+                    border: `1.5px solid ${selected?.id === o.id ? '#2563eb' : '#e5e7eb'}`,
+                    background: selected?.id === o.id ? '#eff6ff' : '#fff',
+                    borderRadius: 8, cursor: 'pointer',
+                  }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+                    <span style={{ fontWeight: 700, fontSize: 13, color: '#0f172a' }}>{o.order_number}</span>
+                    <span style={{ fontWeight: 700, fontSize: 14, color: '#0ea5e9' }}>{fmtUSD(o.total_amount)}</span>
+                  </div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: '#64748b' }}>
+                    <span><FiUser size={10} style={{ verticalAlign: 'middle' }} /> {o.customer_name || 'Walk-in'}</span>
+                    <span>{o.item_count} item{o.item_count === 1 ? '' : 's'}</span>
+                  </div>
+                  {o.sales_at && (
+                    <div style={{ marginTop: 4, fontSize: 10, color: '#94a3b8' }}>
+                      <FiClock size={10} style={{ verticalAlign: 'middle' }} /> {new Date(o.sales_at).toLocaleString()}
+                      {o.sales_by_name ? ` · by ${o.sales_by_name}` : ''}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* ── RIGHT: Order detail + payment ──────────────────────────── */}
+        <div style={{ background: '#fff', border: '1px solid #e5e7eb', borderRadius: 10, padding: 16, overflowY: 'auto' }}>
+          {!selected ? (
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: '#94a3b8', flexDirection: 'column' }}>
+              <FiShoppingCart size={48} style={{ marginBottom: 12, opacity: 0.4 }} />
+              <p style={{ fontStyle: 'italic' }}>Select an order from the queue to collect payment</p>
+            </div>
+          ) : loadingDetail ? (
+            <p style={{ color: '#64748b' }}>Loading order…</p>
+          ) : (
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 18 }}>
+              {/* Left half: order + items */}
+              <div>
+                <h3 style={{ margin: '0 0 4px 0', fontSize: 16, color: '#0f172a' }}>Order {selected.order_number}</h3>
+                <p style={{ margin: 0, fontSize: 12, color: '#64748b' }}>Customer: <strong>{selected.customer_name || 'Walk-in'}</strong></p>
+                <div style={{ marginTop: 14, border: '1px solid #e5e7eb', borderRadius: 8, overflow: 'hidden' }}>
+                  <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+                    <thead style={{ background: '#f8fafc' }}>
+                      <tr>
+                        <th style={thStyle}>Item</th>
+                        <th style={{ ...thStyle, textAlign: 'right' }}>Qty</th>
+                        <th style={{ ...thStyle, textAlign: 'right' }}>Price</th>
+                        <th style={{ ...thStyle, textAlign: 'right' }}>Total</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {(selected.items || []).map((it, i) => (
+                        <tr key={i} style={{ borderTop: '1px solid #f1f5f9' }}>
+                          <td style={tdStyle}>{it.product_name}</td>
+                          <td style={{ ...tdStyle, textAlign: 'right' }}>{parseFloat(it.quantity).toFixed(2)} {it.unit || ''}</td>
+                          <td style={{ ...tdStyle, textAlign: 'right' }}>{fmtUSD(it.unit_price)}</td>
+                          <td style={{ ...tdStyle, textAlign: 'right' }}>{fmtUSD(it.total_price)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                <div style={{ marginTop: 12, fontSize: 13 }}>
+                  <div style={totalsRow}><span>Subtotal</span><span>{fmtUSD(selected.subtotal)}</span></div>
+                  {parseFloat(selected.discount || 0) > 0 && (
+                    <div style={totalsRow}><span>Discount</span><span>−{fmtUSD(selected.discount)}</span></div>
+                  )}
+                  <div style={{ ...totalsRow, fontWeight: 700, color: '#0f172a', borderTop: '1px solid #e5e7eb', marginTop: 6, paddingTop: 6 }}>
+                    <span>Total Due</span><span>{fmtUSD(selected.total_amount)}</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Right half: payment */}
+              <div>
+                <h3 style={{ margin: '0 0 10px 0', fontSize: 16, color: '#0f172a' }}>Payment</h3>
+                <div style={{ background: '#f0f9ff', border: '1px solid #bae6fd', borderRadius: 8, padding: '12px 14px', marginBottom: 14 }}>
+                  <div style={{ fontSize: 11, color: '#0369a1', fontWeight: 600 }}>Total Due</div>
+                  <div style={{ fontSize: 26, fontWeight: 800, color: '#0c4a6e', lineHeight: 1.1 }}>{fmtUSD(selected.total_amount)}</div>
+                  <div style={{ fontSize: 11, color: '#0369a1', marginTop: 2 }}>
+                    or {fmtFRA(parseFloat(selected.total_amount) * SELL_RATE)} FRA (sell {SELL_RATE.toLocaleString()})
+                  </div>
+                </div>
+
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+                  <div>
+                    <label style={lblStyle}>Amount Paid ($)</label>
+                    <input type="number" min="0" step="0.01" value={amountPaidUSD}
+                      onChange={e => setAmountPaidUSD(e.target.value)} placeholder="0.00" style={inputStyle} />
+                  </div>
+                  <div>
+                    <label style={lblStyle}>Amount Paid (FRA)</label>
+                    <input type="number" min="0" step="1" value={amountPaidFRA}
+                      onChange={e => setAmountPaidFRA(e.target.value)} placeholder="0" style={inputStyle} />
+                  </div>
+                </div>
+
+                {calc && (calc.paidUSD > 0 || calc.paidFRA > 0) && (
+                  <div style={{ marginTop: 12 }}>
+                    {calc.isOverpaid ? (
+                      <div style={{ background: '#ecfdf5', border: '1px solid #a7f3d0', borderRadius: 8, padding: '10px 12px' }}>
+                        <div style={{ fontSize: 11, color: '#047857', fontWeight: 600 }}>Change</div>
+                        <div style={{ fontSize: 20, fontWeight: 800, color: '#065f46' }}>
+                          {fmtUSD(calc.changeUSD)}{' '}
+                          <span style={{ fontSize: 12, color: '#047857', fontWeight: 600 }}>
+                            ≈ FRA {fmtFRA(calc.changeFRA)} (buy {BUY_RATE.toLocaleString()})
+                          </span>
+                        </div>
+                      </div>
+                    ) : (
+                      <div style={{ background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 8, padding: '10px 12px' }}>
+                        <div style={{ fontSize: 11, color: '#b91c1c', fontWeight: 600 }}>Unpaid Balance</div>
+                        <div style={{ fontSize: 20, fontWeight: 800, color: '#991b1b' }}>
+                          {fmtUSD(calc.unpaidBalance)}{' '}
+                          <span style={{ fontSize: 12, color: '#b91c1c', fontWeight: 600 }}>
+                            ≈ FRA {fmtFRA(calc.unpaidBalanceFRA)} (sell {SELL_RATE.toLocaleString()})
+                          </span>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {calc?.isOverpaid && (
+                  <div style={{ marginTop: 12 }}>
+                    <div style={{ fontSize: 11, color: '#64748b', fontWeight: 600, marginBottom: 6 }}>Change Given</div>
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+                      <div>
+                        <label style={lblStyle}>Given ($)</label>
+                        <input type="number" min="0" step="0.01" value={changeGivenUSD}
+                          onChange={e => {
+                            const v = parseFloat(e.target.value) || 0;
+                            const otherUSD = BUY_RATE > 0 ? (parseFloat(changeGivenFRA || 0) || 0) / BUY_RATE : 0;
+                            if (v + otherUSD > calc.changeUSD + 0.001) return;
+                            setChangeGivenUSD(e.target.value);
+                          }}
+                          placeholder="0.00" style={inputStyle} />
+                      </div>
+                      <div>
+                        <label style={lblStyle}>Given (FRA)</label>
+                        <input type="number" min="0" step="1" value={changeGivenFRA}
+                          onChange={e => {
+                            const vAsUSD = BUY_RATE > 0 ? (parseFloat(e.target.value) || 0) / BUY_RATE : 0;
+                            const otherUSD = parseFloat(changeGivenUSD || 0) || 0;
+                            if (otherUSD + vAsUSD > calc.changeUSD + 0.001) return;
+                            setChangeGivenFRA(e.target.value);
+                          }}
+                          placeholder="0" style={inputStyle} />
+                      </div>
+                    </div>
+                    {(calc.givenUSD > 0 || calc.givenFRA > 0) && (
+                      <div style={{ marginTop: 10, padding: '10px 12px',
+                                    background: Math.abs(calc.netRemaining) < 0.01 ? '#ecfdf5' : '#fef3c7',
+                                    border: `1px solid ${Math.abs(calc.netRemaining) < 0.01 ? '#a7f3d0' : '#fde68a'}`,
+                                    borderRadius: 8 }}>
+                        <div style={{ fontSize: 11, color: Math.abs(calc.netRemaining) < 0.01 ? '#047857' : '#92400e', fontWeight: 600 }}>
+                          {Math.abs(calc.netRemaining) < 0.01 ? 'Exact change given' : 'Still owed to customer'}
+                        </div>
+                        {Math.abs(calc.netRemaining) >= 0.01 && (
+                          <div style={{ fontSize: 16, fontWeight: 800, color: '#78350f' }}>
+                            {fmtUSD(calc.netRemaining)} <span style={{ fontSize: 11, fontWeight: 600 }}>(FRA {fmtFRA(calc.netRemainingFRA)})</span>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                <button onClick={handleConfirm}
+                  disabled={!canConfirm || submitting}
+                  style={{
+                    marginTop: 18, width: '100%', padding: '14px',
+                    background: canConfirm ? 'linear-gradient(135deg,#16a34a,#15803d)' : '#cbd5e1',
+                    color: '#fff', border: 'none', borderRadius: 8,
+                    fontSize: 15, fontWeight: 700, cursor: canConfirm ? 'pointer' : 'not-allowed',
+                  }}>
+                  Confirm Payment →
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Confirm modal */}
+      {confirm && selected && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,0.6)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 200 }}>
+          <div style={{ background: '#fff', borderRadius: 12, width: 'min(440px, 92vw)', padding: 22 }}>
+            <h3 style={{ margin: '0 0 14px 0' }}>Confirm Payment</h3>
+            <div style={confirmRow}><span>Order</span><strong>{selected.order_number}</strong></div>
+            <div style={confirmRow}><span>Customer</span><strong>{selected.customer_name || 'Walk-in'}</strong></div>
+            <hr style={hrStyle} />
+            <div style={confirmRow}><span>Total Due</span><strong>{fmtUSD(confirm.totalDue)}</strong></div>
+            <div style={confirmRow}><span>Paid ($)</span><strong>{fmtUSD(confirm.paidUSD)}</strong></div>
+            {confirm.paidFRA > 0 && (
+              <div style={confirmRow}><span>Paid (FRA)</span><strong>FRA {fmtFRA(confirm.paidFRA)} <span style={{ color: '#64748b', fontWeight: 500 }}>(={fmtUSD(confirm.paidFRAasUSD)})</span></strong></div>
+            )}
+            <div style={{ ...confirmRow, fontWeight: 700 }}><span>Total Paid</span><strong>{fmtUSD(confirm.totalAmountPaid)}</strong></div>
+            <hr style={hrStyle} />
+            {confirm.isOverpaid ? (
+              <>
+                <div style={confirmRow}><span>Change</span><strong>{fmtUSD(confirm.changeUSD)} <span style={{ color: '#64748b', fontWeight: 500 }}>(FRA {fmtFRA(confirm.changeFRA)})</span></strong></div>
+                {(confirm.givenUSD > 0 || confirm.givenFRA > 0) && (
+                  <>
+                    {confirm.givenUSD > 0 && <div style={confirmRow}><span>Change Given ($)</span><strong>{fmtUSD(confirm.givenUSD)}</strong></div>}
+                    {confirm.givenFRA > 0 && <div style={confirmRow}><span>Change Given (FRA)</span><strong>FRA {fmtFRA(confirm.givenFRA)}</strong></div>}
+                  </>
+                )}
+                <div style={{ ...confirmRow, marginTop: 8, padding: '10px 12px',
+                              background: Math.abs(confirm.netRemaining) < 0.01 ? '#ecfdf5' : '#fef3c7',
+                              borderRadius: 8 }}>
+                  <span style={{ fontWeight: 700 }}>{Math.abs(confirm.netRemaining) < 0.01 ? 'Exact Change' : 'Still owed'}</span>
+                  <strong>{Math.abs(confirm.netRemaining) < 0.01 ? fmtUSD(0) : fmtUSD(confirm.netRemaining)}</strong>
+                </div>
+              </>
+            ) : (
+              <div style={{ ...confirmRow, padding: '10px 12px', background: '#fef2f2', borderRadius: 8 }}>
+                <span style={{ fontWeight: 700, color: '#b91c1c' }}>Unpaid Balance</span>
+                <strong style={{ color: '#991b1b' }}>−{fmtUSD(confirm.unpaidBalance)}</strong>
+              </div>
+            )}
+            <div style={{ display: 'flex', gap: 10, marginTop: 18 }}>
+              <button onClick={() => setConfirm(null)}
+                style={{ flex: 1, padding: '12px', background: '#f1f5f9', color: '#475569', border: '1px solid #e2e8f0', borderRadius: 8, cursor: 'pointer', fontWeight: 600 }}>
+                Cancel
+              </button>
+              <button onClick={processPayment}
+                disabled={submitting || (!confirm.isOverpaid && Math.abs(confirm.unpaidBalance) >= 0.001)}
+                style={{ flex: 1, padding: '12px',
+                         background: submitting ? '#94a3b8' : 'linear-gradient(135deg,#16a34a,#15803d)',
+                         color: '#fff', border: 'none', borderRadius: 8, cursor: 'pointer', fontWeight: 700 }}>
+                {submitting ? 'Processing…' : 'Yes, Process Payment'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+const thStyle = { padding: '8px 10px', fontSize: 11, color: '#64748b', fontWeight: 600, textAlign: 'left', textTransform: 'uppercase', letterSpacing: 0.5 };
+const tdStyle = { padding: '8px 10px', color: '#0f172a' };
+const totalsRow = { display: 'flex', justifyContent: 'space-between', padding: '4px 0', color: '#475569' };
+const lblStyle = { display: 'block', fontSize: 11, color: '#64748b', fontWeight: 600, marginBottom: 4 };
+const inputStyle = { width: '100%', padding: '10px 12px', border: '1px solid #d1d5db', borderRadius: 6, fontSize: 14, boxSizing: 'border-box' };
+const confirmRow = { display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '6px 0', color: '#0f172a', fontSize: 13 };
+const hrStyle = { border: 'none', borderTop: '1px solid #e2e8f0', margin: '10px 0' };
