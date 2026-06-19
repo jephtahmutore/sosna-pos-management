@@ -1351,6 +1351,31 @@ function initTenantDb(db) {
     console.error('[migrations] phase-1 multi-currency failed:', e.message);
     // best-effort; later phases can re-attempt
   }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // 3-Station workflow (Sales → Cashier → Dispatch)
+  // ─────────────────────────────────────────────────────────────────────────
+  // Per-branch UI gate that swaps the single-screen POS for a 3-station flow
+  // used at kasumbalesa1:
+  //   'single_pos'    — one cashier creates + pays + dispatches in one step
+  //                     (lusaka1, mansa1 — existing behaviour).
+  //   'three_station' — Sales creates the order → Cashier collects payment →
+  //                     Dispatch releases goods. Each station is a separate
+  //                     screen; orders move through a status state machine.
+  //
+  // orders.status values used in this flow:
+  //   'PENDING_PAYMENT' — Sales confirmed; awaiting Cashier
+  //   'PAID'            — Cashier collected; awaiting Dispatch
+  //   'DISPATCHED'      — Goods released; stock decremented HERE (not at sale)
+  //   'CANCELLED'       — Voided at any stage
+  //   NULL              — Legacy single_pos completed sale (unchanged)
+  addCol('business_settings', 'workflow_mode', "TEXT NOT NULL DEFAULT 'single_pos'");
+  addCol('orders', 'sales_user_id',    'INTEGER');
+  addCol('orders', 'cashier_user_id',  'INTEGER');
+  addCol('orders', 'dispatch_user_id', 'INTEGER');
+  addCol('orders', 'sales_at',         'TEXT');
+  addCol('orders', 'paid_at',          'TEXT');
+  addCol('orders', 'dispatched_at',    'TEXT');
 }
 
 module.exports = { initTenantDb };

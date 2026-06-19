@@ -41,7 +41,15 @@ router.post('/', auth, (req, res) => {
       // Phase 4 dual-currency FX bucket (kassumbalesa1). K-only branches send
       // nothing here, so the COALESCEs below preserve historical row shape.
       currency, fra_received, fra_change_given, selling_rate_used, buying_rate_used,
+      // 3-station workflow (kassumbalesa1): when the Sales station confirms an
+      // order, status='PENDING_PAYMENT' is sent. We then skip credit checks,
+      // skip stock movements (stock decrements at Dispatch), and skip profit
+      // recalculation (no revenue realised until Cashier collects payment).
+      status,
     } = req.body;
+    const orderStatus = (typeof status === 'string' && status.trim().toUpperCase() === 'PENDING_PAYMENT')
+      ? 'PENDING_PAYMENT' : null;
+    const isPendingPayment = orderStatus === 'PENDING_PAYMENT';
     const orderCurrency  = (typeof currency === 'string' && currency.trim()) ? currency.trim() : 'K';
     const fraReceived    = parseFloat(fra_received     || 0) || 0;
     const fraChangeGiven = parseFloat(fra_change_given || 0) || 0;
@@ -73,8 +81,10 @@ router.post('/', auth, (req, res) => {
     // ── Server-side credit-limit guard ───────────────────────────────────────
     // Mirrors the POS UI rule: if the buyer matches a known customer,
     // enforce credit_status and credit_limit. Walk-in sales must be paid in full.
+    // PENDING_PAYMENT (3-station Sales hand-off) skips this — no payment is
+    // being collected here, the Cashier station enforces it at the next stage.
     const unpaid = Math.max(0, parseFloat(total_amount || 0) - parseFloat(amount_received || 0));
-    if (unpaid > 0.001) {
+    if (!isPendingPayment && unpaid > 0.001) {
       if (!customer_name || !customer_name.trim()) {
         return res.status(400).json({ error: 'Walk-in sales must be paid in full' });
       }
@@ -124,18 +134,24 @@ router.post('/', auth, (req, res) => {
 
     const order = db.transaction(() => {
       const orderSyncId = randomUUID();
+      // For PENDING_PAYMENT, also stamp sales_user_id + sales_at so the
+      // Cashier inbox can show who created it and when.
       const ordSql = `INSERT INTO orders (order_number, customer_name, customer_id, customer_sync_id, subtotal, tax_amount, total_amount, discount,
           amount_received, cash_received, momo_received, bank_received,
           change_amount, payment_method, created_by,
           currency, fra_received, fra_change_given, selling_rate_used, buying_rate_used,
+          status, sales_user_id, sales_at,
           sync_id, tenant_id, branch_id, device_id, synced, created_at, updated_at)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,${tsExpr},${tsExpr})`;
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,${tsExpr},?,?,?,?,0,${tsExpr},${tsExpr})`;
       const ordArgs = [orderNum, customer_name, customer_id || null, customer_sync_id || null,
             subtotal, tax_amount, total_amount, discount || 0,
             finalAmountReceived, cashIn, momoIn, bankIn,
             change_amount || 0, payment_method || 'Cash', req.user.id,
             orderCurrency, fraReceived, fraChangeGiven, sellingRateUsed, buyingRateUsed,
-            orderSyncId, tenantId, branchId, deviceId];
+            orderStatus,
+            isPendingPayment ? req.user.id : null];
+      if (overrideTs) ordArgs.push(overrideTs);                       // sales_at when override
+      ordArgs.push(orderSyncId, tenantId, branchId, deviceId);
       if (overrideTs) ordArgs.push(overrideTs, overrideTs);
       const info = db.prepare(ordSql).run(...ordArgs);
 
@@ -161,18 +177,27 @@ router.post('/', auth, (req, res) => {
         if (overrideTs) itemArgs.push(overrideTs, overrideTs);
         itemStmt.run(...itemArgs);
 
-        const movArgs = [item.product_id, productSyncId, 'sales', 'sale', -baseQty, orderId, 'order', req.user.id,
-              randomUUID(), tenantId, branchId, deviceId];
-        if (overrideTs) movArgs.push(overrideTs, overrideTs);
-        movArgs.push(orderSyncId);
-        movStmt.run(...movArgs);
+        // PENDING_PAYMENT skips the stock decrement — stock only leaves at
+        // Dispatch (see memory [[project-sosna-stock-deduction-timing]]).
+        // The matching decrement movement is created when Dispatch confirms.
+        if (!isPendingPayment) {
+          const movArgs = [item.product_id, productSyncId, 'sales', 'sale', -baseQty, orderId, 'order', req.user.id,
+                randomUUID(), tenantId, branchId, deviceId];
+          if (overrideTs) movArgs.push(overrideTs, overrideTs);
+          movArgs.push(orderSyncId);
+          movStmt.run(...movArgs);
+        }
       }
 
       return db.prepare('SELECT * FROM orders WHERE id = ?').get(orderId);
     })();
 
-    const orderDate = overrideDate || new Date().toISOString().split('T')[0];
-    recalculateDailyProfit(db, orderDate, req.user.tenantId);
+    // PENDING_PAYMENT orders haven't realised revenue yet — Cashier collection
+    // is what triggers the profit recalc, not Sales hand-off.
+    if (!isPendingPayment) {
+      const orderDate = overrideDate || new Date().toISOString().split('T')[0];
+      recalculateDailyProfit(db, orderDate, req.user.tenantId);
+    }
     res.status(201).json(order);
   } catch (error) {
     res.status(500).json({ error: error.message });

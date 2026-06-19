@@ -35,6 +35,10 @@ const SystemSettings = () => {
     // rate / dual-currency payment / USD+FRA receipt features (default for
     // lusaka1, mansa1). 'USD+FRA' unlocks them (kassumbalesa1).
     currencyMode: 'K',
+    // Workflow mode swaps the single-screen POS for the 3-station flow
+    // (Sales → Cashier → Dispatch). 'single_pos' is the default for lusaka1,
+    // mansa1. 'three_station' is used for kassumbalesa1.
+    workflowMode: 'single_pos',
   });
   const [saving, setSaving] = useState(false);
 
@@ -91,6 +95,7 @@ const SystemSettings = () => {
         receiptPrinterPort: parseInt(b.receipt_printer_port) || 9100,
         defaultCrateDeposit: parseFloat(b.default_crate_deposit) || 57,
         currencyMode: (String(b.currency_mode || 'K').toUpperCase() === 'USD+FRA') ? 'USD+FRA' : 'K',
+        workflowMode: (String(b.workflow_mode || 'single_pos').toLowerCase() === 'three_station') ? 'three_station' : 'single_pos',
       });
     }).catch(() => {});
   }, []);
@@ -118,6 +123,7 @@ const SystemSettings = () => {
         receipt_printer_port: form.receiptPrinterPort,
         default_crate_deposit: form.defaultCrateDeposit,
         currency_mode: form.currencyMode,
+        workflow_mode: form.workflowMode,
       });
       refreshCurrency();
       alert('System settings saved.');
@@ -229,6 +235,43 @@ const SystemSettings = () => {
                   <input type="radio" name="currency-mode" value={opt.val}
                          checked={form.currencyMode === opt.val}
                          onChange={() => setForm(f => ({ ...f, currencyMode: opt.val }))}
+                         style={{ marginTop: 3 }} />
+                  <div>
+                    <div style={{ fontWeight: 700, fontSize: 13, color: '#0f172a' }}>{opt.label}</div>
+                    <div style={{ fontSize: 11, color: '#64748b', marginTop: 2 }}>{opt.sub}</div>
+                  </div>
+                </label>
+              ))}
+            </div>
+          </div>
+
+          {/* ── Workflow Mode (per-branch POS shape) ─────────────────────── */}
+          {/* Drives whether this branch uses the single-screen POS (one      */}
+          {/* cashier creates + pays in one step) or the 3-station flow       */}
+          {/* (Sales → Cashier → Dispatch). Default 'single_pos' keeps        */}
+          {/* lusaka1, mansa1 on the current behaviour; kassumbalesa1 flips    */}
+          {/* to 'three_station'. Stored on business_settings.workflow_mode.   */}
+          <div className="form-section">
+            <h3 className="form-section-title"><FiDollarSign /> Workflow Mode</h3>
+            <p style={{ fontSize: 13, color: '#6b7280', marginBottom: 14 }}>
+              Controls the POS shape for this branch. Most branches use the <strong>single-screen POS</strong>.
+              Switch to <strong>3-station</strong> only on branches where Sales, Cashier, and Dispatch are separate roles.
+            </p>
+            <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+              {[
+                { val: 'single_pos',    label: 'Single-screen POS',  sub: 'One cashier does everything (default)' },
+                { val: 'three_station', label: '3-station workflow', sub: 'Sales → Cashier → Dispatch with order hand-off' },
+              ].map(opt => (
+                <label key={opt.val}
+                       style={{ flex: '1 1 240px', display: 'flex', alignItems: 'flex-start', gap: 10,
+                                padding: '12px 14px',
+                                border: `1.5px solid ${form.workflowMode === opt.val ? '#2563eb' : '#e5e7eb'}`,
+                                borderRadius: 10,
+                                background: form.workflowMode === opt.val ? '#eff6ff' : '#fff',
+                                cursor: 'pointer' }}>
+                  <input type="radio" name="workflow-mode" value={opt.val}
+                         checked={form.workflowMode === opt.val}
+                         onChange={() => setForm(f => ({ ...f, workflowMode: opt.val }))}
                          style={{ marginTop: 3 }} />
                   <div>
                     <div style={{ fontWeight: 700, fontSize: 13, color: '#0f172a' }}>{opt.label}</div>

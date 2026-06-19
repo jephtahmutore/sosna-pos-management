@@ -80,6 +80,15 @@ const POS = () => {
   // so a fresh tenant or older API stays single-currency.
   const [currencyMode, setCurrencyMode] = useState('K');
   const isDual = currencyMode === 'USD+FRA';
+  // Workflow mode (Phase A gate). 'single_pos' = one cashier creates + pays
+  // + dispatches in one step (lusaka1, mansa1 — default). 'three_station' =
+  // Sales creates the order → Cashier collects payment → Dispatch releases
+  // goods (kassumbalesa1). When three_station, this POS screen IS the Sales
+  // station: the Pay button becomes "Confirm & Send to Cashier" and no
+  // payment modal opens — the order is saved with status='PENDING_PAYMENT'
+  // and lands in the Cashier inbox.
+  const [workflowMode, setWorkflowMode] = useState('single_pos');
+  const isThreeStation = workflowMode === 'three_station';
   // Hardcoded FX rates for now — user will describe the rate-config flow
   // later (per-day? admin only? from where?). Both rates match the Phase 1
   // schema seed (branches.selling_rate = 2900, branches.buying_rate = 2600).
@@ -370,6 +379,8 @@ const POS = () => {
         setBlockOversell(!!res.data?.business?.block_oversell);
         const cm = String(res.data?.business?.currency_mode || 'K').toUpperCase();
         setCurrencyMode(cm === 'USD+FRA' ? 'USD+FRA' : 'K');
+        const wm = String(res.data?.business?.workflow_mode || 'single_pos').toLowerCase();
+        setWorkflowMode(wm === 'three_station' ? 'three_station' : 'single_pos');
       } catch (err) { /* use default */ }
       try {
         const res = await getQuickItems();
@@ -712,6 +723,50 @@ const POS = () => {
   // Print via hidden iframe — works on mobile / Capacitor APK / desktop.
   // See utils/printHtml.js for why this beats window.open + w.print().
   const printDirect = (html) => printHtml(html);
+
+  // 3-station Sales station: save the order with status='PENDING_PAYMENT'
+  // so it lands in the Cashier inbox. No payment math, no FX, no stock
+  // decrement here — stock decrement happens at Dispatch (see project memory
+  // [[project-sosna-stock-deduction-timing]]).
+  const handleSendToCashier = async () => {
+    if (cart.length === 0) return;
+    try {
+      await createOrder({
+        customer_name: customerName,
+        customer_id: selectedCustomer ? selectedCustomer.id : null,
+        customer_sync_id: selectedCustomer ? selectedCustomer.sync_id : null,
+        items: cart,
+        subtotal,
+        tax_amount: 0,
+        total_amount: total,
+        discount: parseFloat(discount || 0),
+        amount_received: 0,
+        cash_received: 0,
+        momo_received: 0,
+        bank_received: 0,
+        change_amount: 0,
+        payment_method: 'Pending',
+        status: 'PENDING_PAYMENT',
+        currency: isDual ? 'USD' : 'K',
+        sale_date: (isAdmin && saleDate && saleDate !== todayStr()) ? saleDate : null,
+      });
+
+      suppressCartBroadcast.current = true;
+      setCart([]);
+      setCustomerName('');
+      setDiscount(0);
+      setCashIn(''); setMomoIn(''); setBankIn('');
+      setSaleDate(todayStr());
+      setBarcodeMsg({ text: 'Order sent to cashier.', type: 'success' });
+      setTimeout(() => setBarcodeMsg(null), 2500);
+
+      try { customerChannel.current?.postMessage({ type: 'cart_clear' }); } catch {}
+    } catch (err) {
+      const msg = err?.response?.data?.error || err?.message || 'Failed to send order to cashier';
+      setBarcodeMsg({ text: msg, type: 'error' });
+      setTimeout(() => setBarcodeMsg(null), 4000);
+    }
+  };
 
   const handleCheckout = async (override) => {
     if (cart.length === 0) return;
@@ -1341,6 +1396,16 @@ const POS = () => {
                   style={{ background: 'linear-gradient(135deg,#d97706,#b45309)' }}
                 >
                   <FiFileText /> Credit Sale →
+                </button>
+              ) : isThreeStation ? (
+                <button
+                  className="btn-checkout"
+                  onClick={handleSendToCashier}
+                  disabled={cart.length === 0}
+                  title={cart.length === 0 ? 'Cart is empty' : 'Sends the order to the Cashier inbox for payment'}
+                  style={{ background: 'linear-gradient(135deg,#0ea5e9,#0369a1)' }}
+                >
+                  <FiShoppingCart /> Confirm & Send to Cashier →
                 </button>
               ) : (
                 <button

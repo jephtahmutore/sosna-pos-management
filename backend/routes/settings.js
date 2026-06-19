@@ -62,7 +62,7 @@ router.put('/business', auth, (req, res) => {
   try {
     const { business_name, business_phone, business_email, business_address, tax_rate, single_location_mode, block_oversell, currencies,
             receipt_printer_type, receipt_printer_name, receipt_printer_ip, receipt_printer_port,
-            default_crate_deposit, currency_mode } = req.body;
+            default_crate_deposit, currency_mode, workflow_mode } = req.body;
     // Only update currencies if the caller explicitly sent them; otherwise leave whatever's stored.
     const currenciesJson = currencies !== undefined ? JSON.stringify(normaliseCurrencies(currencies)) : null;
     const existing = db.prepare('SELECT * FROM business_settings LIMIT 1').get();
@@ -103,6 +103,13 @@ router.put('/business', auth, (req, res) => {
       if (currency_mode !== undefined) {
         const cm = String(currency_mode || 'K').toUpperCase() === 'USD+FRA' ? 'USD+FRA' : 'K';
         sets.push('currency_mode=?'); vals.push(cm);
+      }
+      // workflow_mode is a per-branch UI gate. 'single_pos' = one cashier does
+      // everything (lusaka1, mansa1 — default). 'three_station' = Sales →
+      // Cashier → Dispatch flow with order status state machine (kasumbalesa1).
+      if (workflow_mode !== undefined) {
+        const wm = String(workflow_mode || 'single_pos').toLowerCase() === 'three_station' ? 'three_station' : 'single_pos';
+        sets.push('workflow_mode=?'); vals.push(wm);
       }
       if (sets.length === 0) return res.json(existing); // nothing to update
       sets.push("updated_at=datetime('now')", 'synced=0');
