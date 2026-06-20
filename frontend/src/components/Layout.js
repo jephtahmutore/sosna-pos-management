@@ -227,6 +227,7 @@ const Layout = () => {
       '/hq/inventory-report': 'HQ Inventory Report',
       '/hq/cash-position': 'HQ Cash Position',
       '/hq/purchases': 'HQ Purchases',
+      '/hq/suppliers': 'HQ Suppliers',
       '/stock/incoming': 'Incoming Stock',
       '/stock/items': t('itemDetails'), '/stock/grn': t('grn'), '/stock/siv': t('siv'),
       '/stock/sales-damages': 'Sales Damages',
@@ -326,6 +327,13 @@ const Layout = () => {
             <div className={`nav-item ${isActive('/hq/purchases') ? 'active' : ''}`} onClick={() => navigate('/hq/purchases')}>
               <FiClipboard className="nav-icon" />
               {!collapsed && <span>HQ Purchases</span>}
+            </div>
+          )}
+          {/* HQ Suppliers — master list + live AP balance per supplier. */}
+          {hq && (
+            <div className={`nav-item ${isActive('/hq/suppliers') ? 'active' : ''}`} onClick={() => navigate('/hq/suppliers')}>
+              <FiUsers className="nav-icon" />
+              {!collapsed && <span>HQ Suppliers</span>}
             </div>
           )}
 

@@ -175,6 +175,16 @@ export const getHqPurchase = (id) => api.get(`/hq/purchases/${id}`);
 export const createHqPurchase = (data) => api.post('/hq/purchases', data);
 export const getHqPurchaseIncoming = (slug) => api.get('/hq/purchases/incoming', { params: { slug } });
 export const receiveHqPurchaseItem = (itemId, data) => api.put(`/hq/purchases/items/${itemId}/receive`, data);
+
+// HQ Suppliers + AP — supplier master with live AP balance computed
+// from purchases - payments (never stored).
+export const getHqSuppliers = () => api.get('/hq/suppliers');
+export const getHqSupplier  = (id) => api.get(`/hq/suppliers/${id}`);
+export const createHqSupplier = (data) => api.post('/hq/suppliers', data);
+export const updateHqSupplier = (id, data) => api.put(`/hq/suppliers/${id}`, data);
+export const deleteHqSupplier = (id) => api.delete(`/hq/suppliers/${id}`);
+export const recordHqSupplierPayment = (supplierId, data) => api.post(`/hq/suppliers/${supplierId}/payments`, data);
+export const deleteHqSupplierPayment = (paymentId) => api.delete(`/hq/suppliers/payments/${paymentId}`);
 export const reverseOrderItem = (orderId, itemId, quantity, unit) => {
   const body = {};
   if (quantity != null) body.quantity = quantity;

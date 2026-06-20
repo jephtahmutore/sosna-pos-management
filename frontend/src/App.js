@@ -17,6 +17,7 @@ import HqInventoryReport from './pages/HqInventoryReport';
 import HqCashPosition from './pages/HqCashPosition';
 import StockTransfers from './pages/StockTransfers';
 import HqPurchases from './pages/HqPurchases';
+import HqSuppliers from './pages/HqSuppliers';
 import IncomingStock from './pages/IncomingStock';
 import ItemDetails from './pages/ItemDetails';
 import GRN from './pages/GRN';
@@ -248,6 +249,7 @@ function AppRoutes() {
         <Route path="hq/inventory-report" element={<HqInventoryReport />} />
         <Route path="hq/cash-position"    element={<HqCashPosition />} />
         <Route path="hq/purchases"        element={<HqPurchases />} />
+        <Route path="hq/suppliers"        element={<HqSuppliers />} />
         <Route path="pos/sales-report" element={<PermRoute perms={['Sales','Reports','SalesReport:View','SalesReport:Add','SalesReport:Edit','SalesReport:Delete']}><SalesReport /></PermRoute>} />
         <Route path="pos/sales-inventory" element={<PermRoute perms={['Sales','Reports','SalesInventory:View','SalesInventory:Add','SalesInventory:Edit','SalesInventory:Delete']}><SalesInventory /></PermRoute>} />
         <Route path="pos/sales-stock-card" element={<PermRoute perms={['Sales','Reports','SalesInventory:View','Inventory:View']}><Inventory viewLocation="sales" /></PermRoute>} />

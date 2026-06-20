@@ -7,7 +7,7 @@ import {
   FiRefreshCw, FiPlus, FiPackage, FiTrash2, FiEye,
 } from 'react-icons/fi';
 import {
-  getHqBranches, getHqPurchases, getHqPurchase, createHqPurchase,
+  getHqBranches, getHqPurchases, getHqPurchase, createHqPurchase, getHqSuppliers,
 } from '../services/api';
 
 const fmtMoney = (n) => `$${parseFloat(n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
@@ -161,12 +161,20 @@ function statusBadge(s) {
 }
 
 function CreatePurchaseModal({ branches, onClose, onCreated, onError }) {
-  const [supplier, setSupplier] = useState('');
+  const [supplierId, setSupplierId] = useState('');
+  const [supplier, setSupplier]     = useState('');
+  const [suppliers, setSuppliers]   = useState([]);
   const [invoice, setInvoice]   = useState('');
   const [date, setDate]         = useState(todayISO());
   const [notes, setNotes]       = useState('');
   const [items, setItems]       = useState([newItem(branches[0]?.slug || '')]);
   const [submitting, setSubmitting] = useState(false);
+
+  useEffect(() => {
+    getHqSuppliers()
+      .then(r => setSuppliers(r.data?.suppliers || []))
+      .catch(() => {});
+  }, []);
 
   function newItem(defaultSlug = '') {
     return { product_name: '', unit: 'pcs', dispatched_qty: '', cost_price: '', destination_slug: defaultSlug };
@@ -197,8 +205,12 @@ function CreatePurchaseModal({ branches, onClose, onCreated, onError }) {
     if (clean.length === 0) return onError('Add at least one valid item');
     setSubmitting(true);
     try {
+      // If user picked from dropdown, send supplier_id + the master name.
+      // If they typed free-form, send just the name (legacy, no AP linkage).
+      const picked = suppliers.find(s => String(s.id) === String(supplierId));
       await createHqPurchase({
-        supplier_name: supplier || null,
+        supplier_id:   picked ? picked.id : null,
+        supplier_name: picked ? picked.name : (supplier || null),
         invoice_number: invoice || null,
         date,
         notes: notes || null,
@@ -221,7 +233,22 @@ function CreatePurchaseModal({ branches, onClose, onCreated, onError }) {
 
         <div style={{ padding: 16, overflowY: 'auto', flex: 1 }}>
           <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr 1fr', gap: 12, marginBottom: 14 }}>
-            <div><label style={lbl}>Supplier name</label><input type="text" value={supplier} onChange={e => setSupplier(e.target.value)} placeholder="e.g. Sosna Distributors Ltd" style={inp} /></div>
+            <div>
+              <label style={lbl}>Supplier</label>
+              {suppliers.length > 0 ? (
+                <select value={supplierId} onChange={e => { setSupplierId(e.target.value); setSupplier(''); }} style={inp}>
+                  <option value="">— pick from master, or type new below —</option>
+                  {suppliers.map(s => (
+                    <option key={s.id} value={s.id}>{s.name}{s.balance > 0.001 ? `  (owes $${s.balance.toFixed(2)})` : ''}</option>
+                  ))}
+                </select>
+              ) : (
+                <input type="text" value={supplier} onChange={e => setSupplier(e.target.value)} placeholder="e.g. Sosna Distributors Ltd" style={inp} />
+              )}
+              {suppliers.length > 0 && !supplierId && (
+                <input type="text" value={supplier} onChange={e => setSupplier(e.target.value)} placeholder="Or type a new supplier name (won't link to AP master)" style={{ ...inp, marginTop: 6 }} />
+              )}
+            </div>
             <div><label style={lbl}>Invoice #</label><input type="text" value={invoice} onChange={e => setInvoice(e.target.value)} placeholder="INV-2026-…" style={inp} /></div>
             <div><label style={lbl}>Date</label><input type="date" value={date} onChange={e => setDate(e.target.value)} style={inp} /></div>
           </div>

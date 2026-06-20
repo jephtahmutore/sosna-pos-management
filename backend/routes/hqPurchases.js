@@ -66,7 +66,7 @@ function destinationName(slug) {
 // branch products can be linked by passing their sync_id.
 router.post('/', hqAuth, (req, res) => {
   try {
-    const { supplier_name, invoice_number, date, notes, items } = req.body || {};
+    const { supplier_id, supplier_name, invoice_number, date, notes, items } = req.body || {};
     if (!date) return res.status(400).json({ error: 'date is required' });
     if (!Array.isArray(items) || items.length === 0) {
       return res.status(400).json({ error: 'At least one item required' });
@@ -107,11 +107,12 @@ router.post('/', hqAuth, (req, res) => {
 
     masterDb.transaction(() => {
       const insHdr = masterDb.prepare(`
-        INSERT INTO hq_purchases (purchase_number, sync_id, supplier_name, invoice_number,
+        INSERT INTO hq_purchases (purchase_number, sync_id, supplier_id, supplier_name, invoice_number,
                                   date, total_amount, notes, status, created_by, created_by_name)
-        VALUES (?,?,?,?,?,?,?,'OPEN',?,?)
+        VALUES (?,?,?,?,?,?,?,?,'OPEN',?,?)
       `).run(
         purchaseNumber, syncId,
+        supplier_id || null,
         supplier_name || null, invoice_number || null,
         date, totalAmount, notes || null,
         createdBy, createdByName

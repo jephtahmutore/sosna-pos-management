@@ -137,7 +137,60 @@ try {
     );
     CREATE INDEX IF NOT EXISTS idx_hq_pi_dest_status ON hq_purchase_items (destination_slug, status);
     CREATE INDEX IF NOT EXISTS idx_hq_pi_purchase   ON hq_purchase_items (purchase_id);
+
+    -- ── HQ Suppliers + AP ───────────────────────────────────────────────
+    -- Master supplier list lives at HQ. Each hq_purchases.supplier_name is
+    -- denormalised text (for human readability + so older rows don't break
+    -- when a supplier is renamed). AP per supplier is computed from joins,
+    -- not stored, so it can never drift out of sync with the underlying
+    -- purchases + payments:
+    --   AP = SUM(hq_purchases.total_amount  WHERE supplier matches)
+    --      - SUM(hq_supplier_payments.amount WHERE supplier matches)
+    --
+    -- Matching: by supplier_id when set, else by case-insensitive
+    -- supplier_name. New purchases pick from the master list (supplier_id
+    -- filled in); legacy rows fall back to name match.
+    CREATE TABLE IF NOT EXISTS hq_suppliers (
+      id              INTEGER PRIMARY KEY AUTOINCREMENT,
+      name            TEXT NOT NULL,
+      phone           TEXT,
+      email           TEXT,
+      address         TEXT,
+      contact_person  TEXT,
+      notes           TEXT,
+      status          TEXT NOT NULL DEFAULT 'Active',
+      created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_hq_suppliers_name ON hq_suppliers (name COLLATE NOCASE);
+
+    CREATE TABLE IF NOT EXISTS hq_supplier_payments (
+      id              INTEGER PRIMARY KEY AUTOINCREMENT,
+      payment_number  TEXT NOT NULL UNIQUE,
+      supplier_id     INTEGER,
+      supplier_name   TEXT NOT NULL,
+      amount          REAL NOT NULL DEFAULT 0,
+      payment_date    TEXT NOT NULL,
+      payment_method  TEXT NOT NULL DEFAULT 'Cash',
+      reference       TEXT,
+      notes           TEXT,
+      created_by      INTEGER,
+      created_by_name TEXT,
+      created_at      TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_hq_pay_supplier ON hq_supplier_payments (supplier_id, supplier_name);
+    CREATE INDEX IF NOT EXISTS idx_hq_pay_date     ON hq_supplier_payments (payment_date);
   `);
+
+  // Add supplier_id to hq_purchases (nullable — older rows stay name-only).
+  // Run as a separate ALTER so re-running the schema on existing master.dbs
+  // doesn't trip CREATE TABLE.
+  try {
+    const cols = masterDb.prepare(`PRAGMA table_info(hq_purchases)`).all();
+    if (!cols.find(c => c.name === 'supplier_id')) {
+      masterDb.prepare(`ALTER TABLE hq_purchases ADD COLUMN supplier_id INTEGER`).run();
+    }
+  } catch (_) { /* fresh DB — table created above */ }
 
   console.log('[master] Master DB ready:', masterDbPath);
 } catch (e) {

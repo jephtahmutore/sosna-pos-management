@@ -82,6 +82,7 @@ app.use('/api/updates',          require('./routes/updates'));
 app.use('/api/tenant-admin',     require('./routes/tenantAdmin'));
 app.use('/api/hq',               require('./routes/hq'));
 app.use('/api/hq/purchases',     require('./routes/hqPurchases'));
+app.use('/api/hq/suppliers',     require('./routes/hqSuppliers'));
 app.use('/api/transfers',        require('./routes/transfers'));
 app.use('/admin',                require('./routes/admin'));
 
