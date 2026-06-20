@@ -53,18 +53,26 @@ function pushToBranches(hqRow, { overridePrices = false } = {}) {
       // similarly read so the device_filter on later reports doesn't drop
       // these rows. v1.3.4 hotfix for v1.3.3.
       // Discover the branch's tenant_id in order of reliability:
-      //   1. sync_config['tenant_id']                    (preferred)
-      //   2. Any existing products row's non-empty tenant_id
-      //   3. business_settings.tenant_id
-      // None of the three? Leave null and skip the INSERT below — the
-      // row would be invisible to GET /products anyway (it filters by
-      // p.tenant_id = req.user.tenantId).
-      let branchTenantId = null;
+      //   1. master.branches.tenant_id    (AUTHORITATIVE — joined into
+      //                                     listTenants as t.tenant_id;
+      //                                     populated by registerBranch
+      //                                     during initial activation)
+      //   2. sync_config['tenant_id']     (per-branch DB store, often
+      //                                     empty on freshly-activated
+      //                                     branches that haven't been
+      //                                     logged into yet)
+      //   3. Any existing products row's non-empty tenant_id
+      //   4. business_settings.tenant_id
+      // None of the four? Skip the INSERT and report the error in the
+      // push response so the operator sees it.
+      let branchTenantId = t.tenant_id || null;
       let branchBranchId = null;
-      try {
-        const tRow = db.prepare("SELECT value FROM sync_config WHERE key = 'tenant_id'").get();
-        if (tRow?.value) branchTenantId = tRow.value;
-      } catch (_) { /* fresh DB without sync_config yet */ }
+      if (!branchTenantId) {
+        try {
+          const tRow = db.prepare("SELECT value FROM sync_config WHERE key = 'tenant_id'").get();
+          if (tRow?.value) branchTenantId = tRow.value;
+        } catch (_) {}
+      }
       if (!branchTenantId) {
         try {
           const r = db.prepare("SELECT tenant_id FROM products WHERE tenant_id IS NOT NULL AND tenant_id != '' LIMIT 1").get();
@@ -80,12 +88,16 @@ function pushToBranches(hqRow, { overridePrices = false } = {}) {
       try {
         const bRow = db.prepare("SELECT value FROM sync_config WHERE key = 'branch_id'").get();
         if (bRow?.value) branchBranchId = bRow.value;
-      } catch (_) { /* fine */ }
+      } catch (_) {}
       if (!branchBranchId) {
         try {
           const r = db.prepare("SELECT branch_id FROM products WHERE branch_id IS NOT NULL AND branch_id != '' LIMIT 1").get();
           if (r?.branch_id) branchBranchId = r.branch_id;
         } catch (_) {}
+      }
+      if (!branchTenantId) {
+        out.errors.push({ slug: t.slug, error: 'No tenant_id discoverable (not in master.branches, sync_config, products, or business_settings). Activate the branch by logging into it once to bootstrap, or run UPDATE manually.' });
+        continue;
       }
 
       // Backfill any orphan v1.3.3 row first (tenant_id NULL from the
