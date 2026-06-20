@@ -45,6 +45,34 @@ function pushToBranches(hqRow, { overridePrices = false } = {}) {
   for (const t of listTenants()) {
     try {
       const db = getTenantDb(t.slug);
+      // CRITICAL — branch's GET /api/products filters
+      //   WHERE p.tenant_id = req.user.tenantId
+      // so a row inserted with tenant_id NULL is invisible to the branch's
+      // Item Details page. Read the branch's own tenant_id from its
+      // sync_config so the row is visible + scoped correctly. branch_id
+      // similarly read so the device_filter on later reports doesn't drop
+      // these rows. v1.3.4 hotfix for v1.3.3.
+      let branchTenantId = null;
+      let branchBranchId = null;
+      try {
+        const tRow = db.prepare("SELECT value FROM sync_config WHERE key = 'tenant_id'").get();
+        if (tRow?.value) branchTenantId = tRow.value;
+      } catch (_) { /* fresh DB without sync_config yet — leave null */ }
+      try {
+        const bRow = db.prepare("SELECT value FROM sync_config WHERE key = 'branch_id'").get();
+        if (bRow?.value) branchBranchId = bRow.value;
+      } catch (_) { /* fine */ }
+
+      // Backfill any orphan v1.3.3 row first (tenant_id NULL from the
+      // bug) so it becomes visible to the branch's GET /api/products
+      // immediately on the next push — no DB surgery needed.
+      if (branchTenantId) {
+        try {
+          db.prepare(`UPDATE products SET tenant_id = ?, branch_id = COALESCE(branch_id, ?) WHERE sync_id = ? AND (tenant_id IS NULL OR tenant_id = '')`)
+            .run(branchTenantId, branchBranchId, hqRow.sync_id);
+        } catch (_) {}
+      }
+
       const existing = db.prepare(
         'SELECT id, cost_price, selling_price FROM products WHERE sync_id = ?'
       ).get(hqRow.sync_id);
@@ -93,7 +121,7 @@ function pushToBranches(hqRow, { overridePrices = false } = {}) {
           hqRow.default_cost_price || 0, hqRow.default_selling_price || 0,
           hqRow.min_stock || 0, hqRow.units_json || null,
           hqRow.status || 'Active', hqRow.product_type || 'finished',
-          hqRow.sync_id, null, null, null
+          hqRow.sync_id, branchTenantId, branchBranchId, null
         );
         out.pushed += 1;
       }
