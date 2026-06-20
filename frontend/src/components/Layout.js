@@ -38,6 +38,15 @@ const Layout = () => {
   // sosnazm.com host. On real per-branch subdomains hq=false and the
   // dropdown stays hidden (the host already pins the tenant).
   const hq = isHqHost();
+  // v1.3.2 — branches are pure POS / receive points. Several sidebar
+  // entries (procurement, supplier mgmt, supplier AP, equity / loans /
+  // shareholders, etc.) are HQ-only. When `branchOnly` is true we hide
+  // them from the sidebar regardless of permission so branch staff can't
+  // stumble into the legacy single-tenant flows. HQ admins still see
+  // everything because hq=true sets branchOnly=false. Direct URL access
+  // is not blocked here — perms already gate routes; this just keeps the
+  // nav focused on what branches actually do.
+  const branchOnly = !hq;
   const [hqBranches, setHqBranches] = useState([]);
   const [currentHqBranch, setCurrentHqBranch] = useState(() => getHqBranch());
   useEffect(() => {
@@ -469,14 +478,14 @@ const Layout = () => {
                       <FiFileText className="nav-icon" /> <span>{t('itemDetails')}</span>
                     </div>
                   )}
-                  {hasPageAccess('GRN') && (
+                  {!branchOnly && hasPageAccess('GRN') && (
                     <div className={`nav-item ${isActive('/stock/grn') ? 'active' : ''}`} onClick={() => navigate('/stock/grn')}>
                       <FiDownload className="nav-icon" /> <span>{t('grn')}</span>
                     </div>
                   )}
                   {/* Empty Returns hidden — superseded by Credit Notes →
                       Crate Return. Route still exists for deep-links. */}
-                  {hasPageAccess('SIV') && (
+                  {!branchOnly && hasPageAccess('SIV') && (
                     <div className={`nav-item ${isActive('/stock/siv') ? 'active' : ''}`} onClick={() => navigate('/stock/siv')}>
                       <FiUpload className="nav-icon" /> <span>{t('siv')}</span>
                     </div>
@@ -571,7 +580,7 @@ const Layout = () => {
                       <FiClipboard className="nav-icon" /> <span>{t('cashBook')}</span>
                     </div>
                   )}
-                  {hasPageAccess('AccountPayables') && (
+                  {!branchOnly && hasPageAccess('AccountPayables') && (
                     <div className={`nav-item ${isActive('/accounting/account-payables') ? 'active' : ''}`} onClick={() => navigate('/accounting/account-payables')}>
                       <FiFileText className="nav-icon" /> <span>{t('accountPayables')}</span>
                     </div>
@@ -581,27 +590,27 @@ const Layout = () => {
                       <FiFileText className="nav-icon" /> <span>Account Receivables</span>
                     </div>
                   )}
-                  {isAllAccess() && user?.role === 'Administrator' && (
+                  {!branchOnly && isAllAccess() && user?.role === 'Administrator' && (
                     <div className={`nav-item ${isActive('/accounting/credit-notes') ? 'active' : ''}`} onClick={() => navigate('/accounting/credit-notes')}>
                       <FiCreditCard className="nav-icon" /> <span>Credit Notes</span>
                     </div>
                   )}
-                  {hasPageAccess('CapitalAccount') && (
+                  {!branchOnly && hasPageAccess('CapitalAccount') && (
                     <div className={`nav-item ${isActive('/accounting/capital-account') ? 'active' : ''}`} onClick={() => navigate('/accounting/capital-account')}>
                       <FiTrendingUp className="nav-icon" /> <span>Capital Account</span>
                     </div>
                   )}
-                  {hasPageAccess('DividendAccount') && (
+                  {!branchOnly && hasPageAccess('DividendAccount') && (
                     <div className={`nav-item ${isActive('/accounting/dividend-account') ? 'active' : ''}`} onClick={() => navigate('/accounting/dividend-account')}>
                       <FiDollarSign className="nav-icon" /> <span>Dividend Account</span>
                     </div>
                   )}
-                  {hasPageAccess('Shareholders') && (
+                  {!branchOnly && hasPageAccess('Shareholders') && (
                     <div className={`nav-item ${isActive('/accounting/shareholders') ? 'active' : ''}`} onClick={() => navigate('/accounting/shareholders')}>
                       <FiUsers className="nav-icon" /> <span>Shareholders</span>
                     </div>
                   )}
-                  {hasPageAccess('LoanAccount') && (
+                  {!branchOnly && hasPageAccess('LoanAccount') && (
                     <div className={`nav-item ${isActive('/accounting/loans') ? 'active' : ''}`} onClick={() => navigate('/accounting/loans')}>
                       <FiTrendingDown className="nav-icon" /> <span>Loan Account</span>
                     </div>
@@ -628,7 +637,7 @@ const Layout = () => {
               </div>
               {openGroups.suppliersCustomers && (
                 <div className="nav-children">
-                  {hasPageAccess('Suppliers') && (
+                  {!branchOnly && hasPageAccess('Suppliers') && (
                     <div className={`nav-item ${isActive('/suppliers-customers/suppliers') ? 'active' : ''}`} onClick={() => navigate('/suppliers-customers/suppliers')}>
                       <FiUserPlus className="nav-icon" /> <span>{t('suppliers')}</span>
                     </div>
