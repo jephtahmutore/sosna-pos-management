@@ -147,6 +147,9 @@ export const getHqBranches = () => api.get('/hq/branches');
 // HQ — cross-branch summary (auth required). Backend loops over each
 // tenant DB and aggregates today/MTD revenue, queue depths, stock value, AR.
 export const getHqOverview = () => api.get('/hq/overview');
+// HQ — cross-branch order list with date + branch filters. Defaults to
+// today, all branches. Sorted newest first, capped at 1000 rows server-side.
+export const getHqSalesReport = (params) => api.get('/hq/sales-report', { params });
 export const reverseOrderItem = (orderId, itemId, quantity, unit) => {
   const body = {};
   if (quantity != null) body.quantity = quantity;

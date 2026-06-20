@@ -223,6 +223,7 @@ const Layout = () => {
       '/pos/cashier': 'Cashier',
       '/pos/dispatch': 'Dispatch',
       '/hq/overview': 'HQ Overview',
+      '/hq/sales-report': 'HQ Sales Report',
       '/stock/items': t('itemDetails'), '/stock/grn': t('grn'), '/stock/siv': t('siv'),
       '/stock/sales-damages': 'Sales Damages',
       '/stock/inventory': t('inventory'), '/stock/adjustments': t('stockAdjustment'),
@@ -293,6 +294,12 @@ const Layout = () => {
             <div className={`nav-item ${isActive('/hq/overview') ? 'active' : ''}`} onClick={() => navigate('/hq/overview')}>
               <FiGlobe className="nav-icon" />
               {!collapsed && <span>HQ Overview</span>}
+            </div>
+          )}
+          {hq && (
+            <div className={`nav-item ${isActive('/hq/sales-report') ? 'active' : ''}`} onClick={() => navigate('/hq/sales-report')}>
+              <FiFileText className="nav-icon" />
+              {!collapsed && <span>HQ Sales Report</span>}
             </div>
           )}
 

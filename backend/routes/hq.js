@@ -174,4 +174,90 @@ router.get('/overview', hqAuth, (req, res) => {
   }
 });
 
+// GET /api/hq/sales-report?from=YYYY-MM-DD&to=YYYY-MM-DD&branch=slug
+// Cross-branch order list with date + branch filters. Default range is
+// today only; pass `branch=all` (or omit) to span every registered tenant.
+// Sorted newest first; capped at 1000 rows so a busy multi-month query
+// can't blow up the response. Each row carries its branch slug + name so
+// the table can render origin without a second lookup.
+router.get('/sales-report', hqAuth, (req, res) => {
+  try {
+    const from   = (req.query.from   || new Date().toISOString().slice(0, 10)).toString();
+    const to     = (req.query.to     || from).toString();
+    const branch = (req.query.branch || 'all').toString().toLowerCase();
+    const LIMIT  = Math.min(parseInt(req.query.limit, 10) || 1000, 5000);
+
+    // We compare ISO date prefixes (YYYY-MM-DD) so timestamps with a time
+    // component still bucket correctly. `to` is inclusive: a created_at of
+    // '2026-06-19 23:59:30' falls under to='2026-06-19'.
+    const tenants = listTenants().filter(t => branch === 'all' || t.slug === branch);
+    const rows = [];
+
+    for (const t of tenants) {
+      try {
+        const db = getTenantDb(t.slug);
+        const settings = tryGet(db, `SELECT business_name FROM business_settings ORDER BY id ASC LIMIT 1`) || {};
+        const branchName = settings.business_name || t.business_name || t.slug;
+
+        const orders = db.prepare(`
+          SELECT id, order_number, customer_name, total_amount, amount_received,
+                 change_amount, payment_method, status, currency,
+                 created_at, paid_at, dispatched_at,
+                 TRIM(COALESCE(u.first_name,'') || ' ' || COALESCE(u.last_name,'')) AS created_by_name
+            FROM orders o
+            LEFT JOIN users u ON u.id = o.created_by
+           WHERE o.deleted_at IS NULL
+             AND substr(COALESCE(o.paid_at, o.created_at), 1, 10) >= ?
+             AND substr(COALESCE(o.paid_at, o.created_at), 1, 10) <= ?
+             AND (o.status IS NULL OR o.status != 'Reversed')
+           ORDER BY COALESCE(o.paid_at, o.created_at) DESC
+           LIMIT ?
+        `).all(from, to, LIMIT);
+
+        for (const o of orders) {
+          rows.push({
+            ...o,
+            branch_slug: t.slug,
+            branch_name: branchName,
+          });
+        }
+      } catch (e) {
+        // Skip branches that error out — they'll show up missing rather
+        // than failing the whole report.
+        console.error(`[hq.sales-report] ${t.slug}:`, e.message);
+      }
+    }
+
+    // Sort the combined list by paid_at|created_at desc and trim to LIMIT.
+    rows.sort((a, b) => {
+      const av = a.paid_at || a.created_at || '';
+      const bv = b.paid_at || b.created_at || '';
+      return bv.localeCompare(av);
+    });
+    const capped = rows.slice(0, LIMIT);
+
+    // Totals across whatever survived the filters.
+    const totals = capped.reduce((acc, r) => {
+      acc.orders += 1;
+      acc.revenue += parseFloat(r.total_amount || 0);
+      acc.received += parseFloat(r.amount_received || 0);
+      acc.by_branch[r.branch_slug] = acc.by_branch[r.branch_slug] || { name: r.branch_name, orders: 0, revenue: 0 };
+      acc.by_branch[r.branch_slug].orders  += 1;
+      acc.by_branch[r.branch_slug].revenue += parseFloat(r.total_amount || 0);
+      return acc;
+    }, { orders: 0, revenue: 0, received: 0, by_branch: {} });
+
+    res.json({
+      from, to, branch,
+      total_rows: rows.length,
+      returned_rows: capped.length,
+      truncated: rows.length > capped.length,
+      totals,
+      orders: capped,
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 module.exports = router;
