@@ -39,6 +39,11 @@ const SystemSettings = () => {
     // (Sales → Cashier → Dispatch). 'single_pos' is the default for lusaka1,
     // mansa1. 'three_station' is used for kassumbalesa1.
     workflowMode: 'single_pos',
+    // v1.3.9 — re-exposes the legacy GRN + Suppliers + AP sidebar
+    // entries on this branch so an operator can record initial stock /
+    // openings before HQ Procurement is in routine use. Off by default;
+    // OK to leave on temporarily at launch then switch off later.
+    legacyProcurementEnabled: false,
   });
   const [saving, setSaving] = useState(false);
 
@@ -96,6 +101,7 @@ const SystemSettings = () => {
         defaultCrateDeposit: parseFloat(b.default_crate_deposit) || 57,
         currencyMode: (String(b.currency_mode || 'K').toUpperCase() === 'USD+FRA') ? 'USD+FRA' : 'K',
         workflowMode: (String(b.workflow_mode || 'single_pos').toLowerCase() === 'three_station') ? 'three_station' : 'single_pos',
+        legacyProcurementEnabled: !!parseInt(b.legacy_procurement_enabled || 0, 10),
       });
     }).catch(() => {});
   }, []);
@@ -124,6 +130,7 @@ const SystemSettings = () => {
         default_crate_deposit: form.defaultCrateDeposit,
         currency_mode: form.currencyMode,
         workflow_mode: form.workflowMode,
+        legacy_procurement_enabled: form.legacyProcurementEnabled ? 1 : 0,
       });
       refreshCurrency();
       alert('System settings saved.');
@@ -280,6 +287,32 @@ const SystemSettings = () => {
                 </label>
               ))}
             </div>
+          </div>
+
+          {/* ── Legacy Procurement (per-branch escape hatch) ─────────────── */}
+          {/* Hidden by v1.3.2 lockdown otherwise. Turn ON at branch launch */}
+          {/* to seed initial stock via GRN + Suppliers + AP, then OFF      */}
+          {/* once HQ Procurement is in routine use.                        */}
+          <div className="form-section">
+            <h3 className="form-section-title"><FiSliders /> Legacy Procurement (branch escape hatch)</h3>
+            <p style={{ fontSize: 13, color: '#6b7280', marginBottom: 14 }}>
+              By default a branch only has <strong>Incoming Stock</strong> and <strong>Inter-Branch Transfers</strong> — the procurement loop is owned by HQ. Turn this ON to temporarily expose the legacy <strong>GRN</strong>, <strong>Suppliers</strong>, and <strong>Account Payables</strong> sidebar entries so you can seed openings or rescue a one-off. Switch off once HQ Purchases is doing the job.
+            </p>
+            <label style={{ display: 'inline-flex', alignItems: 'center', gap: 10, padding: '10px 14px',
+                            border: `1.5px solid ${form.legacyProcurementEnabled ? '#d97706' : '#e5e7eb'}`,
+                            background: form.legacyProcurementEnabled ? '#fef3c7' : '#fff',
+                            borderRadius: 10, cursor: 'pointer' }}>
+              <input type="checkbox" checked={!!form.legacyProcurementEnabled}
+                     onChange={e => setForm(f => ({ ...f, legacyProcurementEnabled: e.target.checked }))} />
+              <div>
+                <div style={{ fontWeight: 700, fontSize: 13, color: '#0f172a' }}>
+                  Show legacy GRN + Suppliers + AP on this branch's sidebar
+                </div>
+                <div style={{ fontSize: 11, color: '#64748b', marginTop: 2 }}>
+                  Save then refresh; the entries appear under Stock + Accounting + Suppliers groups.
+                </div>
+              </div>
+            </label>
           </div>
 
           {/* ── Currencies ──────────────────────────────────────────────── */}

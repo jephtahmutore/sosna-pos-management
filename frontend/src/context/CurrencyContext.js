@@ -17,8 +17,11 @@ const CurrencyContext = createContext({
   // Per-branch feature gates loaded from business_settings:
   //   workflowMode — 'single_pos' | 'three_station' (drives Cashier/Dispatch sidebar)
   //   currencyMode — 'K' | 'USD+FRA' (drives dual-currency UI)
+  //   legacyProcurementEnabled — re-exposes GRN + Suppliers on branch sidebar
+  //                              (off by default since v1.3.2 lockdown)
   workflowMode: 'single_pos',
   currencyMode: 'K',
+  legacyProcurementEnabled: false,
   refresh: () => {},
 });
 
@@ -35,6 +38,7 @@ export const CurrencyProvider = ({ children }) => {
   const [currencies, setCurrencies] = useState(DEFAULTS);
   const [workflowMode, setWorkflowMode] = useState('single_pos');
   const [currencyMode, setCurrencyMode] = useState('K');
+  const [legacyProcurementEnabled, setLegacyProcurementEnabled] = useState(false);
 
   const refresh = useCallback(async () => {
     // Skip the API call when the user isn't logged in — otherwise the 401 response
@@ -48,6 +52,7 @@ export const CurrencyProvider = ({ children }) => {
       setWorkflowMode(wm === 'three_station' ? 'three_station' : 'single_pos');
       const cm = String(biz.currency_mode || 'K').toUpperCase();
       setCurrencyMode(cm === 'USD+FRA' ? 'USD+FRA' : 'K');
+      setLegacyProcurementEnabled(!!parseInt(biz.legacy_procurement_enabled || 0, 10));
     } catch { /* keep defaults */ }
   }, []);
 
@@ -58,7 +63,7 @@ export const CurrencyProvider = ({ children }) => {
   const money = (n) => `${symbol}${parseFloat(n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
   return (
-    <CurrencyContext.Provider value={{ currencies, primary, symbol, money, workflowMode, currencyMode, refresh }}>
+    <CurrencyContext.Provider value={{ currencies, primary, symbol, money, workflowMode, currencyMode, legacyProcurementEnabled, refresh }}>
       {children}
     </CurrencyContext.Provider>
   );

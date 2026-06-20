@@ -62,7 +62,8 @@ router.put('/business', auth, (req, res) => {
   try {
     const { business_name, business_phone, business_email, business_address, tax_rate, single_location_mode, block_oversell, currencies,
             receipt_printer_type, receipt_printer_name, receipt_printer_ip, receipt_printer_port,
-            default_crate_deposit, currency_mode, workflow_mode } = req.body;
+            default_crate_deposit, currency_mode, workflow_mode,
+            legacy_procurement_enabled } = req.body;
     // Only update currencies if the caller explicitly sent them; otherwise leave whatever's stored.
     const currenciesJson = currencies !== undefined ? JSON.stringify(normaliseCurrencies(currencies)) : null;
     const existing = db.prepare('SELECT * FROM business_settings LIMIT 1').get();
@@ -110,6 +111,13 @@ router.put('/business', auth, (req, res) => {
       if (workflow_mode !== undefined) {
         const wm = String(workflow_mode || 'single_pos').toLowerCase() === 'three_station' ? 'three_station' : 'single_pos';
         sets.push('workflow_mode=?'); vals.push(wm);
+      }
+      // legacy_procurement_enabled re-exposes the legacy GRN + Suppliers
+      // sidebar entries on a branch (hidden by v1.3.2 lockdown). Useful
+      // for branch launch / migration; HQ-side ignores it.
+      if (legacy_procurement_enabled !== undefined) {
+        const lp = (legacy_procurement_enabled === true || legacy_procurement_enabled === 1 || legacy_procurement_enabled === '1') ? 1 : 0;
+        sets.push('legacy_procurement_enabled=?'); vals.push(lp);
       }
       if (sets.length === 0) return res.json(existing); // nothing to update
       sets.push("updated_at=datetime('now')", 'synced=0');

@@ -33,7 +33,10 @@ const Layout = () => {
       'Suppliers', 'Customers', 'Sales', 'Reports');
   const { language, changeLanguage, t } = useLanguage();
   // 3-station gate — only kassumbalesa1 sees the Cashier sidebar entry.
-  const { workflowMode } = useCurrency();
+  const { workflowMode, legacyProcurementEnabled } = useCurrency();
+  // Computed: legacy GRN + Suppliers entries should appear if HQ (always)
+  // OR the branch flipped the per-branch toggle in System Settings.
+  const showLegacyProcurement = !branchOnly || legacyProcurementEnabled;
   // HQ branch selector — only when the React app is served from the bare
   // sosnazm.com host. On real per-branch subdomains hq=false and the
   // dropdown stays hidden (the host already pins the tenant).
@@ -488,7 +491,7 @@ const Layout = () => {
                       <FiFileText className="nav-icon" /> <span>{t('itemDetails')}</span>
                     </div>
                   )}
-                  {!branchOnly && hasPageAccess('GRN') && (
+                  {showLegacyProcurement && hasPageAccess('GRN') && (
                     <div className={`nav-item ${isActive('/stock/grn') ? 'active' : ''}`} onClick={() => navigate('/stock/grn')}>
                       <FiDownload className="nav-icon" /> <span>{t('grn')}</span>
                     </div>
@@ -590,7 +593,7 @@ const Layout = () => {
                       <FiClipboard className="nav-icon" /> <span>{t('cashBook')}</span>
                     </div>
                   )}
-                  {!branchOnly && hasPageAccess('AccountPayables') && (
+                  {showLegacyProcurement && hasPageAccess('AccountPayables') && (
                     <div className={`nav-item ${isActive('/accounting/account-payables') ? 'active' : ''}`} onClick={() => navigate('/accounting/account-payables')}>
                       <FiFileText className="nav-icon" /> <span>{t('accountPayables')}</span>
                     </div>
@@ -647,7 +650,7 @@ const Layout = () => {
               </div>
               {openGroups.suppliersCustomers && (
                 <div className="nav-children">
-                  {!branchOnly && hasPageAccess('Suppliers') && (
+                  {showLegacyProcurement && hasPageAccess('Suppliers') && (
                     <div className={`nav-item ${isActive('/suppliers-customers/suppliers') ? 'active' : ''}`} onClick={() => navigate('/suppliers-customers/suppliers')}>
                       <FiUserPlus className="nav-icon" /> <span>{t('suppliers')}</span>
                     </div>

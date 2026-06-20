@@ -1398,6 +1398,14 @@ function initTenantDb(db) {
   addCol('sales_returns', 'confirmed_by_name', 'TEXT');
   addCol('sales_returns', 'confirmed_at',      'TEXT');
   addCol('sales_returns', 'confirm_notes',     'TEXT');
+
+  // v1.3.9 — per-branch toggle that re-enables the legacy GRN + Suppliers
+  // sidebar entries (otherwise hidden on branches by v1.3.2's lockdown).
+  // Use case: seeding initial stock at a freshly-deployed branch before
+  // the HQ Procurement loop is producing receipts, or one-off rescues.
+  // OFF by default — only branches that flip this ON see the legacy
+  // pages. HQ host always sees them regardless of this flag.
+  addCol('business_settings', 'legacy_procurement_enabled', 'INTEGER NOT NULL DEFAULT 0');
 }
 
 module.exports = { initTenantDb };
