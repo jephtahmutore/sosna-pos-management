@@ -319,17 +319,65 @@ router.put('/:id', hqAuth, (req, res) => {
   }
 });
 
-// DELETE /api/hq/products/:id — soft delete (status='Deleted'). The
-// name is FREED for re-use (the CREATE dup check already excludes
-// status='Deleted'). pushToBranches sees the Deleted status and soft-
-// deletes each branch's matching products row via deleted_at — branch
-// list / picker / POS all hide it (their GETs already filter
-// `deleted_at IS NULL`), but historical orders / GRNs that referenced
-// the product keep working because the row + sync_id are preserved.
+// DELETE /api/hq/products/:id — soft-delete with full history guard,
+// matching the per-branch products DELETE behaviour (products.js:502).
+// Blocks if ANY of the following reference the product's sync_id:
+//   - GRN / SIV / order lines at any branch
+//   - sales_return (damages) lines at any branch
+//   - HQ purchase lines (master.db) — any non-cancelled status counts
+// When clear: status='Deleted' on hq_products (frees the name for
+// re-use), pushToBranches sees Deleted and soft-deletes the matching
+// branch row (deleted_at = now). Historical rows that pre-dated all
+// of this are unaffected — they reference the snapshot, not the live
+// row.
 router.delete('/:id', hqAuth, (req, res) => {
   try {
     const row = masterDb.prepare(`SELECT * FROM hq_products WHERE id = ?`).get(req.params.id);
     if (!row) return res.status(404).json({ error: 'Product not found' });
+
+    // Walk every registered branch and count references. Errors per
+    // branch don't block the delete attempt — they get reported so HQ
+    // sees which branch DB couldn't be checked and can re-try.
+    const blockers = [];
+    const branchErrors = [];
+    for (const t of listTenants()) {
+      try {
+        const db = getTenantDb(t.slug);
+        const counts = {
+          grn:     db.prepare('SELECT COUNT(*) AS c FROM grn_items           WHERE product_sync_id = ? AND deleted_at IS NULL').get(row.sync_id).c,
+          siv:     db.prepare('SELECT COUNT(*) AS c FROM siv_items           WHERE product_sync_id = ? AND deleted_at IS NULL').get(row.sync_id).c,
+          orders:  db.prepare('SELECT COUNT(*) AS c FROM order_items         WHERE product_sync_id = ? AND deleted_at IS NULL').get(row.sync_id).c,
+          damages: db.prepare('SELECT COUNT(*) AS c FROM sales_return_items  WHERE product_sync_id = ? AND deleted_at IS NULL').get(row.sync_id).c,
+        };
+        const branchLabel = t.business_name || t.slug;
+        if (counts.grn)     blockers.push(`${counts.grn} GRN line(s) at ${branchLabel}`);
+        if (counts.siv)     blockers.push(`${counts.siv} SIV line(s) at ${branchLabel}`);
+        if (counts.orders)  blockers.push(`${counts.orders} sales line(s) at ${branchLabel}`);
+        if (counts.damages) blockers.push(`${counts.damages} damages line(s) at ${branchLabel}`);
+      } catch (e) {
+        branchErrors.push(`${t.slug}: ${e.message}`);
+      }
+    }
+    // HQ-side check: any non-cancelled HQ Purchase line that targets
+    // this product (regardless of branch). Cancelled lines don't count
+    // since they never created any real history.
+    const hqRefs = masterDb.prepare(`
+      SELECT COUNT(*) AS c FROM hq_purchase_items
+       WHERE product_sync_id = ? AND status != 'CANCELLED'
+    `).get(row.sync_id).c;
+    if (hqRefs > 0) blockers.push(`${hqRefs} HQ purchase line(s)`);
+
+    if (blockers.length > 0) {
+      return res.status(400).json({
+        error: `Cannot delete "${row.name}" — it is used in ${blockers.join(', ')}. Remove or cancel those records first, or mark the product inactive instead.`,
+      });
+    }
+    if (branchErrors.length > 0) {
+      return res.status(503).json({
+        error: `Could not verify history at every branch (${branchErrors.join('; ')}). Retry once those branches are reachable.`,
+      });
+    }
+
     masterDb.prepare(`UPDATE hq_products SET status = 'Deleted', updated_at = datetime('now') WHERE id = ?`).run(req.params.id);
     const updated = masterDb.prepare(`SELECT * FROM hq_products WHERE id = ?`).get(req.params.id);
     pushToBranches(updated);
