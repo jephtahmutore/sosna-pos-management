@@ -4,10 +4,11 @@
 // confirms with actual received qty in their Incoming Stock queue.
 import React, { useEffect, useMemo, useState } from 'react';
 import {
-  FiRefreshCw, FiPlus, FiPackage, FiTrash2, FiEye,
+  FiRefreshCw, FiPlus, FiPackage, FiTrash2, FiEye, FiXCircle,
 } from 'react-icons/fi';
 import {
   getHqBranches, getHqPurchases, getHqPurchase, createHqPurchase, getHqSuppliers,
+  cancelHqPurchaseItem, cancelHqPurchase,
 } from '../services/api';
 
 const fmtMoney = (n) => `$${parseFloat(n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
@@ -142,7 +143,20 @@ export default function HqPurchases() {
       )}
 
       {viewing && (
-        <DetailModal data={viewing} onClose={() => setViewing(null)} />
+        <DetailModal
+          data={viewing}
+          onClose={() => setViewing(null)}
+          onChanged={async () => {
+            // Re-fetch detail to reflect the cancel + refresh the list
+            // so per-row counts + status tags update too.
+            try {
+              const r = await getHqPurchase(viewing.id);
+              setViewing(r.data);
+            } catch (_) { setViewing(null); }
+            refresh();
+          }}
+          flash={flash}
+        />
       )}
     </div>
   );
@@ -327,7 +341,36 @@ function CreatePurchaseModal({ branches, onClose, onCreated, onError }) {
   );
 }
 
-function DetailModal({ data, onClose }) {
+function DetailModal({ data, onClose, onChanged, flash }) {
+  const items = data.items || [];
+  // Whole-purchase cancel is only safe while NO line has been received
+  // (a received line moved real stock — v1 doesn't reverse those).
+  const anyReceived = items.some(it => it.status === 'RECEIVED');
+  const anyPending  = items.some(it => it.status === 'PENDING');
+  const headerCancellable = !anyReceived && data.status !== 'CANCELLED' && data.status !== 'COMPLETED';
+
+  const doLineCancel = async (it) => {
+    if (!window.confirm(`Cancel line "${it.product_name}" (${parseFloat(it.dispatched_qty).toFixed(2)} ${it.unit || ''} → ${it.destination_name || it.destination_slug})?`)) return;
+    try {
+      await cancelHqPurchaseItem(it.id);
+      flash?.('Line cancelled.', 'success');
+      onChanged?.();
+    } catch (err) {
+      flash?.(err?.response?.data?.error || 'Cancel failed', 'error');
+    }
+  };
+
+  const doWholeCancel = async () => {
+    if (!window.confirm(`Cancel entire purchase ${data.purchase_number}? All pending lines will be cancelled.`)) return;
+    try {
+      await cancelHqPurchase(data.id);
+      flash?.('Purchase cancelled.', 'success');
+      onChanged?.();
+    } catch (err) {
+      flash?.(err?.response?.data?.error || 'Cancel failed', 'error');
+    }
+  };
+
   return (
     <div style={overlay}>
       <div style={{ background: '#fff', borderRadius: 12, width: 'min(900px, 96vw)', maxHeight: '92vh', display: 'flex', flexDirection: 'column' }}>
@@ -336,13 +379,21 @@ function DetailModal({ data, onClose }) {
             <h3 style={{ margin: 0 }}>{data.purchase_number}</h3>
             <div style={{ fontSize: 12, color: '#64748b' }}>{data.supplier_name || 'Supplier —'} · Invoice {data.invoice_number || '—'} · {data.date}</div>
           </div>
-          <button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 22, color: '#64748b' }}>×</button>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            {headerCancellable && (
+              <button onClick={doWholeCancel}
+                style={{ padding: '6px 12px', background: '#fff', color: '#b91c1c', border: '1px solid #fecaca', borderRadius: 6, cursor: 'pointer', fontWeight: 600, fontSize: 12, display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                <FiXCircle size={12} /> Cancel Purchase
+              </button>
+            )}
+            <button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 22, color: '#64748b' }}>×</button>
+          </div>
         </div>
         <div style={{ padding: 16, overflowY: 'auto', flex: 1 }}>
           <div style={{ display: 'flex', gap: 12, marginBottom: 12 }}>
             <Pill label="Status" value={statusBadge(data.status)} />
             <Pill label="Total" value={<strong>{fmtMoney(data.total_amount)}</strong>} />
-            <Pill label="Lines" value={`${fmtInt(data.items?.length || 0)}`} />
+            <Pill label="Lines" value={`${fmtInt(items.length)}`} />
             <Pill label="By" value={data.created_by_name || '—'} />
           </div>
           {data.notes && <p style={{ background: '#f8fafc', padding: 10, borderRadius: 6, fontSize: 13, color: '#475569' }}>{data.notes}</p>}
@@ -356,13 +407,14 @@ function DetailModal({ data, onClose }) {
                 <th style={{ ...th, textAlign: 'right' }}>Cost</th>
                 <th style={th}>Status</th>
                 <th style={th}>Notes</th>
+                <th style={th}></th>
               </tr>
             </thead>
             <tbody>
-              {(data.items || []).map(it => {
+              {items.map(it => {
                 const variance = it.status === 'RECEIVED' && it.received_qty !== it.dispatched_qty;
                 return (
-                  <tr key={it.id} style={{ borderTop: '1px solid #f1f5f9', background: variance ? '#fffbeb' : '#fff' }}>
+                  <tr key={it.id} style={{ borderTop: '1px solid #f1f5f9', background: variance ? '#fffbeb' : it.status === 'CANCELLED' ? '#fafafa' : '#fff', opacity: it.status === 'CANCELLED' ? 0.6 : 1 }}>
                     <td style={td}>{it.product_name} <span style={{ color: '#94a3b8', fontSize: 11 }}>{it.unit}</span></td>
                     <td style={td}>{it.destination_name || it.destination_slug}</td>
                     <td style={{ ...td, textAlign: 'right' }}>{parseFloat(it.dispatched_qty).toFixed(2)}</td>
@@ -372,11 +424,24 @@ function DetailModal({ data, onClose }) {
                     <td style={{ ...td, textAlign: 'right' }}>{fmtMoney(it.cost_price)}</td>
                     <td style={td}>{statusBadge(it.status)}</td>
                     <td style={{ ...td, color: '#64748b' }}>{it.variance_notes || ''}</td>
+                    <td style={td}>
+                      {it.status === 'PENDING' && (
+                        <button onClick={() => doLineCancel(it)} title="Cancel this line"
+                          style={{ background: 'none', border: 'none', color: '#dc2626', cursor: 'pointer', padding: 2 }}>
+                          <FiTrash2 size={14} />
+                        </button>
+                      )}
+                    </td>
                   </tr>
                 );
               })}
             </tbody>
           </table>
+          {anyPending && (
+            <p style={{ fontSize: 11, color: '#94a3b8', marginTop: 10 }}>
+              <FiTrash2 size={10} style={{ verticalAlign: 'middle' }} /> Cancel only removes pending lines; received lines stay in branch stock.
+            </p>
+          )}
         </div>
       </div>
     </div>

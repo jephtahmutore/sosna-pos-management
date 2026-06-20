@@ -175,6 +175,8 @@ export const getHqPurchase = (id) => api.get(`/hq/purchases/${id}`);
 export const createHqPurchase = (data) => api.post('/hq/purchases', data);
 export const getHqPurchaseIncoming = (slug) => api.get('/hq/purchases/incoming', { params: { slug } });
 export const receiveHqPurchaseItem = (itemId, data) => api.put(`/hq/purchases/items/${itemId}/receive`, data);
+export const cancelHqPurchaseItem  = (itemId) => api.put(`/hq/purchases/items/${itemId}/cancel`);
+export const cancelHqPurchase      = (id) => api.put(`/hq/purchases/${id}/cancel`);
 
 // HQ Suppliers + AP — supplier master with live AP balance computed
 // from purchases - payments (never stored).

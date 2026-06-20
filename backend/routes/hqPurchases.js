@@ -323,4 +323,91 @@ router.put('/items/:itemId/receive', hqAuth, (req, res) => {
   }
 });
 
+// PUT /api/hq/purchases/items/:itemId/cancel — drop a single PENDING line
+// (operator entered the wrong item, supplier won't deliver this one, etc).
+// Subtracts the line value from the parent's total_amount + auto-promotes
+// the header:
+//   0 PENDING + at least 1 RECEIVED → COMPLETED (everything that was
+//                                                going to land has landed)
+//   0 PENDING + 0 RECEIVED          → CANCELLED (whole thing is dead)
+router.put('/items/:itemId/cancel', hqAuth, (req, res) => {
+  try {
+    const item = masterDb.prepare(`SELECT * FROM hq_purchase_items WHERE id = ?`).get(req.params.itemId);
+    if (!item) return res.status(404).json({ error: 'Line not found' });
+    if (item.status !== 'PENDING') return res.status(400).json({ error: `Line is already ${item.status}` });
+
+    masterDb.transaction(() => {
+      masterDb.prepare(`
+        UPDATE hq_purchase_items
+           SET status = 'CANCELLED',
+               variance_notes = COALESCE(NULLIF(variance_notes,''), 'Cancelled at HQ')
+         WHERE id = ?
+      `).run(req.params.itemId);
+
+      // Header total drops by this line's value so AP stays accurate.
+      masterDb.prepare(`
+        UPDATE hq_purchases
+           SET total_amount = MAX(0, total_amount - ?),
+               updated_at   = datetime('now')
+         WHERE id = ?
+      `).run(item.line_total || 0, item.purchase_id);
+
+      const cnt = masterDb.prepare(`
+        SELECT
+          SUM(CASE WHEN status = 'PENDING'   THEN 1 ELSE 0 END) AS pending,
+          SUM(CASE WHEN status = 'RECEIVED'  THEN 1 ELSE 0 END) AS received,
+          SUM(CASE WHEN status = 'CANCELLED' THEN 1 ELSE 0 END) AS cancelled
+          FROM hq_purchase_items WHERE purchase_id = ?
+      `).get(item.purchase_id);
+      if ((cnt.pending || 0) === 0) {
+        const next = (cnt.received || 0) > 0 ? 'COMPLETED' : 'CANCELLED';
+        masterDb.prepare(`UPDATE hq_purchases SET status = ?, updated_at = datetime('now') WHERE id = ?`).run(next, item.purchase_id);
+      }
+    })();
+
+    res.json({
+      item:            masterDb.prepare(`SELECT * FROM hq_purchase_items WHERE id = ?`).get(req.params.itemId),
+      purchase_status: masterDb.prepare(`SELECT status FROM hq_purchases WHERE id = ?`).get(item.purchase_id)?.status,
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// PUT /api/hq/purchases/:id/cancel — cancel an entire purchase. Rejected
+// if any line has already been received (those lines moved real stock at
+// a branch; the cancellation would need a counter-movement which v1
+// doesn't support). Use the per-line cancel for partial scenarios.
+router.put('/:id/cancel', hqAuth, (req, res) => {
+  try {
+    const p = masterDb.prepare(`SELECT * FROM hq_purchases WHERE id = ?`).get(req.params.id);
+    if (!p) return res.status(404).json({ error: 'Purchase not found' });
+    if (p.status === 'CANCELLED' || p.status === 'COMPLETED') {
+      return res.status(400).json({ error: `Purchase is already ${p.status}` });
+    }
+    const received = masterDb.prepare(`
+      SELECT COUNT(*) AS n FROM hq_purchase_items WHERE purchase_id = ? AND status = 'RECEIVED'
+    `).get(req.params.id).n;
+    if (received > 0) {
+      return res.status(400).json({ error: `Cannot cancel — ${received} line(s) already received. Cancel them individually first if you need to.` });
+    }
+    masterDb.transaction(() => {
+      masterDb.prepare(`
+        UPDATE hq_purchase_items
+           SET status = 'CANCELLED',
+               variance_notes = COALESCE(NULLIF(variance_notes,''), 'Cancelled at HQ')
+         WHERE purchase_id = ? AND status = 'PENDING'
+      `).run(req.params.id);
+      masterDb.prepare(`
+        UPDATE hq_purchases
+           SET status = 'CANCELLED', total_amount = 0, updated_at = datetime('now')
+         WHERE id = ?
+      `).run(req.params.id);
+    })();
+    res.json(getOne(parseInt(req.params.id, 10)));
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 module.exports = router;
