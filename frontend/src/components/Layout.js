@@ -48,7 +48,7 @@ const Layout = () => {
   // pending + Incoming Stock from HQ + Incoming Inter-Branch Transfers).
   // Derives slug the same way StockTransfers / IncomingStock do: HQ
   // X-Branch when on bare sosnazm.com, else host's first subdomain.
-  const [badges, setBadges] = useState({ cashier_pending: 0, dispatch_pending: 0, incoming_stock: 0, incoming_transfers: 0, hq_pending_grn: 0 });
+  const [badges, setBadges] = useState({ cashier_pending: 0, dispatch_pending: 0, incoming_stock: 0, incoming_transfers: 0, hq_pending_grn: 0, hq_pending_damages: 0 });
   useEffect(() => {
     let cancelled = false;
     const slug = hq ? (currentHqBranch || '') : (typeof window !== 'undefined' ? window.location.hostname.split('.')[0] : '');
@@ -249,6 +249,7 @@ const Layout = () => {
       '/hq/cash-position': 'HQ Cash Position',
       '/hq/purchases': 'HQ Purchases',
       '/hq/confirm-grn': 'Confirm GRN',
+      '/hq/confirm-damages': 'Confirm Damages',
       '/hq/suppliers': 'HQ Suppliers',
       '/stock/incoming': 'Incoming Stock',
       '/stock/items': t('itemDetails'), '/stock/grn': t('grn'), '/stock/siv': t('siv'),
@@ -358,6 +359,13 @@ const Layout = () => {
               <FiCheckCircle className="nav-icon" />
               {!collapsed && <span>Confirm GRN</span>}
               {!collapsed && badges.hq_pending_grn > 0 && <SidebarBadge n={badges.hq_pending_grn} />}
+            </div>
+          )}
+          {hq && (
+            <div className={`nav-item ${isActive('/hq/confirm-damages') ? 'active' : ''}`} onClick={() => navigate('/hq/confirm-damages')}>
+              <FiAlertTriangle className="nav-icon" />
+              {!collapsed && <span>Confirm Damages</span>}
+              {!collapsed && badges.hq_pending_damages > 0 && <SidebarBadge n={badges.hq_pending_damages} />}
             </div>
           )}
           {/* HQ Suppliers — master list + live AP balance per supplier. */}

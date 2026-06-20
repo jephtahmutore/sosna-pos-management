@@ -75,6 +75,11 @@ router.get('/stats', auth, readOnlyGuard, (req, res) => {
 });
 
 // POST /api/sales-returns
+// v1.3.1: branch DECLARES the damage. No stock decrement yet — HQ must
+// confirm via /api/hq/damages/:slug/:id/confirm before stock_movements
+// + profit recalc happen. Until then status='PENDING' and the row sits
+// in the HQ Confirm Damages queue. Items are still recorded so HQ can
+// see exactly what's being claimed.
 router.post('/', auth, (req, res) => {
   try {
     const { date, notes, items } = req.body;
@@ -87,8 +92,10 @@ router.post('/', auth, (req, res) => {
       const returnNum = syncConfig.generateNumber('SRT', 'sales_returns');
       const returnSyncId = randomUUID();
       const info = db.prepare(`
-        INSERT INTO sales_returns (return_number, date, notes, total_items, created_by, sync_id, tenant_id, branch_id, device_id, synced, created_at, updated_at)
-        VALUES (?,?,?,?,?,?,?,?,?,0,datetime('now'),datetime('now'))
+        INSERT INTO sales_returns (return_number, date, notes, total_items, status,
+                                   created_by, sync_id, tenant_id, branch_id, device_id, synced,
+                                   created_at, updated_at)
+        VALUES (?,?,?,?, 'PENDING', ?,?,?,?,?,0,datetime('now'),datetime('now'))
       `).run(returnNum, returnDate, notes || null, items.length, req.user.id,
              returnSyncId, tenantId, branchId, deviceId);
       const returnId = info.lastInsertRowid;
@@ -96,33 +103,107 @@ router.post('/', auth, (req, res) => {
       for (const item of items) {
         const qty = parseFloat(item.quantity);
         const prod = db.prepare('SELECT sync_id, unit, alt_unit, conversion_factor, units_json FROM products WHERE id = ?').get(item.product_id);
-        // Prefer client-sent product_sync_id (stable across PCs).
         const productSyncId = item.product_sync_id || prod?.sync_id || null;
         const lineUnit = (item.unit || '').trim() || prod?.unit || null;
-        const baseQty = qty * conversionToBase(prod, lineUnit);
         db.prepare(`
           INSERT INTO sales_return_items (return_id, return_sync_id, product_id, product_sync_id, quantity, unit, sync_id, tenant_id, branch_id, device_id, synced, created_at, updated_at)
           VALUES (?,?,?,?,?,?,?,?,?,?,0,datetime('now'),datetime('now'))
         `).run(returnId, returnSyncId, item.product_id, productSyncId, qty, lineUnit, randomUUID(), tenantId, branchId, deviceId);
-
-        // Sales Damages: remove from sales counter — items are destroyed/expired, NOT returned to store.
-        // The cost of these items (qty × avg cost) becomes a Damages line on the daily Profit Report.
-        db.prepare(`
-          INSERT INTO stock_movements (product_id, product_sync_id, location, movement_type, quantity, reference_id, reference_type, notes, created_by, sync_id, tenant_id, branch_id, device_id, synced, created_at, updated_at, reference_sync_id)
-          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0,?,datetime('now'),?)
-        `).run(item.product_id, productSyncId, 'sales', 'sales_return', -baseQty, returnId, 'sales_return',
-               notes || null, req.user.id, randomUUID(), tenantId, branchId, deviceId, returnDate, returnSyncId);
+        // Note: no stock_movements row here — that's created at HQ confirm time.
       }
 
       return db.prepare('SELECT * FROM sales_returns WHERE id = ?').get(returnId);
     })();
 
-    recalculateDailyProfit(db, returnDate, req.user.tenantId);
+    // No profit recalc — damages don't hit the books until HQ confirms.
     res.status(201).json(result);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
 });
+
+// PUT /api/sales-returns/:id/confirm
+// HQ-only — proxied through here for symmetry but the routes/hqDamages.js
+// HQ-facing list endpoint is what HQ operators hit. Either path moves the
+// damage from PENDING → CONFIRMED, creates the stock_movement rows, and
+// triggers recalculateDailyProfit so the damages cost lands on the day's
+// Profit Report. Reject path clears the row to REJECTED (kept for audit).
+function confirmDamage(db, params, req, res, body) {
+  try {
+    const ret = db.prepare('SELECT * FROM sales_returns WHERE id = ? AND deleted_at IS NULL').get(params.id);
+    if (!ret) return res.status(404).json({ error: 'Damage not found' });
+    if (ret.status !== 'PENDING') return res.status(400).json({ error: `Damage is ${ret.status}, not PENDING` });
+
+    const items = db.prepare(
+      `SELECT sri.*, p.unit AS product_base_unit, p.alt_unit, p.conversion_factor, p.units_json
+         FROM sales_return_items sri
+         LEFT JOIN products p ON p.sync_id = sri.product_sync_id
+         WHERE sri.return_sync_id = ? AND sri.deleted_at IS NULL`
+    ).all(ret.sync_id);
+
+    const tenantId = ret.tenant_id;
+    const branchId = ret.branch_id;
+    const deviceId = ret.device_id;
+    const confirmedBy = req.user.id || null;
+    const confirmedByName = req.user.firstName || req.user.email || 'HQ';
+
+    db.transaction(() => {
+      for (const it of items) {
+        const prod = { unit: it.product_base_unit, alt_unit: it.alt_unit, conversion_factor: it.conversion_factor, units_json: it.units_json };
+        const baseQty = parseFloat(it.quantity) * conversionToBase(prod, it.unit);
+        db.prepare(`
+          INSERT INTO stock_movements (product_id, product_sync_id, location, movement_type,
+                                       quantity, reference_id, reference_type, notes,
+                                       created_by, sync_id, tenant_id, branch_id, device_id, synced,
+                                       created_at, updated_at, reference_sync_id)
+          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0,?,datetime('now'),?)
+        `).run(
+          it.product_id, it.product_sync_id, 'sales', 'sales_return', -baseQty,
+          ret.id, 'sales_return', ret.notes || null,
+          confirmedBy, randomUUID(), tenantId, branchId, deviceId,
+          ret.date, ret.sync_id
+        );
+      }
+      db.prepare(`
+        UPDATE sales_returns
+           SET status = 'CONFIRMED',
+               confirmed_by = ?, confirmed_by_name = ?, confirmed_at = datetime('now'),
+               confirm_notes = ?, synced = 0
+         WHERE id = ?
+      `).run(confirmedBy, confirmedByName, body?.confirm_notes || null, params.id);
+    })();
+
+    recalculateDailyProfit(db, ret.date, tenantId);
+    res.json(db.prepare('SELECT * FROM sales_returns WHERE id = ?').get(params.id));
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+}
+
+router.put('/:id/confirm', auth, (req, res) => confirmDamage(db, req.params, req, res, req.body));
+
+router.put('/:id/reject', auth, (req, res) => {
+  try {
+    const ret = db.prepare('SELECT * FROM sales_returns WHERE id = ? AND deleted_at IS NULL').get(req.params.id);
+    if (!ret) return res.status(404).json({ error: 'Damage not found' });
+    if (ret.status !== 'PENDING') return res.status(400).json({ error: `Damage is ${ret.status}, not PENDING` });
+    const confirmedBy = req.user.id || null;
+    const confirmedByName = req.user.firstName || req.user.email || 'HQ';
+    db.prepare(`
+      UPDATE sales_returns
+         SET status = 'REJECTED',
+             confirmed_by = ?, confirmed_by_name = ?, confirmed_at = datetime('now'),
+             confirm_notes = ?, synced = 0
+       WHERE id = ?
+    `).run(confirmedBy, confirmedByName, req.body?.confirm_notes || 'Rejected at HQ', req.params.id);
+    res.json(db.prepare('SELECT * FROM sales_returns WHERE id = ?').get(req.params.id));
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Expose for the HQ-side cross-branch router.
+module.exports.confirmDamage = confirmDamage;
 
 // GET /api/sales-returns/:id
 router.get('/:id', auth, readOnlyGuard, (req, res) => {

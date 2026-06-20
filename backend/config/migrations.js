@@ -1376,6 +1376,28 @@ function initTenantDb(db) {
   addCol('orders', 'sales_at',         'TEXT');
   addCol('orders', 'paid_at',          'TEXT');
   addCol('orders', 'dispatched_at',    'TEXT');
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // v1.3.1 — Sales Damages state machine
+  // ─────────────────────────────────────────────────────────────────────────
+  // Spec: branches can only declare damages; HQ must confirm before the
+  // sales-floor stock is decremented + the damages cost flows into
+  // daily_profit_summary.damages. This keeps fraud / data-entry mistakes
+  // off the books until HQ has eyes on them.
+  //
+  // Status enum on sales_returns:
+  //   PENDING   — branch declared, awaiting HQ confirmation, no stock yet
+  //   CONFIRMED — HQ approved, stock decremented + profit recalculated
+  //   REJECTED  — HQ rejected with confirm_notes explaining why
+  //
+  // Default is 'CONFIRMED' so EXISTING legacy rows stay marked
+  // already-actioned (they already created their stock_movements). New
+  // rows from v1.3.1+ are written as PENDING by the POST endpoint.
+  addCol('sales_returns', 'status',            "TEXT NOT NULL DEFAULT 'CONFIRMED'");
+  addCol('sales_returns', 'confirmed_by',      'INTEGER');
+  addCol('sales_returns', 'confirmed_by_name', 'TEXT');
+  addCol('sales_returns', 'confirmed_at',      'TEXT');
+  addCol('sales_returns', 'confirm_notes',     'TEXT');
 }
 
 module.exports = { initTenantDb };

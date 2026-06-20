@@ -15,7 +15,7 @@
 const express = require('express');
 const router  = express.Router();
 const jwt = require('jsonwebtoken');
-const { masterDb, isRegistered } = require('../config/masterDb');
+const { masterDb, isRegistered, listTenants } = require('../config/masterDb');
 const { getTenantDb } = require('../config/tenantDb');
 
 function hqAuth(req, res, next) {
@@ -35,18 +35,31 @@ router.get('/badges', hqAuth, (req, res) => {
   try {
     const slug = String(req.query.slug || '').toLowerCase();
 
-    // hq_pending_grn is HQ-scope (not branch) — returned regardless of
-    // slug so the HQ "Confirm GRN" sidebar entry has its count whether
-    // or not a branch is currently picked.
+    // HQ-scope counts (returned regardless of slug so HQ sidebar badges
+    // are always live whether or not a branch is currently picked).
     const hqPendingGrn = safeCount(() => masterDb.prepare(
       `SELECT COUNT(*) AS n FROM hq_purchase_items WHERE status = 'GRN_SUBMITTED'`
     ).get()?.n);
+    // Damages live per-branch — sum PENDING rows across every registered
+    // tenant. Cheap (1 COUNT per branch, 3 branches today).
+    let hqPendingDamages = 0;
+    try {
+      for (const t of listTenants()) {
+        try {
+          const db = getTenantDb(t.slug);
+          hqPendingDamages += safeCount(() => db.prepare(
+            `SELECT COUNT(*) AS n FROM sales_returns WHERE deleted_at IS NULL AND status = 'PENDING'`
+          ).get()?.n);
+        } catch (_) { /* skip broken branch */ }
+      }
+    } catch (_) { /* listTenants failure → 0 */ }
 
     if (!slug || !isRegistered(slug)) {
       return res.json({
         cashier_pending: 0, dispatch_pending: 0,
         incoming_stock: 0, incoming_transfers: 0,
-        hq_pending_grn: hqPendingGrn,
+        hq_pending_grn:     hqPendingGrn,
+        hq_pending_damages: hqPendingDamages,
       });
     }
 
@@ -75,6 +88,7 @@ router.get('/badges', hqAuth, (req, res) => {
       incoming_stock:      incomingStock,
       incoming_transfers:  incomingTransfers,
       hq_pending_grn:      hqPendingGrn,
+      hq_pending_damages:  hqPendingDamages,
     });
   } catch (error) {
     res.status(500).json({ error: error.message });

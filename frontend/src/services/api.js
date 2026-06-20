@@ -198,6 +198,12 @@ export const updateHqSupplier = (id, data) => api.put(`/hq/suppliers/${id}`, dat
 export const deleteHqSupplier = (id) => api.delete(`/hq/suppliers/${id}`);
 export const recordHqSupplierPayment = (supplierId, data) => api.post(`/hq/suppliers/${supplierId}/payments`, data);
 export const deleteHqSupplierPayment = (paymentId) => api.delete(`/hq/suppliers/payments/${paymentId}`);
+
+// HQ Damages — v1.3.1 cross-branch queue of branch-declared damages
+// waiting for HQ to confirm before sales-floor stock is decremented.
+export const getHqDamagesAwaiting = () => api.get('/hq/damages/awaiting');
+export const confirmHqDamage = (slug, id, data) => api.put(`/hq/damages/${slug}/${id}/confirm`, data || {});
+export const rejectHqDamage  = (slug, id, data) => api.put(`/hq/damages/${slug}/${id}/reject`,  data || {});
 export const reverseOrderItem = (orderId, itemId, quantity, unit) => {
   const body = {};
   if (quantity != null) body.quantity = quantity;
