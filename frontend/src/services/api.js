@@ -144,6 +144,9 @@ export const confirmDispatch = (id) => api.put(`/orders/${id}/confirm-dispatch`)
 
 // HQ — public list of registered branches for the login + sidebar picker.
 export const getHqBranches = () => api.get('/hq/branches');
+// HQ — cross-branch summary (auth required). Backend loops over each
+// tenant DB and aggregates today/MTD revenue, queue depths, stock value, AR.
+export const getHqOverview = () => api.get('/hq/overview');
 export const reverseOrderItem = (orderId, itemId, quantity, unit) => {
   const body = {};
   if (quantity != null) body.quantity = quantity;

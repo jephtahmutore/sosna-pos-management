@@ -222,6 +222,7 @@ const Layout = () => {
       '/pos/sales-stock-card': 'Sales Stock Card',
       '/pos/cashier': 'Cashier',
       '/pos/dispatch': 'Dispatch',
+      '/hq/overview': 'HQ Overview',
       '/stock/items': t('itemDetails'), '/stock/grn': t('grn'), '/stock/siv': t('siv'),
       '/stock/sales-damages': 'Sales Damages',
       '/stock/inventory': t('inventory'), '/stock/adjustments': t('stockAdjustment'),
@@ -285,6 +286,16 @@ const Layout = () => {
         )}
 
         <nav className="sidebar-nav">
+          {/* HQ Overview — only when serving from bare sosnazm.com.
+              Sits above Dashboard because it's the natural landing page
+              for an HQ operator (cross-branch snapshot, jump-to-branch). */}
+          {hq && (
+            <div className={`nav-item ${isActive('/hq/overview') ? 'active' : ''}`} onClick={() => navigate('/hq/overview')}>
+              <FiGlobe className="nav-icon" />
+              {!collapsed && <span>HQ Overview</span>}
+            </div>
+          )}
+
           {/* Dashboard — only for All access users */}
           {isAllAccess() && (
             <div className={`nav-item ${isActive('/dashboard') ? 'active' : ''}`} onClick={() => navigate('/dashboard')}>

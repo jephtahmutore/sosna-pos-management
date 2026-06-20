@@ -11,6 +11,7 @@ import Dashboard from './pages/Dashboard';
 import POS from './pages/POS';
 import Cashier from './pages/Cashier';
 import Dispatch from './pages/Dispatch';
+import HqOverview from './pages/HqOverview';
 import ItemDetails from './pages/ItemDetails';
 import GRN from './pages/GRN';
 import EmptyReturns from './pages/EmptyReturns';
@@ -114,6 +115,12 @@ const CUSTOM_PRIORITY = [
 const DefaultRedirect = () => {
   const { user, isAllAccess, hasPageAccess } = useAuth();
   if (!user) return <Navigate to="/login" />;
+  // HQ users land on the cross-branch overview by default.
+  try {
+    const isHq = ['sosnazm.com', 'www.sosnazm.com', 'localhost', '127.0.0.1']
+      .includes(window.location.hostname);
+    if (isHq) return <Navigate to="/hq/overview" />;
+  } catch { /* SSR / no window — fall through */ }
   if (isAllAccess()) return <Navigate to="/dashboard" />;
   // Find first page the custom user has access to
   for (const entry of CUSTOM_PRIORITY) {
@@ -230,6 +237,7 @@ function AppRoutes() {
         <Route path="pos" element={<PermRoute perms={['POS','Sales','POS:View','POS:Add','POS:Edit','POS:Delete']}><POS /></PermRoute>} />
         <Route path="pos/cashier" element={<PermRoute perms={['POS','Sales','POS:View','POS:Add','POS:Edit','POS:Delete']}><Cashier /></PermRoute>} />
         <Route path="pos/dispatch" element={<PermRoute perms={['POS','Sales','POS:View','POS:Add','POS:Edit','POS:Delete']}><Dispatch /></PermRoute>} />
+        <Route path="hq/overview"  element={<HqOverview />} />
         <Route path="pos/sales-report" element={<PermRoute perms={['Sales','Reports','SalesReport:View','SalesReport:Add','SalesReport:Edit','SalesReport:Delete']}><SalesReport /></PermRoute>} />
         <Route path="pos/sales-inventory" element={<PermRoute perms={['Sales','Reports','SalesInventory:View','SalesInventory:Add','SalesInventory:Edit','SalesInventory:Delete']}><SalesInventory /></PermRoute>} />
         <Route path="pos/sales-stock-card" element={<PermRoute perms={['Sales','Reports','SalesInventory:View','Inventory:View']}><Inventory viewLocation="sales" /></PermRoute>} />
