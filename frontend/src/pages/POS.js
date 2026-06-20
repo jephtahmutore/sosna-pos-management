@@ -731,7 +731,7 @@ const POS = () => {
   const handleSendToCashier = async () => {
     if (cart.length === 0) return;
     try {
-      await createOrder({
+      const res = await createOrder({
         customer_name: customerName,
         customer_id: selectedCustomer ? selectedCustomer.id : null,
         customer_sync_id: selectedCustomer ? selectedCustomer.sync_id : null,
@@ -751,21 +751,123 @@ const POS = () => {
         sale_date: (isAdmin && saleDate && saleDate !== todayStr()) ? saleDate : null,
       });
 
+      // Snapshot what we need to print BEFORE clearing the cart.
+      const printSnap = {
+        orderNumber: res.data?.order_number || '',
+        customerName: customerName || 'Walk-in',
+        items: [...cart],
+        subtotal,
+        discount: parseFloat(discount || 0),
+        total,
+        date: new Date(),
+        servedBy: user ? `${user.first_name || ''} ${user.last_name || ''}`.trim() : 'Sales',
+      };
+
       suppressCartBroadcast.current = true;
       setCart([]);
       setCustomerName('');
       setDiscount(0);
       setCashIn(''); setMomoIn(''); setBankIn('');
       setSaleDate(todayStr());
-      setBarcodeMsg({ text: 'Order sent to cashier.', type: 'success' });
+      setBarcodeMsg({ text: 'Order sent to cashier — printing 2 copies.', type: 'success' });
       setTimeout(() => setBarcodeMsg(null), 2500);
 
       try { customerChannel.current?.postMessage({ type: 'cart_clear' }); } catch {}
+
+      // A4: auto-print 2 copies. We build one HTML doc with the receipt
+      // content rendered twice, separated by a page break so the printer
+      // outputs both copies in one pass — cashier keeps one, customer
+      // walks the other one to Dispatch.
+      try { printPendingOrderTwoCopies(printSnap); } catch (_) { /* non-fatal */ }
     } catch (err) {
       const msg = err?.response?.data?.error || err?.message || 'Failed to send order to cashier';
       setBarcodeMsg({ text: msg, type: 'error' });
       setTimeout(() => setBarcodeMsg(null), 4000);
     }
+  };
+
+  // Render one copy of the Sales-station notification slip (the "Sales Order /
+  // Awaiting Payment" receipt). Used by printPendingOrderTwoCopies below to
+  // emit two copies in a single print job.
+  const renderPendingOrderCopy = (snap, label) => {
+    const curSym = '$';
+    const fmt = (n) => parseFloat(n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    const div = '='.repeat(42);
+    const itemsRows = (snap.items || []).map(it => {
+      const qty = parseFloat(it.quantity || 0);
+      const up  = parseFloat(it.unit_price || 0);
+      const lt  = parseFloat(it.total_price || qty * up);
+      return `<tr><td colspan="4">${String(it.product_name).replace(/</g, '&lt;')}</td></tr>
+              <tr>
+                <td style="padding-left:6px;">${qty.toFixed(2)} ${it.unit || ''}</td><td></td>
+                <td style="text-align:right;">${curSym}${fmt(up)}</td>
+                <td style="text-align:right;">${curSym}${fmt(lt)}</td>
+              </tr>`;
+    }).join('');
+    const disc = snap.discount > 0
+      ? `<tr><td>Discount</td><td></td><td></td><td style="text-align:right;">-${curSym}${fmt(snap.discount)}</td></tr>` : '';
+    return `
+      <div class="c" style="font-size:14px;font-weight:700;letter-spacing:1px;">${businessName || 'SOSNA'}</div>
+      ${businessAddress ? `<div class="c" style="font-size:11px;">${String(businessAddress).replace(/\n/g, '<br/>')}</div>` : ''}
+      ${businessPhone ? `<div class="c" style="font-size:11px;">Tel: ${businessPhone}</div>` : ''}
+      <div class="divider">${div}</div>
+      <div class="c" style="font-weight:700;font-size:12px;">SALES ORDER</div>
+      <div class="c" style="font-size:11px;">(Awaiting Payment)</div>
+      <div class="c" style="font-size:10px;margin-top:2px;">[${label}]</div>
+      <div class="divider">${div}</div>
+      <table>
+        <tr><td>Order #:</td><td></td><td style="text-align:right;">${snap.orderNumber}</td></tr>
+        <tr><td>Date &amp; Time:</td><td></td><td style="text-align:right;">${snap.date.toLocaleDateString('en-GB')} ${snap.date.toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',hour12:false})}</td></tr>
+        <tr><td>Customer:</td><td></td><td style="text-align:right;">${snap.customerName}</td></tr>
+        <tr><td>Sales by:</td><td></td><td style="text-align:right;">${snap.servedBy}</td></tr>
+      </table>
+      <div class="divider">${div}</div>
+      <table>
+        <tr style="font-size:10px;">
+          <td style="width:42%;font-weight:700;">ITEM</td>
+          <td style="width:18%;text-align:center;font-weight:700;">QTY</td>
+          <td style="width:20%;text-align:right;font-weight:700;">PRICE</td>
+          <td style="width:20%;text-align:right;font-weight:700;">TOTAL</td>
+        </tr>
+        ${itemsRows}
+      </table>
+      <div class="divider">${'-'.repeat(42)}</div>
+      <table>
+        <tr><td>Subtotal</td><td></td><td></td><td style="text-align:right;">${curSym}${fmt(snap.subtotal)}</td></tr>
+        ${disc}
+      </table>
+      <div class="divider">${div}</div>
+      <table>
+        <tr class="grand"><td>TOTAL DUE</td><td></td><td></td><td style="text-align:right;">${curSym}${fmt(snap.total)}</td></tr>
+      </table>
+      <div class="divider">${div}</div>
+      <div class="c" style="margin-top:4px;font-size:11px;">Please present this slip</div>
+      <div class="c" style="font-size:11px;">to the cashier for payment.</div>`;
+  };
+
+  const printPendingOrderTwoCopies = (snap) => {
+    const html = `<!DOCTYPE html>
+<html><head><meta charset="UTF-8">
+<style>
+  @page { size: 80mm auto; margin: 0; }
+  html, body { height: auto; margin: 0; padding: 0; overflow-x: hidden; }
+  * { box-sizing: border-box; }
+  body { width: 80mm; max-width: 80mm; padding: 2mm 3mm; font-family: 'Courier New', Courier, monospace; font-size: 11px; color: #000; font-weight: 700; }
+  table { width: 100%; border-collapse: collapse; font-size: 11px; }
+  td { padding: 1px 0; vertical-align: top; }
+  .c { text-align: center; }
+  .divider { text-align: center; font-size: 10px; overflow: hidden; white-space: nowrap; margin: 3px 0; }
+  .grand { font-size: 16px; font-weight: 800; }
+  .gap   { height: 12mm; }
+  .copy2 { page-break-before: always; }
+</style>
+</head>
+<body>
+  ${renderPendingOrderCopy(snap, 'Copy 1 of 2 — Cashier')}
+  <div class="gap"></div>
+  <div class="copy2">${renderPendingOrderCopy(snap, 'Copy 2 of 2 — Customer')}</div>
+</body></html>`;
+    printHtml(html);
   };
 
   const handleCheckout = async (override) => {
