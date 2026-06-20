@@ -48,7 +48,7 @@ const Layout = () => {
   // pending + Incoming Stock from HQ + Incoming Inter-Branch Transfers).
   // Derives slug the same way StockTransfers / IncomingStock do: HQ
   // X-Branch when on bare sosnazm.com, else host's first subdomain.
-  const [badges, setBadges] = useState({ cashier_pending: 0, dispatch_pending: 0, incoming_stock: 0, incoming_transfers: 0 });
+  const [badges, setBadges] = useState({ cashier_pending: 0, dispatch_pending: 0, incoming_stock: 0, incoming_transfers: 0, hq_pending_grn: 0 });
   useEffect(() => {
     let cancelled = false;
     const slug = hq ? (currentHqBranch || '') : (typeof window !== 'undefined' ? window.location.hostname.split('.')[0] : '');
@@ -248,6 +248,7 @@ const Layout = () => {
       '/hq/inventory-report': 'HQ Inventory Report',
       '/hq/cash-position': 'HQ Cash Position',
       '/hq/purchases': 'HQ Purchases',
+      '/hq/confirm-grn': 'Confirm GRN',
       '/hq/suppliers': 'HQ Suppliers',
       '/stock/incoming': 'Incoming Stock',
       '/stock/items': t('itemDetails'), '/stock/grn': t('grn'), '/stock/siv': t('siv'),
@@ -341,13 +342,22 @@ const Layout = () => {
               {!collapsed && <span>HQ Cash Position</span>}
             </div>
           )}
-          {/* HQ Purchases — procurement entry point. HQ has no warehouse;
-              each line carries its own destination_slug and the destination
-              branch confirms with actual received qty. */}
+          {/* HQ Purchases — procurement entry point. HQ logs the supplier
+              purchase per-line with a destination branch; branch enters the
+              actual qty on their Incoming Stock page (Submit GRN); HQ then
+              confirms here (Confirm GRN) — only then does branch stock
+              update + supplier AP lock in. */}
           {hq && (
             <div className={`nav-item ${isActive('/hq/purchases') ? 'active' : ''}`} onClick={() => navigate('/hq/purchases')}>
               <FiClipboard className="nav-icon" />
               {!collapsed && <span>HQ Purchases</span>}
+            </div>
+          )}
+          {hq && (
+            <div className={`nav-item ${isActive('/hq/confirm-grn') ? 'active' : ''}`} onClick={() => navigate('/hq/confirm-grn')}>
+              <FiCheckCircle className="nav-icon" />
+              {!collapsed && <span>Confirm GRN</span>}
+              {!collapsed && badges.hq_pending_grn > 0 && <SidebarBadge n={badges.hq_pending_grn} />}
             </div>
           )}
           {/* HQ Suppliers — master list + live AP balance per supplier. */}

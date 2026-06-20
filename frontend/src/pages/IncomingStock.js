@@ -1,15 +1,16 @@
-// IncomingStock — branch-side queue of PENDING HQ Purchase items where
-// destination_slug = current branch. Operator counts what physically
-// arrived and clicks Receive; we POST received_qty (with optional
-// variance notes) and the backend mints the stock_movement + bumps
-// products.current_stock on this branch's DB.
+// IncomingStock — branch-side queue of HQ Purchase items for this branch.
+// v1.3.0 splits the old one-click receive into a two-step workflow:
+//   AWAITING_GRN  → branch enters actual qty + clicks "Submit GRN"
+//   GRN_SUBMITTED → waiting for HQ to confirm; row shown read-only with
+//                   the submitted qty + a "Waiting for HQ" badge.
+// Stock only becomes sellable AFTER HQ confirms (separate page).
 //
 // "current branch" derivation matches StockTransfers: HQ X-Branch when
 // on bare sosnazm.com, otherwise the host's first subdomain.
 import React, { useEffect, useState } from 'react';
-import { FiRefreshCw, FiCheckCircle, FiPackage, FiInbox } from 'react-icons/fi';
+import { FiRefreshCw, FiCheckCircle, FiPackage, FiInbox, FiClock } from 'react-icons/fi';
 import {
-  isHqHost, getHqBranch, getHqPurchaseIncoming, receiveHqPurchaseItem,
+  isHqHost, getHqBranch, getHqPurchaseIncoming, submitHqPurchaseGrn,
 } from '../services/api';
 
 function currentBranchSlug() {
@@ -66,15 +67,15 @@ export default function IncomingStock() {
     if (!(qty >= 0)) { flash('Received qty must be 0 or more', 'error'); return; }
     setReceiving(r => ({ ...r, submitting: true }));
     try {
-      await receiveHqPurchaseItem(receiving.item.id, {
+      await submitHqPurchaseGrn(receiving.item.id, {
         received_qty: qty,
         variance_notes: receiving.notes || null,
       });
-      flash('Received — stock added to branch.', 'success');
+      flash('GRN submitted — waiting for HQ to confirm before stock is sellable.', 'success');
       setReceiving(null);
       refresh();
     } catch (err) {
-      flash(err?.response?.data?.error || 'Receive failed', 'error');
+      flash(err?.response?.data?.error || 'Submit failed', 'error');
       setReceiving(r => ({ ...r, submitting: false }));
     }
   };
@@ -93,7 +94,7 @@ export default function IncomingStock() {
       <div className="page-header">
         <div>
           <h1>Incoming Stock</h1>
-          <p>HQ purchases waiting for confirmation · current branch: <strong>{slug}</strong></p>
+          <p>Submit GRN for what physically arrived. Stock becomes sellable only after HQ confirms · branch: <strong>{slug}</strong></p>
         </div>
         <button onClick={refresh}
           style={{ padding: '8px 14px', background: '#0ea5e9', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 6 }}>
@@ -123,30 +124,46 @@ export default function IncomingStock() {
                   <th style={th}>Date</th>
                   <th style={th}>Supplier</th>
                   <th style={th}>Product</th>
-                  <th style={{ ...th, textAlign: 'right' }}>Dispatched</th>
-                  <th style={{ ...th, textAlign: 'right' }}>Cost</th>
-                  <th style={th}>Logged by</th>
+                  <th style={{ ...th, textAlign: 'right' }}>Expected</th>
+                  <th style={{ ...th, textAlign: 'right' }}>Submitted</th>
+                  <th style={th}>Status</th>
                   <th style={th}></th>
                 </tr>
               </thead>
               <tbody>
-                {items.map(it => (
-                  <tr key={it.id} style={{ borderTop: '1px solid #f1f5f9' }}>
-                    <td style={{ ...td, fontFamily: 'monospace', fontSize: 12 }}>{it.purchase_number}</td>
-                    <td style={td}>{it.purchase_date}</td>
-                    <td style={td}>{it.supplier_name || '—'}</td>
-                    <td style={td}>{it.product_name} <span style={{ color: '#94a3b8', fontSize: 11 }}>{it.unit}</span></td>
-                    <td style={{ ...td, textAlign: 'right', fontWeight: 700 }}>{fmtQty(it.dispatched_qty)}</td>
-                    <td style={{ ...td, textAlign: 'right' }}>{fmtMoney(it.cost_price)}</td>
-                    <td style={{ ...td, color: '#64748b', fontSize: 11 }}>{it.hq_user || '—'}</td>
-                    <td style={td}>
-                      <button onClick={() => openReceive(it)}
-                        style={{ padding: '5px 12px', background: '#16a34a', color: '#fff', border: 'none', borderRadius: 4, cursor: 'pointer', fontSize: 12, fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-                        <FiCheckCircle size={12} /> Receive
-                      </button>
-                    </td>
-                  </tr>
-                ))}
+                {items.map(it => {
+                  const isAwaiting  = it.status === 'AWAITING_GRN';
+                  const isSubmitted = it.status === 'GRN_SUBMITTED';
+                  return (
+                    <tr key={it.id} style={{ borderTop: '1px solid #f1f5f9', background: isSubmitted ? '#fffbeb' : '#fff' }}>
+                      <td style={{ ...td, fontFamily: 'monospace', fontSize: 12 }}>{it.purchase_number}</td>
+                      <td style={td}>{it.purchase_date}</td>
+                      <td style={td}>{it.supplier_name || '—'}</td>
+                      <td style={td}>{it.product_name} <span style={{ color: '#94a3b8', fontSize: 11 }}>{it.unit}</span></td>
+                      <td style={{ ...td, textAlign: 'right' }}>{fmtQty(it.dispatched_qty)}</td>
+                      <td style={{ ...td, textAlign: 'right', fontWeight: 700 }}>
+                        {it.received_qty == null ? '—' : fmtQty(it.received_qty)}
+                      </td>
+                      <td style={td}>
+                        {isAwaiting && <span style={tag('#dbeafe', '#1e40af')}>Awaiting GRN</span>}
+                        {isSubmitted && <span style={tag('#fef3c7', '#92400e')}><FiClock size={10} style={{ verticalAlign: 'middle' }} /> Waiting HQ</span>}
+                      </td>
+                      <td style={td}>
+                        {isAwaiting && (
+                          <button onClick={() => openReceive(it)}
+                            style={{ padding: '5px 12px', background: '#16a34a', color: '#fff', border: 'none', borderRadius: 4, cursor: 'pointer', fontSize: 12, fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                            <FiCheckCircle size={12} /> Submit GRN
+                          </button>
+                        )}
+                        {isSubmitted && it.variance_notes && (
+                          <span style={{ fontSize: 11, color: '#92400e', fontStyle: 'italic' }}>
+                            {it.variance_notes}
+                          </span>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
@@ -173,20 +190,23 @@ function ReceiveModal({ state, setState, onCancel, onSubmit }) {
   return (
     <div style={overlay}>
       <div style={{ background: '#fff', borderRadius: 12, width: 'min(520px, 92vw)', padding: 22 }}>
-        <h3 style={{ margin: '0 0 6px 0' }}>Receive Stock</h3>
+        <h3 style={{ margin: '0 0 6px 0' }}>Submit GRN</h3>
         <p style={{ margin: 0, fontSize: 13, color: '#64748b' }}>
           <strong>{item.product_name}</strong> from <strong>{item.supplier_name || 'supplier'}</strong> · Purchase {item.purchase_number}
         </p>
+        <div style={{ marginTop: 10, padding: '8px 12px', background: '#eff6ff', border: '1px solid #bfdbfe', borderRadius: 6, fontSize: 12, color: '#1e40af' }}>
+          You're submitting a GRN. Stock will become sellable only after HQ confirms the count.
+        </div>
 
         <div style={{ marginTop: 16 }}>
-          <label style={lbl}>Dispatched by HQ</label>
+          <label style={lbl}>Expected (HQ said)</label>
           <div style={{ fontSize: 18, fontWeight: 700, color: '#0f172a' }}>
             {fmtQty(dispatched)} <span style={{ fontSize: 13, color: '#64748b', fontWeight: 500 }}>{item.unit}</span>
           </div>
         </div>
 
         <div style={{ marginTop: 12 }}>
-          <label style={lbl}>Actual received qty</label>
+          <label style={lbl}>Actual received qty (your count)</label>
           <input type="number" min="0" step="any" value={received_qty}
             onChange={e => setState(s => ({ ...s, received_qty: e.target.value }))}
             style={{ ...inp, fontSize: 18, fontWeight: 700 }}
@@ -215,7 +235,7 @@ function ReceiveModal({ state, setState, onCancel, onSubmit }) {
             style={{ flex: 1, padding: '12px',
                      background: submitting ? '#94a3b8' : 'linear-gradient(135deg,#16a34a,#15803d)',
                      color: '#fff', border: 'none', borderRadius: 8, cursor: 'pointer', fontWeight: 700 }}>
-            {submitting ? 'Receiving…' : 'Confirm Receipt'}
+            {submitting ? 'Submitting…' : 'Submit GRN'}
           </button>
         </div>
       </div>
@@ -228,3 +248,4 @@ const lbl = { display: 'block', fontSize: 11, color: '#64748b', fontWeight: 600,
 const inp = { width: '100%', padding: '10px 12px', border: '1px solid #d1d5db', borderRadius: 6, fontSize: 14, background: '#fff', boxSizing: 'border-box' };
 const th  = { padding: '10px 12px', fontSize: 11, color: '#64748b', fontWeight: 700, textAlign: 'left', textTransform: 'uppercase', letterSpacing: 0.5 };
 const td  = { padding: '8px 12px', color: '#0f172a' };
+const tag = (bg, fg) => ({ background: bg, color: fg, fontSize: 11, fontWeight: 700, padding: '2px 8px', borderRadius: 10, textTransform: 'uppercase', letterSpacing: 0.4, display: 'inline-flex', alignItems: 'center', gap: 4 });

@@ -124,7 +124,7 @@ router.post('/', hqAuth, (req, res) => {
                                        product_sync_id, product_name, unit,
                                        dispatched_qty, cost_price, line_total,
                                        destination_slug, destination_name, status)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,'PENDING')
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,'AWAITING_GRN')
       `);
       for (const it of clean) {
         insItem.run(
@@ -160,21 +160,29 @@ router.get('/', hqAuth, (req, res) => {
     if (status) { sql += ' WHERE status = ?'; params.push(status); }
     sql += ' ORDER BY date DESC, id DESC LIMIT 500';
     const headers = masterDb.prepare(sql).all(...params);
-    // Pull per-header reception counts in one round-trip so the list can
-    // show "3 of 5 received" without 500 separate queries.
+    // Per-header counts across the new state machine. AWAITING_GRN +
+    // GRN_SUBMITTED together = "still open" so the list can show
+    // "3 of 5 confirmed" without 500 separate queries.
     const counts = masterDb.prepare(`
       SELECT purchase_id,
              COUNT(*) AS total,
-             SUM(CASE WHEN status = 'RECEIVED'  THEN 1 ELSE 0 END) AS received,
-             SUM(CASE WHEN status = 'PENDING'   THEN 1 ELSE 0 END) AS pending
+             SUM(CASE WHEN status = 'CONFIRMED'     THEN 1 ELSE 0 END) AS confirmed,
+             SUM(CASE WHEN status = 'GRN_SUBMITTED' THEN 1 ELSE 0 END) AS awaiting_confirm,
+             SUM(CASE WHEN status = 'AWAITING_GRN'  THEN 1 ELSE 0 END) AS awaiting_grn,
+             SUM(CASE WHEN status = 'CANCELLED'     THEN 1 ELSE 0 END) AS cancelled
         FROM hq_purchase_items
        GROUP BY purchase_id
     `).all().reduce((acc, r) => { acc[r.purchase_id] = r; return acc; }, {});
     const enriched = headers.map(h => ({
       ...h,
-      items_total:    counts[h.id]?.total    || 0,
-      items_received: counts[h.id]?.received || 0,
-      items_pending:  counts[h.id]?.pending  || 0,
+      items_total:            counts[h.id]?.total            || 0,
+      items_confirmed:        counts[h.id]?.confirmed        || 0,
+      items_awaiting_confirm: counts[h.id]?.awaiting_confirm || 0,
+      items_awaiting_grn:     counts[h.id]?.awaiting_grn     || 0,
+      items_cancelled:        counts[h.id]?.cancelled        || 0,
+      // Legacy field kept so older clients don't break — same as awaiting_grn.
+      items_pending:          counts[h.id]?.awaiting_grn     || 0,
+      items_received:         counts[h.id]?.confirmed        || 0,
     }));
     res.json({ purchases: enriched });
   } catch (error) {
@@ -183,7 +191,11 @@ router.get('/', hqAuth, (req, res) => {
 });
 
 // GET /api/hq/purchases/incoming?slug=
-// Branch-facing — every PENDING line whose destination_slug matches.
+// Branch-facing — every line whose destination_slug matches AND is
+// still in flight (AWAITING_GRN = branch must enter actual qty;
+// GRN_SUBMITTED = waiting for HQ confirmation, branch can see it but
+// can't re-submit). Sort by submitted/created time so the freshest
+// arrivals float to the top.
 router.get('/incoming', hqAuth, (req, res) => {
   try {
     const slug = String(req.query.slug || '').toLowerCase();
@@ -195,10 +207,33 @@ router.get('/incoming', hqAuth, (req, res) => {
              p.created_by_name AS hq_user
         FROM hq_purchase_items i
         JOIN hq_purchases p ON p.id = i.purchase_id
-       WHERE i.destination_slug = ? AND i.status = 'PENDING'
+       WHERE i.destination_slug = ? AND i.status IN ('AWAITING_GRN', 'GRN_SUBMITTED')
        ORDER BY p.date DESC, i.id DESC
        LIMIT 500
     `).all(slug);
+    res.json({ items: rows });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// GET /api/hq/purchases/awaiting-confirmation
+// HQ-facing — every line that branches have submitted GRNs for and
+// HQ hasn't confirmed yet. Drives the "Confirm GRN" page + the HQ
+// notification badge. Includes the destination slug so HQ knows
+// which branch counted what.
+router.get('/awaiting-confirmation', hqAuth, (req, res) => {
+  try {
+    const rows = masterDb.prepare(`
+      SELECT i.*,
+             p.purchase_number, p.supplier_name, p.invoice_number,
+             p.date AS purchase_date, p.created_by_name AS hq_user
+        FROM hq_purchase_items i
+        JOIN hq_purchases p ON p.id = i.purchase_id
+       WHERE i.status = 'GRN_SUBMITTED'
+       ORDER BY COALESCE(i.received_at, p.date) DESC, i.id DESC
+       LIMIT 500
+    `).all();
     res.json({ items: rows });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -216,12 +251,30 @@ router.get('/:id', hqAuth, (req, res) => {
   }
 });
 
-// PUT /api/hq/purchases/items/:itemId/receive
-// Body: { received_qty, variance_notes? }
-// Branch confirms the actual quantity that arrived. We auto-create the
-// product at the destination if needed (matched by sync_id, fallback to
-// name to absorb older catalogs), then increment stock + log movement.
-router.put('/items/:itemId/receive', hqAuth, (req, res) => {
+// Auto-promote a header to COMPLETED once every line is CONFIRMED or
+// CANCELLED. Called from confirm + cancel endpoints. Stays at whatever
+// it was (OPEN) while anything is still AWAITING_GRN or GRN_SUBMITTED.
+function maybeCompleteHeader(purchaseId) {
+  const cnt = masterDb.prepare(`
+    SELECT
+      SUM(CASE WHEN status IN ('AWAITING_GRN','GRN_SUBMITTED') THEN 1 ELSE 0 END) AS open,
+      SUM(CASE WHEN status = 'CONFIRMED'  THEN 1 ELSE 0 END) AS confirmed,
+      SUM(CASE WHEN status = 'CANCELLED'  THEN 1 ELSE 0 END) AS cancelled
+      FROM hq_purchase_items WHERE purchase_id = ?
+  `).get(purchaseId);
+  if ((cnt.open || 0) === 0) {
+    const next = (cnt.confirmed || 0) > 0 ? 'COMPLETED' : 'CANCELLED';
+    masterDb.prepare(`UPDATE hq_purchases SET status = ?, updated_at = datetime('now') WHERE id = ?`).run(next, purchaseId);
+  }
+}
+
+// PUT /api/hq/purchases/items/:itemId/submit-grn
+// Branch action. Records the actual qty that physically arrived; line
+// moves AWAITING_GRN → GRN_SUBMITTED. **No stock change at the branch
+// yet** — that happens when HQ confirms the GRN, because HQ is the only
+// place authorised to lock in supplier AP. If branch needs to re-submit
+// (HQ rejected), the same endpoint accepts it again from AWAITING_GRN.
+router.put('/items/:itemId/submit-grn', hqAuth, (req, res) => {
   try {
     const { received_qty, variance_notes } = req.body || {};
     const receivedQty = parseFloat(received_qty);
@@ -229,29 +282,68 @@ router.put('/items/:itemId/receive', hqAuth, (req, res) => {
 
     const item = masterDb.prepare(`SELECT * FROM hq_purchase_items WHERE id = ?`).get(req.params.itemId);
     if (!item) return res.status(404).json({ error: 'Line not found' });
-    if (item.status !== 'PENDING') return res.status(400).json({ error: `Line is already ${item.status}` });
+    if (item.status !== 'AWAITING_GRN') return res.status(400).json({ error: `Line is ${item.status} — only AWAITING_GRN lines can submit a GRN` });
+    if (!isRegistered(item.destination_slug)) return res.status(400).json({ error: `Destination "${item.destination_slug}" no longer registered` });
 
-    const toSlug = item.destination_slug;
-    if (!isRegistered(toSlug)) return res.status(400).json({ error: `Destination "${toSlug}" no longer registered` });
-
-    const toDb = getTenantDb(toSlug);
     const receivedBy = req.user.id || null;
     const receivedByName = req.user.firstName || req.user.email || 'Branch';
 
+    masterDb.prepare(`
+      UPDATE hq_purchase_items
+         SET status = 'GRN_SUBMITTED',
+             received_qty = ?,
+             variance_notes = ?,
+             received_by = ?,
+             received_by_name = ?,
+             received_at = datetime('now')
+       WHERE id = ?
+    `).run(receivedQty, variance_notes || null, receivedBy, receivedByName, req.params.itemId);
+
+    res.json({
+      item: masterDb.prepare(`SELECT * FROM hq_purchase_items WHERE id = ?`).get(req.params.itemId),
+      purchase_status: masterDb.prepare(`SELECT status FROM hq_purchases WHERE id = ?`).get(item.purchase_id)?.status,
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// PUT /api/hq/purchases/items/:itemId/confirm
+// HQ action — accepts the branch's GRN. This is the ONLY place that
+// touches branch stock: products.current_stock bumps + a stock_movement
+// row gets minted (movement_type='hq_receipt'). After this point the
+// supplier AP is committed and can be paid via /hq/suppliers/:id/payments.
+// Body: { confirm_notes? }  (HQ doesn't override the qty — if HQ disagrees
+// with the branch count it rejects instead.)
+router.put('/items/:itemId/confirm', hqAuth, (req, res) => {
+  try {
+    const { confirm_notes } = req.body || {};
+    const item = masterDb.prepare(`SELECT * FROM hq_purchase_items WHERE id = ?`).get(req.params.itemId);
+    if (!item) return res.status(404).json({ error: 'Line not found' });
+    if (item.status !== 'GRN_SUBMITTED') return res.status(400).json({ error: `Line is ${item.status} — only GRN_SUBMITTED lines can be confirmed` });
+
+    const toSlug = item.destination_slug;
+    if (!isRegistered(toSlug)) return res.status(400).json({ error: `Destination "${toSlug}" no longer registered` });
+    const toDb = getTenantDb(toSlug);
+
+    const confirmedBy     = req.user.id || null;
+    const confirmedByName = req.user.firstName || req.user.email || 'HQ';
+    const qty = parseFloat(item.received_qty) || 0;
+
     toDb.transaction(() => {
-      // Find product by sync_id first (preferred — survives renames),
-      // then by name as a fallback. Auto-create with the snapshot if neither.
+      // Find product at branch by sync_id (preferred) then name; auto-
+      // create from the line snapshot if neither matches. Same logic as
+      // the deprecated /receive endpoint — moved here so it only fires
+      // at confirm time (the whole point of the v1.3.0 state machine).
       let prod = toDb.prepare(`
         SELECT id, sync_id, unit, alt_unit, conversion_factor, units_json
-          FROM products
-         WHERE sync_id = ? AND deleted_at IS NULL
+          FROM products WHERE sync_id = ? AND deleted_at IS NULL
       `).get(item.product_sync_id);
       if (!prod) {
         prod = toDb.prepare(`
           SELECT id, sync_id, unit, alt_unit, conversion_factor, units_json
-            FROM products
-           WHERE LOWER(name) = LOWER(?) AND deleted_at IS NULL
-           ORDER BY id ASC LIMIT 1
+            FROM products WHERE LOWER(name) = LOWER(?) AND deleted_at IS NULL
+            ORDER BY id ASC LIMIT 1
         `).get(item.product_name);
       }
       if (!prod) {
@@ -270,9 +362,7 @@ router.put('/items/:itemId/receive', hqAuth, (req, res) => {
         ).get(info.lastInsertRowid);
       }
 
-      // Increment stock (base units) + log movement. movement_type=
-      // 'hq_receipt' makes it easy to filter on Bin Card / reports.
-      const baseQty = receivedQty * conversionToBase(prod, item.unit);
+      const baseQty = qty * conversionToBase(prod, item.unit);
       toDb.prepare(`
         UPDATE products SET current_stock = current_stock + ?,
                             updated_at = datetime('now'),
@@ -288,31 +378,23 @@ router.put('/items/:itemId/receive', hqAuth, (req, res) => {
       `).run(
         prod.id, prod.sync_id, 'sales', 'hq_receipt',
         baseQty, 'hq_purchase', item.sync_id,
-        `HQ Purchase ${item.purchase_sync_id ? '' : ''}${variance_notes ? ' — ' + variance_notes : ''}`.trim() || null,
-        receivedBy,
+        `HQ Purchase confirmed${confirm_notes ? ' — ' + confirm_notes : ''}`,
+        confirmedBy,
         randomUUID(), null, null, null
       );
     })();
 
-    // Update the master line + auto-complete the header if no PENDING left.
     masterDb.prepare(`
       UPDATE hq_purchase_items
-         SET status = 'RECEIVED',
-             received_qty = ?,
-             variance_notes = ?,
-             received_by = ?,
-             received_by_name = ?,
-             received_at = datetime('now')
+         SET status = 'CONFIRMED',
+             confirmed_by = ?,
+             confirmed_by_name = ?,
+             confirmed_at = datetime('now'),
+             confirm_notes = ?
        WHERE id = ?
-    `).run(receivedQty, variance_notes || null, receivedBy, receivedByName, req.params.itemId);
+    `).run(confirmedBy, confirmedByName, confirm_notes || null, req.params.itemId);
 
-    const remaining = masterDb.prepare(`
-      SELECT COUNT(*) AS n FROM hq_purchase_items
-       WHERE purchase_id = ? AND status = 'PENDING'
-    `).get(item.purchase_id).n;
-    if (remaining === 0) {
-      masterDb.prepare(`UPDATE hq_purchases SET status='COMPLETED', updated_at=datetime('now') WHERE id=?`).run(item.purchase_id);
-    }
+    maybeCompleteHeader(item.purchase_id);
 
     res.json({
       item: masterDb.prepare(`SELECT * FROM hq_purchase_items WHERE id = ?`).get(req.params.itemId),
@@ -323,18 +405,49 @@ router.put('/items/:itemId/receive', hqAuth, (req, res) => {
   }
 });
 
-// PUT /api/hq/purchases/items/:itemId/cancel — drop a single PENDING line
-// (operator entered the wrong item, supplier won't deliver this one, etc).
-// Subtracts the line value from the parent's total_amount + auto-promotes
-// the header:
-//   0 PENDING + at least 1 RECEIVED → COMPLETED (everything that was
-//                                                going to land has landed)
-//   0 PENDING + 0 RECEIVED          → CANCELLED (whole thing is dead)
+// PUT /api/hq/purchases/items/:itemId/reject
+// HQ action — pushes a GRN_SUBMITTED line back to the branch for a recount.
+// confirm_notes captures the reason ("recount needed", "supplier delivery
+// note says 8 not 10", etc); branch sees it on their Pending GRN screen.
+router.put('/items/:itemId/reject', hqAuth, (req, res) => {
+  try {
+    const { confirm_notes } = req.body || {};
+    const item = masterDb.prepare(`SELECT * FROM hq_purchase_items WHERE id = ?`).get(req.params.itemId);
+    if (!item) return res.status(404).json({ error: 'Line not found' });
+    if (item.status !== 'GRN_SUBMITTED') return res.status(400).json({ error: `Line is ${item.status} — only GRN_SUBMITTED lines can be rejected` });
+
+    masterDb.prepare(`
+      UPDATE hq_purchase_items
+         SET status = 'AWAITING_GRN',
+             received_qty = NULL,
+             received_by = NULL,
+             received_by_name = NULL,
+             received_at = NULL,
+             confirm_notes = ?
+       WHERE id = ?
+    `).run(confirm_notes || 'Rejected — recount requested', req.params.itemId);
+
+    res.json({
+      item: masterDb.prepare(`SELECT * FROM hq_purchase_items WHERE id = ?`).get(req.params.itemId),
+      purchase_status: masterDb.prepare(`SELECT status FROM hq_purchases WHERE id = ?`).get(item.purchase_id)?.status,
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// PUT /api/hq/purchases/items/:itemId/cancel — drop a single line that
+// hasn't been CONFIRMED yet (AWAITING_GRN or GRN_SUBMITTED — both safe,
+// no branch stock has moved). Confirmed lines can't be cancelled here
+// because they already changed branch stock; you'd need a damages /
+// adjustment flow for that.
 router.put('/items/:itemId/cancel', hqAuth, (req, res) => {
   try {
     const item = masterDb.prepare(`SELECT * FROM hq_purchase_items WHERE id = ?`).get(req.params.itemId);
     if (!item) return res.status(404).json({ error: 'Line not found' });
-    if (item.status !== 'PENDING') return res.status(400).json({ error: `Line is already ${item.status}` });
+    if (!['AWAITING_GRN', 'GRN_SUBMITTED'].includes(item.status)) {
+      return res.status(400).json({ error: `Line is ${item.status} — only un-confirmed lines can be cancelled` });
+    }
 
     masterDb.transaction(() => {
       masterDb.prepare(`
@@ -352,17 +465,7 @@ router.put('/items/:itemId/cancel', hqAuth, (req, res) => {
          WHERE id = ?
       `).run(item.line_total || 0, item.purchase_id);
 
-      const cnt = masterDb.prepare(`
-        SELECT
-          SUM(CASE WHEN status = 'PENDING'   THEN 1 ELSE 0 END) AS pending,
-          SUM(CASE WHEN status = 'RECEIVED'  THEN 1 ELSE 0 END) AS received,
-          SUM(CASE WHEN status = 'CANCELLED' THEN 1 ELSE 0 END) AS cancelled
-          FROM hq_purchase_items WHERE purchase_id = ?
-      `).get(item.purchase_id);
-      if ((cnt.pending || 0) === 0) {
-        const next = (cnt.received || 0) > 0 ? 'COMPLETED' : 'CANCELLED';
-        masterDb.prepare(`UPDATE hq_purchases SET status = ?, updated_at = datetime('now') WHERE id = ?`).run(next, item.purchase_id);
-      }
+      maybeCompleteHeader(item.purchase_id);
     })();
 
     res.json({
@@ -375,9 +478,10 @@ router.put('/items/:itemId/cancel', hqAuth, (req, res) => {
 });
 
 // PUT /api/hq/purchases/:id/cancel — cancel an entire purchase. Rejected
-// if any line has already been received (those lines moved real stock at
-// a branch; the cancellation would need a counter-movement which v1
-// doesn't support). Use the per-line cancel for partial scenarios.
+// if any line has already been CONFIRMED (those lines moved real stock at
+// a branch; cancellation would need a counter-movement which v1.3 doesn't
+// support — use the damages workflow for that). AWAITING_GRN +
+// GRN_SUBMITTED lines flip to CANCELLED in one go.
 router.put('/:id/cancel', hqAuth, (req, res) => {
   try {
     const p = masterDb.prepare(`SELECT * FROM hq_purchases WHERE id = ?`).get(req.params.id);
@@ -385,18 +489,18 @@ router.put('/:id/cancel', hqAuth, (req, res) => {
     if (p.status === 'CANCELLED' || p.status === 'COMPLETED') {
       return res.status(400).json({ error: `Purchase is already ${p.status}` });
     }
-    const received = masterDb.prepare(`
-      SELECT COUNT(*) AS n FROM hq_purchase_items WHERE purchase_id = ? AND status = 'RECEIVED'
+    const confirmed = masterDb.prepare(`
+      SELECT COUNT(*) AS n FROM hq_purchase_items WHERE purchase_id = ? AND status = 'CONFIRMED'
     `).get(req.params.id).n;
-    if (received > 0) {
-      return res.status(400).json({ error: `Cannot cancel — ${received} line(s) already received. Cancel them individually first if you need to.` });
+    if (confirmed > 0) {
+      return res.status(400).json({ error: `Cannot cancel — ${confirmed} line(s) already confirmed (stock at branch). Cancel them individually first if you need to.` });
     }
     masterDb.transaction(() => {
       masterDb.prepare(`
         UPDATE hq_purchase_items
            SET status = 'CANCELLED',
                variance_notes = COALESCE(NULLIF(variance_notes,''), 'Cancelled at HQ')
-         WHERE purchase_id = ? AND status = 'PENDING'
+         WHERE purchase_id = ? AND status IN ('AWAITING_GRN', 'GRN_SUBMITTED')
       `).run(req.params.id);
       masterDb.prepare(`
         UPDATE hq_purchases

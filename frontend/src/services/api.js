@@ -174,7 +174,14 @@ export const getHqPurchases = (params) => api.get('/hq/purchases', { params });
 export const getHqPurchase = (id) => api.get(`/hq/purchases/${id}`);
 export const createHqPurchase = (data) => api.post('/hq/purchases', data);
 export const getHqPurchaseIncoming = (slug) => api.get('/hq/purchases/incoming', { params: { slug } });
-export const receiveHqPurchaseItem = (itemId, data) => api.put(`/hq/purchases/items/${itemId}/receive`, data);
+// v1.3.0 split: branch SUBMITS a GRN (status → GRN_SUBMITTED, no stock yet);
+// HQ then CONFIRMS (stock + AP land) or REJECTS (back to AWAITING_GRN).
+export const submitHqPurchaseGrn   = (itemId, data) => api.put(`/hq/purchases/items/${itemId}/submit-grn`, data);
+export const confirmHqPurchaseItem = (itemId, data) => api.put(`/hq/purchases/items/${itemId}/confirm`, data);
+export const rejectHqPurchaseItem  = (itemId, data) => api.put(`/hq/purchases/items/${itemId}/reject`, data);
+export const getHqGrnAwaitingConfirmation = () => api.get('/hq/purchases/awaiting-confirmation');
+// Legacy alias — older builds still call this; routes to submit-grn now.
+export const receiveHqPurchaseItem = (itemId, data) => api.put(`/hq/purchases/items/${itemId}/submit-grn`, data);
 export const cancelHqPurchaseItem  = (itemId) => api.put(`/hq/purchases/items/${itemId}/cancel`);
 export const cancelHqPurchase      = (id) => api.put(`/hq/purchases/${id}/cancel`);
 

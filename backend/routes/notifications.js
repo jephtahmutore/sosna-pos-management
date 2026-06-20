@@ -34,10 +34,20 @@ function safeCount(fn) { try { return fn() || 0; } catch { return 0; } }
 router.get('/badges', hqAuth, (req, res) => {
   try {
     const slug = String(req.query.slug || '').toLowerCase();
+
+    // hq_pending_grn is HQ-scope (not branch) — returned regardless of
+    // slug so the HQ "Confirm GRN" sidebar entry has its count whether
+    // or not a branch is currently picked.
+    const hqPendingGrn = safeCount(() => masterDb.prepare(
+      `SELECT COUNT(*) AS n FROM hq_purchase_items WHERE status = 'GRN_SUBMITTED'`
+    ).get()?.n);
+
     if (!slug || !isRegistered(slug)) {
-      // Unknown / unregistered slug → all zeros (no error, keeps the
-      // sidebar quiet in HQ-only / no-branch states).
-      return res.json({ cashier_pending: 0, dispatch_pending: 0, incoming_stock: 0, incoming_transfers: 0 });
+      return res.json({
+        cashier_pending: 0, dispatch_pending: 0,
+        incoming_stock: 0, incoming_transfers: 0,
+        hq_pending_grn: hqPendingGrn,
+      });
     }
 
     const db = getTenantDb(slug);
@@ -48,8 +58,11 @@ router.get('/badges', hqAuth, (req, res) => {
       `SELECT COUNT(*) AS n FROM orders WHERE deleted_at IS NULL AND status = 'PAID'`
     ).get()?.n);
 
+    // Branch's "Incoming Stock" badge counts only the AWAITING_GRN rows
+    // (action items for the branch). GRN_SUBMITTED lines are read-only
+    // for the branch until HQ confirms / rejects.
     const incomingStock = safeCount(() => masterDb.prepare(
-      `SELECT COUNT(*) AS n FROM hq_purchase_items WHERE destination_slug = ? AND status = 'PENDING'`
+      `SELECT COUNT(*) AS n FROM hq_purchase_items WHERE destination_slug = ? AND status = 'AWAITING_GRN'`
     ).get(slug)?.n);
 
     const incomingTransfers = safeCount(() => masterDb.prepare(
@@ -61,6 +74,7 @@ router.get('/badges', hqAuth, (req, res) => {
       dispatch_pending:    dispatch,
       incoming_stock:      incomingStock,
       incoming_transfers:  incomingTransfers,
+      hq_pending_grn:      hqPendingGrn,
     });
   } catch (error) {
     res.status(500).json({ error: error.message });

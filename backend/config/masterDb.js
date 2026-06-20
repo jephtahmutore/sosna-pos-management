@@ -192,6 +192,47 @@ try {
     }
   } catch (_) { /* fresh DB — table created above */ }
 
+  // ── v1.3.0 — New procurement state machine ────────────────────────────
+  // Old model: PENDING (HQ-created) → RECEIVED (branch one-click, AP locked).
+  // New model: AWAITING_GRN (HQ-created) → GRN_SUBMITTED (branch enters
+  //            actual qty, no stock change yet) → CONFIRMED (HQ approves,
+  //            now stock decrements at branch + supplier AP locks in).
+  // Reasoning: HQ can't release a GRN because only the branch knows what
+  // physically arrived; HQ then audits + confirms what branch reports.
+  //
+  // Add: confirmed_by / confirmed_by_name / confirmed_at / confirm_notes.
+  // Backfill: any existing 'PENDING' rows → 'AWAITING_GRN'; 'RECEIVED' →
+  // 'CONFIRMED' with confirmed_at stamped from received_at so AP reports
+  // don't lose the date. Idempotent — guarded by column-existence check.
+  try {
+    const piCols = masterDb.prepare(`PRAGMA table_info(hq_purchase_items)`).all().map(c => c.name);
+    const addCol = (col, def) => {
+      if (!piCols.includes(col)) {
+        masterDb.prepare(`ALTER TABLE hq_purchase_items ADD COLUMN ${col} ${def}`).run();
+        piCols.push(col);
+      }
+    };
+    addCol('confirmed_by',      'INTEGER');
+    addCol('confirmed_by_name', 'TEXT');
+    addCol('confirmed_at',      'TEXT');
+    addCol('confirm_notes',     'TEXT');
+    // Status rename — only on rows that still carry the legacy labels.
+    masterDb.prepare(`
+      UPDATE hq_purchase_items SET status = 'AWAITING_GRN'
+       WHERE status = 'PENDING'
+    `).run();
+    masterDb.prepare(`
+      UPDATE hq_purchase_items
+         SET status = 'CONFIRMED',
+             confirmed_by      = COALESCE(confirmed_by, received_by),
+             confirmed_by_name = COALESCE(confirmed_by_name, received_by_name),
+             confirmed_at      = COALESCE(confirmed_at, received_at)
+       WHERE status = 'RECEIVED'
+    `).run();
+  } catch (e) {
+    console.warn('[masterDb] v1.3.0 hq_purchase_items migration:', e.message);
+  }
+
   console.log('[master] Master DB ready:', masterDbPath);
 } catch (e) {
   console.warn('[master] Could not open master DB (Electron mode — VPS-only features disabled):', e.message);
