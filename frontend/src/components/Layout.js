@@ -346,7 +346,7 @@ const Layout = () => {
           )}
 
           {/* Sales Group */}
-          {hasPageAccess('POS', 'SalesReport', 'SalesInventory', 'CashReport', 'SalesBinCard') && (collapsed ? (
+          {hasPageAccess('POS', 'Cashier', 'Dispatch', 'SalesReport', 'SalesInventory', 'CashReport', 'SalesBinCard') && (collapsed ? (
             <div className={`nav-item ${isGroupActive(['/pos']) ? 'active' : ''}`} onClick={() => navigate('/pos')}>
               <FiShoppingCart className="nav-icon" />
             </div>
@@ -366,15 +366,16 @@ const Layout = () => {
                       <FiShoppingCart className="nav-icon" /> <span>{t('pos')}</span>
                     </div>
                   )}
-                  {/* Cashier — only shown when this branch is on the 3-station workflow.
-                      Single-screen branches (lusaka1, mansa1) hide it entirely. */}
-                  {workflowMode === 'three_station' && hasPageAccess('POS') && (
+                  {/* Cashier — only shown when this branch is on the 3-station
+                      workflow AND the user has explicit Cashier permission
+                      (separate from POS so non-cashier staff can't take money). */}
+                  {workflowMode === 'three_station' && hasPageAccess('Cashier') && (
                     <div className={`nav-item ${isActive('/pos/cashier') ? 'active' : ''}`} onClick={() => navigate('/pos/cashier')}>
                       <FiCreditCard className="nav-icon" /> <span>Cashier</span>
                     </div>
                   )}
-                  {/* Dispatch — same gate. Releases goods on PAID orders. */}
-                  {workflowMode === 'three_station' && hasPageAccess('POS') && (
+                  {/* Dispatch — same gate, separate perm. Releases goods on PAID orders. */}
+                  {workflowMode === 'three_station' && hasPageAccess('Dispatch') && (
                     <div className={`nav-item ${isActive('/pos/dispatch') ? 'active' : ''}`} onClick={() => navigate('/pos/dispatch')}>
                       <FiPackage className="nav-icon" /> <span>Dispatch</span>
                     </div>

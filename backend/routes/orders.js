@@ -1,6 +1,6 @@
 const router = require('express').Router();
 const db = require('../config/database');
-const { auth, readOnlyGuard } = require('../middleware/auth');
+const { auth, readOnlyGuard, requirePagePerm } = require('../middleware/auth');
 const syncConfig = require('../config/syncConfig');
 const { randomUUID } = require('crypto');
 const { recalculateDailyProfit } = require('../config/profitHelper');
@@ -35,7 +35,7 @@ router.get('/', auth, readOnlyGuard, (req, res) => {
 // and that are now waiting to be physically released by the Dispatch
 // station. Same FIFO ordering as the Cashier inbox so the oldest order
 // gets handed over first.
-router.get('/dispatch-inbox', auth, readOnlyGuard, (req, res) => {
+router.get('/dispatch-inbox', auth, requirePagePerm('Dispatch'), readOnlyGuard, (req, res) => {
   try {
     const rows = db.prepare(
       `SELECT o.id, o.order_number, o.customer_name, o.total_amount, o.subtotal, o.discount,
@@ -60,7 +60,7 @@ router.get('/dispatch-inbox', auth, readOnlyGuard, (req, res) => {
 // stock_movements rows that the rest of the system (Bin Card, profit, etc.)
 // reads. Also stamps dispatch_user_id + dispatched_at and triggers profit
 // recalc so the day's revenue lines up with the day's COGS.
-router.put('/:id/confirm-dispatch', auth, (req, res) => {
+router.put('/:id/confirm-dispatch', auth, requirePagePerm('Dispatch'), (req, res) => {
   try {
     const result = db.transaction(() => {
       const order = db.prepare('SELECT * FROM orders WHERE id = ? AND deleted_at IS NULL AND tenant_id = ?')
@@ -125,7 +125,7 @@ router.put('/:id/confirm-dispatch', auth, (req, res) => {
 // The Sales station POSTs orders with status='PENDING_PAYMENT'; this endpoint
 // is what the Cashier page polls. Sorted by sales_at ASC so the oldest pending
 // order is processed first (FIFO — fair to the customer who arrived earliest).
-router.get('/cashier-inbox', auth, readOnlyGuard, (req, res) => {
+router.get('/cashier-inbox', auth, requirePagePerm('Cashier'), readOnlyGuard, (req, res) => {
   try {
     const rows = db.prepare(
       `SELECT o.id, o.order_number, o.customer_name, o.total_amount, o.subtotal, o.discount,
@@ -423,7 +423,7 @@ router.get('/:id', auth, readOnlyGuard, (req, res) => {
 // status to 'PAID', stamps cashier_user_id + paid_at. Stock movements are
 // STILL skipped here — they happen at Dispatch (see memory
 // [[project-sosna-stock-deduction-timing]]).
-router.put('/:id/collect-payment', auth, (req, res) => {
+router.put('/:id/collect-payment', auth, requirePagePerm('Cashier'), (req, res) => {
   try {
     const {
       paid_usd, paid_fra, given_usd, given_fra,

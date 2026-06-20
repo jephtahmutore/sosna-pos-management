@@ -242,8 +242,8 @@ function AppRoutes() {
         <Route index element={<DefaultRedirect />} />
         <Route path="dashboard" element={<PermRoute allAccessOnly><Dashboard /></PermRoute>} />
         <Route path="pos" element={<PermRoute perms={['POS','Sales','POS:View','POS:Add','POS:Edit','POS:Delete']}><POS /></PermRoute>} />
-        <Route path="pos/cashier" element={<PermRoute perms={['POS','Sales','POS:View','POS:Add','POS:Edit','POS:Delete']}><Cashier /></PermRoute>} />
-        <Route path="pos/dispatch" element={<PermRoute perms={['POS','Sales','POS:View','POS:Add','POS:Edit','POS:Delete']}><Dispatch /></PermRoute>} />
+        <Route path="pos/cashier"  element={<PermRoute perms={['Cashier','Cashier:View','Cashier:Add','Cashier:Edit','Cashier:Delete']}><Cashier /></PermRoute>} />
+        <Route path="pos/dispatch" element={<PermRoute perms={['Dispatch','Dispatch:View','Dispatch:Add','Dispatch:Edit','Dispatch:Delete']}><Dispatch /></PermRoute>} />
         <Route path="hq/overview"         element={<HqOverview />} />
         <Route path="hq/sales-report"     element={<HqSalesReport />} />
         <Route path="hq/inventory-report" element={<HqInventoryReport />} />

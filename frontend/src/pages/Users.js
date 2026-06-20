@@ -17,6 +17,10 @@ const PAGE_GROUPS = [
     group: 'Sales',
     pages: [
       { key: 'POS',          label: 'POS (Point of Sale)' },
+      // Kassumbalesa 3-station workflow — separate roles per station.
+      // Grant these to users you trust to take money + release goods.
+      { key: 'Cashier',      label: 'Cashier station (3-station)' },
+      { key: 'Dispatch',     label: 'Dispatch station (3-station)' },
       { key: 'SalesReport',  label: 'Sales Report' },
       { key: 'SalesInventory', label: 'Sales Inventory' },
       { key: 'CashReport',   label: 'Cash Report' },

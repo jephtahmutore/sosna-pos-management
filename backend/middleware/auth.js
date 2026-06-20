@@ -1,4 +1,5 @@
 const jwt = require('jsonwebtoken');
+const db = require('../config/database');
 
 const auth = (req, res, next) => {
   try {
@@ -39,4 +40,30 @@ const readOnlyGuard = (req, res, next) => {
   next();
 };
 
-module.exports = { auth, adminOnly, readOnlyGuard };
+// Build a middleware that allows Admins through, or any user whose role
+// matches the page name, or any user whose permissions array carries
+// "<page>" or "<page>:Add"/"<page>:Edit" etc. Looks up perms from the
+// current tenant DB so a permission change takes effect immediately
+// without re-login (the JWT doesn't carry perms).
+function requirePagePerm(page) {
+  return (req, res, next) => {
+    try {
+      if (!req.user) return res.status(401).json({ error: 'Access denied' });
+      if (req.user.role === 'Administrator') return next();
+      // Role name match — e.g. role='Cashier' satisfies the Cashier gate.
+      if (req.user.role === page) return next();
+      // Permission keyword match — admins grant 'Cashier:Add' etc via Users.
+      const u = db.prepare('SELECT permissions FROM users WHERE id = ?').get(req.user.id);
+      let perms = [];
+      try { perms = JSON.parse(u?.permissions || '[]'); } catch { /* ignore */ }
+      if (perms.some(p => p === page || p === `${page}:Add` || p === `${page}:Edit` || p === `${page}:View` || p === `${page}:Delete`)) {
+        return next();
+      }
+      return res.status(403).json({ error: `${page} permission required` });
+    } catch (e) {
+      return res.status(500).json({ error: e.message });
+    }
+  };
+}
+
+module.exports = { auth, adminOnly, readOnlyGuard, requirePagePerm };
