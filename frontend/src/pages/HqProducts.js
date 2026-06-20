@@ -59,10 +59,10 @@ export default function HqProducts() {
   };
 
   const remove = async (row) => {
-    if (!window.confirm(`Deactivate "${row.name}"? Branches will mirror as Inactive but historical data stays.`)) return;
+    if (!window.confirm(`Delete "${row.name}"? The product will disappear from HQ + every branch, the name becomes free for re-use, and historical orders / GRNs that referenced it still render.`)) return;
     try {
       await deleteHqProduct(row.id);
-      flash('Product deactivated.', 'success');
+      flash('Product deleted.', 'success');
       refresh();
     } catch (err) { flash(err?.response?.data?.error || 'Delete failed', 'error'); }
   };

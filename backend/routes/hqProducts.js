@@ -110,8 +110,29 @@ function pushToBranches(hqRow, { overridePrices = false } = {}) {
         } catch (_) {}
       }
 
+      // HQ-side Deleted → soft-delete the matching branch row so it
+      // disappears from Item Details / POS / pickers (their GETs all
+      // filter `deleted_at IS NULL`). Historical orders + GRN lines
+      // reference sync_id, not the row, so they keep rendering fine.
+      if (hqRow.status === 'Deleted') {
+        try {
+          const info = db.prepare(`
+            UPDATE products
+               SET deleted_at = datetime('now'),
+                   updated_at = datetime('now'),
+                   synced = 0
+             WHERE sync_id = ? AND deleted_at IS NULL
+          `).run(hqRow.sync_id);
+          if (info.changes > 0) out.updated += 1;
+          else out.skipped += 1;
+        } catch (e) {
+          out.errors.push({ slug: t.slug, error: e.message });
+        }
+        continue;
+      }
+
       const existing = db.prepare(
-        'SELECT id, cost_price, selling_price FROM products WHERE sync_id = ?'
+        'SELECT id, cost_price, selling_price FROM products WHERE sync_id = ? AND deleted_at IS NULL'
       ).get(hqRow.sync_id);
       if (existing) {
         if (overridePrices) {
@@ -170,14 +191,21 @@ function pushToBranches(hqRow, { overridePrices = false } = {}) {
 }
 
 // GET /api/hq/products?status=Active|Inactive|&q=
+// Deleted rows are excluded by default so the HQ list + branch picker
+// don't show ghost products. Pass ?status=Deleted explicitly to surface
+// them (e.g. for an admin "trash" view later).
 router.get('/', hqAuth, (req, res) => {
   try {
     const status = String(req.query.status || '').trim();
     const q      = String(req.query.q || '').trim().toLowerCase();
     let sql = `SELECT * FROM hq_products WHERE 1=1`;
     const params = [];
-    if (status) { sql += ' AND status = ?'; params.push(status); }
-    if (q)      { sql += ' AND LOWER(name) LIKE ?'; params.push(`%${q}%`); }
+    if (status) {
+      sql += ' AND status = ?'; params.push(status);
+    } else {
+      sql += " AND status != 'Deleted'";
+    }
+    if (q) { sql += ' AND LOWER(name) LIKE ?'; params.push(`%${q}%`); }
     sql += ' ORDER BY name COLLATE NOCASE ASC';
     res.json({ products: masterDb.prepare(sql).all(...params) });
   } catch (error) {
@@ -291,14 +319,18 @@ router.put('/:id', hqAuth, (req, res) => {
   }
 });
 
-// DELETE /api/hq/products/:id — soft delete (status='Inactive'); branches
-// mirror the deactivation. Hard delete is intentionally not exposed —
-// it would orphan branch products with the same sync_id.
+// DELETE /api/hq/products/:id — soft delete (status='Deleted'). The
+// name is FREED for re-use (the CREATE dup check already excludes
+// status='Deleted'). pushToBranches sees the Deleted status and soft-
+// deletes each branch's matching products row via deleted_at — branch
+// list / picker / POS all hide it (their GETs already filter
+// `deleted_at IS NULL`), but historical orders / GRNs that referenced
+// the product keep working because the row + sync_id are preserved.
 router.delete('/:id', hqAuth, (req, res) => {
   try {
     const row = masterDb.prepare(`SELECT * FROM hq_products WHERE id = ?`).get(req.params.id);
     if (!row) return res.status(404).json({ error: 'Product not found' });
-    masterDb.prepare(`UPDATE hq_products SET status = 'Inactive', updated_at = datetime('now') WHERE id = ?`).run(req.params.id);
+    masterDb.prepare(`UPDATE hq_products SET status = 'Deleted', updated_at = datetime('now') WHERE id = ?`).run(req.params.id);
     const updated = masterDb.prepare(`SELECT * FROM hq_products WHERE id = ?`).get(req.params.id);
     pushToBranches(updated);
     res.json({ success: true });
