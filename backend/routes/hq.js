@@ -260,4 +260,98 @@ router.get('/sales-report', hqAuth, (req, res) => {
   }
 });
 
+// GET /api/hq/inventory-report?branch=&low_only=&q=
+// Cross-branch stock list — one row per product per branch. Capped at
+// 2000 rows so a catalog explosion can't blow up the JSON.
+//   branch    — slug or 'all' (default)
+//   low_only  — '1' = only rows where current_stock <= min_stock
+//   q         — substring match on product name (case-insensitive)
+// Returns: per-branch summary (count, value, low-count) + flat rows.
+router.get('/inventory-report', hqAuth, (req, res) => {
+  try {
+    const branch  = (req.query.branch || 'all').toString().toLowerCase();
+    const lowOnly = req.query.low_only === '1' || req.query.low_only === 'true';
+    const q       = (req.query.q || '').toString().trim().toLowerCase();
+    const LIMIT   = Math.min(parseInt(req.query.limit, 10) || 2000, 5000);
+
+    const tenants = listTenants().filter(t => branch === 'all' || t.slug === branch);
+    const rows = [];
+    const byBranch = {};
+
+    for (const t of tenants) {
+      try {
+        const db = getTenantDb(t.slug);
+        const settings = tryGet(db, `SELECT business_name FROM business_settings ORDER BY id ASC LIMIT 1`) || {};
+        const branchName = settings.business_name || t.business_name || t.slug;
+        byBranch[t.slug] = { name: branchName, products: 0, low: 0, stock_value: 0 };
+
+        // Pull active products + category for context.
+        let sql = `
+          SELECT p.id, p.name, p.unit, p.current_stock, p.min_stock,
+                 p.cost_price, p.selling_price, p.status,
+                 c.name AS category_name
+            FROM products p
+            LEFT JOIN categories c ON c.id = p.category_id
+           WHERE p.deleted_at IS NULL`;
+        const params = [];
+        if (lowOnly) sql += ' AND p.current_stock <= p.min_stock';
+        if (q)       { sql += ' AND LOWER(p.name) LIKE ?'; params.push(`%${q}%`); }
+        sql += ' ORDER BY (p.current_stock * p.cost_price) DESC';
+        const products = db.prepare(sql).all(...params);
+
+        for (const p of products) {
+          const stock = parseFloat(p.current_stock || 0);
+          const min   = parseFloat(p.min_stock || 0);
+          const cost  = parseFloat(p.cost_price || 0);
+          const value = stock * cost;
+          const isLow = stock <= min;
+          byBranch[t.slug].products    += 1;
+          byBranch[t.slug].stock_value += value;
+          if (isLow) byBranch[t.slug].low += 1;
+          rows.push({
+            branch_slug: t.slug,
+            branch_name: branchName,
+            product_id:  p.id,
+            name:        p.name,
+            category:    p.category_name || '—',
+            unit:        p.unit || '',
+            current_stock: stock,
+            min_stock:   min,
+            cost_price:  cost,
+            selling_price: parseFloat(p.selling_price || 0),
+            value,
+            low: isLow,
+            status: p.status || 'Active',
+          });
+        }
+      } catch (e) {
+        console.error(`[hq.inventory-report] ${t.slug}:`, e.message);
+      }
+    }
+
+    // Sort combined list by value desc and cap.
+    rows.sort((a, b) => b.value - a.value);
+    const capped = rows.slice(0, LIMIT);
+
+    const rollup = Object.values(byBranch).reduce((acc, b) => {
+      acc.products    += b.products;
+      acc.stock_value += b.stock_value;
+      acc.low         += b.low;
+      return acc;
+    }, { products: 0, stock_value: 0, low: 0 });
+
+    res.json({
+      branch, low_only: lowOnly, q,
+      total_rows: rows.length,
+      returned_rows: capped.length,
+      truncated: rows.length > capped.length,
+      rollup,
+      by_branch: byBranch,
+      rows: capped,
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 module.exports = router;
