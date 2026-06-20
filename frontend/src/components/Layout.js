@@ -11,7 +11,7 @@ import { getDiscountRequestsPendingCount } from '../services/api';
 import { FiGrid, FiShoppingCart, FiPackage, FiFileText, FiDollarSign, FiUsers, FiSettings,
          FiChevronDown, FiLogOut, FiSearch, FiBell, FiMenu, FiDownload, FiUpload, FiList,
          FiBook, FiCreditCard, FiClipboard, FiUser, FiUserPlus, FiSliders, FiGlobe, FiCloud, FiTool,
-         FiCornerDownLeft, FiCornerUpLeft, FiTrendingUp, FiTrendingDown, FiAlertTriangle, FiCheckCircle, FiTag, FiRefreshCw } from 'react-icons/fi';
+         FiCornerDownLeft, FiCornerUpLeft, FiTrendingUp, FiTrendingDown, FiAlertTriangle, FiCheckCircle, FiTag, FiRefreshCw, FiTruck } from 'react-icons/fi';
 
 const LANGUAGES = [
   { code: 'en', label: 'English', flag: '🇬🇧' },
@@ -230,6 +230,7 @@ const Layout = () => {
       '/stock/sales-damages': 'Sales Damages',
       '/stock/inventory': t('inventory'), '/stock/adjustments': t('stockAdjustment'),
       '/stock/categories': 'Categories and Units', '/stock/expiry-report': 'Expiry Report', '/stock/stock-count': 'Stock Count',
+      '/stock/transfers': 'Stock Transfers',
       '/accounting/cash-receipts': t('cashReceipt'), '/accounting/payment-vouchers': t('paymentVoucher'),
       '/accounting/cash-book': t('cashBook'), '/accounting/account-payables': t('accountPayables'),
       '/accounting/account-receivables': 'Account Receivables',
@@ -458,6 +459,13 @@ const Layout = () => {
                   {hasPageAccess('StockCount') && (
                     <div className={`nav-item ${isActive('/stock/stock-count') ? 'active' : ''}`} onClick={() => navigate('/stock/stock-count')}>
                       <FiClipboard className="nav-icon" /> <span>Stock Count</span>
+                    </div>
+                  )}
+                  {/* Stock Transfers — Phase C HQ Warehouse. Universal: works
+                      on every branch (incoming queue) and at HQ (outgoing). */}
+                  {hasPageAccess('Inventory') && (
+                    <div className={`nav-item ${isActive('/stock/transfers') ? 'active' : ''}`} onClick={() => navigate('/stock/transfers')}>
+                      <FiTruck className="nav-icon" /> <span>Stock Transfers</span>
                     </div>
                   )}
                 </div>

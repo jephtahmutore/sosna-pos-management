@@ -15,6 +15,7 @@ import HqOverview from './pages/HqOverview';
 import HqSalesReport from './pages/HqSalesReport';
 import HqInventoryReport from './pages/HqInventoryReport';
 import HqCashPosition from './pages/HqCashPosition';
+import StockTransfers from './pages/StockTransfers';
 import ItemDetails from './pages/ItemDetails';
 import GRN from './pages/GRN';
 import EmptyReturns from './pages/EmptyReturns';
@@ -263,6 +264,7 @@ function AppRoutes() {
         <Route path="stock/sales-returns" element={<Navigate to="/stock/sales-damages" replace />} />
         <Route path="stock/expiry-report" element={<PermRoute perms={['Stock','GRN','ExpiryReport:View']}><ExpiryReport /></PermRoute>} />
         <Route path="stock/stock-count" element={<PermRoute perms={['Stock','StockCount:View','StockCount:Add']}><StockCount /></PermRoute>} />
+        <Route path="stock/transfers"   element={<PermRoute perms={['Stock','GRN','SIV','Inventory:View']}><StockTransfers /></PermRoute>} />
         <Route path="accounting/cash-receipts" element={<PermRoute perms={['Accounting','CashReceipt:View','CashReceipt:Add','CashReceipt:Edit','CashReceipt:Delete']}><CashReceipt /></PermRoute>} />
         <Route path="accounting/payment-vouchers" element={<PermRoute perms={['Accounting','PaymentVoucher:View','PaymentVoucher:Add','PaymentVoucher:Edit','PaymentVoucher:Delete']}><PaymentVoucher /></PermRoute>} />
         <Route path="accounting/cash-book" element={<PermRoute perms={['Accounting','CashBook:View','CashBook:Add','CashBook:Edit','CashBook:Delete']}><CashBook /></PermRoute>} />

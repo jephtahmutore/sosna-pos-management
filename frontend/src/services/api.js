@@ -154,6 +154,17 @@ export const getHqSalesReport = (params) => api.get('/hq/sales-report', { params
 export const getHqInventoryReport = (params) => api.get('/hq/inventory-report', { params });
 // HQ — per-branch cash IN/OUT/Net per method (Cash/Bank/MoMo), today + MTD.
 export const getHqCashPosition = () => api.get('/hq/cash-position');
+
+// Stock Transfers (Phase C — HQ Warehouse). Stored in master.db so source
+// + destination see the same row. Works the same on HQ and on per-branch
+// subdomains; the "current branch" the page operates against is derived
+// from either the HQ X-Branch header (if set) or the host's subdomain.
+export const getTransferSourceProducts = (slug) => api.get('/transfers/source-products', { params: { slug } });
+export const getOutgoingTransfers = (params) => api.get('/transfers/outgoing', { params });
+export const getIncomingTransfers = (params) => api.get('/transfers/incoming', { params });
+export const createTransfer = (data) => api.post('/transfers', data);
+export const receiveTransfer = (id) => api.put(`/transfers/${id}/receive`);
+export const cancelTransfer = (id) => api.put(`/transfers/${id}/cancel`);
 export const reverseOrderItem = (orderId, itemId, quantity, unit) => {
   const body = {};
   if (quantity != null) body.quantity = quantity;

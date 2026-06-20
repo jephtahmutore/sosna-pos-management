@@ -81,6 +81,7 @@ app.use('/api/sync',             require('./routes/sync'));
 app.use('/api/updates',          require('./routes/updates'));
 app.use('/api/tenant-admin',     require('./routes/tenantAdmin'));
 app.use('/api/hq',               require('./routes/hq'));
+app.use('/api/transfers',        require('./routes/transfers'));
 app.use('/admin',                require('./routes/admin'));
 
 app.get('/api/health', (req, res) => {

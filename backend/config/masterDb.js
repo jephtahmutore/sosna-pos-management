@@ -51,6 +51,38 @@ try {
       slug        TEXT,
       created_at  TEXT NOT NULL DEFAULT (datetime('now'))
     );
+
+    -- ── Phase C: cross-branch stock transfers ───────────────────────────
+    -- Lives in master.db (not in per-branch DBs) so source and destination
+    -- both read/write the same row without cross-DB queries. The items
+    -- payload is a JSON array on the row itself:
+    --   [{ product_sync_id, product_name, unit, quantity, cost_price }, ...]
+    -- status state machine:
+    --   PENDING   — source created + decremented its stock; in transit
+    --   RECEIVED  — destination confirmed + incremented its stock
+    --   CANCELLED — source aborted before destination received
+    CREATE TABLE IF NOT EXISTS stock_transfers (
+      id              INTEGER PRIMARY KEY AUTOINCREMENT,
+      transfer_number TEXT NOT NULL UNIQUE,
+      sync_id         TEXT NOT NULL UNIQUE,
+      from_slug       TEXT NOT NULL,
+      from_name       TEXT,
+      to_slug         TEXT NOT NULL,
+      to_name         TEXT,
+      items_json      TEXT NOT NULL,
+      total_items     INTEGER NOT NULL DEFAULT 0,
+      total_value     REAL NOT NULL DEFAULT 0,
+      notes           TEXT,
+      status          TEXT NOT NULL DEFAULT 'PENDING',
+      created_by      INTEGER,
+      created_by_name TEXT,
+      created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+      received_by     INTEGER,
+      received_by_name TEXT,
+      received_at     TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_transfers_to_status   ON stock_transfers (to_slug, status);
+    CREATE INDEX IF NOT EXISTS idx_transfers_from_status ON stock_transfers (from_slug, status);
   `);
 
   console.log('[master] Master DB ready:', masterDbPath);
@@ -171,4 +203,8 @@ module.exports = {
   getLicense, createLicense, activateLicense, updateLicense, listLicenses, getLicenseStats,
   registerBranch, getBranchesForTenant,
   masterDb,
+  // Re-export the masterDb instance under a more obvious name for the
+  // transfer routes, which need to read/write the stock_transfers table
+  // directly without going through per-tenant routing.
+  getMasterDb: () => masterDb,
 };
