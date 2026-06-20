@@ -165,6 +165,16 @@ export const getIncomingTransfers = (params) => api.get('/transfers/incoming', {
 export const createTransfer = (data) => api.post('/transfers', data);
 export const receiveTransfer = (id) => api.put(`/transfers/${id}/receive`);
 export const cancelTransfer = (id) => api.put(`/transfers/${id}/cancel`);
+
+// HQ Purchases — Phase C v2: supplier purchases logged at HQ with
+// per-line destination branch. HQ has no warehouse / no source stock.
+// Branch confirms with actual received qty; stock arrives in branch DB
+// only on receive (auto-creates product if missing by sync_id or name).
+export const getHqPurchases = (params) => api.get('/hq/purchases', { params });
+export const getHqPurchase = (id) => api.get(`/hq/purchases/${id}`);
+export const createHqPurchase = (data) => api.post('/hq/purchases', data);
+export const getHqPurchaseIncoming = (slug) => api.get('/hq/purchases/incoming', { params: { slug } });
+export const receiveHqPurchaseItem = (itemId, data) => api.put(`/hq/purchases/items/${itemId}/receive`, data);
 export const reverseOrderItem = (orderId, itemId, quantity, unit) => {
   const body = {};
   if (quantity != null) body.quantity = quantity;

@@ -83,6 +83,60 @@ try {
     );
     CREATE INDEX IF NOT EXISTS idx_transfers_to_status   ON stock_transfers (to_slug, status);
     CREATE INDEX IF NOT EXISTS idx_transfers_from_status ON stock_transfers (from_slug, status);
+
+    -- ── Phase C: HQ Purchase Receipts (no warehouse, drop-ship to branch) ──
+    -- HQ has no physical stock — every supplier purchase is logged here
+    -- with PER-LINE destination_slug. Branches see lines targeted at them
+    -- in their "Incoming Stock" queue and confirm with actual_received_qty.
+    -- On confirm, the branch's tenant DB gets a stock_movement (+) and a
+    -- products.current_stock increment (auto-creating the product if it
+    -- doesn't exist yet, matched by sync_id, fallback to name).
+    --
+    -- AP at HQ: total_amount accumulates supplier debt at the HQ level.
+    -- Variance (dispatched_qty vs received_qty) is captured per line; HQ
+    -- can chase the supplier or write off the gap later.
+    --
+    -- A header row stays OPEN until every line is RECEIVED (or CANCELLED);
+    -- then it auto-promotes to COMPLETED so HQ can filter the list.
+    CREATE TABLE IF NOT EXISTS hq_purchases (
+      id              INTEGER PRIMARY KEY AUTOINCREMENT,
+      purchase_number TEXT NOT NULL UNIQUE,
+      sync_id         TEXT NOT NULL UNIQUE,
+      supplier_name   TEXT,
+      invoice_number  TEXT,
+      date            TEXT NOT NULL,
+      total_amount    REAL NOT NULL DEFAULT 0,
+      notes           TEXT,
+      status          TEXT NOT NULL DEFAULT 'OPEN',
+      created_by      INTEGER,
+      created_by_name TEXT,
+      created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS hq_purchase_items (
+      id                INTEGER PRIMARY KEY AUTOINCREMENT,
+      purchase_id       INTEGER NOT NULL REFERENCES hq_purchases(id),
+      purchase_sync_id  TEXT NOT NULL,
+      sync_id           TEXT NOT NULL UNIQUE,
+      product_sync_id   TEXT NOT NULL,
+      product_name      TEXT NOT NULL,
+      unit              TEXT,
+      dispatched_qty    REAL NOT NULL,
+      cost_price        REAL NOT NULL DEFAULT 0,
+      line_total        REAL NOT NULL DEFAULT 0,
+      destination_slug  TEXT NOT NULL,
+      destination_name  TEXT,
+      received_qty      REAL,
+      status            TEXT NOT NULL DEFAULT 'PENDING',  -- PENDING | RECEIVED | CANCELLED
+      variance_notes    TEXT,
+      received_by       INTEGER,
+      received_by_name  TEXT,
+      received_at       TEXT,
+      created_at        TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_hq_pi_dest_status ON hq_purchase_items (destination_slug, status);
+    CREATE INDEX IF NOT EXISTS idx_hq_pi_purchase   ON hq_purchase_items (purchase_id);
   `);
 
   console.log('[master] Master DB ready:', masterDbPath);

@@ -11,7 +11,7 @@ import { getDiscountRequestsPendingCount } from '../services/api';
 import { FiGrid, FiShoppingCart, FiPackage, FiFileText, FiDollarSign, FiUsers, FiSettings,
          FiChevronDown, FiLogOut, FiSearch, FiBell, FiMenu, FiDownload, FiUpload, FiList,
          FiBook, FiCreditCard, FiClipboard, FiUser, FiUserPlus, FiSliders, FiGlobe, FiCloud, FiTool,
-         FiCornerDownLeft, FiCornerUpLeft, FiTrendingUp, FiTrendingDown, FiAlertTriangle, FiCheckCircle, FiTag, FiRefreshCw, FiTruck } from 'react-icons/fi';
+         FiCornerDownLeft, FiCornerUpLeft, FiTrendingUp, FiTrendingDown, FiAlertTriangle, FiCheckCircle, FiTag, FiRefreshCw, FiTruck, FiInbox } from 'react-icons/fi';
 
 const LANGUAGES = [
   { code: 'en', label: 'English', flag: '🇬🇧' },
@@ -226,11 +226,13 @@ const Layout = () => {
       '/hq/sales-report': 'HQ Sales Report',
       '/hq/inventory-report': 'HQ Inventory Report',
       '/hq/cash-position': 'HQ Cash Position',
+      '/hq/purchases': 'HQ Purchases',
+      '/stock/incoming': 'Incoming Stock',
       '/stock/items': t('itemDetails'), '/stock/grn': t('grn'), '/stock/siv': t('siv'),
       '/stock/sales-damages': 'Sales Damages',
       '/stock/inventory': t('inventory'), '/stock/adjustments': t('stockAdjustment'),
       '/stock/categories': 'Categories and Units', '/stock/expiry-report': 'Expiry Report', '/stock/stock-count': 'Stock Count',
-      '/stock/transfers': 'Stock Transfers',
+      '/stock/transfers': 'Inter-Branch Transfers',
       '/accounting/cash-receipts': t('cashReceipt'), '/accounting/payment-vouchers': t('paymentVoucher'),
       '/accounting/cash-book': t('cashBook'), '/accounting/account-payables': t('accountPayables'),
       '/accounting/account-receivables': 'Account Receivables',
@@ -315,6 +317,15 @@ const Layout = () => {
             <div className={`nav-item ${isActive('/hq/cash-position') ? 'active' : ''}`} onClick={() => navigate('/hq/cash-position')}>
               <FiDollarSign className="nav-icon" />
               {!collapsed && <span>HQ Cash Position</span>}
+            </div>
+          )}
+          {/* HQ Purchases — procurement entry point. HQ has no warehouse;
+              each line carries its own destination_slug and the destination
+              branch confirms with actual received qty. */}
+          {hq && (
+            <div className={`nav-item ${isActive('/hq/purchases') ? 'active' : ''}`} onClick={() => navigate('/hq/purchases')}>
+              <FiClipboard className="nav-icon" />
+              {!collapsed && <span>HQ Purchases</span>}
             </div>
           )}
 
@@ -461,11 +472,19 @@ const Layout = () => {
                       <FiClipboard className="nav-icon" /> <span>Stock Count</span>
                     </div>
                   )}
-                  {/* Stock Transfers — Phase C HQ Warehouse. Universal: works
-                      on every branch (incoming queue) and at HQ (outgoing). */}
+                  {/* Incoming Stock — HQ Purchases waiting for branch confirmation.
+                      Universal: every branch has its own queue (filtered server-side
+                      by destination_slug). */}
+                  {hasPageAccess('Inventory') && (
+                    <div className={`nav-item ${isActive('/stock/incoming') ? 'active' : ''}`} onClick={() => navigate('/stock/incoming')}>
+                      <FiInbox className="nav-icon" /> <span>Incoming Stock</span>
+                    </div>
+                  )}
+                  {/* Stock Transfers — Inter-branch (Mansa surplus → Lusaka shortage).
+                      Different from HQ Purchases: source stock IS decremented here. */}
                   {hasPageAccess('Inventory') && (
                     <div className={`nav-item ${isActive('/stock/transfers') ? 'active' : ''}`} onClick={() => navigate('/stock/transfers')}>
-                      <FiTruck className="nav-icon" /> <span>Stock Transfers</span>
+                      <FiTruck className="nav-icon" /> <span>Inter-Branch Transfers</span>
                     </div>
                   )}
                 </div>
