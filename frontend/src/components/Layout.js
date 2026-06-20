@@ -5,7 +5,7 @@ import { Outlet, useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { useLanguage } from '../context/LanguageContext';
 import { useCurrency } from '../context/CurrencyContext';
-import { isHqHost, getHqBranch, setHqBranch, getHqBranches } from '../services/api';
+import { isHqHost, getHqBranch, setHqBranch, getHqBranches, getNotificationBadges } from '../services/api';
 import SyncStatus from './SyncStatus';
 import { getDiscountRequestsPendingCount } from '../services/api';
 import { FiGrid, FiShoppingCart, FiPackage, FiFileText, FiDollarSign, FiUsers, FiSettings,
@@ -44,6 +44,27 @@ const Layout = () => {
     if (!hq) return;
     getHqBranches().then(r => setHqBranches(r.data?.branches || [])).catch(() => {});
   }, [hq]);
+  // Sidebar badge counts for the current branch (Cashier / Dispatch
+  // pending + Incoming Stock from HQ + Incoming Inter-Branch Transfers).
+  // Derives slug the same way StockTransfers / IncomingStock do: HQ
+  // X-Branch when on bare sosnazm.com, else host's first subdomain.
+  const [badges, setBadges] = useState({ cashier_pending: 0, dispatch_pending: 0, incoming_stock: 0, incoming_transfers: 0 });
+  useEffect(() => {
+    let cancelled = false;
+    const slug = hq ? (currentHqBranch || '') : (typeof window !== 'undefined' ? window.location.hostname.split('.')[0] : '');
+    if (!slug || !user) return undefined;
+    const tick = async () => {
+      try {
+        const r = await getNotificationBadges(slug);
+        if (!cancelled) setBadges(r.data || badges);
+      } catch (_) { /* keep last value on transient errors */ }
+    };
+    tick();
+    const id = setInterval(tick, 30_000);
+    return () => { cancelled = true; clearInterval(id); };
+  // eslint-disable-next-line
+  }, [hq, currentHqBranch, user?.id]);
+
   const switchHqBranch = (slug) => {
     if (!slug || slug === currentHqBranch) return;
     const target = hqBranches.find(b => b.slug === slug);
@@ -372,12 +393,14 @@ const Layout = () => {
                   {workflowMode === 'three_station' && hasPageAccess('Cashier') && (
                     <div className={`nav-item ${isActive('/pos/cashier') ? 'active' : ''}`} onClick={() => navigate('/pos/cashier')}>
                       <FiCreditCard className="nav-icon" /> <span>Cashier</span>
+                      {badges.cashier_pending > 0 && <SidebarBadge n={badges.cashier_pending} />}
                     </div>
                   )}
                   {/* Dispatch — same gate, separate perm. Releases goods on PAID orders. */}
                   {workflowMode === 'three_station' && hasPageAccess('Dispatch') && (
                     <div className={`nav-item ${isActive('/pos/dispatch') ? 'active' : ''}`} onClick={() => navigate('/pos/dispatch')}>
                       <FiPackage className="nav-icon" /> <span>Dispatch</span>
+                      {badges.dispatch_pending > 0 && <SidebarBadge n={badges.dispatch_pending} />}
                     </div>
                   )}
                   {hasPageAccess('SalesReport') && (
@@ -487,6 +510,7 @@ const Layout = () => {
                   {hasPageAccess('Inventory') && (
                     <div className={`nav-item ${isActive('/stock/incoming') ? 'active' : ''}`} onClick={() => navigate('/stock/incoming')}>
                       <FiInbox className="nav-icon" /> <span>Incoming Stock</span>
+                      {badges.incoming_stock > 0 && <SidebarBadge n={badges.incoming_stock} />}
                     </div>
                   )}
                   {/* Stock Transfers — Inter-branch (Mansa surplus → Lusaka shortage).
@@ -494,6 +518,7 @@ const Layout = () => {
                   {hasPageAccess('Inventory') && (
                     <div className={`nav-item ${isActive('/stock/transfers') ? 'active' : ''}`} onClick={() => navigate('/stock/transfers')}>
                       <FiTruck className="nav-icon" /> <span>Inter-Branch Transfers</span>
+                      {badges.incoming_transfers > 0 && <SidebarBadge n={badges.incoming_transfers} />}
                     </div>
                   )}
                 </div>
@@ -787,5 +812,22 @@ const Layout = () => {
     </div>
   );
 };
+
+// Tiny red pill rendered to the right of a sidebar entry when there's
+// pending work. Numbers >99 collapse to "99+" so the pill stays compact.
+function SidebarBadge({ n }) {
+  const label = n > 99 ? '99+' : String(n);
+  return (
+    <span style={{
+      marginLeft: 'auto',
+      background: '#dc2626', color: '#fff',
+      fontSize: 10, fontWeight: 800,
+      minWidth: 18, height: 18, padding: '0 5px',
+      borderRadius: 9, display: 'inline-flex',
+      alignItems: 'center', justifyContent: 'center',
+      lineHeight: 1,
+    }}>{label}</span>
+  );
+}
 
 export default Layout;

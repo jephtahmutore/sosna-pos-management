@@ -178,6 +178,10 @@ export const receiveHqPurchaseItem = (itemId, data) => api.put(`/hq/purchases/it
 export const cancelHqPurchaseItem  = (itemId) => api.put(`/hq/purchases/items/${itemId}/cancel`);
 export const cancelHqPurchase      = (id) => api.put(`/hq/purchases/${id}/cancel`);
 
+// Sidebar badge counts — one cheap call covers cashier / dispatch /
+// incoming stock / incoming transfers for the current branch.
+export const getNotificationBadges = (slug) => api.get('/notifications/badges', { params: { slug } });
+
 // HQ Suppliers + AP — supplier master with live AP balance computed
 // from purchases - payments (never stored).
 export const getHqSuppliers = () => api.get('/hq/suppliers');
