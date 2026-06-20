@@ -21,20 +21,19 @@ body {
 }
 
 :root {
-  /* Sosna theme — Premium Distribution (Option A).
-     Emerald primary + gold accent + warm cream surfaces. Status colors
-     (green / red / yellow) stay as-is so success / danger / warning
-     stay semantically obvious. Toggle this block to switch palettes
-     wholesale without touching individual components. */
-  --primary: #065F46;        /* deep emerald */
-  --primary-dark: #022C22;   /* near-black emerald */
-  --primary-light: #D1FAE5;  /* light mint */
-  --accent: #D97706;         /* gold */
-  --accent-dark: #92400E;    /* burnt amber */
+  /* Sosna theme — Industrial Logistics (Option B).
+     Slate navy primary + amber accent + neutral grey surfaces.
+     Status colors (green / red / yellow) stay as-is. Toggle this
+     block to switch palettes wholesale. */
+  --primary: #1E293B;        /* slate navy */
+  --primary-dark: #0F172A;   /* near-black navy */
+  --primary-light: #E2E8F0;  /* light slate */
+  --accent: #F59E0B;         /* amber */
+  --accent-dark: #B45309;    /* burnt amber */
   --accent-light: #FEF3C7;   /* cream */
-  --sidebar-bg: #022C22;
-  --sidebar-hover: #064E3B;
-  --sidebar-active: rgba(217,119,6,0.18);
+  --sidebar-bg: #0F172A;
+  --sidebar-hover: #1E293B;
+  --sidebar-active: rgba(245,158,11,0.20);
   --white: #ffffff;
   --gray-50: #f9fafb;
   --gray-100: #f3f4f6;
@@ -70,18 +69,17 @@ body {
   overflow: hidden;
 }
 
-/* Sidebar — emerald gradient. The bottom is near-black so the version
-   pill + logout button keep enough contrast at the foot of the sidebar. */
+/* Sidebar — slate navy gradient. Industrial / dispatch feel. */
 .sidebar {
   width: 220px;
-  background: linear-gradient(180deg, #064E3B 0%, #022C22 50%, #021712 100%);
+  background: linear-gradient(180deg, #1E293B 0%, #0F172A 50%, #020617 100%);
   color: white;
   display: flex;
   flex-direction: column;
   overflow-y: auto;
   transition: width 0.3s;
   z-index: 100;
-  box-shadow: 4px 0 24px rgba(2, 23, 18, 0.4);
+  box-shadow: 4px 0 24px rgba(2, 6, 23, 0.4);
 }
 
 .sidebar.collapsed {
@@ -1058,14 +1056,14 @@ body {
   align-items: center;
   justify-content: center;
   gap: 8px;
-  box-shadow: 0 4px 14px rgba(6, 95, 70, 0.35);
+  box-shadow: 0 4px 14px rgba(15, 23, 42, 0.4);
   transition: all 0.15s;
   letter-spacing: 0.3px;
 }
 
 .cart-actions .btn-checkout:hover:not(:disabled) {
   transform: translateY(-1px);
-  box-shadow: 0 6px 18px rgba(6, 95, 70, 0.45);
+  box-shadow: 0 6px 18px rgba(15, 23, 42, 0.5);
 }
 
 .cart-actions .btn-checkout:disabled {
@@ -1512,18 +1510,17 @@ body {
 .text-orange { color: var(--orange); }
 .font-bold { font-weight: 700; }
 
-/* Login page — Premium Distribution: deep emerald with gold accent
-   blob top-left, near-black bottom-right. Same shape as before so the
-   .login-card glass effect still reads. */
+/* Login page — Industrial Logistics: slate navy with amber accent blob.
+   Same overlay shape as Option A so the .login-card glass still reads. */
 .login-page {
   min-height: 100vh;
   display: flex;
   align-items: center;
   justify-content: center;
   background:
-    radial-gradient(ellipse 60% 70% at top left, rgba(217, 119, 6, 0.35), transparent 60%),
-    radial-gradient(ellipse 55% 65% at bottom right, rgba(2, 23, 18, 0.85), transparent 55%),
-    linear-gradient(135deg, #021712 0%, #022C22 45%, #065F46 100%);
+    radial-gradient(ellipse 60% 70% at top left, rgba(245, 158, 11, 0.32), transparent 60%),
+    radial-gradient(ellipse 55% 65% at bottom right, rgba(2, 6, 23, 0.85), transparent 55%),
+    linear-gradient(135deg, #020617 0%, #0F172A 45%, #1E293B 100%);
   position: relative;
   overflow: hidden;
   padding: 24px;
@@ -1540,12 +1537,12 @@ body {
 }
 .login-page::before {
   width: 420px; height: 420px;
-  background: #D97706; /* gold accent blob */
+  background: #F59E0B; /* amber accent blob */
   top: -120px; left: -100px;
 }
 .login-page::after {
   width: 520px; height: 520px;
-  background: #021712;
+  background: #020617;
   bottom: -180px; right: -160px;
 }
 
@@ -1574,8 +1571,8 @@ body {
 .login-logo {
   width: 84px;
   height: 84px;
-  background: linear-gradient(135deg, #065F46 0%, #022C22 100%);
-  color: #FEF3C7; /* cream */
+  background: linear-gradient(135deg, #1E293B 0%, #0F172A 100%);
+  color: #F59E0B; /* amber */
   border-radius: 22px;
   display: flex;
   align-items: center;
@@ -1583,8 +1580,8 @@ body {
   font-size: 40px;
   margin: 0 auto 22px;
   box-shadow:
-    0 14px 32px rgba(6, 95, 70, 0.55),
-    inset 0 0 0 1px rgba(217, 119, 6, 0.4),
+    0 14px 32px rgba(15, 23, 42, 0.55),
+    inset 0 0 0 1px rgba(245, 158, 11, 0.45),
     inset 0 -3px 8px rgba(0, 0, 0, 0.25);
   transform: rotate(-4deg);
   transition: transform 0.3s ease;
