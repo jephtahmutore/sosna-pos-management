@@ -4,12 +4,13 @@
 // confirms with actual received qty in their Incoming Stock queue.
 import React, { useEffect, useMemo, useState } from 'react';
 import {
-  FiRefreshCw, FiPlus, FiPackage, FiTrash2, FiEye, FiXCircle,
+  FiRefreshCw, FiPlus, FiPackage, FiTrash2, FiEye, FiXCircle, FiPrinter,
 } from 'react-icons/fi';
 import {
   getHqBranches, getHqPurchases, getHqPurchase, createHqPurchase, getHqSuppliers,
   cancelHqPurchaseItem, cancelHqPurchase,
 } from '../services/api';
+import printHtml from '../utils/printHtml';
 
 const fmtMoney = (n) => `$${parseFloat(n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 const fmtInt   = (n) => parseFloat(n || 0).toLocaleString();
@@ -380,6 +381,10 @@ function DetailModal({ data, onClose, onChanged, flash }) {
             <div style={{ fontSize: 12, color: '#64748b' }}>{data.supplier_name || 'Supplier —'} · Invoice {data.invoice_number || '—'} · {data.date}</div>
           </div>
           <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            <button onClick={() => printHtml(renderPurchaseDocket(data))}
+              style={{ padding: '6px 12px', background: '#0ea5e9', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer', fontWeight: 600, fontSize: 12, display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+              <FiPrinter size={12} /> Print Docket
+            </button>
             {headerCancellable && (
               <button onClick={doWholeCancel}
                 style={{ padding: '6px 12px', background: '#fff', color: '#b91c1c', border: '1px solid #fecaca', borderRadius: 6, cursor: 'pointer', fontWeight: 600, fontSize: 12, display: 'inline-flex', alignItems: 'center', gap: 4 }}>
@@ -455,6 +460,93 @@ function Pill({ label, value }) {
       <div style={{ fontSize: 13, color: '#0f172a', marginTop: 2 }}>{value}</div>
     </div>
   );
+}
+
+// A4-style dispatch docket — handed to the supplier driver so they know
+// which branch each line drops at. Items grouped by destination_slug
+// with per-destination subtotals. Routed through the same printHtml
+// util (iframe + print dialog on desktop, PDF on mobile).
+function renderPurchaseDocket(p) {
+  const fmt = (n) => `$${parseFloat(n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  // Bucket lines by destination so the driver can hand-off cleanly.
+  const groups = {};
+  for (const it of (p.items || [])) {
+    const key = it.destination_slug;
+    if (!groups[key]) groups[key] = { name: it.destination_name || key, items: [], subtotal: 0 };
+    groups[key].items.push(it);
+    groups[key].subtotal += (parseFloat(it.line_total) || 0);
+  }
+  const groupHtml = Object.entries(groups).map(([slug, g]) => `
+    <div style="margin-top:14px;">
+      <div style="background:#f1f5f9;padding:6px 10px;border-radius:4px;font-size:13px;font-weight:700;">
+        → ${escapeHtml(g.name)} <span style="color:#64748b;font-weight:500;">(${escapeHtml(slug)})</span>
+      </div>
+      <table style="width:100%;border-collapse:collapse;font-size:12px;margin-top:6px;">
+        <thead><tr style="background:#fff;border-bottom:1px solid #e2e8f0;">
+          <th style="text-align:left;padding:6px;">Product</th>
+          <th style="text-align:left;padding:6px;width:60px;">Unit</th>
+          <th style="text-align:right;padding:6px;width:80px;">Qty</th>
+          <th style="text-align:right;padding:6px;width:90px;">Cost</th>
+          <th style="text-align:right;padding:6px;width:100px;">Line Total</th>
+        </tr></thead>
+        <tbody>
+          ${g.items.map(it => `<tr style="border-bottom:1px dashed #e2e8f0;">
+            <td style="padding:6px;">${escapeHtml(it.product_name)}</td>
+            <td style="padding:6px;">${escapeHtml(it.unit || '')}</td>
+            <td style="text-align:right;padding:6px;">${parseFloat(it.dispatched_qty).toFixed(2)}</td>
+            <td style="text-align:right;padding:6px;">${fmt(it.cost_price)}</td>
+            <td style="text-align:right;padding:6px;font-weight:700;">${fmt(it.line_total)}</td>
+          </tr>`).join('')}
+          <tr style="background:#f8fafc;">
+            <td colspan="4" style="padding:6px;text-align:right;font-weight:700;">Subtotal — ${escapeHtml(g.name)}</td>
+            <td style="padding:6px;text-align:right;font-weight:800;">${fmt(g.subtotal)}</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  `).join('');
+
+  return `<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><title>${escapeHtml(p.purchase_number || 'purchase')}-docket</title>
+<style>
+  @page { size: A4; margin: 12mm; }
+  body { margin: 0; font-family: 'Helvetica Neue', Arial, sans-serif; color: #0f172a; }
+  h1 { margin: 0 0 4px 0; font-size: 20px; }
+  .muted { color: #64748b; font-size: 12px; }
+  .meta-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 14px; margin: 14px 0 6px 0; font-size: 13px; }
+  .meta-grid div span:first-child { color: #64748b; display: inline-block; min-width: 100px; }
+  .total-box { margin-top: 18px; padding: 12px 14px; background: #0f172a; color: #fff; border-radius: 6px; display: flex; justify-content: space-between; align-items: center; font-size: 16px; }
+  .signoff { margin-top: 28px; display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 24px; font-size: 11px; color: #64748b; }
+  .signoff > div { border-top: 1px solid #94a3b8; padding-top: 4px; }
+</style>
+</head>
+<body>
+  <h1>HQ Purchase Docket</h1>
+  <div class="muted">Sosna · ${escapeHtml(p.purchase_number || '')}</div>
+  <div class="meta-grid">
+    <div><span>Supplier:</span><strong>${escapeHtml(p.supplier_name || '—')}</strong></div>
+    <div><span>Invoice #:</span><strong>${escapeHtml(p.invoice_number || '—')}</strong></div>
+    <div><span>Date:</span><strong>${escapeHtml(p.date || '')}</strong></div>
+    <div><span>Logged by:</span><strong>${escapeHtml(p.created_by_name || '—')}</strong></div>
+  </div>
+  ${p.notes ? `<div style="margin-top:8px;padding:8px 10px;background:#fffbeb;border:1px solid #fde68a;border-radius:4px;font-size:12px;">${escapeHtml(p.notes)}</div>` : ''}
+  ${groupHtml || '<p class="muted">No items.</p>'}
+  <div class="total-box">
+    <span>PURCHASE TOTAL</span>
+    <span>${fmt(p.total_amount)}</span>
+  </div>
+  <div class="signoff">
+    <div>Loaded by (HQ)</div>
+    <div>Driver / collector</div>
+    <div>Received by (branch)</div>
+  </div>
+</body></html>`;
+}
+
+function escapeHtml(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 
 const overlay = { position: 'fixed', inset: 0, background: 'rgba(15,23,42,0.6)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 200, padding: 16 };
