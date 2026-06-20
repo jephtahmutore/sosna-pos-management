@@ -256,6 +256,7 @@ const Layout = () => {
       '/hq/sales-report': 'HQ Sales Report',
       '/hq/inventory-report': 'HQ Inventory Report',
       '/hq/cash-position': 'HQ Cash Position',
+      '/hq/products': 'HQ Products',
       '/hq/purchases': 'HQ Purchases',
       '/hq/confirm-grn': 'Confirm GRN',
       '/hq/confirm-damages': 'Confirm Damages',
@@ -350,6 +351,15 @@ const Layout = () => {
             <div className={`nav-item ${isActive('/hq/cash-position') ? 'active' : ''}`} onClick={() => navigate('/hq/cash-position')}>
               <FiDollarSign className="nav-icon" />
               {!collapsed && <span>HQ Cash Position</span>}
+            </div>
+          )}
+          {/* HQ Products — master catalogue. Pushed to every branch's
+              products table on save; branches keep their own selling
+              price unless HQ ticks "force-push prices". */}
+          {hq && (
+            <div className={`nav-item ${isActive('/hq/products') ? 'active' : ''}`} onClick={() => navigate('/hq/products')}>
+              <FiPackage className="nav-icon" />
+              {!collapsed && <span>HQ Products</span>}
             </div>
           )}
           {/* HQ Purchases — procurement entry point. HQ logs the supplier

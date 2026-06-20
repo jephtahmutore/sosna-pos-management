@@ -204,6 +204,19 @@ export const deleteHqSupplierPayment = (paymentId) => api.delete(`/hq/suppliers/
 export const getHqDamagesAwaiting = () => api.get('/hq/damages/awaiting');
 export const confirmHqDamage = (slug, id, data) => api.put(`/hq/damages/${slug}/${id}/confirm`, data || {});
 export const rejectHqDamage  = (slug, id, data) => api.put(`/hq/damages/${slug}/${id}/reject`,  data || {});
+
+// HQ Products — central catalogue. HQ creates → auto-pushed to every
+// branch (matched by sync_id). Branches keep their own selling price;
+// pass override_prices=true on PUT to force-push HQ defaults onto
+// branches that already had the product.
+export const getHqProducts = (params) => api.get('/hq/products', { params });
+export const getHqProduct  = (id) => api.get(`/hq/products/${id}`);
+export const createHqProduct = (data) => api.post('/hq/products', data);
+export const updateHqProduct = (id, data, overridePrices = false) =>
+  api.put(`/hq/products/${id}` + (overridePrices ? '?override_prices=1' : ''), data);
+export const deleteHqProduct = (id) => api.delete(`/hq/products/${id}`);
+export const pushHqProduct   = (id, overridePrices = false) =>
+  api.post(`/hq/products/${id}/push`, { override_prices: overridePrices });
 export const reverseOrderItem = (orderId, itemId, quantity, unit) => {
   const body = {};
   if (quantity != null) body.quantity = quantity;

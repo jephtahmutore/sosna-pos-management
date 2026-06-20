@@ -84,6 +84,7 @@ app.use('/api/hq',               require('./routes/hq'));
 app.use('/api/hq/purchases',     require('./routes/hqPurchases'));
 app.use('/api/hq/suppliers',     require('./routes/hqSuppliers'));
 app.use('/api/hq/damages',       require('./routes/hqDamages'));
+app.use('/api/hq/products',      require('./routes/hqProducts'));
 app.use('/api/transfers',        require('./routes/transfers'));
 app.use('/api/notifications',    require('./routes/notifications'));
 app.use('/admin',                require('./routes/admin'));

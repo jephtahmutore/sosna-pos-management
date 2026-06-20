@@ -192,6 +192,43 @@ try {
     }
   } catch (_) { /* fresh DB — table created above */ }
 
+  // ── v1.3.3 — HQ Product Master ────────────────────────────────────────
+  // HQ owns the canonical catalogue. When HQ creates a product we INSERT
+  // a copy into every registered branch's `products` table using the
+  // SAME sync_id so the linkage is automatic + survives renames. Per-
+  // branch selling_price stays branch-owned (HQ default fills only on
+  // first insert; subsequent HQ edits won't overwrite a branch's
+  // override unless ?override_prices=1 is passed).
+  try {
+    masterDb.exec(`
+      CREATE TABLE IF NOT EXISTS hq_products (
+        id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+        sync_id               TEXT UNIQUE NOT NULL,
+        code                  TEXT,
+        name                  TEXT NOT NULL,
+        category_name         TEXT,
+        main_category_name    TEXT,
+        unit                  TEXT NOT NULL DEFAULT 'pcs',
+        default_cost_price    REAL NOT NULL DEFAULT 0,
+        default_selling_price REAL NOT NULL DEFAULT 0,
+        min_stock             REAL NOT NULL DEFAULT 0,
+        units_json            TEXT,
+        status                TEXT NOT NULL DEFAULT 'Active',
+        product_type          TEXT NOT NULL DEFAULT 'finished',
+        image_url             TEXT,
+        notes                 TEXT,
+        created_by            INTEGER,
+        created_by_name       TEXT,
+        created_at            TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at            TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_hq_products_name ON hq_products(name COLLATE NOCASE);
+      CREATE INDEX IF NOT EXISTS idx_hq_products_status ON hq_products(status);
+    `);
+  } catch (e) {
+    console.warn('[masterDb] v1.3.3 hq_products migration:', e.message);
+  }
+
   // ── v1.3.0 — New procurement state machine ────────────────────────────
   // Old model: PENDING (HQ-created) → RECEIVED (branch one-click, AP locked).
   // New model: AWAITING_GRN (HQ-created) → GRN_SUBMITTED (branch enters

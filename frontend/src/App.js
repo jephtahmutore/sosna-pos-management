@@ -20,6 +20,7 @@ import HqPurchases from './pages/HqPurchases';
 import HqSuppliers from './pages/HqSuppliers';
 import HqConfirmGrn from './pages/HqConfirmGrn';
 import HqConfirmDamages from './pages/HqConfirmDamages';
+import HqProducts from './pages/HqProducts';
 import IncomingStock from './pages/IncomingStock';
 import ItemDetails from './pages/ItemDetails';
 import GRN from './pages/GRN';
@@ -253,6 +254,7 @@ function AppRoutes() {
         <Route path="hq/purchases"        element={<HqPurchases />} />
         <Route path="hq/confirm-grn"      element={<HqConfirmGrn />} />
         <Route path="hq/confirm-damages"  element={<HqConfirmDamages />} />
+        <Route path="hq/products"         element={<HqProducts />} />
         <Route path="hq/suppliers"        element={<HqSuppliers />} />
         <Route path="pos/sales-report" element={<PermRoute perms={['Sales','Reports','SalesReport:View','SalesReport:Add','SalesReport:Edit','SalesReport:Delete']}><SalesReport /></PermRoute>} />
         <Route path="pos/sales-inventory" element={<PermRoute perms={['Sales','Reports','SalesInventory:View','SalesInventory:Add','SalesInventory:Edit','SalesInventory:Delete']}><SalesInventory /></PermRoute>} />

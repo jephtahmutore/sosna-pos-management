@@ -8,7 +8,7 @@ import {
 } from 'react-icons/fi';
 import {
   getHqBranches, getHqPurchases, getHqPurchase, createHqPurchase, getHqSuppliers,
-  cancelHqPurchaseItem, cancelHqPurchase,
+  cancelHqPurchaseItem, cancelHqPurchase, getHqProducts,
 } from '../services/api';
 import printHtml from '../utils/printHtml';
 
@@ -185,14 +185,21 @@ function CreatePurchaseModal({ branches, onClose, onCreated, onError }) {
   const [items, setItems]       = useState([newItem(branches[0]?.slug || '')]);
   const [submitting, setSubmitting] = useState(false);
 
+  const [hqProducts, setHqProducts] = useState([]);
   useEffect(() => {
     getHqSuppliers()
       .then(r => setSuppliers(r.data?.suppliers || []))
       .catch(() => {});
+    // Pre-load Active HQ master products for the line picker. Falls back
+    // to free-text input if the list is empty (fresh install with no
+    // catalogue yet).
+    getHqProducts({ status: 'Active' })
+      .then(r => setHqProducts(r.data?.products || []))
+      .catch(() => {});
   }, []);
 
   function newItem(defaultSlug = '') {
-    return { product_name: '', unit: 'pcs', dispatched_qty: '', cost_price: '', destination_slug: defaultSlug };
+    return { product_sync_id: '', product_name: '', unit: 'pcs', dispatched_qty: '', cost_price: '', destination_slug: defaultSlug };
   }
 
   const updateItem = (i, field, value) => {
@@ -210,6 +217,7 @@ function CreatePurchaseModal({ branches, onClose, onCreated, onError }) {
   const submit = async () => {
     const clean = items
       .map(it => ({
+        product_sync_id:  (it.product_sync_id || '').trim(),
         product_name:     (it.product_name || '').trim(),
         unit:             it.unit || null,
         dispatched_qty:   parseFloat(it.dispatched_qty) || 0,
@@ -291,7 +299,45 @@ function CreatePurchaseModal({ branches, onClose, onCreated, onError }) {
                   const lineTotal = (parseFloat(it.dispatched_qty) || 0) * (parseFloat(it.cost_price) || 0);
                   return (
                     <tr key={i} style={{ borderTop: '1px solid #f1f5f9' }}>
-                      <td style={tdS}><input type="text" value={it.product_name} onChange={e => updateItem(i, 'product_name', e.target.value)} placeholder="Product name" style={cellInp} /></td>
+                      <td style={tdS}>
+                        {hqProducts.length > 0 ? (
+                          <select
+                            value={it.product_name}
+                            onChange={e => {
+                              const picked = hqProducts.find(p => p.name === e.target.value);
+                              if (picked) {
+                                // Atomic update so HQ master sync_id rides
+                                // through to the line — that's what makes the
+                                // branch line auto-match its existing
+                                // products.sync_id at GRN-confirm time
+                                // (no duplicate product gets auto-created).
+                                setItems(arr => arr.map((row, idx) => idx === i ? {
+                                  ...row,
+                                  product_sync_id: picked.sync_id,
+                                  product_name:    picked.name,
+                                  unit:            picked.unit || 'pcs',
+                                  cost_price:      String(picked.default_cost_price || 0),
+                                } : row));
+                              } else {
+                                setItems(arr => arr.map((row, idx) => idx === i ? {
+                                  ...row,
+                                  product_sync_id: '',
+                                  product_name:    e.target.value,
+                                } : row));
+                              }
+                            }}
+                            style={cellInp}>
+                            <option value="">— pick from HQ master —</option>
+                            {hqProducts.map(p => (
+                              <option key={p.id} value={p.name}>
+                                {p.name}{p.code ? ` (${p.code})` : ''}
+                              </option>
+                            ))}
+                          </select>
+                        ) : (
+                          <input type="text" value={it.product_name} onChange={e => updateItem(i, 'product_name', e.target.value)} placeholder="Product name" style={cellInp} />
+                        )}
+                      </td>
                       <td style={tdS}><input type="text" value={it.unit} onChange={e => updateItem(i, 'unit', e.target.value)} style={cellInp} /></td>
                       <td style={tdS}><input type="number" min="0" step="any" value={it.dispatched_qty} onChange={e => updateItem(i, 'dispatched_qty', e.target.value)} style={{ ...cellInp, textAlign: 'right' }} /></td>
                       <td style={tdS}><input type="number" min="0" step="any" value={it.cost_price} onChange={e => updateItem(i, 'cost_price', e.target.value)} style={{ ...cellInp, textAlign: 'right' }} /></td>
