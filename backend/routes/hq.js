@@ -358,4 +358,142 @@ router.get('/inventory-report', hqAuth, (req, res) => {
   }
 });
 
+// GET /api/hq/cash-position
+// Per-branch + rollup cash movement per method (Cash / Bank / MoMo) for
+// today and month-to-date. Built from the same primary sources the
+// per-branch Cash Report reads: orders (POS receipts), customer_payments
+// (AR collected), cash_receipts (manual CR), payment_vouchers (manual
+// PV), ap_payments (supplier paid).
+//
+//   Cash IN  = orders.cash_received + cash_receipts.cash_amount
+//              + customer_payments.cash_amount
+//   Cash OUT = payment_vouchers.cash_amount + ap_payments.cash_amount
+//   Net      = IN - OUT      (same shape for bank_amount + momo_amount)
+//
+// All sums use COALESCE so old rows without the split columns drop to 0
+// instead of NULLing the whole reduce.
+router.get('/cash-position', hqAuth, (req, res) => {
+  try {
+    const todayPrefix = new Date().toISOString().slice(0, 10);
+    const monthPrefix = todayPrefix.slice(0, 7);
+    const tenants = listTenants();
+
+    const sumIn = (db, datePrefix, span) => {
+      const wherePref = span === 'today' ? `= ?` : `LIKE ? || '%'`;
+      const dateArg   = span === 'today' ? datePrefix : datePrefix;
+      const param     = (col) => `substr(COALESCE(${col}, ''), 1, ${span === 'today' ? 10 : 7}) ${wherePref}`;
+      // Each subquery filters by its own date column then sums the per-method splits.
+      const row = tryGet(db, `
+        SELECT
+          (SELECT COALESCE(SUM(cash_received), 0)
+             FROM orders
+            WHERE deleted_at IS NULL
+              AND (status IS NULL OR status IN ('PAID','DISPATCHED'))
+              AND ${param('paid_at')}) AS sales_cash,
+          (SELECT COALESCE(SUM(momo_received), 0)
+             FROM orders
+            WHERE deleted_at IS NULL
+              AND (status IS NULL OR status IN ('PAID','DISPATCHED'))
+              AND ${param('paid_at')}) AS sales_momo,
+          (SELECT COALESCE(SUM(bank_received), 0)
+             FROM orders
+            WHERE deleted_at IS NULL
+              AND (status IS NULL OR status IN ('PAID','DISPATCHED'))
+              AND ${param('paid_at')}) AS sales_bank,
+          (SELECT COALESCE(SUM(cash_amount), 0)
+             FROM cash_receipts
+            WHERE deleted_at IS NULL AND ${param('date')}) AS cr_cash,
+          (SELECT COALESCE(SUM(bank_amount), 0)
+             FROM cash_receipts
+            WHERE deleted_at IS NULL AND ${param('date')}) AS cr_bank,
+          (SELECT COALESCE(SUM(momo_amount), 0)
+             FROM cash_receipts
+            WHERE deleted_at IS NULL AND ${param('date')}) AS cr_momo,
+          (SELECT COALESCE(SUM(cash_amount), 0)
+             FROM customer_payments
+            WHERE deleted_at IS NULL AND ${param('payment_date')}) AS cp_cash,
+          (SELECT COALESCE(SUM(bank_amount), 0)
+             FROM customer_payments
+            WHERE deleted_at IS NULL AND ${param('payment_date')}) AS cp_bank,
+          (SELECT COALESCE(SUM(momo_amount), 0)
+             FROM customer_payments
+            WHERE deleted_at IS NULL AND ${param('payment_date')}) AS cp_momo
+      `, [dateArg, dateArg, dateArg, dateArg, dateArg, dateArg, dateArg, dateArg, dateArg]);
+      const r = row || {};
+      return {
+        cash: (r.sales_cash || 0) + (r.cr_cash || 0) + (r.cp_cash || 0),
+        bank: (r.sales_bank || 0) + (r.cr_bank || 0) + (r.cp_bank || 0),
+        momo: (r.sales_momo || 0) + (r.cr_momo || 0) + (r.cp_momo || 0),
+      };
+    };
+
+    const sumOut = (db, datePrefix, span) => {
+      const param = (col) => `substr(COALESCE(${col}, ''), 1, ${span === 'today' ? 10 : 7}) = ?`;
+      const row = tryGet(db, `
+        SELECT
+          (SELECT COALESCE(SUM(cash_amount), 0) FROM payment_vouchers WHERE deleted_at IS NULL AND ${param('date')}) AS pv_cash,
+          (SELECT COALESCE(SUM(bank_amount), 0) FROM payment_vouchers WHERE deleted_at IS NULL AND ${param('date')}) AS pv_bank,
+          (SELECT COALESCE(SUM(momo_amount), 0) FROM payment_vouchers WHERE deleted_at IS NULL AND ${param('date')}) AS pv_momo,
+          (SELECT COALESCE(SUM(cash_amount), 0) FROM ap_payments WHERE deleted_at IS NULL AND ${param('date')}) AS ap_cash,
+          (SELECT COALESCE(SUM(bank_amount), 0) FROM ap_payments WHERE deleted_at IS NULL AND ${param('date')}) AS ap_bank,
+          (SELECT COALESCE(SUM(momo_amount), 0) FROM ap_payments WHERE deleted_at IS NULL AND ${param('date')}) AS ap_momo
+      `, [datePrefix, datePrefix, datePrefix, datePrefix, datePrefix, datePrefix]);
+      const r = row || {};
+      return {
+        cash: (r.pv_cash || 0) + (r.ap_cash || 0),
+        bank: (r.pv_bank || 0) + (r.ap_bank || 0),
+        momo: (r.pv_momo || 0) + (r.ap_momo || 0),
+      };
+    };
+
+    const branches = [];
+    for (const t of tenants) {
+      try {
+        const db = getTenantDb(t.slug);
+        const settings = tryGet(db, `SELECT business_name FROM business_settings ORDER BY id ASC LIMIT 1`) || {};
+        const todayIn  = sumIn(db,  todayPrefix, 'today');
+        const todayOut = sumOut(db, todayPrefix, 'today');
+        const mtdIn    = sumIn(db,  monthPrefix, 'mtd');
+        const mtdOut   = sumOut(db, monthPrefix, 'mtd');
+        branches.push({
+          slug: t.slug,
+          name: settings.business_name || t.business_name || t.slug,
+          today: {
+            in:  todayIn,
+            out: todayOut,
+            net: { cash: todayIn.cash - todayOut.cash, bank: todayIn.bank - todayOut.bank, momo: todayIn.momo - todayOut.momo },
+          },
+          mtd: {
+            in:  mtdIn,
+            out: mtdOut,
+            net: { cash: mtdIn.cash - mtdOut.cash, bank: mtdIn.bank - mtdOut.bank, momo: mtdIn.momo - mtdOut.momo },
+          },
+        });
+      } catch (e) {
+        branches.push({ slug: t.slug, name: t.business_name || t.slug, error: e.message });
+      }
+    }
+
+    // Rollup — sums across all branches per period per direction per method.
+    const rollup = branches.reduce((acc, b) => {
+      if (b.error) return acc;
+      for (const period of ['today', 'mtd']) {
+        for (const dir of ['in', 'out', 'net']) {
+          for (const method of ['cash', 'bank', 'momo']) {
+            acc[period][dir][method] += b[period][dir][method];
+          }
+        }
+      }
+      return acc;
+    }, {
+      today: { in: { cash:0, bank:0, momo:0 }, out: { cash:0, bank:0, momo:0 }, net: { cash:0, bank:0, momo:0 } },
+      mtd:   { in: { cash:0, bank:0, momo:0 }, out: { cash:0, bank:0, momo:0 }, net: { cash:0, bank:0, momo:0 } },
+    });
+
+    res.json({ as_of: new Date().toISOString(), branches, rollup });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 module.exports = router;

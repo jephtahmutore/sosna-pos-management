@@ -225,6 +225,7 @@ const Layout = () => {
       '/hq/overview': 'HQ Overview',
       '/hq/sales-report': 'HQ Sales Report',
       '/hq/inventory-report': 'HQ Inventory Report',
+      '/hq/cash-position': 'HQ Cash Position',
       '/stock/items': t('itemDetails'), '/stock/grn': t('grn'), '/stock/siv': t('siv'),
       '/stock/sales-damages': 'Sales Damages',
       '/stock/inventory': t('inventory'), '/stock/adjustments': t('stockAdjustment'),
@@ -307,6 +308,12 @@ const Layout = () => {
             <div className={`nav-item ${isActive('/hq/inventory-report') ? 'active' : ''}`} onClick={() => navigate('/hq/inventory-report')}>
               <FiPackage className="nav-icon" />
               {!collapsed && <span>HQ Inventory</span>}
+            </div>
+          )}
+          {hq && (
+            <div className={`nav-item ${isActive('/hq/cash-position') ? 'active' : ''}`} onClick={() => navigate('/hq/cash-position')}>
+              <FiDollarSign className="nav-icon" />
+              {!collapsed && <span>HQ Cash Position</span>}
             </div>
           )}
 

@@ -152,6 +152,8 @@ export const getHqOverview = () => api.get('/hq/overview');
 export const getHqSalesReport = (params) => api.get('/hq/sales-report', { params });
 // HQ — cross-branch stock list. Filters: branch, low_only, q (name search).
 export const getHqInventoryReport = (params) => api.get('/hq/inventory-report', { params });
+// HQ — per-branch cash IN/OUT/Net per method (Cash/Bank/MoMo), today + MTD.
+export const getHqCashPosition = () => api.get('/hq/cash-position');
 export const reverseOrderItem = (orderId, itemId, quantity, unit) => {
   const body = {};
   if (quantity != null) body.quantity = quantity;
