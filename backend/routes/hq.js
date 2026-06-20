@@ -199,10 +199,14 @@ router.get('/sales-report', hqAuth, (req, res) => {
         const settings = tryGet(db, `SELECT business_name FROM business_settings ORDER BY id ASC LIMIT 1`) || {};
         const branchName = settings.business_name || t.business_name || t.slug;
 
+        // Every column from `orders` must be prefixed with `o.` — id, status,
+        // and created_at all collide with users columns, and better-sqlite3
+        // throws "ambiguous column name" on the unprefixed form (vanilla
+        // sqlite CLI silently picks one, which is what hid this in dev).
         const orders = db.prepare(`
-          SELECT id, order_number, customer_name, total_amount, amount_received,
-                 change_amount, payment_method, status, currency,
-                 created_at, paid_at, dispatched_at,
+          SELECT o.id, o.order_number, o.customer_name, o.total_amount, o.amount_received,
+                 o.change_amount, o.payment_method, o.status, o.currency,
+                 o.created_at, o.paid_at, o.dispatched_at,
                  TRIM(COALESCE(u.first_name,'') || ' ' || COALESCE(u.last_name,'')) AS created_by_name
             FROM orders o
             LEFT JOIN users u ON u.id = o.created_by
