@@ -7,10 +7,40 @@ const api = axios.create({
   headers: { 'Content-Type': 'application/json' }
 });
 
-// Add token to requests
+// HQ mode = the React app is being served from the bare sosnazm.com (or
+// localhost in dev) where there's no per-tenant subdomain. The branch
+// is chosen by the user via a sidebar dropdown / login picker and
+// stored in localStorage as 'hq.branch'. Every API call adds an
+// X-Branch header so the backend routes to the right tenant DB
+// (see backend/middleware/tenant.js — HQ branch-switch).
+export const HQ_HOSTS = new Set(['sosnazm.com', 'www.sosnazm.com', 'localhost', '127.0.0.1']);
+export const isHqHost = () => {
+  try { return HQ_HOSTS.has(window.location.hostname); }
+  catch { return false; }
+};
+export const HQ_BRANCH_KEY = 'hq.branch';
+export const getHqBranch = () => {
+  try { return localStorage.getItem(HQ_BRANCH_KEY) || ''; }
+  catch { return ''; }
+};
+export const setHqBranch = (slug) => {
+  try {
+    if (slug) localStorage.setItem(HQ_BRANCH_KEY, slug);
+    else localStorage.removeItem(HQ_BRANCH_KEY);
+  } catch { /* ignore */ }
+};
+
+// Add token + HQ branch header to requests
 api.interceptors.request.use((config) => {
   const token = localStorage.getItem('token');
   if (token) config.headers.Authorization = `Bearer ${token}`;
+  // Only attach X-Branch when we're on the bare HQ host; sending it from
+  // a real per-branch subdomain would be ignored by the backend, but
+  // there's no reason to emit a header we don't need.
+  if (isHqHost()) {
+    const br = getHqBranch();
+    if (br) config.headers['X-Branch'] = br;
+  }
   return config;
 });
 
@@ -111,6 +141,9 @@ export const getCashierInbox = () => api.get('/orders/cashier-inbox');
 export const collectOrderPayment = (id, data) => api.put(`/orders/${id}/collect-payment`, data);
 export const getDispatchInbox = () => api.get('/orders/dispatch-inbox');
 export const confirmDispatch = (id) => api.put(`/orders/${id}/confirm-dispatch`);
+
+// HQ — public list of registered branches for the login + sidebar picker.
+export const getHqBranches = () => api.get('/hq/branches');
 export const reverseOrderItem = (orderId, itemId, quantity, unit) => {
   const body = {};
   if (quantity != null) body.quantity = quantity;

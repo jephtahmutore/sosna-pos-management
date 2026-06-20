@@ -8,6 +8,17 @@ const auth = (req, res, next) => {
     }
     const decoded = jwt.verify(token, process.env.JWT_SECRET || 'sosna-pro-secret-key-2026');
     req.user = decoded;
+    // HQ branch-switch override: the JWT was issued from whichever branch
+    // the user originally logged into, but the request may target a
+    // DIFFERENT branch via X-Branch. tenant middleware already opened
+    // the right DB; here we swap the tenantId on req.user so every WHERE
+    // clause downstream (WHERE tenant_id = ?) filters by the operating
+    // branch, not the original one. Roles/permissions still come from
+    // the JWT — caller is responsible for keeping the same admin user
+    // configured across branches if cross-branch operation is desired.
+    if (req.hqBranchTenantId) {
+      req.user = { ...decoded, tenantId: req.hqBranchTenantId };
+    }
     next();
   } catch (error) {
     res.status(401).json({ error: 'Invalid token.' });

@@ -5,6 +5,7 @@ import { Outlet, useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { useLanguage } from '../context/LanguageContext';
 import { useCurrency } from '../context/CurrencyContext';
+import { isHqHost, getHqBranch, setHqBranch, getHqBranches } from '../services/api';
 import SyncStatus from './SyncStatus';
 import { getDiscountRequestsPendingCount } from '../services/api';
 import { FiGrid, FiShoppingCart, FiPackage, FiFileText, FiDollarSign, FiUsers, FiSettings,
@@ -33,6 +34,27 @@ const Layout = () => {
   const { language, changeLanguage, t } = useLanguage();
   // 3-station gate — only kassumbalesa1 sees the Cashier sidebar entry.
   const { workflowMode } = useCurrency();
+  // HQ branch selector — only when the React app is served from the bare
+  // sosnazm.com host. On real per-branch subdomains hq=false and the
+  // dropdown stays hidden (the host already pins the tenant).
+  const hq = isHqHost();
+  const [hqBranches, setHqBranches] = useState([]);
+  const [currentHqBranch, setCurrentHqBranch] = useState(() => getHqBranch());
+  useEffect(() => {
+    if (!hq) return;
+    getHqBranches().then(r => setHqBranches(r.data?.branches || [])).catch(() => {});
+  }, [hq]);
+  const switchHqBranch = (slug) => {
+    if (!slug || slug === currentHqBranch) return;
+    const target = hqBranches.find(b => b.slug === slug);
+    const label = target ? `${target.name} (${slug})` : slug;
+    if (!window.confirm(`Switch HQ to ${label}? You'll be signed out and asked to sign in again to that branch.`)) return;
+    setHqBranch(slug);
+    setCurrentHqBranch(slug);
+    // Clear auth so the login screen re-runs against the new branch's DB.
+    try { localStorage.removeItem('token'); localStorage.removeItem('user'); } catch (_) {}
+    window.location.href = '/login';
+  };
   const navigate = useNavigate();
   const location = useLocation();
   const [collapsed, setCollapsed] = useState(false);
@@ -230,11 +252,37 @@ const Layout = () => {
           <div className="sidebar-logo">🍷</div>
           {!collapsed && (
             <div className="sidebar-brand">
-              <h2>Sosna</h2>
-              <p>Management System</p>
+              <h2>Sosna{hq ? ' HQ' : ''}</h2>
+              <p>{hq ? 'Head Office' : 'Management System'}</p>
             </div>
           )}
         </div>
+
+        {/* HQ branch selector — visible only when serving from bare sosnazm.com.
+            Switching forces a re-login against the chosen branch (see
+            switchHqBranch above). Hidden when sidebar is collapsed. */}
+        {hq && !collapsed && (
+          <div style={{ padding: '8px 12px 4px', borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
+            <label style={{ display: 'block', fontSize: 10, color: 'rgba(255,255,255,0.55)', textTransform: 'uppercase', letterSpacing: 0.6, marginBottom: 4 }}>
+              Active Branch
+            </label>
+            <select value={currentHqBranch}
+              onChange={e => switchHqBranch(e.target.value)}
+              style={{
+                width: '100%', padding: '7px 10px',
+                background: 'rgba(255,255,255,0.08)', color: '#fff',
+                border: '1px solid rgba(255,255,255,0.15)', borderRadius: 6,
+                fontSize: 13, fontWeight: 600, outline: 'none',
+              }}>
+              {!currentHqBranch && <option value="">— pick a branch —</option>}
+              {hqBranches.map(b => (
+                <option key={b.slug} value={b.slug} style={{ color: '#0f172a' }}>
+                  {b.name} ({b.slug})
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
 
         <nav className="sidebar-nav">
           {/* Dashboard — only for All access users */}
