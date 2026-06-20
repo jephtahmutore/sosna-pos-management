@@ -278,7 +278,7 @@ const Layout = () => {
       {/* Sidebar */}
       <div className={`sidebar ${collapsed ? 'collapsed' : ''} ${mobileOpen ? 'mobile-open' : ''}`}>
         <div className="sidebar-header">
-          <div className="sidebar-logo">🍷</div>
+          <div className="sidebar-logo">🍾</div>
           {!collapsed && (
             <div className="sidebar-brand">
               <h2>Sosna{hq ? ' HQ' : ''}</h2>
@@ -699,6 +699,16 @@ const Layout = () => {
 
       {/* Main Content */}
       <div className="main-content">
+        {/* HQ amber stripe — unmistakable "you are in HQ mode" cue. Only
+            rendered on the bare sosnazm.com host; branch subdomains never
+            show it. Thin 3px bar so it doesn't steal real estate. */}
+        {hq && (
+          <div style={{
+            height: 3,
+            background: 'linear-gradient(90deg, #D97706 0%, #F59E0B 50%, #D97706 100%)',
+            boxShadow: '0 1px 4px rgba(217,119,6,0.4)',
+          }} />
+        )}
         {/* Top Header */}
         <div className="top-header">
           <div className="top-header-left">

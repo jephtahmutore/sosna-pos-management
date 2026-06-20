@@ -54,9 +54,9 @@ const Login = () => {
     <div className="login-page">
       <div className="login-card">
         <div className="login-header">
-          <div className="login-logo">🍷</div>
+          <div className="login-logo">🍾</div>
           <h1>Sosna{hq ? ' HQ' : ''}</h1>
-          <p>{hq ? 'Head Office — pick a branch to manage' : 'Management System'}</p>
+          <p>{hq ? 'Head Office — pick a branch to manage' : 'Distribution Management'}</p>
         </div>
         {error && <div className="login-error">{error}</div>}
         <form className="login-form" onSubmit={handleSubmit}>
