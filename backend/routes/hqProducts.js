@@ -52,16 +52,41 @@ function pushToBranches(hqRow, { overridePrices = false } = {}) {
       // sync_config so the row is visible + scoped correctly. branch_id
       // similarly read so the device_filter on later reports doesn't drop
       // these rows. v1.3.4 hotfix for v1.3.3.
+      // Discover the branch's tenant_id in order of reliability:
+      //   1. sync_config['tenant_id']                    (preferred)
+      //   2. Any existing products row's non-empty tenant_id
+      //   3. business_settings.tenant_id
+      // None of the three? Leave null and skip the INSERT below — the
+      // row would be invisible to GET /products anyway (it filters by
+      // p.tenant_id = req.user.tenantId).
       let branchTenantId = null;
       let branchBranchId = null;
       try {
         const tRow = db.prepare("SELECT value FROM sync_config WHERE key = 'tenant_id'").get();
         if (tRow?.value) branchTenantId = tRow.value;
-      } catch (_) { /* fresh DB without sync_config yet — leave null */ }
+      } catch (_) { /* fresh DB without sync_config yet */ }
+      if (!branchTenantId) {
+        try {
+          const r = db.prepare("SELECT tenant_id FROM products WHERE tenant_id IS NOT NULL AND tenant_id != '' LIMIT 1").get();
+          if (r?.tenant_id) branchTenantId = r.tenant_id;
+        } catch (_) {}
+      }
+      if (!branchTenantId) {
+        try {
+          const r = db.prepare("SELECT tenant_id FROM business_settings WHERE tenant_id IS NOT NULL AND tenant_id != '' LIMIT 1").get();
+          if (r?.tenant_id) branchTenantId = r.tenant_id;
+        } catch (_) {}
+      }
       try {
         const bRow = db.prepare("SELECT value FROM sync_config WHERE key = 'branch_id'").get();
         if (bRow?.value) branchBranchId = bRow.value;
       } catch (_) { /* fine */ }
+      if (!branchBranchId) {
+        try {
+          const r = db.prepare("SELECT branch_id FROM products WHERE branch_id IS NOT NULL AND branch_id != '' LIMIT 1").get();
+          if (r?.branch_id) branchBranchId = r.branch_id;
+        } catch (_) {}
+      }
 
       // Backfill any orphan v1.3.3 row first (tenant_id NULL from the
       // bug) so it becomes visible to the branch's GET /api/products
