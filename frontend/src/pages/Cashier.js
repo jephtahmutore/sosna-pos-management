@@ -21,7 +21,10 @@ import {
   getCashierInbox,
   getOrder,
   collectOrderPayment,
+  getSettings,
 } from '../services/api';
+import { useAuth } from '../context/AuthContext';
+import printHtml from '../utils/printHtml';
 
 const SELL_RATE = 2900;
 const BUY_RATE  = 2600;
@@ -30,6 +33,7 @@ const fmtUSD = (n) => `$${parseFloat(n || 0).toFixed(2)}`;
 const fmtFRA = (n) => Math.round(parseFloat(n || 0)).toLocaleString('en-US');
 
 export default function Cashier() {
+  const { user } = useAuth();
   const [inbox, setInbox] = useState([]);
   const [loadingInbox, setLoadingInbox] = useState(false);
   const [selected, setSelected] = useState(null);
@@ -41,6 +45,20 @@ export default function Cashier() {
   const [confirm, setConfirm] = useState(null);   // { ...calc }
   const [submitting, setSubmitting] = useState(false);
   const [toast, setToast] = useState(null);
+  // Business header info for the printed receipt — fetched once on mount,
+  // same pattern POS.js uses for its sales receipt.
+  const [biz, setBiz] = useState({ name: 'SOSNA', phone: '', address: '' });
+
+  useEffect(() => {
+    getSettings().then(r => {
+      const b = r.data?.business || {};
+      setBiz({
+        name:    b.business_name    || 'SOSNA',
+        phone:   b.business_phone   || '',
+        address: b.business_address || '',
+      });
+    }).catch(() => {});
+  }, []);
 
   const refreshInbox = async () => {
     setLoadingInbox(true);
@@ -114,6 +132,19 @@ export default function Cashier() {
         buy_rate:  BUY_RATE,
         sell_rate: SELL_RATE,
       });
+
+      // Snapshot for the printed receipt BEFORE we clear state.
+      const cashierName = user ? `${user.first_name || ''} ${user.last_name || ''}`.trim() : 'Cashier';
+      try {
+        printHtml(renderCashierReceipt({
+          biz,
+          order: selected,
+          calc: confirm,
+          cashierName,
+          when: new Date(),
+        }));
+      } catch (_) { /* non-fatal — payment is already recorded */ }
+
       setSelected(null);
       setConfirm(null);
       setAmountPaidUSD(''); setAmountPaidFRA('');
@@ -414,6 +445,113 @@ export default function Cashier() {
       )}
     </div>
   );
+}
+
+// Dual-currency 80mm thermal receipt — built once on confirm + sent via
+// printHtml (iframe + print dialog on Electron / desktop, PDF download on
+// mobile, share-sheet on Capacitor APK). FRA rows only appear when the
+// payment actually involved FRA cash or FRA change — keeps USD-only sales
+// from showing useless "FRA: 0" lines.
+function renderCashierReceipt({ biz, order, calc, cashierName, when }) {
+  const fmt = (n) => parseFloat(n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const fmtFra = (n) => Math.round(parseFloat(n || 0)).toLocaleString('en-US');
+  const div = '='.repeat(42);
+  const da  = '-'.repeat(42);
+  const itemsRows = (order.items || []).map(it => {
+    const qty = parseFloat(it.quantity || 0);
+    const up  = parseFloat(it.unit_price || 0);
+    const lt  = parseFloat(it.total_price || qty * up);
+    return `<tr><td colspan="4">${String(it.product_name).replace(/</g, '&lt;')}</td></tr>
+            <tr>
+              <td style="padding-left:6px;">${qty.toFixed(2)} ${it.unit || ''}</td><td></td>
+              <td style="text-align:right;">$${fmt(up)}</td>
+              <td style="text-align:right;">$${fmt(lt)}</td>
+            </tr>`;
+  }).join('');
+  const usedFra = (calc.paidFRA > 0.0001) || (calc.givenFRA > 0.0001);
+  const sellRate = SELL_RATE;
+  const buyRate  = BUY_RATE;
+  return `<!DOCTYPE html>
+<html><head><meta charset="UTF-8">
+<style>
+  @page { size: 80mm auto; margin: 0; }
+  html, body { height: auto; margin: 0; padding: 0; overflow-x: hidden; }
+  * { box-sizing: border-box; }
+  body { width: 80mm; max-width: 80mm; padding: 2mm 3mm; font-family: 'Courier New', Courier, monospace; font-size: 11px; color: #000; font-weight: 700; }
+  table { width: 100%; border-collapse: collapse; font-size: 11px; }
+  td { padding: 1px 0; vertical-align: top; }
+  .c { text-align: center; }
+  .divider { text-align: center; font-size: 10px; overflow: hidden; white-space: nowrap; margin: 3px 0; }
+  .grand { font-size: 16px; font-weight: 800; }
+  .amt { font-size: 13px; font-weight: 700; }
+  .sub { color: #444; font-weight: 500; font-size: 10px; }
+</style>
+</head>
+<body>
+  <div class="c" style="font-size:14px;font-weight:700;letter-spacing:1px;">${biz.name || 'SOSNA'}</div>
+  ${biz.address ? `<div class="c" style="font-size:11px;">${String(biz.address).replace(/\n/g, '<br/>')}</div>` : ''}
+  ${biz.phone ? `<div class="c" style="font-size:11px;">Tel: ${biz.phone}</div>` : ''}
+  <div class="divider">${div}</div>
+  <div class="c" style="font-weight:700;font-size:12px;">SALES RECEIPT</div>
+  ${usedFra ? `<div class="c" style="font-size:10px;">(USD + FRA payment)</div>` : ''}
+  <div class="divider">${div}</div>
+  <table>
+    <tr><td>Receipt #:</td><td></td><td style="text-align:right;">${order.order_number || ''}</td></tr>
+    <tr><td>Date &amp; Time:</td><td></td><td style="text-align:right;">${when.toLocaleDateString('en-GB')} ${when.toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',hour12:false})}</td></tr>
+    <tr><td>Customer:</td><td></td><td style="text-align:right;">${order.customer_name || 'Walk-in'}</td></tr>
+    <tr><td>Cashier:</td><td></td><td style="text-align:right;">${cashierName}</td></tr>
+  </table>
+  <div class="divider">${div}</div>
+  <table>
+    <tr style="font-size:10px;">
+      <td style="width:42%;font-weight:700;">ITEM</td>
+      <td style="width:18%;text-align:center;font-weight:700;">QTY</td>
+      <td style="width:20%;text-align:right;font-weight:700;">PRICE</td>
+      <td style="width:20%;text-align:right;font-weight:700;">TOTAL</td>
+    </tr>
+    ${itemsRows}
+  </table>
+  <div class="divider">${da}</div>
+  <table>
+    <tr><td>Subtotal</td><td></td><td></td><td style="text-align:right;">$${fmt(order.subtotal)}</td></tr>
+    ${parseFloat(order.discount || 0) > 0 ? `<tr><td>Discount</td><td></td><td></td><td style="text-align:right;">-$${fmt(order.discount)}</td></tr>` : ''}
+  </table>
+  <div class="divider">${div}</div>
+  <table>
+    <tr class="grand"><td>TOTAL DUE</td><td></td><td></td><td style="text-align:right;">$${fmt(calc.totalDue)}</td></tr>
+  </table>
+  <div class="divider">${div}</div>
+  <table>
+    <tr class="amt"><td>Cash Paid ($)</td><td></td><td></td><td style="text-align:right;">$${fmt(calc.paidUSD)}</td></tr>
+    ${calc.paidFRA > 0.0001 ? `
+      <tr><td>Cash Paid (FRA)</td><td></td><td></td><td style="text-align:right;">FRA ${fmtFra(calc.paidFRA)}</td></tr>
+      <tr><td class="sub">  at sell rate ${sellRate.toLocaleString()}</td><td></td><td></td><td style="text-align:right;" class="sub">≈ $${fmt(calc.paidFRAasUSD)}</td></tr>
+    ` : ''}
+    <tr class="amt"><td>Total Paid ($)</td><td></td><td></td><td style="text-align:right;">$${fmt(calc.totalAmountPaid)}</td></tr>
+  </table>
+  <div class="divider">${da}</div>
+  ${calc.isOverpaid ? `
+    <table>
+      <tr class="amt"><td>*** CHANGE ***</td><td></td><td></td><td style="text-align:right;">$${fmt(calc.changeUSD)}</td></tr>
+      ${usedFra ? `<tr><td class="sub">  ≈ at buy rate ${buyRate.toLocaleString()}</td><td></td><td></td><td style="text-align:right;" class="sub">FRA ${fmtFra(calc.changeFRA)}</td></tr>` : ''}
+    </table>
+    ${(calc.givenUSD > 0.0001 || calc.givenFRA > 0.0001) ? `
+      <div class="divider">${da}</div>
+      <table>
+        ${calc.givenUSD > 0.0001 ? `<tr><td>Change Given ($)</td><td></td><td></td><td style="text-align:right;">$${fmt(calc.givenUSD)}</td></tr>` : ''}
+        ${calc.givenFRA > 0.0001 ? `<tr><td>Change Given (FRA)</td><td></td><td></td><td style="text-align:right;">FRA ${fmtFra(calc.givenFRA)}</td></tr>` : ''}
+        <tr class="amt"><td>${Math.abs(calc.netRemaining) < 0.01 ? 'Exact Change' : 'Still Owed'}</td><td></td><td></td><td style="text-align:right;">$${fmt(Math.abs(calc.netRemaining))}</td></tr>
+      </table>
+    ` : ''}
+  ` : calc.unpaidBalance > 0.0001 ? `
+    <table>
+      <tr class="amt"><td>*** BALANCE DUE ***</td><td></td><td></td><td style="text-align:right;">$${fmt(calc.unpaidBalance)}</td></tr>
+    </table>
+  ` : ''}
+  <div class="divider">${div}</div>
+  <div class="c" style="margin-top:4px;">Thank you for your purchase!</div>
+  <div class="c">Please come again.</div>
+</body></html>`;
 }
 
 const thStyle = { padding: '8px 10px', fontSize: 11, color: '#64748b', fontWeight: 600, textAlign: 'left', textTransform: 'uppercase', letterSpacing: 0.5 };
