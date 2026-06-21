@@ -34,9 +34,6 @@ const Layout = () => {
   const { language, changeLanguage, t } = useLanguage();
   // 3-station gate — only kassumbalesa1 sees the Cashier sidebar entry.
   const { workflowMode, legacyProcurementEnabled } = useCurrency();
-  // Computed: legacy GRN + Suppliers entries should appear if HQ (always)
-  // OR the branch flipped the per-branch toggle in System Settings.
-  const showLegacyProcurement = !branchOnly || legacyProcurementEnabled;
   // HQ branch selector — only when the React app is served from the bare
   // sosnazm.com host. On real per-branch subdomains hq=false and the
   // dropdown stays hidden (the host already pins the tenant).
@@ -50,6 +47,12 @@ const Layout = () => {
   // is not blocked here — perms already gate routes; this just keeps the
   // nav focused on what branches actually do.
   const branchOnly = !hq;
+  // v1.3.9 — legacy GRN + Suppliers + AP entries are shown at HQ always,
+  // or on a branch only when the operator flipped the per-branch toggle
+  // in System Settings (used to seed openings at launch). Must be declared
+  // AFTER branchOnly — referencing it earlier was the v1.3.9 TDZ crash
+  // that blanked Layout.js for every branch.
+  const showLegacyProcurement = !branchOnly || legacyProcurementEnabled;
   const [hqBranches, setHqBranches] = useState([]);
   const [currentHqBranch, setCurrentHqBranch] = useState(() => getHqBranch());
   useEffect(() => {
