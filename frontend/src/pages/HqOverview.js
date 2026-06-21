@@ -68,16 +68,21 @@ export default function HqOverview() {
 
       {loading && !data ? (
         <p style={{ color: '#64748b' }}>Loading overview…</p>
-      ) : data && (
+      ) : data && (() => {
+        // Defensive: backend may return without rollup (transient API
+        // error, mid-render race, or older endpoint version). Use a
+        // zeroed default rather than crashing the whole page. v1.3.13.
+        const rollup = data.rollup || {};
+        return (
         <>
           {/* Roll-up row */}
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(190px, 1fr))', gap: 12, marginBottom: 22 }}>
-            <RollupCard icon={<FiTrendingUp />} label="Today's Revenue" value={fmtMoney(data.rollup.today_revenue)} sub={`${fmtInt(data.rollup.today_orders)} orders`} color="#0ea5e9" />
-            <RollupCard icon={<FiTrendingUp />} label="Month-to-Date"     value={fmtMoney(data.rollup.mtd_revenue)}   sub={`${fmtInt(data.rollup.mtd_orders)} orders`}   color="#6366f1" />
-            <RollupCard icon={<FiClock />}      label="Awaiting Payment"  value={fmtInt(data.rollup.pending_payment)} sub="3-station Sales → Cashier" color="#f59e0b" />
-            <RollupCard icon={<FiTruck />}      label="Awaiting Dispatch" value={fmtInt(data.rollup.awaiting_dispatch)} sub="Cashier → Dispatch"     color="#16a34a" />
-            <RollupCard icon={<FiPackage />}    label="Stock Value"       value={fmtMoney(data.rollup.stock_value)}   sub="At cost, all branches"  color="#0f766e" />
-            <RollupCard icon={<FiDollarSign />} label="AR Outstanding"    value={fmtMoney(data.rollup.ar_outstanding)} sub="Unpaid by customers"   color="#dc2626" />
+            <RollupCard icon={<FiTrendingUp />} label="Today's Revenue" value={fmtMoney(rollup.today_revenue)} sub={`${fmtInt(rollup.today_orders)} orders`} color="#0ea5e9" />
+            <RollupCard icon={<FiTrendingUp />} label="Month-to-Date"     value={fmtMoney(rollup.mtd_revenue)}   sub={`${fmtInt(rollup.mtd_orders)} orders`}   color="#6366f1" />
+            <RollupCard icon={<FiClock />}      label="Awaiting Payment"  value={fmtInt(rollup.pending_payment)} sub="3-station Sales → Cashier" color="#f59e0b" />
+            <RollupCard icon={<FiTruck />}      label="Awaiting Dispatch" value={fmtInt(rollup.awaiting_dispatch)} sub="Cashier → Dispatch"     color="#16a34a" />
+            <RollupCard icon={<FiPackage />}    label="Stock Value"       value={fmtMoney(rollup.stock_value)}   sub="At cost, all branches"  color="#0f766e" />
+            <RollupCard icon={<FiDollarSign />} label="AR Outstanding"    value={fmtMoney(rollup.ar_outstanding)} sub="Unpaid by customers"   color="#dc2626" />
           </div>
 
           {/* Per-branch cards */}
@@ -123,11 +128,14 @@ export default function HqOverview() {
             ))}
           </div>
 
-          <p style={{ marginTop: 18, fontSize: 11, color: '#94a3b8' }}>
-            Snapshot taken {new Date(data.as_of).toLocaleString()} · auto-refresh every 30s
-          </p>
+          {data.as_of && (
+            <p style={{ marginTop: 18, fontSize: 11, color: '#94a3b8' }}>
+              Snapshot taken {new Date(data.as_of).toLocaleString()} · auto-refresh every 30s
+            </p>
+          )}
         </>
-      )}
+        );
+      })()}
     </div>
   );
 }
