@@ -14,9 +14,21 @@ const api = axios.create({
 // X-Branch header so the backend routes to the right tenant DB
 // (see backend/middleware/tenant.js — HQ branch-switch).
 export const HQ_HOSTS = new Set(['sosnazm.com', 'www.sosnazm.com', 'localhost', '127.0.0.1']);
-export const isHqHost = () => {
-  try { return HQ_HOSTS.has(window.location.hostname); }
+// Electron always runs on localhost but its identity is fixed at
+// install-time (Setup screen) — it IS a branch, not HQ. Without this
+// guard the localhost entry above made the login screen ask "pick a
+// branch" + the sidebar surfaced HQ-only entries (HQ Products etc.)
+// inside the desktop app. Detect Electron via its UA so dev `npm start`
+// in a normal browser still gets HQ treatment.
+const isElectronUa = () => {
+  try { return /electron/i.test((typeof navigator !== 'undefined' && navigator.userAgent) || ''); }
   catch { return false; }
+};
+export const isHqHost = () => {
+  try {
+    if (isElectronUa()) return false;
+    return HQ_HOSTS.has(window.location.hostname);
+  } catch { return false; }
 };
 export const HQ_BRANCH_KEY = 'hq.branch';
 export const getHqBranch = () => {
