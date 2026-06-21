@@ -3,6 +3,19 @@ import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-d
 import { AuthProvider, useAuth } from './context/AuthContext';
 import { LanguageProvider } from './context/LanguageContext';
 import { CurrencyProvider } from './context/CurrencyContext';
+import { isHqHost } from './services/api';
+
+// HQ-only route gate. Every /hq/* page assumes a multi-branch HQ context
+// (master.db queries, branch picker, cross-branch reports). On a branch
+// install (per-branch subdomain OR Electron desktop) those queries
+// either fail or return empty + the UI is meaningless. So if the host
+// isn't HQ we redirect anywhere a /hq/* URL is hit. Sidebar entries are
+// already hidden by Layout.js — this catches direct URL navigation +
+// retained-from-prior-session URLs after a v1.3.12 update.
+const HqRoute = ({ children }) => {
+  if (!isHqHost()) return <Navigate to="/" replace />;
+  return children;
+};
 import Layout from './components/Layout';
 import Login from './pages/Login';
 import Setup from './pages/Setup';
@@ -125,12 +138,12 @@ const CUSTOM_PRIORITY = [
 const DefaultRedirect = () => {
   const { user, isAllAccess, hasPageAccess } = useAuth();
   if (!user) return <Navigate to="/login" />;
-  // HQ users land on the cross-branch overview by default.
-  try {
-    const isHq = ['sosnazm.com', 'www.sosnazm.com', 'localhost', '127.0.0.1']
-      .includes(window.location.hostname);
-    if (isHq) return <Navigate to="/hq/overview" />;
-  } catch { /* SSR / no window — fall through */ }
+  // HQ users land on the cross-branch overview by default. Use the
+  // shared isHqHost() so the Electron-is-never-HQ rule (v1.3.12) is
+  // honoured here too — otherwise a localhost Electron would land on
+  // /hq/overview, get bounced by HqRoute back to "/", land here again,
+  // re-redirect to /hq/overview… infinite loop.
+  if (isHqHost()) return <Navigate to="/hq/overview" />;
   if (isAllAccess()) return <Navigate to="/dashboard" />;
   // Find first page the custom user has access to
   for (const entry of CUSTOM_PRIORITY) {
@@ -247,15 +260,15 @@ function AppRoutes() {
         <Route path="pos" element={<PermRoute perms={['POS','Sales','POS:View','POS:Add','POS:Edit','POS:Delete']}><POS /></PermRoute>} />
         <Route path="pos/cashier"  element={<PermRoute perms={['Cashier','Cashier:View','Cashier:Add','Cashier:Edit','Cashier:Delete']}><Cashier /></PermRoute>} />
         <Route path="pos/dispatch" element={<PermRoute perms={['Dispatch','Dispatch:View','Dispatch:Add','Dispatch:Edit','Dispatch:Delete']}><Dispatch /></PermRoute>} />
-        <Route path="hq/overview"         element={<HqOverview />} />
-        <Route path="hq/sales-report"     element={<HqSalesReport />} />
-        <Route path="hq/inventory-report" element={<HqInventoryReport />} />
-        <Route path="hq/cash-position"    element={<HqCashPosition />} />
-        <Route path="hq/purchases"        element={<HqPurchases />} />
-        <Route path="hq/confirm-grn"      element={<HqConfirmGrn />} />
-        <Route path="hq/confirm-damages"  element={<HqConfirmDamages />} />
-        <Route path="hq/products"         element={<HqProducts />} />
-        <Route path="hq/suppliers"        element={<HqSuppliers />} />
+        <Route path="hq/overview"         element={<HqRoute><HqOverview /></HqRoute>} />
+        <Route path="hq/sales-report"     element={<HqRoute><HqSalesReport /></HqRoute>} />
+        <Route path="hq/inventory-report" element={<HqRoute><HqInventoryReport /></HqRoute>} />
+        <Route path="hq/cash-position"    element={<HqRoute><HqCashPosition /></HqRoute>} />
+        <Route path="hq/purchases"        element={<HqRoute><HqPurchases /></HqRoute>} />
+        <Route path="hq/confirm-grn"      element={<HqRoute><HqConfirmGrn /></HqRoute>} />
+        <Route path="hq/confirm-damages"  element={<HqRoute><HqConfirmDamages /></HqRoute>} />
+        <Route path="hq/products"         element={<HqRoute><HqProducts /></HqRoute>} />
+        <Route path="hq/suppliers"        element={<HqRoute><HqSuppliers /></HqRoute>} />
         <Route path="pos/sales-report" element={<PermRoute perms={['Sales','Reports','SalesReport:View','SalesReport:Add','SalesReport:Edit','SalesReport:Delete']}><SalesReport /></PermRoute>} />
         <Route path="pos/sales-inventory" element={<PermRoute perms={['Sales','Reports','SalesInventory:View','SalesInventory:Add','SalesInventory:Edit','SalesInventory:Delete']}><SalesInventory /></PermRoute>} />
         <Route path="pos/sales-stock-card" element={<PermRoute perms={['Sales','Reports','SalesInventory:View','Inventory:View']}><Inventory viewLocation="sales" /></PermRoute>} />
