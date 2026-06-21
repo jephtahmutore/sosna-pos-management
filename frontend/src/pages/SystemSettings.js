@@ -8,7 +8,7 @@ import {
 } from '../services/api';
 import {
   FiSave, FiPrinter, FiMonitor, FiCloud, FiServer, FiDollarSign,
-  FiWifi, FiWifiOff, FiAlertTriangle, FiTrash2, FiPlus,
+  FiWifi, FiWifiOff, FiAlertTriangle, FiTrash2, FiPlus, FiSliders,
 } from 'react-icons/fi';
 import Portal from '../utils/Portal';
 import useModalScrollLock from '../utils/useModalScrollLock';
