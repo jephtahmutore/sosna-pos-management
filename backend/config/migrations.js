@@ -1439,6 +1439,17 @@ function initTenantDb(db) {
     );
     CREATE INDEX IF NOT EXISTS idx_fx_rates_effective ON fx_rates (effective_date);
   `);
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // v1.5.0 — HQ-owned products marker
+  // ─────────────────────────────────────────────────────────────────────────
+  // Marks a branch product as managed by HQ. Set to 1 by pushToBranches.
+  // The branch UI uses this to lock HQ-owned fields (code, name, category,
+  // unit, packagings, default_unit, photo, container, UB barcode) — branch
+  // only edits price, status, min stock, notes, opening stock. The branch
+  // PUT /api/products/:id ALSO enforces this server-side so a hostile
+  // client can't bypass the UI lock.
+  addCol('products', 'is_hq_owned', 'INTEGER NOT NULL DEFAULT 0');
 }
 
 module.exports = { initTenantDb };

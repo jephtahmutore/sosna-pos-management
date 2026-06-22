@@ -1,13 +1,14 @@
 // HqProducts — HQ-owned product catalogue.
 //
-// HQ creates the canonical product list here; every registered branch
-// gets a synced copy in its own products table (same sync_id linker).
-// Each branch keeps its OWN selling price after the initial push; HQ
-// can force-push new defaults to all branches by ticking the "override
-// branch prices" box on edit / save.
-//
-// View modal shows per-branch override snapshot so HQ can spot
-// branches that have drifted from the default pricing.
+// v1.5.0 split (per user spec on 2026-06-23):
+//   HQ owns: code, name, category, base unit, packagings, default unit,
+//            photo, container link, UB barcode.
+//   Branch owns: cost / selling / alt price, min stock, status, opening
+//                stock, notes.
+// HQ creates here; every registered branch gets a copy in its own
+// products table with is_hq_owned=1 (same sync_id linker). Branch
+// prices are NEVER touched by HQ — every HQ edit overwrites only the
+// HQ-owned fields on every branch.
 import React, { useEffect, useState } from 'react';
 import {
   FiRefreshCw, FiPlus, FiEdit2, FiTrash2, FiEye, FiSearch,
@@ -69,7 +70,7 @@ export default function HqProducts() {
 
   const repush = async (row) => {
     try {
-      const r = await pushHqProduct(row.id, false);
+      const r = await pushHqProduct(row.id);
       flash(`Pushed: +${r.data?.pushed || 0} created, ${r.data?.updated || 0} updated, ${r.data?.errors?.length || 0} errored.`, 'success');
     } catch (err) { flash(err?.response?.data?.error || 'Push failed', 'error'); }
   };
@@ -133,33 +134,35 @@ export default function HqProducts() {
                   <th style={th}>Code</th>
                   <th style={th}>Name</th>
                   <th style={th}>Category</th>
-                  <th style={th}>Unit</th>
-                  <th style={{ ...th, textAlign: 'right' }}>Default Cost</th>
-                  <th style={{ ...th, textAlign: 'right' }}>Default Selling</th>
-                  <th style={{ ...th, textAlign: 'right' }}>Min Stock</th>
+                  <th style={th}>Base Unit</th>
+                  <th style={th}>Default Unit</th>
+                  <th style={{ ...th, textAlign: 'right' }}>Packagings</th>
                   <th style={th}>Status</th>
                   <th style={th}></th>
                 </tr>
               </thead>
               <tbody>
-                {rows.map(r => (
-                  <tr key={r.id} style={{ borderTop: '1px solid #f1f5f9', opacity: r.status === 'Inactive' ? 0.55 : 1 }}>
-                    <td style={{ ...td, fontFamily: 'monospace', fontSize: 12 }}>{r.code || '—'}</td>
-                    <td style={{ ...td, fontWeight: 600 }}>{r.name}</td>
-                    <td style={td}>{r.category_name || '—'}</td>
-                    <td style={td}>{r.unit}</td>
-                    <td style={{ ...td, textAlign: 'right' }}>{fmtMoney(r.default_cost_price)}</td>
-                    <td style={{ ...td, textAlign: 'right', fontWeight: 700 }}>{fmtMoney(r.default_selling_price)}</td>
-                    <td style={{ ...td, textAlign: 'right' }}>{fmtQty(r.min_stock)}</td>
-                    <td style={td}>{statusBadge(r.status)}</td>
-                    <td style={{ ...td, whiteSpace: 'nowrap' }}>
-                      <button onClick={() => openView(r.id)} style={btnIcon('#0ea5e9')}><FiEye size={12} /> View</button>
-                      <button onClick={() => setShowForm(r)} style={btnIcon('#64748b')}><FiEdit2 size={12} /> Edit</button>
-                      <button onClick={() => repush(r)} style={btnIcon('#16a34a')} title="Re-push to all branches"><FiUpload size={12} /></button>
-                      <button onClick={() => remove(r)} style={btnIcon('#dc2626')}><FiTrash2 size={12} /></button>
-                    </td>
-                  </tr>
-                ))}
+                {rows.map(r => {
+                  let packCount = 0;
+                  try { const arr = r.units_json ? JSON.parse(r.units_json) : []; packCount = Array.isArray(arr) ? Math.max(0, arr.length - 1) : 0; } catch {}
+                  return (
+                    <tr key={r.id} style={{ borderTop: '1px solid #f1f5f9', opacity: r.status === 'Inactive' ? 0.55 : 1 }}>
+                      <td style={{ ...td, fontFamily: 'monospace', fontSize: 12 }}>{r.code || '—'}</td>
+                      <td style={{ ...td, fontWeight: 600 }}>{r.name}</td>
+                      <td style={td}>{r.category_name || '—'}</td>
+                      <td style={td}>{r.unit}</td>
+                      <td style={td}>{r.default_unit || <span style={{ color: '#94a3b8' }}>—</span>}</td>
+                      <td style={{ ...td, textAlign: 'right' }}>{packCount}</td>
+                      <td style={td}>{statusBadge(r.status)}</td>
+                      <td style={{ ...td, whiteSpace: 'nowrap' }}>
+                        <button onClick={() => openView(r.id)} style={btnIcon('#0ea5e9')}><FiEye size={12} /> View</button>
+                        <button onClick={() => setShowForm(r)} style={btnIcon('#64748b')}><FiEdit2 size={12} /> Edit</button>
+                        <button onClick={() => repush(r)} style={btnIcon('#16a34a')} title="Re-push to all branches"><FiUpload size={12} /></button>
+                        <button onClick={() => remove(r)} style={btnIcon('#dc2626')}><FiTrash2 size={12} /></button>
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
@@ -197,34 +200,76 @@ function statusBadge(s) {
 }
 
 function ProductForm({ existing, onClose, onSaved, onError }) {
+  // Parse existing units_json into [{ name, conv }] for the packagings
+  // editor. Index 0 is the base unit row and stays in sync with `unit`.
+  const initialPacks = (() => {
+    try {
+      const arr = existing?.units_json ? JSON.parse(existing.units_json) : [];
+      if (!Array.isArray(arr) || arr.length === 0) return [];
+      return arr.slice(1).map(u => ({ name: u.name || '', conv: u.conv ?? u.factor ?? '' }));
+    } catch { return []; }
+  })();
+
   const [form, setForm] = useState({
-    code:                 existing?.code                 || '',
-    name:                 existing?.name                 || '',
-    category_name:        existing?.category_name        || '',
-    main_category_name:   existing?.main_category_name   || '',
-    unit:                 existing?.unit                 || 'pcs',
-    default_cost_price:   existing?.default_cost_price   ?? '',
-    default_selling_price:existing?.default_selling_price?? '',
-    min_stock:            existing?.min_stock            ?? '',
-    status:               existing?.status               || 'Active',
-    notes:                existing?.notes                || '',
+    code:                       existing?.code                       || '',
+    name:                       existing?.name                       || '',
+    category_name:              existing?.category_name              || '',
+    main_category_name:         existing?.main_category_name         || '',
+    unit:                       existing?.unit                       || 'pcs',
+    default_unit:               existing?.default_unit               || '',
+    image_url:                  existing?.image_url                  || '',
+    container_product_sync_id:  existing?.container_product_sync_id  || '',
+    units_per_container:        existing?.units_per_container        || '',
+    ub_number_start:            existing?.ub_number_start            ?? 1,
+    ub_number_length:           existing?.ub_number_length           ?? 6,
+    ub_quantity_start:          existing?.ub_quantity_start          ?? 7,
+    ub_quantity_length:         existing?.ub_quantity_length         ?? 0,
+    ub_decimal_start:           existing?.ub_decimal_start           ?? 2,
+    status:                     existing?.status                     || 'Active',
   });
-  const [overridePrices, setOverridePrices] = useState(false);
-  const [submitting, setSubmitting]         = useState(false);
+  const [packagings, setPackagings] = useState(initialPacks);
+  const [submitting, setSubmitting] = useState(false);
   const update = (field, v) => setForm(f => ({ ...f, [field]: v }));
+
+  const addPack = () => setPackagings(p => [...p, { name: '', conv: '' }]);
+  const setPack = (i, patch) => setPackagings(p => p.map((row, idx) => idx === i ? { ...row, ...patch } : row));
+  const removePack = (i) => setPackagings(p => p.filter((_, idx) => idx !== i));
 
   const submit = async () => {
     if (!form.name.trim()) return onError('Name is required');
+    if (!form.unit.trim())  return onError('Base unit is required');
+    for (const p of packagings) {
+      if (!p.name.trim())                              return onError('Packaging name cannot be empty');
+      if (!p.conv || parseFloat(p.conv) <= 0)          return onError(`Conversion factor for "${p.name}" must be > 0`);
+      if (p.name.trim().toLowerCase() === form.unit.trim().toLowerCase()) return onError(`Packaging name "${p.name}" duplicates the base unit`);
+    }
+    // Build units_json: [base, ...extras] with conv stored as factor for compatibility.
+    const unitsJson = JSON.stringify([
+      { name: form.unit.trim(), conv: 1, factor: 1, is_base: true },
+      ...packagings.map(p => ({ name: p.name.trim(), conv: parseFloat(p.conv), factor: parseFloat(p.conv) })),
+    ]);
     setSubmitting(true);
     try {
       const payload = {
-        ...form,
-        default_cost_price:    parseFloat(form.default_cost_price)    || 0,
-        default_selling_price: parseFloat(form.default_selling_price) || 0,
-        min_stock:             parseFloat(form.min_stock)             || 0,
+        code: form.code || null,
+        name: form.name.trim(),
+        category_name: form.category_name || null,
+        main_category_name: form.main_category_name || null,
+        unit: form.unit.trim(),
+        units_json: unitsJson,
+        default_unit: form.default_unit || null,
+        image_url: form.image_url || null,
+        container_product_sync_id: form.container_product_sync_id || null,
+        units_per_container: form.units_per_container || null,
+        ub_number_start:    parseInt(form.ub_number_start)    || 1,
+        ub_number_length:   parseInt(form.ub_number_length)   || 6,
+        ub_quantity_start:  parseInt(form.ub_quantity_start)  || 7,
+        ub_quantity_length: parseInt(form.ub_quantity_length) || 0,
+        ub_decimal_start:   parseInt(form.ub_decimal_start)   || 2,
+        status: form.status,
       };
       const res = existing
-        ? await updateHqProduct(existing.id, payload, overridePrices)
+        ? await updateHqProduct(existing.id, payload)
         : await createHqProduct(payload);
       onSaved(res.data?.push);
     } catch (err) {
@@ -233,9 +278,11 @@ function ProductForm({ existing, onClose, onSaved, onError }) {
     setSubmitting(false);
   };
 
+  const unitOptions = [form.unit, ...packagings.map(p => p.name)].filter(Boolean);
+
   return (
     <div style={overlay}>
-      <div style={{ background: '#fff', borderRadius: 12, width: 'min(640px, 96vw)', maxHeight: '92vh', display: 'flex', flexDirection: 'column' }}>
+      <div style={{ background: '#fff', borderRadius: 12, width: 'min(720px, 96vw)', maxHeight: '92vh', display: 'flex', flexDirection: 'column' }}>
         <div style={{ padding: '16px 20px', borderBottom: '1px solid #e5e7eb', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <h3 style={{ margin: 0 }}>{existing ? 'Edit Product' : 'New Product'}</h3>
           <button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 22, color: '#64748b' }}>×</button>
@@ -249,13 +296,63 @@ function ProductForm({ existing, onClose, onSaved, onError }) {
             <Field label="Category"><input type="text" value={form.category_name} onChange={e => update('category_name', e.target.value)} placeholder="e.g. Beer" style={inp} /></Field>
             <Field label="Main category"><input type="text" value={form.main_category_name} onChange={e => update('main_category_name', e.target.value)} placeholder="e.g. Beverage" style={inp} /></Field>
           </div>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr', gap: 10 }}>
-            <Field label="Unit"><input type="text" value={form.unit} onChange={e => update('unit', e.target.value)} style={inp} /></Field>
-            <Field label="Default cost"><input type="number" step="any" min="0" value={form.default_cost_price} onChange={e => update('default_cost_price', e.target.value)} style={inp} /></Field>
-            <Field label="Default selling"><input type="number" step="any" min="0" value={form.default_selling_price} onChange={e => update('default_selling_price', e.target.value)} style={inp} /></Field>
-            <Field label="Min stock"><input type="number" step="any" min="0" value={form.min_stock} onChange={e => update('min_stock', e.target.value)} style={inp} /></Field>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+            <Field label="Base Unit *"><input type="text" value={form.unit} onChange={e => update('unit', e.target.value)} placeholder="pcs / Bottle" style={inp} /></Field>
+            <Field label="Default Unit (auto-selected on GRN/SIV/POS)">
+              <select value={form.default_unit} onChange={e => update('default_unit', e.target.value)} style={inp}>
+                <option value="">— Use base unit ({form.unit || 'pcs'}) —</option>
+                {unitOptions.map(u => <option key={u} value={u}>{u}</option>)}
+              </select>
+            </Field>
           </div>
-          <Field label="Notes"><input type="text" value={form.notes} onChange={e => update('notes', e.target.value)} style={inp} /></Field>
+
+          {/* Packagings */}
+          <div style={{ background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 8, padding: 12 }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+              <strong style={{ fontSize: 13 }}>Packagings (larger units)</strong>
+              <button type="button" onClick={addPack} style={{ padding: '4px 10px', background: '#0ea5e9', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer', fontSize: 12, fontWeight: 600 }}>+ Add</button>
+            </div>
+            <div style={{ fontSize: 11, color: '#64748b', marginBottom: 8 }}>Base unit is <b>{form.unit || 'pcs'}</b>. Add packs/boxes that contain multiple base units (e.g. 1 Crate = 24 Bottle).</div>
+            {packagings.length === 0 ? (
+              <div style={{ color: '#94a3b8', fontSize: 12, fontStyle: 'italic' }}>No extra packagings yet.</div>
+            ) : (
+              <div style={{ display: 'grid', gap: 6 }}>
+                {packagings.map((p, i) => (
+                  <div key={i} style={{ display: 'grid', gridTemplateColumns: '1fr 1fr auto', gap: 6, alignItems: 'center' }}>
+                    <input type="text" value={p.name} onChange={e => setPack(i, { name: e.target.value })} placeholder="e.g. Box" style={inp} />
+                    <input type="number" step="any" min="0" value={p.conv} onChange={e => setPack(i, { conv: e.target.value })} placeholder={`How many ${form.unit || 'pcs'} per ${p.name || 'pack'}`} style={inp} />
+                    <button type="button" onClick={() => removePack(i)} style={{ padding: '6px 10px', background: '#fee2e2', color: '#b91c1c', border: '1px solid #fecaca', borderRadius: 6, cursor: 'pointer', fontSize: 11 }}>✕</button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Container link */}
+          <div style={{ background: '#fefce8', border: '1px solid #fde68a', borderRadius: 8, padding: 12 }}>
+            <strong style={{ fontSize: 13, color: '#92400e' }}>Returnable Container (Crate / Empties)</strong>
+            <div style={{ fontSize: 11, color: '#92400e', margin: '4px 0 8px 0' }}>If this product is sold in a deposit-bearing crate, link the empty-crate product here.</div>
+            <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: 10 }}>
+              <Field label="Container sync_id"><input type="text" value={form.container_product_sync_id} onChange={e => update('container_product_sync_id', e.target.value)} placeholder="paste empty-crate sync_id" style={inp} /></Field>
+              <Field label="Units per container"><input type="number" step="any" min="0" value={form.units_per_container} onChange={e => update('units_per_container', e.target.value)} placeholder="24" style={inp} /></Field>
+            </div>
+          </div>
+
+          {/* Photo */}
+          <Field label="Photo URL"><input type="text" value={form.image_url} onChange={e => update('image_url', e.target.value)} placeholder="https://… (or upload via Item Details later)" style={inp} /></Field>
+
+          {/* UB Barcode */}
+          <details style={{ background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 8, padding: 10 }}>
+            <summary style={{ cursor: 'pointer', fontSize: 13, fontWeight: 700, color: '#0f172a' }}>Barcode (UB) settings — advanced</summary>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 8, marginTop: 10 }}>
+              <Field label="Num. start"><input type="number" min="0" value={form.ub_number_start} onChange={e => update('ub_number_start', e.target.value)} style={inp} /></Field>
+              <Field label="Num. length"><input type="number" min="0" value={form.ub_number_length} onChange={e => update('ub_number_length', e.target.value)} style={inp} /></Field>
+              <Field label="Qty start"><input type="number" min="0" value={form.ub_quantity_start} onChange={e => update('ub_quantity_start', e.target.value)} style={inp} /></Field>
+              <Field label="Qty length"><input type="number" min="0" value={form.ub_quantity_length} onChange={e => update('ub_quantity_length', e.target.value)} style={inp} /></Field>
+              <Field label="Decimal start"><input type="number" min="0" value={form.ub_decimal_start} onChange={e => update('ub_decimal_start', e.target.value)} style={inp} /></Field>
+            </div>
+          </details>
+
           {existing && (
             <Field label="Status">
               <select value={form.status} onChange={e => update('status', e.target.value)} style={inp}>
@@ -265,19 +362,9 @@ function ProductForm({ existing, onClose, onSaved, onError }) {
             </Field>
           )}
 
-          <div style={{ padding: '10px 12px', background: existing ? '#fef3c7' : '#eff6ff', border: `1px solid ${existing ? '#fde68a' : '#bfdbfe'}`, borderRadius: 6, fontSize: 12 }}>
-            <strong>What happens on save:</strong>{' '}
-            {existing
-              ? <>The product is updated, then pushed to every branch (name / unit / min stock / status / units_json). Branches keep their own cost + selling price unless you tick the box below.</>
-              : <>The product is created and immediately pushed to every registered branch with HQ defaults. Branches can later override their own selling price.</>}
+          <div style={{ padding: '10px 12px', background: '#eff6ff', border: '1px solid #bfdbfe', borderRadius: 6, fontSize: 12, color: '#1e3a8a' }}>
+            <strong>HQ-owned fields only.</strong> Branches CANNOT edit these. Each branch sets its own <b>Cost / Selling / Min stock / Status / Opening stock / Notes</b>. The product stays hidden from a branch's POS until the branch sets a selling price.
           </div>
-
-          {existing && (
-            <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8, fontSize: 13, color: '#475569', cursor: 'pointer' }}>
-              <input type="checkbox" checked={overridePrices} onChange={e => setOverridePrices(e.target.checked)} />
-              <span><strong>Also force-push prices</strong> — overrides each branch's current cost + selling with HQ defaults.</span>
-            </label>
-          )}
         </div>
         <div style={{ padding: 14, borderTop: '1px solid #e5e7eb', display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
           <button onClick={onClose} style={{ padding: '10px 18px', background: '#f1f5f9', color: '#475569', border: '1px solid #e2e8f0', borderRadius: 6, cursor: 'pointer', fontWeight: 600 }}>Cancel</button>
@@ -310,12 +397,12 @@ function DetailModal({ data, onClose }) {
         </div>
         <div style={{ padding: 16, overflowY: 'auto', flex: 1 }}>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 10, marginBottom: 16 }}>
-            <Stat label="Default cost"    value={fmtMoney(p.default_cost_price)} />
-            <Stat label="Default selling" value={fmtMoney(p.default_selling_price)} />
-            <Stat label="Min stock"       value={fmtQty(p.min_stock)} />
+            <Stat label="Base Unit"       value={p.unit} />
+            <Stat label="Default Unit"    value={p.default_unit || '—'} />
+            <Stat label="Container"       value={p.container_product_sync_id ? `${p.units_per_container || '?'} per crate` : '—'} />
             <Stat label="Status"          value={statusBadge(p.status)} />
           </div>
-          <h4 style={{ margin: '14px 0 8px 0', fontSize: 13, color: '#0f172a' }}>Per-branch snapshot</h4>
+          <h4 style={{ margin: '14px 0 8px 0', fontSize: 13, color: '#0f172a' }}>Per-branch snapshot (branch-owned values)</h4>
           {data.branches?.length === 0 ? (
             <p style={{ color: '#94a3b8', fontSize: 12 }}>No branches registered.</p>
           ) : (
@@ -323,30 +410,28 @@ function DetailModal({ data, onClose }) {
               <thead style={{ background: '#f8fafc' }}>
                 <tr>
                   <th style={th}>Branch</th>
-                  <th style={th}>Status</th>
+                  <th style={th}>Linked</th>
                   <th style={{ ...th, textAlign: 'right' }}>Cost</th>
                   <th style={{ ...th, textAlign: 'right' }}>Selling</th>
                   <th style={{ ...th, textAlign: 'right' }}>On hand</th>
                 </tr>
               </thead>
               <tbody>
-                {data.branches?.map(b => {
-                  const costDrift   = b.found && Math.abs((b.cost_price    || 0) - (p.default_cost_price    || 0)) > 0.001;
-                  const sellingDrift= b.found && Math.abs((b.selling_price || 0) - (p.default_selling_price || 0)) > 0.001;
-                  return (
-                    <tr key={b.slug} style={{ borderTop: '1px solid #f1f5f9' }}>
-                      <td style={td}>{b.name} <span style={{ color: '#94a3b8', fontSize: 11 }}>({b.slug})</span></td>
-                      <td style={td}>
-                        {b.error ? <span style={{ color: '#dc2626', fontSize: 11 }}><FiAlertTriangle size={11} /> {b.error}</span>
-                                 : b.found ? <span style={{ color: '#166534' }}>Linked</span>
-                                            : <span style={{ color: '#94a3b8' }}>Missing</span>}
-                      </td>
-                      <td style={{ ...td, textAlign: 'right', color: costDrift ? '#b45309' : '#0f172a', fontWeight: costDrift ? 700 : 400 }}>{b.found ? fmtMoney(b.cost_price) : '—'}</td>
-                      <td style={{ ...td, textAlign: 'right', color: sellingDrift ? '#b45309' : '#0f172a', fontWeight: sellingDrift ? 700 : 400 }}>{b.found ? fmtMoney(b.selling_price) : '—'}</td>
-                      <td style={{ ...td, textAlign: 'right' }}>{b.found ? fmtQty(b.current_stock) : '—'}</td>
-                    </tr>
-                  );
-                })}
+                {data.branches?.map(b => (
+                  <tr key={b.slug} style={{ borderTop: '1px solid #f1f5f9' }}>
+                    <td style={td}>{b.name} <span style={{ color: '#94a3b8', fontSize: 11 }}>({b.slug})</span></td>
+                    <td style={td}>
+                      {b.error ? <span style={{ color: '#dc2626', fontSize: 11 }}><FiAlertTriangle size={11} /> {b.error}</span>
+                               : b.found ? <span style={{ color: '#166534' }}>Yes</span>
+                                          : <span style={{ color: '#94a3b8' }}>Missing</span>}
+                    </td>
+                    <td style={{ ...td, textAlign: 'right' }}>{b.found ? fmtMoney(b.cost_price) : '—'}</td>
+                    <td style={{ ...td, textAlign: 'right', fontWeight: 700, color: b.found && (b.selling_price || 0) <= 0 ? '#dc2626' : '#0f172a' }}>
+                      {b.found ? (b.selling_price > 0 ? fmtMoney(b.selling_price) : '$0 (hidden from POS)') : '—'}
+                    </td>
+                    <td style={{ ...td, textAlign: 'right' }}>{b.found ? fmtQty(b.current_stock) : '—'}</td>
+                  </tr>
+                ))}
               </tbody>
             </table>
           )}

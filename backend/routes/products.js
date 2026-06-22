@@ -215,9 +215,14 @@ function normaliseUnits(body) {
   };
 }
 
+// v1.5.0: product_type removed from the public API surface. Always inserted
+// as 'finished' on the DB so legacy queries that filter on it keep working.
+// Branches no longer create products via this endpoint in the new HQ-owned
+// workflow, but the route stays for the legacy/local-only path so older
+// installs (Electron, single-tenant) continue to work.
 router.post('/', auth, (req, res) => {
   try {
-    const { code, name, category_id, cost_price, current_stock, min_stock, product_type,
+    const { code, name, category_id, cost_price, current_stock, min_stock,
             container_product_sync_id, units_per_container, default_unit } = req.body;
     const { units, legacy } = normaliseUnits(req.body);
     const tenantId = syncConfig.getTenantId(req);
@@ -230,9 +235,8 @@ router.post('/', auth, (req, res) => {
        alt_unit, conversion_factor, alt_price, units_json,
        container_product_sync_id, units_per_container, default_unit,
        sync_id, tenant_id, branch_id, device_id, synced, created_at, updated_at)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,datetime('now'),datetime('now'))`
+       VALUES (?,?,?,?,?,?,?,?,?,'finished',?,?,?,?,?,?,?,?,?,?,?,0,datetime('now'),datetime('now'))`
     ).run(code, name, category_id, categorySyncId, legacy.unit, cost_price, legacy.selling_price, current_stock || 0, min_stock || 10,
-          product_type || 'sellable',
           legacy.alt_unit, legacy.conversion_factor, legacy.alt_price,
           JSON.stringify(units),
           container_product_sync_id || null,
@@ -254,19 +258,24 @@ router.post('/', auth, (req, res) => {
 });
 
 // Update product
+// v1.5.0: when products.is_hq_owned=1, the request body's HQ-owned fields
+// are ignored — branch can only change cost_price, selling_price,
+// alt_price (within units_json), min_stock, status, current_stock, notes.
+// HQ fields stay locked to whatever HQ pushed.
 router.put('/:id', auth, (req, res) => {
   try {
     const { code, name, category_id, cost_price, current_stock, min_stock,
-            product_type, ub_number_start, ub_number_length, ub_quantity_start, ub_quantity_length, ub_decimal_start, status,
+            ub_number_start, ub_number_length, ub_quantity_start, ub_quantity_length, ub_decimal_start, status,
             container_product_sync_id, units_per_container, default_unit } = req.body;
-    const existingProduct = db.prepare('SELECT sync_id, unit FROM products WHERE id = ?').get(req.params.id);
+    const existingProduct = db.prepare('SELECT sync_id, unit, is_hq_owned, code, name, category_id, category_sync_id, units_json, default_unit, image_url, container_product_sync_id, units_per_container, ub_number_start, ub_number_length, ub_quantity_start, ub_quantity_length, ub_decimal_start FROM products WHERE id = ?').get(req.params.id);
     if (!existingProduct) return res.status(404).json({ error: 'Product not found' });
+    const isHq = !!existingProduct.is_hq_owned;
     let normalised;
     try { normalised = normaliseUnits(req.body); }
     catch (e) { return res.status(e.status || 400).json({ error: e.message }); }
     const { units, legacy } = normalised;
     // Lock: base unit (legacy.unit) cannot change once stock movements exist for the product.
-    if (legacy.unit !== existingProduct.unit) {
+    if (!isHq && legacy.unit !== existingProduct.unit) {
       const hasMovements = db.prepare(
         `SELECT 1 FROM stock_movements sm
          WHERE sm.product_sync_id = ? AND sm.deleted_at IS NULL
@@ -277,35 +286,52 @@ router.put('/:id', auth, (req, res) => {
     db.transaction(() => {
       const cat = category_id ? db.prepare('SELECT sync_id FROM categories WHERE id = ?').get(category_id) : null;
       const categorySyncId = cat?.sync_id || null;
-      // Preserve existing UB values if not provided in the request
-      const existing = db.prepare('SELECT ub_number_start, ub_number_length, ub_quantity_start, ub_quantity_length, ub_decimal_start FROM products WHERE id = ?').get(req.params.id) || {};
-      // Container link is optional — if the caller didn't send the fields, leave whatever's stored.
-      const updateContainer = container_product_sync_id !== undefined || units_per_container !== undefined;
-      const containerSql = updateContainer
-        ? ', container_product_sync_id=?, units_per_container=?'
-        : '';
-      const containerArgs = updateContainer
-        ? [container_product_sync_id || null, units_per_container ? parseFloat(units_per_container) : null]
-        : [];
-      // default_unit: same pattern — only update if caller explicitly sent it.
-      const updateDefaultUnit = default_unit !== undefined;
-      const defaultUnitSql  = updateDefaultUnit ? ', default_unit=?' : '';
-      const defaultUnitArgs = updateDefaultUnit ? [default_unit || null] : [];
+      // For HQ-owned products, the HQ-owned columns are forced back to
+      // whatever HQ pushed. Branch-owned columns (price/min/status/stock)
+      // come from the request. For branch-owned products (legacy/non-HQ),
+      // the existing behaviour stands.
+      const useHqFields = isHq;
+      const finalCode      = useHqFields ? existingProduct.code      : code;
+      const finalName      = useHqFields ? existingProduct.name      : name;
+      const finalCategoryId       = useHqFields ? existingProduct.category_id      : category_id;
+      const finalCategorySyncId   = useHqFields ? existingProduct.category_sync_id : categorySyncId;
+      const finalUnit             = useHqFields ? existingProduct.unit             : legacy.unit;
+      const finalUnitsJson        = useHqFields ? existingProduct.units_json       : JSON.stringify(units);
+      const finalDefaultUnit      = useHqFields ? existingProduct.default_unit
+                                                : (default_unit !== undefined ? (default_unit || null) : undefined);
+      const finalContainerSync    = useHqFields ? existingProduct.container_product_sync_id
+                                                : (container_product_sync_id !== undefined ? (container_product_sync_id || null) : undefined);
+      const finalContainerUnits   = useHqFields ? existingProduct.units_per_container
+                                                : (units_per_container !== undefined ? (units_per_container ? parseFloat(units_per_container) : null) : undefined);
+      const finalUbNumStart   = useHqFields ? existingProduct.ub_number_start    : (ub_number_start    ?? existingProduct.ub_number_start    ?? 1);
+      const finalUbNumLen     = useHqFields ? existingProduct.ub_number_length   : (ub_number_length   ?? existingProduct.ub_number_length   ?? 6);
+      const finalUbQtyStart   = useHqFields ? existingProduct.ub_quantity_start  : (ub_quantity_start  ?? existingProduct.ub_quantity_start  ?? 7);
+      const finalUbQtyLen     = useHqFields ? existingProduct.ub_quantity_length : (ub_quantity_length ?? existingProduct.ub_quantity_length ?? 0);
+      const finalUbDecStart   = useHqFields ? existingProduct.ub_decimal_start   : (ub_decimal_start   ?? existingProduct.ub_decimal_start   ?? 2);
+      const finalAltUnit      = useHqFields ? null : legacy.alt_unit;
+      const finalConvFactor   = useHqFields ? null : legacy.conversion_factor;
+      const finalAltPrice     = useHqFields ? null : legacy.alt_price;
+
+      // Container / default_unit only update when explicitly provided OR
+      // when HQ-locked (forced).
+      const updateContainer   = useHqFields || container_product_sync_id !== undefined || units_per_container !== undefined;
+      const containerSql      = updateContainer ? ', container_product_sync_id=?, units_per_container=?' : '';
+      const containerArgs     = updateContainer ? [finalContainerSync ?? null, finalContainerUnits ?? null] : [];
+      const updateDefaultUnit = useHqFields || default_unit !== undefined;
+      const defaultUnitSql    = updateDefaultUnit ? ', default_unit=?' : '';
+      const defaultUnitArgs   = updateDefaultUnit ? [finalDefaultUnit ?? null] : [];
+
       db.prepare(
         `UPDATE products SET code=?, name=?, category_id=?, category_sync_id=?, unit=?, cost_price=?, selling_price=?,
-         current_stock=?, min_stock=?, product_type=?,
+         current_stock=?, min_stock=?,
          ub_number_start=?, ub_number_length=?, ub_quantity_start=?, ub_quantity_length=?, ub_decimal_start=?,
          alt_unit=?, conversion_factor=?, alt_price=?, units_json=?${containerSql}${defaultUnitSql},
          status=?,
          updated_at=datetime('now'), synced=0 WHERE id=?`
-      ).run(code, name, category_id, categorySyncId, legacy.unit, cost_price, legacy.selling_price, current_stock, min_stock,
-            product_type || 'sellable',
-            ub_number_start ?? existing.ub_number_start ?? 1,
-            ub_number_length ?? existing.ub_number_length ?? 6,
-            ub_quantity_start ?? existing.ub_quantity_start ?? 7,
-            ub_quantity_length ?? existing.ub_quantity_length ?? 0,
-            ub_decimal_start ?? existing.ub_decimal_start ?? 2,
-            legacy.alt_unit, legacy.conversion_factor, legacy.alt_price, JSON.stringify(units),
+      ).run(finalCode, finalName, finalCategoryId, finalCategorySyncId, finalUnit,
+            cost_price, legacy.selling_price, current_stock, min_stock,
+            finalUbNumStart, finalUbNumLen, finalUbQtyStart, finalUbQtyLen, finalUbDecStart,
+            finalAltUnit, finalConvFactor, finalAltPrice, finalUnitsJson,
             ...containerArgs,
             ...defaultUnitArgs,
             (status === 'Inactive' ? 'Inactive' : 'Active'),

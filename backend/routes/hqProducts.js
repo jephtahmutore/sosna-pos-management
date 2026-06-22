@@ -1,17 +1,22 @@
 /**
  * hqProducts.js — HQ-owned product master + auto-push to branches.
  *
- * Design (per user spec on 2026-06-21):
- *   - HQ declares the canonical product list (name / code / unit /
- *     default prices / categories).
+ * Design (v1.5.0 — per user spec on 2026-06-23):
+ *   HQ owns: code, name, category, base unit, packagings (units_json),
+ *            default_unit, photo (image_url), container link + units
+ *            per container, UB barcode settings.
+ *   Branch owns: cost_price, selling_price, alt_price, min_stock,
+ *                status, current_stock (opening), notes.
+ *
+ * On push:
  *   - Every registered branch gets a COPY in its own products table
- *     using the SAME sync_id, so the linkage survives renames and the
- *     existing POS / stock / sync code paths just work.
- *   - Each branch keeps its OWN selling_price (and cost_price). HQ
- *     defaults only fill on the FIRST insert; subsequent HQ edits push
- *     name / unit / units_json / min_stock / status / etc but do NOT
- *     overwrite branch-set prices — unless the caller passes
- *     override_prices=true explicitly.
+ *     using the SAME sync_id; is_hq_owned=1 marks the row as HQ-managed.
+ *   - INSERT writes only HQ-owned columns; branch fields start blank
+ *     (cost/selling=0, status='Active', current_stock=0) so the branch
+ *     can fill them in. Item stays hidden from POS until they do.
+ *   - UPDATE always OVERWRITES the HQ-owned columns at every branch
+ *     (per user: "yes overwrite"). Never touches branch-owned columns
+ *     so a price the branch set survives every HQ tweak.
  *
  * Auto-pushing is synchronous-best-effort: a branch DB that won't open
  * is logged + skipped; the master row is still saved so HQ can re-push
@@ -36,11 +41,22 @@ function hqAuth(req, res, next) {
 }
 
 // Push an HQ master product into every registered branch's products
-// table. Idempotent: matches on sync_id. On INSERT we fill cost + price
-// from HQ defaults; on UPDATE we only touch name / code / unit /
-// units_json / min_stock / status / product_type (preserves branch
-// pricing) unless overridePrices is true.
-function pushToBranches(hqRow, { overridePrices = false } = {}) {
+// table. Idempotent: matches on sync_id.
+//
+// HQ-owned columns (always pushed/overwritten on UPDATE):
+//   code, name, unit, units_json, default_unit, image_url,
+//   container_product_sync_id, units_per_container,
+//   ub_number_start, ub_number_length, ub_quantity_start,
+//   ub_quantity_length, ub_decimal_start, is_hq_owned=1
+//
+// Branch-owned columns (NEVER touched after first INSERT):
+//   cost_price, selling_price, alt_price, min_stock, status,
+//   current_stock, notes
+//
+// On INSERT these start blank (cost/selling=0, current_stock=0,
+// status='Active') so POS keeps the item hidden until the branch sets
+// a real selling_price.
+function pushToBranches(hqRow) {
   const out = { pushed: 0, updated: 0, skipped: 0, errors: [] };
   for (const t of listTenants()) {
     try {
@@ -132,53 +148,61 @@ function pushToBranches(hqRow, { overridePrices = false } = {}) {
       }
 
       const existing = db.prepare(
-        'SELECT id, cost_price, selling_price FROM products WHERE sync_id = ? AND deleted_at IS NULL'
+        'SELECT id FROM products WHERE sync_id = ? AND deleted_at IS NULL'
       ).get(hqRow.sync_id);
       if (existing) {
-        if (overridePrices) {
-          db.prepare(`
-            UPDATE products
-               SET code = ?, name = ?, unit = ?,
-                   cost_price = ?, selling_price = ?,
-                   min_stock = ?, units_json = ?,
-                   status = ?, product_type = ?,
-                   updated_at = datetime('now'), synced = 0
-             WHERE id = ?
-          `).run(
-            hqRow.code || null, hqRow.name, hqRow.unit || 'pcs',
-            hqRow.default_cost_price || 0, hqRow.default_selling_price || 0,
-            hqRow.min_stock || 0, hqRow.units_json || null,
-            hqRow.status || 'Active', hqRow.product_type || 'finished',
-            existing.id
-          );
-        } else {
-          db.prepare(`
-            UPDATE products
-               SET code = ?, name = ?, unit = ?,
-                   min_stock = ?, units_json = ?,
-                   status = ?, product_type = ?,
-                   updated_at = datetime('now'), synced = 0
-             WHERE id = ?
-          `).run(
-            hqRow.code || null, hqRow.name, hqRow.unit || 'pcs',
-            hqRow.min_stock || 0, hqRow.units_json || null,
-            hqRow.status || 'Active', hqRow.product_type || 'finished',
-            existing.id
-          );
-        }
-        out.updated += 1;
-      } else {
+        // UPDATE: only HQ-owned columns. Branch-owned (cost_price,
+        // selling_price, min_stock, status, current_stock) are not
+        // touched even if HQ has values for them.
         db.prepare(`
-          INSERT INTO products (code, name, unit, cost_price, selling_price,
-                                current_stock, min_stock, units_json, status,
-                                product_type, sync_id, tenant_id, branch_id, device_id,
-                                synced, created_at, updated_at)
-          VALUES (?,?,?,?,?,0,?,?,?,?,?,?,?,?,0,datetime('now'),datetime('now'))
+          UPDATE products
+             SET code = ?, name = ?, unit = ?,
+                 units_json = ?, default_unit = ?, image_url = ?,
+                 container_product_sync_id = ?, units_per_container = ?,
+                 ub_number_start = ?, ub_number_length = ?,
+                 ub_quantity_start = ?, ub_quantity_length = ?,
+                 ub_decimal_start = ?,
+                 is_hq_owned = 1,
+                 updated_at = datetime('now'), synced = 0
+           WHERE id = ?
         `).run(
           hqRow.code || null, hqRow.name, hqRow.unit || 'pcs',
-          hqRow.default_cost_price || 0, hqRow.default_selling_price || 0,
-          hqRow.min_stock || 0, hqRow.units_json || null,
-          hqRow.status || 'Active', hqRow.product_type || 'finished',
+          hqRow.units_json || null, hqRow.default_unit || null, hqRow.image_url || null,
+          hqRow.container_product_sync_id || null,
+          hqRow.units_per_container || null,
+          hqRow.ub_number_start    ?? 1,
+          hqRow.ub_number_length   ?? 6,
+          hqRow.ub_quantity_start  ?? 7,
+          hqRow.ub_quantity_length ?? 0,
+          hqRow.ub_decimal_start   ?? 2,
+          existing.id
+        );
+        out.updated += 1;
+      } else {
+        // INSERT: HQ-owned fields filled, branch-owned start blank.
+        // status='Active' so the row isn't dead on arrival; cost+price=0
+        // so POS keeps it hidden until the branch sets a real price.
+        db.prepare(`
+          INSERT INTO products (code, name, unit, cost_price, selling_price,
+                                current_stock, min_stock, units_json,
+                                default_unit, image_url,
+                                container_product_sync_id, units_per_container,
+                                ub_number_start, ub_number_length,
+                                ub_quantity_start, ub_quantity_length, ub_decimal_start,
+                                status, is_hq_owned,
+                                sync_id, tenant_id, branch_id, device_id,
+                                synced, created_at, updated_at)
+          VALUES (?,?,?,0,0,0,0,?,?,?,?,?,?,?,?,?,?,'Active',1,?,?,?,?,0,datetime('now'),datetime('now'))
+        `).run(
+          hqRow.code || null, hqRow.name, hqRow.unit || 'pcs',
+          hqRow.units_json || null, hqRow.default_unit || null, hqRow.image_url || null,
+          hqRow.container_product_sync_id || null,
+          hqRow.units_per_container || null,
+          hqRow.ub_number_start    ?? 1,
+          hqRow.ub_number_length   ?? 6,
+          hqRow.ub_quantity_start  ?? 7,
+          hqRow.ub_quantity_length ?? 0,
+          hqRow.ub_decimal_start   ?? 2,
           hqRow.sync_id, branchTenantId, branchBranchId, null
         );
         out.pushed += 1;
@@ -238,14 +262,17 @@ router.get('/:id', hqAuth, (req, res) => {
 });
 
 // POST /api/hq/products
+// v1.5.0: prices/min_stock/notes removed (branch-owned). Adds default_unit,
+// container, UB barcode. product_type field is gone — branch products
+// always default to 'finished'.
 router.post('/', hqAuth, (req, res) => {
   try {
     const { code, name, category_name, main_category_name, unit,
-            default_cost_price, default_selling_price, min_stock,
-            units_json, status, product_type, image_url, notes } = req.body || {};
+            units_json, status, image_url,
+            default_unit, container_product_sync_id, units_per_container,
+            ub_number_start, ub_number_length, ub_quantity_start,
+            ub_quantity_length, ub_decimal_start } = req.body || {};
     if (!name || !name.trim()) return res.status(400).json({ error: 'name is required' });
-    // Reject case-insensitive dup so the auto-push doesn't make two
-    // products at branches that map to one master.
     const dup = masterDb.prepare(`SELECT id FROM hq_products WHERE LOWER(name) = LOWER(?) AND status != 'Deleted'`).get(name.trim());
     if (dup) return res.status(400).json({ error: 'A product with this name already exists in the HQ master' });
 
@@ -254,39 +281,50 @@ router.post('/', hqAuth, (req, res) => {
     const createdByName = req.user.firstName || req.user.email || 'HQ';
     const info = masterDb.prepare(`
       INSERT INTO hq_products (sync_id, code, name, category_name, main_category_name,
-                               unit, default_cost_price, default_selling_price,
-                               min_stock, units_json, status, product_type,
-                               image_url, notes, created_by, created_by_name)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                               unit, units_json, status, image_url,
+                               default_unit, container_product_sync_id, units_per_container,
+                               ub_number_start, ub_number_length, ub_quantity_start,
+                               ub_quantity_length, ub_decimal_start,
+                               created_by, created_by_name)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     `).run(
       syncId, code || null, name.trim(),
       category_name || null, main_category_name || null,
       unit || 'pcs',
-      parseFloat(default_cost_price) || 0, parseFloat(default_selling_price) || 0,
-      parseFloat(min_stock) || 0, units_json || null,
+      units_json || null,
       (status === 'Inactive' ? 'Inactive' : 'Active'),
-      product_type || 'finished',
-      image_url || null, notes || null,
+      image_url || null,
+      default_unit || null,
+      container_product_sync_id || null,
+      units_per_container ? parseFloat(units_per_container) : null,
+      parseInt(ub_number_start)    || 1,
+      parseInt(ub_number_length)   || 6,
+      parseInt(ub_quantity_start)  || 7,
+      parseInt(ub_quantity_length) || 0,
+      parseInt(ub_decimal_start)   || 2,
       createdBy, createdByName
     );
     const row = masterDb.prepare(`SELECT * FROM hq_products WHERE id = ?`).get(info.lastInsertRowid);
-    const pushReport = pushToBranches(row, { overridePrices: true });
+    const pushReport = pushToBranches(row);
     res.status(201).json({ product: row, push: pushReport });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
 });
 
-// PUT /api/hq/products/:id?override_prices=1
-// Default: branches keep their own cost / selling price. Pass
-// override_prices=1 to force-push the new HQ defaults onto every branch.
+// PUT /api/hq/products/:id
+// v1.5.0: every HQ edit always overwrites the HQ-owned fields on every
+// branch (per user spec). Branch-owned columns (cost, price, min stock,
+// status) are never touched.
 router.put('/:id', hqAuth, (req, res) => {
   try {
     const row = masterDb.prepare(`SELECT * FROM hq_products WHERE id = ?`).get(req.params.id);
     if (!row) return res.status(404).json({ error: 'Product not found' });
     const { code, name, category_name, main_category_name, unit,
-            default_cost_price, default_selling_price, min_stock,
-            units_json, status, product_type, image_url, notes } = req.body || {};
+            units_json, status, image_url,
+            default_unit, container_product_sync_id, units_per_container,
+            ub_number_start, ub_number_length, ub_quantity_start,
+            ub_quantity_length, ub_decimal_start } = req.body || {};
     if (!name || !name.trim()) return res.status(400).json({ error: 'name is required' });
     if (name.trim().toLowerCase() !== row.name.toLowerCase()) {
       const dup = masterDb.prepare(`SELECT id FROM hq_products WHERE LOWER(name) = LOWER(?) AND id != ?`).get(name.trim(), req.params.id);
@@ -295,24 +333,30 @@ router.put('/:id', hqAuth, (req, res) => {
     masterDb.prepare(`
       UPDATE hq_products
          SET code = ?, name = ?, category_name = ?, main_category_name = ?,
-             unit = ?, default_cost_price = ?, default_selling_price = ?,
-             min_stock = ?, units_json = ?, status = ?, product_type = ?,
-             image_url = ?, notes = ?, updated_at = datetime('now')
+             unit = ?, units_json = ?, status = ?, image_url = ?,
+             default_unit = ?, container_product_sync_id = ?, units_per_container = ?,
+             ub_number_start = ?, ub_number_length = ?, ub_quantity_start = ?,
+             ub_quantity_length = ?, ub_decimal_start = ?,
+             updated_at = datetime('now')
        WHERE id = ?
     `).run(
       code || null, name.trim(),
       category_name || null, main_category_name || null,
-      unit || 'pcs',
-      parseFloat(default_cost_price) || 0, parseFloat(default_selling_price) || 0,
-      parseFloat(min_stock) || 0, units_json || null,
+      unit || 'pcs', units_json || null,
       (status === 'Inactive' ? 'Inactive' : 'Active'),
-      product_type || 'finished',
-      image_url || null, notes || null,
+      image_url || null,
+      default_unit || null,
+      container_product_sync_id || null,
+      units_per_container ? parseFloat(units_per_container) : null,
+      parseInt(ub_number_start)    || 1,
+      parseInt(ub_number_length)   || 6,
+      parseInt(ub_quantity_start)  || 7,
+      parseInt(ub_quantity_length) || 0,
+      parseInt(ub_decimal_start)   || 2,
       req.params.id
     );
     const updated = masterDb.prepare(`SELECT * FROM hq_products WHERE id = ?`).get(req.params.id);
-    const overridePrices = req.query.override_prices === '1' || req.query.override_prices === 'true';
-    const pushReport = pushToBranches(updated, { overridePrices });
+    const pushReport = pushToBranches(updated);
     res.json({ product: updated, push: pushReport });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -394,8 +438,7 @@ router.post('/:id/push', hqAuth, (req, res) => {
   try {
     const row = masterDb.prepare(`SELECT * FROM hq_products WHERE id = ?`).get(req.params.id);
     if (!row) return res.status(404).json({ error: 'Product not found' });
-    const overridePrices = req.body?.override_prices === true || req.query.override_prices === '1';
-    res.json(pushToBranches(row, { overridePrices }));
+    res.json(pushToBranches(row));
   } catch (error) {
     res.status(500).json({ error: error.message });
   }

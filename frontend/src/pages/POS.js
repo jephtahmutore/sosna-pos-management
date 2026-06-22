@@ -364,7 +364,15 @@ const POS = () => {
       try {
         const res = await getInventory();
         if (res.data?.length > 0) {
-          const sellable = res.data.filter(p => p.product_type !== 'raw_material' && (p.status || 'Active') === 'Active');
+          // v1.5.0: hide HQ-pushed items that the branch hasn't set a
+          // selling price on yet, and hide anything explicitly Inactive.
+          // Without a price, POS would compute $0 totals — better to keep
+          // the item out of the catalogue until the branch sets a price.
+          const sellable = res.data.filter(p =>
+            p.product_type !== 'raw_material' &&
+            (p.status || 'Active') === 'Active' &&
+            parseFloat(p.selling_price || 0) > 0
+          );
           setProducts(sellable);
           const unique = [...new Set(sellable.map(p => p.category_name).filter(Boolean))].sort();
           setCategories(unique);
@@ -955,7 +963,16 @@ const POS = () => {
       // Refresh stock balances
       try {
         const updated = await getInventory();
-        if (updated.data?.length > 0) setProducts(updated.data);
+        if (updated.data?.length > 0) {
+          // Same v1.5.0 filter as initial load — hide items with no price
+          // or Inactive status.
+          const sellable = updated.data.filter(p =>
+            p.product_type !== 'raw_material' &&
+            (p.status || 'Active') === 'Active' &&
+            parseFloat(p.selling_price || 0) > 0
+          );
+          setProducts(sellable);
+        }
       } catch (err) { /* keep current */ }
     } catch (err) {
       const msg = err.response?.data?.error || err.message || 'Unknown error';

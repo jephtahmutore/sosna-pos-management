@@ -229,6 +229,34 @@ try {
     console.warn('[masterDb] v1.3.3 hq_products migration:', e.message);
   }
 
+  // ── v1.5.0 — HQ-owned vs branch-owned split ──────────────────────────
+  // HQ now owns: code, name, category, base unit, packagings, default unit,
+  // photo, returnable container, UB barcode. Each branch owns: prices,
+  // min stock, status, opening stock, notes.
+  // New hq_products columns mirror the per-product branch fields HQ
+  // controls; pushToBranches copies them into each branch's products
+  // table. Idempotent ALTERs so re-runs on existing master.dbs don't
+  // break.
+  try {
+    const cols = masterDb.prepare(`PRAGMA table_info(hq_products)`).all().map(c => c.name);
+    const addCol = (col, def) => {
+      if (!cols.includes(col)) {
+        masterDb.prepare(`ALTER TABLE hq_products ADD COLUMN ${col} ${def}`).run();
+        cols.push(col);
+      }
+    };
+    addCol('default_unit',              'TEXT');
+    addCol('container_product_sync_id', 'TEXT');
+    addCol('units_per_container',       'REAL');
+    addCol('ub_number_start',           'INTEGER DEFAULT 1');
+    addCol('ub_number_length',          'INTEGER DEFAULT 6');
+    addCol('ub_quantity_start',         'INTEGER DEFAULT 7');
+    addCol('ub_quantity_length',        'INTEGER DEFAULT 0');
+    addCol('ub_decimal_start',          'INTEGER DEFAULT 2');
+  } catch (e) {
+    console.warn('[masterDb] v1.5.0 hq_products column migration:', e.message);
+  }
+
   // ── v1.3.0 — New procurement state machine ────────────────────────────
   // Old model: PENDING (HQ-created) → RECEIVED (branch one-click, AP locked).
   // New model: AWAITING_GRN (HQ-created) → GRN_SUBMITTED (branch enters

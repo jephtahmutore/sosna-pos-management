@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { getProducts, createProduct, updateProduct, updateProductBarcode, deleteProduct, uploadProductImage, deleteProductImage, getSettings, getCategories, getMainCategories, getUnits, deleteAllProducts, importProducts } from '../services/api';
+import { getProducts, createProduct, updateProduct, updateProductBarcode, deleteProduct, uploadProductImage, deleteProductImage, getSettings, getCategories, getMainCategories, getUnits, deleteAllProducts, importProducts, isHqHost } from '../services/api';
 import CategoryFilter from '../components/CategoryFilter';
 import { useLanguage } from '../context/LanguageContext';
 import { useAuth } from '../context/AuthContext';
@@ -80,6 +80,10 @@ const ItemDetails = () => {
   const { t } = useLanguage();
   const { hasPermission, user: authUser } = useAuth();
   const { symbol: curSym } = useCurrency();
+  // v1.5.0: branches don't create products — HQ is the only source. Hide
+  // New Item / Import CSV / Sample CSV on branch hosts. Edit-modal also
+  // locks HQ-owned fields per row (see EditModal: `locked = !!editItem?.is_hq_owned`).
+  const isBranch = !isHqHost();
   const [items, setItems] = useState([]);
   const [dbCategories, setDbCategories] = useState([]);
   const [dbMainCategories, setDbMainCategories] = useState([]);
@@ -601,12 +605,16 @@ const ItemDetails = () => {
           <p>{t('itemsSubtitle')}</p>
         </div>
         <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
-          <button onClick={handleDownloadSample} style={{ display: 'inline-flex', alignItems: 'center', gap: 7, padding: '9px 16px', background: '#f3f4f6', color: '#374151', border: '1px solid #d1d5db', borderRadius: 8, cursor: 'pointer', fontSize: 13, fontWeight: 600 }}>
-            <FiDownload size={14} /> {t('sampleCSV')}
-          </button>
-          <button onClick={() => csvInputRef.current?.click()} disabled={importing} style={{ display: 'inline-flex', alignItems: 'center', gap: 7, padding: '9px 16px', background: importing ? '#d1fae5' : 'linear-gradient(135deg,#059669,#10b981)', color: '#fff', border: 'none', borderRadius: 8, cursor: 'pointer', fontSize: 13, fontWeight: 600, boxShadow: '0 3px 10px rgba(16,185,129,0.3)' }}>
-            <FiUpload size={14} /> {importing ? t('importing') : t('importCSV')}
-          </button>
+          {!isBranch && (
+            <button onClick={handleDownloadSample} style={{ display: 'inline-flex', alignItems: 'center', gap: 7, padding: '9px 16px', background: '#f3f4f6', color: '#374151', border: '1px solid #d1d5db', borderRadius: 8, cursor: 'pointer', fontSize: 13, fontWeight: 600 }}>
+              <FiDownload size={14} /> {t('sampleCSV')}
+            </button>
+          )}
+          {!isBranch && (
+            <button onClick={() => csvInputRef.current?.click()} disabled={importing} style={{ display: 'inline-flex', alignItems: 'center', gap: 7, padding: '9px 16px', background: importing ? '#d1fae5' : 'linear-gradient(135deg,#059669,#10b981)', color: '#fff', border: 'none', borderRadius: 8, cursor: 'pointer', fontSize: 13, fontWeight: 600, boxShadow: '0 3px 10px rgba(16,185,129,0.3)' }}>
+              <FiUpload size={14} /> {importing ? t('importing') : t('importCSV')}
+            </button>
+          )}
           <input ref={csvInputRef} type="file" accept=".csv" style={{ display: 'none' }} onChange={handleImport} />
           <button
             onClick={handlePrint}
@@ -616,7 +624,7 @@ const ItemDetails = () => {
           >
             <FiPrinter size={16} /> {t('print')}
           </button>
-          {hasPermission('Items:Add') && (
+          {!isBranch && hasPermission('Items:Add') && (
           <button className="btn btn-primary" onClick={openNew}>
             <FiPlus /> {t('newItem')}
           </button>
@@ -821,7 +829,7 @@ const ItemDetails = () => {
                     >
                       <FaBarcode />
                     </button>
-                    {hasPermission('Items:Delete') && <button className="action-btn delete" onClick={() => handleDelete(item)} title="Delete item"><FiTrash2 /></button>}
+                    {hasPermission('Items:Delete') && !item.is_hq_owned && <button className="action-btn delete" onClick={() => handleDelete(item)} title="Delete item"><FiTrash2 /></button>}
                   </div>
                 </td>
               </tr>
@@ -832,11 +840,15 @@ const ItemDetails = () => {
       </div>{/* end scrollable */}
 
       {/* ── Add / Edit Modal ──────────────────────────────────────── */}
-      {showModal && (
+      {showModal && (() => {
+        // v1.5.0: HQ-owned products lock the HQ-fields (code, name, category,
+        // unit, packagings, default unit, container, UB barcode, photo).
+        // Only Cost / Selling / Alt Price / Min Stock / Status / Opening
+        // Stock / Notes are branch-editable. Backend PUT enforces this too.
+        const hqLocked = !!(editItem && editItem.is_hq_owned);
+        return (
         <Portal>
         <div className="modal-overlay">
-          {/* Widen this modal beyond the shared 500px so the packaging row
-              (5 columns: unit / conv / cost / price / remove) doesn't squish. */}
           <div className="modal" onClick={e => e.stopPropagation()} style={{ width: 640 }}>
             <div className="modal-header">
               <h3>{editItem ? `${t('edit')} Item` : `${t('newEntry')} Item`}</h3>
@@ -849,7 +861,12 @@ const ItemDetails = () => {
                   <span>{formError}</span>
                 </div>
               )}
-              {editItem && (
+              {hqLocked && (
+                <div style={{ marginBottom: 14, padding: '8px 12px', background: '#fef3c7', border: '1px solid #fde68a', borderRadius: 6, fontSize: 12, color: '#92400e' }}>
+                  <strong>HQ-owned item.</strong> Code, name, category, unit, packagings, photo, container &amp; barcode are managed by HQ. You can only edit <strong>Cost · Selling · Min Stock · Status · Opening Stock</strong>.
+                </div>
+              )}
+              {editItem && !hqLocked && (
                 <div style={{ marginBottom: 14, padding: '8px 12px', background: '#eff6ff', border: '1px solid #bfdbfe', borderRadius: 6, fontSize: 12, color: '#1e40af', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
                   <span>
                     Editable: <strong>Name · Category · Opening Order Price · Selling Price · Alt Selling Price · Status</strong>. Other fields are locked.
@@ -878,7 +895,7 @@ const ItemDetails = () => {
                   <div style={{ display: 'flex', gap: 6 }}>
                     <input
                       value={form.code}
-                      disabled={!!editItem}
+                      disabled={!!editItem || hqLocked}
                       onChange={e => { setForm({ ...form, code: e.target.value }); setFormError(''); }}
                       placeholder="e.g. BF001"
                       style={{ flex: 1, border: formError && !form.code.trim() ? '1.5px solid #dc2626' : undefined }}
@@ -899,6 +916,7 @@ const ItemDetails = () => {
                   <label>Item Name <span style={{ color: '#dc2626' }}>*</span></label>
                   <input
                     value={form.name}
+                    disabled={hqLocked}
                     onChange={e => { setForm({ ...form, name: e.target.value }); setFormError(''); }}
                     placeholder="Product name"
                     style={{ border: formError && !form.name.trim() ? '1.5px solid #dc2626' : undefined }}
@@ -908,7 +926,7 @@ const ItemDetails = () => {
               <div className="form-row">
                 <div className="form-group">
                   <label>Unit</label>
-                  <select value={form.unit || ''} disabled={!!editItem} onChange={e => setForm({ ...form, unit: e.target.value })}>
+                  <select value={form.unit || ''} disabled={!!editItem || hqLocked} onChange={e => setForm({ ...form, unit: e.target.value })}>
                     {/* Always include the current value so editing existing products doesn't lose it */}
                     {form.unit && !dbUnits.some(u => u.name === form.unit) && (
                       <option value={form.unit}>{form.unit}</option>
@@ -926,7 +944,7 @@ const ItemDetails = () => {
                 </div>
                 <div className="form-group">
                   <label>Category</label>
-                  <select value={form.category_id} onChange={e => setForm({ ...form, category_id: e.target.value })}>
+                  <select value={form.category_id} disabled={hqLocked} onChange={e => setForm({ ...form, category_id: e.target.value })}>
                     <option value="">Select Category</option>
                     {dbCategories.map(c => (
                       <option key={c.id} value={c.id}>{c.name}</option>
@@ -987,11 +1005,13 @@ const ItemDetails = () => {
                       &nbsp;Add new units on the <em>Categories and Units</em> page.
                     </div>
                   </div>
-                  <button type="button"
-                    onClick={() => setForm(f => ({ ...f, packagings: [...(f.packagings || []), { name: '', conv: '', price: '' }] }))}
-                    style={{ padding: '6px 12px', background: '#2563eb', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer', fontSize: 12, fontWeight: 600 }}>
-                    + Add Packaging
-                  </button>
+                  {!hqLocked && (
+                    <button type="button"
+                      onClick={() => setForm(f => ({ ...f, packagings: [...(f.packagings || []), { name: '', conv: '', price: '' }] }))}
+                      style={{ padding: '6px 12px', background: '#2563eb', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer', fontSize: 12, fontWeight: 600 }}>
+                      + Add Packaging
+                    </button>
+                  )}
                 </div>
 
                 {(form.packagings || []).length === 0 ? (
@@ -1003,7 +1023,7 @@ const ItemDetails = () => {
                     {(form.packagings || []).map((p, idx) => {
                       // Only conversion is locked for rows loaded from the saved product; name + price stay editable,
                       // and any "+ Add Packaging" rows added during this session are fully editable.
-                      const lockConv = !!p._locked;
+                      const lockConv = !!p._locked || hqLocked;
                       return (
                         <div key={idx} style={{ display: 'grid', gridTemplateColumns: '1.3fr 1fr 1.1fr 1.4fr auto', gap: 8, alignItems: 'end', background: '#fff', padding: 10, borderRadius: 8, border: '1px solid #e5e7eb' }}>
                           <div className="form-group" style={{ margin: 0 }}>
@@ -1097,8 +1117,9 @@ const ItemDetails = () => {
                 </div>
                 <select
                   value={form.default_unit || ''}
+                  disabled={hqLocked}
                   onChange={e => setForm({ ...form, default_unit: e.target.value })}
-                  style={{ width: '100%', maxWidth: 320, padding: '9px 10px', border: '1px solid #bfdbfe', borderRadius: 6, fontSize: 14, background: '#fff' }}
+                  style={{ width: '100%', maxWidth: 320, padding: '9px 10px', border: '1px solid #bfdbfe', borderRadius: 6, fontSize: 14, background: hqLocked ? '#f1f5f9' : '#fff' }}
                 >
                   <option value="">— Use base unit ({form.unit || 'pcs'}) —</option>
                   <option value={form.unit || 'pcs'}>{form.unit || 'pcs'} (base)</option>
@@ -1119,6 +1140,7 @@ const ItemDetails = () => {
                   <div className="form-group">
                     <label>Container Product</label>
                     <select value={form.container_product_sync_id || ''}
+                      disabled={hqLocked}
                       onChange={e => setForm({ ...form, container_product_sync_id: e.target.value })}>
                       <option value="">— No linked container —</option>
                       {items
@@ -1135,6 +1157,7 @@ const ItemDetails = () => {
                   <div className="form-group">
                     <label>Units per Container</label>
                     <input type="number" min="0" step="1" value={form.units_per_container}
+                      disabled={hqLocked}
                       onChange={e => setForm({ ...form, units_per_container: e.target.value })}
                       placeholder="e.g. 24" />
                     <small style={{ color: '#92400e', fontSize: 11 }}>How many bottles fit in one crate (used by GRN to suggest crate count).</small>
@@ -1206,11 +1229,17 @@ const ItemDetails = () => {
                     </div>
                   )}
                   <div>
-                    <label htmlFor="product-image-input" style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '8px 16px', borderRadius: 8, cursor: 'pointer', background: 'linear-gradient(135deg, #2563eb, #1d4ed8)', color: '#fff', fontSize: 13, fontWeight: 600, boxShadow: '0 2px 8px rgba(37,99,235,0.3)' }}>
-                      <FiCamera size={14} /> {imagePreview ? 'Change Photo' : 'Upload Photo'}
-                    </label>
-                    <input id="product-image-input" type="file" accept="image/*" onChange={handleImageChange} style={{ display: 'none' }} />
-                    <p style={{ margin: '6px 0 0', fontSize: 11, color: '#9ca3af' }}>JPG, PNG, WEBP · Max 5MB</p>
+                    {hqLocked ? (
+                      <div style={{ fontSize: 12, color: '#92400e', background: '#fef3c7', border: '1px solid #fde68a', padding: '6px 10px', borderRadius: 6 }}>Photo is managed by HQ.</div>
+                    ) : (
+                      <>
+                        <label htmlFor="product-image-input" style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '8px 16px', borderRadius: 8, cursor: 'pointer', background: 'linear-gradient(135deg, #2563eb, #1d4ed8)', color: '#fff', fontSize: 13, fontWeight: 600, boxShadow: '0 2px 8px rgba(37,99,235,0.3)' }}>
+                          <FiCamera size={14} /> {imagePreview ? 'Change Photo' : 'Upload Photo'}
+                        </label>
+                        <input id="product-image-input" type="file" accept="image/*" onChange={handleImageChange} style={{ display: 'none' }} />
+                        <p style={{ margin: '6px 0 0', fontSize: 11, color: '#9ca3af' }}>JPG, PNG, WEBP · Max 5MB</p>
+                      </>
+                    )}
                   </div>
                 </div>
               </div>
@@ -1222,7 +1251,8 @@ const ItemDetails = () => {
           </div>
         </div>
         </Portal>
-      )}
+        );
+      })()}
 
       {/* ── Barcode Settings Modal ────────────────────────────────── */}
       {showBarcodeModal && barcodeItem && (

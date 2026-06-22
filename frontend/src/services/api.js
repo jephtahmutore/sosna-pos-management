@@ -224,11 +224,11 @@ export const rejectHqDamage  = (slug, id, data) => api.put(`/hq/damages/${slug}/
 export const getHqProducts = (params) => api.get('/hq/products', { params });
 export const getHqProduct  = (id) => api.get(`/hq/products/${id}`);
 export const createHqProduct = (data) => api.post('/hq/products', data);
-export const updateHqProduct = (id, data, overridePrices = false) =>
-  api.put(`/hq/products/${id}` + (overridePrices ? '?override_prices=1' : ''), data);
+// v1.5.0: override_prices param dropped — HQ never touches branch prices.
+// Every save pushes HQ-owned columns only.
+export const updateHqProduct = (id, data) => api.put(`/hq/products/${id}`, data);
 export const deleteHqProduct = (id) => api.delete(`/hq/products/${id}`);
-export const pushHqProduct   = (id, overridePrices = false) =>
-  api.post(`/hq/products/${id}/push`, { override_prices: overridePrices });
+export const pushHqProduct   = (id) => api.post(`/hq/products/${id}/push`);
 export const reverseOrderItem = (orderId, itemId, quantity, unit) => {
   const body = {};
   if (quantity != null) body.quantity = quantity;
