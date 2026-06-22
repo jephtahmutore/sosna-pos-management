@@ -143,7 +143,7 @@ router.post('/', auth, requirePagePerm('FxRates'), (req, res) => {
     if (!isFinite(sell) || sell <= 0) return res.status(400).json({ error: 'sell_rate must be > 0' });
     if (!isFinite(buy)  || buy  <= 0) return res.status(400).json({ error: 'buy_rate must be > 0' });
 
-    const cfg = syncConfig.read() || {};
+    const cfg = syncConfig.getConfig() || {};
     const result = db.prepare(`
       INSERT INTO fx_rates
         (sync_id, effective_date, sell_rate, buy_rate, notes,
