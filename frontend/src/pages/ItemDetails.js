@@ -1146,9 +1146,13 @@ const ItemDetails = () => {
                 <div className="form-group">
                   <label>Opening Stock</label>
                   <input type="number" min="0" step="1" value={form.current_stock}
-                    disabled={!!editItem}
                     onChange={e => setForm({ ...form, current_stock: e.target.value })}
                     onBlur={e => { if (e.target.value !== '' && parseFloat(e.target.value) < 0) setForm(f => ({ ...f, current_stock: '0' })); }} />
+                  {editItem && (
+                    <div style={{ fontSize: 10, color: '#92400e', marginTop: 4 }}>
+                      Editing this replaces the prior opening balance — the original 'opening' stock movement is voided and a new one is created.
+                    </div>
+                  )}
                 </div>
                 <div className="form-group">
                   <label>Min. Stock</label>

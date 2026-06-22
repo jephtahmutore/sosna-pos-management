@@ -452,8 +452,7 @@ const Layout = () => {
                       <FiFileText className="nav-icon" /> <span>{t('salesReport')}</span>
                     </div>
                   )}
-                  {/* Sales Inventory — replaced by Stock Reconciliation (Sales floor). Hidden but route still works in case of legacy access. */}
-                  {false && hasPageAccess('SalesInventory') && (
+                  {hasPageAccess('SalesInventory') && (
                     <div className={`nav-item ${isActive('/pos/sales-inventory') ? 'active' : ''}`} onClick={() => navigate('/pos/sales-inventory')}>
                       <FiList className="nav-icon" /> <span>{t('salesInventory')}</span>
                     </div>
