@@ -17,6 +17,12 @@ import { useCurrency } from '../context/CurrencyContext';
 const todayISO = () => new Date().toISOString().slice(0, 10);
 const fmtRate = (n) => parseFloat(n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
+// Mirror of the Cashier / POS fallback. When no fx_rates row exists yet
+// the page still shows these numbers (labelled "system default") so the
+// manager sees what the till is actually using right now, not a blank.
+const FALLBACK_SELL = 2900;
+const FALLBACK_BUY  = 2600;
+
 export default function FxRates() {
   const { currencyMode } = useCurrency();
   const isDual = currencyMode === 'USD+FRA';
@@ -100,7 +106,9 @@ export default function FxRates() {
     );
   }
 
-  const current = rows.find(r => r.effective_date <= todayISO()) || rows[0];
+  const savedCurrent = rows.find(r => r.effective_date <= todayISO()) || rows[0];
+  const isFallback = !savedCurrent;
+  const current = savedCurrent || { sell_rate: FALLBACK_SELL, buy_rate: FALLBACK_BUY };
 
   return (
     <div className="page-content">
@@ -124,27 +132,33 @@ export default function FxRates() {
       {/* Current effective rate banner */}
       <div style={{ background: '#fff', border: '1px solid #e5e7eb', borderRadius: 12, padding: 16, marginBottom: 18, display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
         <div>
-          <div style={{ color: '#64748b', fontSize: 11, fontWeight: 600, letterSpacing: 0.4, textTransform: 'uppercase' }}>Current Sell Rate</div>
+          <div style={{ color: '#64748b', fontSize: 11, fontWeight: 600, letterSpacing: 0.4, textTransform: 'uppercase', display: 'flex', alignItems: 'center', gap: 6 }}>
+            Current Sell Rate
+            {isFallback && <span style={badgeStyle}>System default</span>}
+          </div>
           <div style={{ fontSize: 26, fontWeight: 800, color: '#0f172a', display: 'flex', alignItems: 'baseline', gap: 6 }}>
-            {current ? fmtRate(current.sell_rate) : '—'}
+            {fmtRate(current.sell_rate)}
             <span style={{ fontSize: 12, color: '#64748b', fontWeight: 500 }}>FRA / USD</span>
           </div>
         </div>
         <div>
-          <div style={{ color: '#64748b', fontSize: 11, fontWeight: 600, letterSpacing: 0.4, textTransform: 'uppercase' }}>Current Buy Rate</div>
+          <div style={{ color: '#64748b', fontSize: 11, fontWeight: 600, letterSpacing: 0.4, textTransform: 'uppercase', display: 'flex', alignItems: 'center', gap: 6 }}>
+            Current Buy Rate
+            {isFallback && <span style={badgeStyle}>System default</span>}
+          </div>
           <div style={{ fontSize: 26, fontWeight: 800, color: '#0f172a', display: 'flex', alignItems: 'baseline', gap: 6 }}>
-            {current ? fmtRate(current.buy_rate) : '—'}
+            {fmtRate(current.buy_rate)}
             <span style={{ fontSize: 12, color: '#64748b', fontWeight: 500 }}>FRA / USD</span>
           </div>
         </div>
-        {current && (
+        {!isFallback && (
           <div style={{ gridColumn: '1 / -1', fontSize: 11, color: '#94a3b8' }}>
             In effect since {current.effective_date}{current.set_by_name ? ` · set by ${current.set_by_name}` : ''}{current.notes ? ` · ${current.notes}` : ''}
           </div>
         )}
-        {!current && (
+        {isFallback && (
           <div style={{ gridColumn: '1 / -1', fontSize: 12, color: '#92400e', background: '#fef3c7', padding: '8px 10px', borderRadius: 6 }}>
-            No rate set yet. Cashier is using the fallback default <b>SELL 2900 / BUY 2600</b>. Add a row below.
+            No manual rate set yet. POS &amp; Cashier are using the system default shown above. Add a row below to override.
           </div>
         )}
       </div>
@@ -242,3 +256,4 @@ const lblStyle = { display: 'block', fontSize: 11, fontWeight: 600, color: '#475
 const inputStyle = { width: '100%', padding: '8px 10px', border: '1px solid #cbd5e1', borderRadius: 6, fontSize: 14, boxSizing: 'border-box' };
 const thStyle = { textAlign: 'left', padding: '10px 14px', fontWeight: 700 };
 const tdStyle = { padding: '10px 14px', color: '#0f172a' };
+const badgeStyle = { background: '#fef3c7', color: '#92400e', padding: '1px 6px', borderRadius: 8, fontSize: 9, fontWeight: 700, letterSpacing: 0.3, textTransform: 'uppercase' };
