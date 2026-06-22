@@ -14,15 +14,46 @@ const { auth, readOnlyGuard, requirePagePerm } = require('../middleware/auth');
 const syncConfig = require('../config/syncConfig');
 const { randomUUID } = require('crypto');
 
-// In-memory cache for the BCC live rate. fawazahmed0/currency-api refreshes
-// daily, so a 30-minute server-side cache is more than enough and protects
-// the upstream from rapid Refresh-button mashing.
+// In-memory cache for the BCC live rate. open.er-api.com refreshes daily,
+// so a 30-minute server-side cache is more than enough and protects the
+// upstream from rapid Refresh-button mashing.
 //
-// Same source as the chart's live-history endpoint — keeps the card value
-// and the chart's most-recent point in lock-step (previously the card used
-// open.er-api.com and the two aggregators disagreed by ~0.5%).
+// open.er-api.com is the source the user picked for the card. It only
+// publishes "latest" (no historical endpoint), so the chart still uses
+// fawazahmed0 for past 6 days — but today's chart point is filled from
+// THIS cache so the card and the most-recent chart bar always agree.
 const LIVE_TTL_MS = 30 * 60 * 1000;
 let liveCache = null; // { fetchedAt, payload }
+
+function fetchLiveUsdCdf() {
+  return new Promise((resolve, reject) => {
+    const req = https.get('https://open.er-api.com/v6/latest/USD', {
+      timeout: 6000,
+      headers: { 'User-Agent': 'sosna-pos/1.0' },
+    }, (res) => {
+      let body = '';
+      res.on('data', chunk => { body += chunk; });
+      res.on('end', () => {
+        try {
+          const j = JSON.parse(body);
+          if (j.result !== 'success' || !j.rates || !j.rates.CDF) {
+            return reject(new Error('Unexpected response from open.er-api.com'));
+          }
+          resolve({
+            source: 'open.er-api.com (BCC official)',
+            base: 'USD',
+            quote: 'CDF',
+            rate: parseFloat(j.rates.CDF),
+            time_last_update: j.time_last_update_utc || null,
+            time_next_update: j.time_next_update_utc || null,
+          });
+        } catch (e) { reject(e); }
+      });
+    });
+    req.on('timeout', () => { req.destroy(new Error('Live rate request timed out')); });
+    req.on('error', reject);
+  });
+}
 
 // fawazahmed0/currency-api hosts daily snapshots from 2024-03-06 onwards.
 // jsdelivr URL pattern, no auth required:
@@ -148,25 +179,17 @@ router.delete('/:id', auth, requirePagePerm('FxRates'), (req, res) => {
 // Returns the upstream rate verbatim plus a fetchedAt stamp so the UI can
 // show "updated 14:05". Cached in-memory for 30min to be polite to the
 // free public API.
+// Returns today's value AND mirrors it into historyCache for the chart so
+// /live-history's most-recent point uses the exact same number this card
+// just displayed (single source of truth for "today").
 router.get('/live', auth, readOnlyGuard, async (req, res) => {
   try {
     const fresh = liveCache && (Date.now() - liveCache.fetchedAt) < LIVE_TTL_MS;
     if (!fresh) {
-      const rate = await fetchUsdCdfOnDate('latest');
-      // Mirror today's value into historyCache so the chart shows the
-      // exact same number on today's point — single source of truth.
+      const payload = await fetchLiveUsdCdf();
+      liveCache = { fetchedAt: Date.now(), payload };
       const todayStr = new Date().toISOString().slice(0, 10);
-      historyCache.set(todayStr, { rate, fetchedAt: Date.now() });
-      liveCache = {
-        fetchedAt: Date.now(),
-        payload: {
-          source: 'fawazahmed0/currency-api (BCC daily)',
-          base: 'USD',
-          quote: 'CDF',
-          rate,
-          time_last_update: new Date().toISOString(),
-        },
-      };
+      historyCache.set(todayStr, { rate: payload.rate, fetchedAt: Date.now() });
     }
     res.json({
       ...liveCache.payload,
@@ -200,7 +223,18 @@ router.get('/live-history', auth, readOnlyGuard, async (req, res) => {
         return { date, rate: cached.rate };
       }
       try {
-        const rate = await fetchUsdCdfOnDate(date);
+        // TODAY uses the same upstream as the Live Market Rate card
+        // (open.er-api.com) so the card and the chart's last point agree
+        // exactly. Past days come from fawazahmed0 because open.er-api.com
+        // doesn't expose a historical endpoint.
+        let rate;
+        if (isToday) {
+          const payload = await fetchLiveUsdCdf();
+          rate = payload.rate;
+          liveCache = { fetchedAt: Date.now(), payload };
+        } else {
+          rate = await fetchUsdCdfOnDate(date);
+        }
         historyCache.set(date, { rate, fetchedAt: Date.now() });
         return { date, rate };
       } catch {
@@ -208,7 +242,7 @@ router.get('/live-history', auth, readOnlyGuard, async (req, res) => {
       }
     }));
     res.json({
-      source: 'fawazahmed0/currency-api (BCC daily)',
+      source: 'open.er-api.com (today) + fawazahmed0/currency-api (past days)',
       base: 'USD',
       quote: 'CDF',
       days,
