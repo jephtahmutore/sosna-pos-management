@@ -8,7 +8,7 @@ const router = require('express').Router();
 const path = require('path');
 const fs = require('fs');
 const multer = require('multer');
-const { auth } = require('../middleware/auth');
+const { auth, withTenantDb } = require('../middleware/auth');
 const { randomUUID } = require('crypto');
 
 // Resolve where to drop uploaded files for the incoming request. Tenant server sets
@@ -64,7 +64,7 @@ const uploadMw = (req, res, next) => {
   });
 };
 
-router.post('/', auth, uploadMw, (req, res) => {
+router.post('/', auth, uploadMw, withTenantDb, (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
   const rel = `invoices/${req.file.filename}`;
   // eslint-disable-next-line no-console

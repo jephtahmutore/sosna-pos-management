@@ -1,6 +1,6 @@
 const router = require('express').Router();
 const db = require('../config/database');
-const { auth, readOnlyGuard } = require('../middleware/auth');
+const { auth, readOnlyGuard, withTenantDb } = require('../middleware/auth');
 const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
@@ -355,7 +355,7 @@ router.patch('/:id/barcode', auth, (req, res) => {
 });
 
 // Upload product image
-router.post('/:id/image', auth, upload.single('image'), (req, res) => {
+router.post('/:id/image', auth, upload.single('image'), withTenantDb, (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ error: 'No image file provided' });
     const imageUrl = `/uploads/products/${req.file.filename}`;
@@ -431,7 +431,7 @@ function parseCSV(text) {
   return rows;
 }
 
-router.post('/import', auth, csvUploadMem.single('file'), (req, res) => {
+router.post('/import', auth, csvUploadMem.single('file'), withTenantDb, (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ error: 'No file provided' });
     const text = req.file.buffer.toString('utf8');

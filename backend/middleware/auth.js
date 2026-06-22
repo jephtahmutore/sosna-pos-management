@@ -66,4 +66,21 @@ function requirePagePerm(page) {
   };
 }
 
-module.exports = { auth, adminOnly, readOnlyGuard, requirePagePerm };
+// Re-enter the per-tenant AsyncLocalStorage context for handlers that run
+// AFTER async middleware (multer file uploads, etc.). multer's stream-based
+// processing drops the ALS context that tenant middleware originally set
+// via runWithDb, so by the time the route handler runs `db.proxy` falls
+// back to defaultDb — every write silently lands in backend/sosna.db
+// instead of the tenant's DB. tenant.js stashes the tenantDb on req before
+// runWithDb; this middleware re-establishes the context just before the
+// handler. Mount it AFTER the multer middleware:
+//
+//   router.post('/import', auth, multer.single('file'), withTenantDb, h)
+function withTenantDb(req, res, next) {
+  if (req.tenantDb) {
+    return db.runWithDb(req.tenantDb, () => next());
+  }
+  next();
+}
+
+module.exports = { auth, adminOnly, readOnlyGuard, requirePagePerm, withTenantDb };

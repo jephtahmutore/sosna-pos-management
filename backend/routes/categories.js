@@ -1,6 +1,6 @@
 const router = require('express').Router();
 const db = require('../config/database');
-const { auth, readOnlyGuard } = require('../middleware/auth');
+const { auth, readOnlyGuard, withTenantDb } = require('../middleware/auth');
 const syncConfig = require('../config/syncConfig');
 const { randomUUID } = require('crypto');
 const multer = require('multer');
@@ -76,7 +76,7 @@ router.delete('/all', auth, (req, res) => {
   }
 });
 
-router.post('/import', auth, csvUpload.single('file'), (req, res) => {
+router.post('/import', auth, csvUpload.single('file'), withTenantDb, (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ error: 'No file provided' });
     const text = req.file.buffer.toString('utf8');

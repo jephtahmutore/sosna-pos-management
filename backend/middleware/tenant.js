@@ -44,6 +44,9 @@ module.exports = function tenantMiddleware(req, res, next) {
           if (row?.value) req.hqBranchTenantId = row.value;
         } catch (_) { /* fresh DB — no row yet */ }
         req.hqBranchSlug = xBranch;
+        // Stash on req so handlers can re-enter the runWithDb context after
+        // async middleware (multer, etc.) that drops the AsyncLocalStorage.
+        req.tenantDb = branchDb;
         return runWithDb(branchDb, () => next());
       } catch (err) {
         console.error(`[tenant] HQ branch-switch open failed for "${xBranch}":`, err.message);
@@ -64,6 +67,14 @@ module.exports = function tenantMiddleware(req, res, next) {
 
   try {
     const tenantDb = getTenantDb(slug);
+    // Stash on req so handlers can re-enter the runWithDb context after
+    // async middleware (multer file uploads, etc.) that drops the
+    // AsyncLocalStorage. Without this stash, multer-using POST routes
+    // (CSV import, image upload, attachments) silently wrote to the
+    // default DB instead of the tenant's — confirmed via diagnostic on
+    // 2026-06-22: 242 products had landed in backend/sosna.db while
+    // tenants/kassumbalesa1.db had 0.
+    req.tenantDb = tenantDb;
     runWithDb(tenantDb, () => next());
   } catch (err) {
     console.error(`[tenant] Failed to open DB for "${slug}":`, err.message);
