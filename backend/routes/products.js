@@ -439,12 +439,17 @@ router.post('/import', auth, csvUploadMem.single('file'), (req, res) => {
     const tenantId = syncConfig.getTenantId(req);
     const { branchId, deviceId } = syncConfig.getConfig();
     let imported = 0, skipped = 0;
+    // 24 columns total = 21 bound (?) + 3 literals (synced=0, created_at=datetime('now'), updated_at=datetime('now')).
+    // Earlier this had an extra ? (22 bound), which SQLite rejected on tenant
+    // DBs with "25 values for 24 columns" — that's what broke CSV import on
+    // the web build (the Electron DB had been migrated with an extra column
+    // at some point so the mismatch wasn't visible there).
     const insertStmt = db.prepare(
       `INSERT INTO products (code, name, category_id, category_sync_id, unit, cost_price, selling_price, current_stock, min_stock,
        ub_number_start, ub_number_length, ub_quantity_start, ub_quantity_length, ub_decimal_start,
        alt_unit, conversion_factor, alt_price,
        sync_id, tenant_id, branch_id, device_id, synced, created_at, updated_at)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,datetime('now'),datetime('now'))`
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,datetime('now'),datetime('now'))`
     );
     const checkCodeStmt = db.prepare("SELECT id FROM products WHERE code = ? AND deleted_at IS NULL");
     const getCatStmt = db.prepare("SELECT id, sync_id FROM categories WHERE name = ? AND deleted_at IS NULL");

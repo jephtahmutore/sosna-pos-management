@@ -363,7 +363,15 @@ const ItemDetails = () => {
 
   const openNew = () => {
     setEditItem(null);
-    setForm({ code: '', name: '', category_id: '', unit: 'pcs', cost_price: '', selling_price: '', current_stock: '', min_stock: '', min_stock_unit: '', product_type: 'sellable', status: 'Active', packagings: [], container_product_sync_id: '', units_per_container: '', default_unit: '' });
+    // Pre-generate the code so the user can just type a name + save.
+    // Mirrors generateCode() but inlined because that one reads
+    // form.category_id from state (which we just cleared in this same
+    // tick — it'd still see the previous form value due to React's
+    // batched updates). 'IT' is the empty-category prefix.
+    const taken = new Set(items.map(i => i.code));
+    let n = 1, code;
+    do { code = `IT${String(n).padStart(3, '0')}`; n++; } while (taken.has(code));
+    setForm({ code, name: '', category_id: '', unit: 'pcs', cost_price: '', selling_price: '', current_stock: '', min_stock: '', min_stock_unit: '', product_type: 'sellable', status: 'Active', packagings: [], container_product_sync_id: '', units_per_container: '', default_unit: '' });
     setImageFile(null); setImagePreview(null); setFormError('');
     setShowModal(true);
   };
