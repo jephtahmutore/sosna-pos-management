@@ -479,15 +479,15 @@ function renderCashierReceipt({ biz, order, calc, cashierName, when, sellRate: _
   const fmtFra = (n) => Math.round(parseFloat(n || 0)).toLocaleString('en-US');
   const div = '='.repeat(42);
   const da  = '-'.repeat(42);
+  // Item row: NAME on the left, QTY + unit on the right. Per-line PRICE
+  // and TOTAL columns removed per Sosna's redesign — the customer only
+  // sees what they're paying via Subtotal / TOTAL DUE.
   const itemsRows = (order.items || []).map(it => {
     const qty = parseFloat(it.quantity || 0);
-    const up  = parseFloat(it.unit_price || 0);
-    const lt  = parseFloat(it.total_price || qty * up);
-    return `<tr><td colspan="4">${String(it.product_name).replace(/</g, '&lt;')}</td></tr>
-            <tr>
-              <td style="padding-left:6px;">${qty.toFixed(2)} ${it.unit || ''}</td><td></td>
-              <td style="text-align:right;">$${fmt(up)}</td>
-              <td style="text-align:right;">$${fmt(lt)}</td>
+    const safeName = String(it.product_name).replace(/</g, '&lt;');
+    return `<tr>
+              <td>${safeName}</td>
+              <td style="text-align:right; white-space:nowrap;">${qty % 1 === 0 ? qty.toFixed(0) : qty.toFixed(2)} ${it.unit || ''}</td>
             </tr>`;
   }).join('');
   const usedFra = (calc.paidFRA > 0.0001) || (calc.givenFRA > 0.0001);
@@ -526,10 +526,8 @@ function renderCashierReceipt({ biz, order, calc, cashierName, when, sellRate: _
   <div class="divider">${div}</div>
   <table>
     <tr style="font-size:10px;">
-      <td style="width:42%;font-weight:700;">ITEM</td>
-      <td style="width:18%;text-align:center;font-weight:700;">QTY</td>
-      <td style="width:20%;text-align:right;font-weight:700;">PRICE</td>
-      <td style="width:20%;text-align:right;font-weight:700;">TOTAL</td>
+      <td style="font-weight:700;">ITEM</td>
+      <td style="text-align:right;font-weight:700;">QTY</td>
     </tr>
     ${itemsRows}
   </table>
@@ -562,13 +560,8 @@ function renderCashierReceipt({ biz, order, calc, cashierName, when, sellRate: _
       <table>
         ${calc.givenUSD > 0.0001 ? `<tr><td>Change Given ($)</td><td></td><td></td><td style="text-align:right;">$${fmt(calc.givenUSD)}</td></tr>` : ''}
         ${calc.givenFRA > 0.0001 ? `<tr><td>Change Given (FRA)</td><td></td><td></td><td style="text-align:right;">FRA ${fmtFra(calc.givenFRA)}</td></tr>` : ''}
-        <tr class="amt"><td>${Math.abs(calc.netRemaining) < 0.01 ? 'Exact Change' : 'Still Owed'}</td><td></td><td></td><td style="text-align:right;">$${fmt(Math.abs(calc.netRemaining))}</td></tr>
       </table>
     ` : ''}
-  ` : calc.unpaidBalance > 0.0001 ? `
-    <table>
-      <tr class="amt"><td>*** BALANCE DUE ***</td><td></td><td></td><td style="text-align:right;">$${fmt(calc.unpaidBalance)}</td></tr>
-    </table>
   ` : ''}
   <div class="divider">${div}</div>
   <div class="c" style="margin-top:4px;">Thank you for your purchase!</div>

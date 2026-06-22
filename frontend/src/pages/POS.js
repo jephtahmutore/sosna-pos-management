@@ -798,15 +798,13 @@ const POS = () => {
     const curSym = '$';
     const fmt = (n) => parseFloat(n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
     const div = '='.repeat(42);
+    // Name + qty only. Per-line PRICE/TOTAL columns removed per redesign.
     const itemsRows = (snap.items || []).map(it => {
       const qty = parseFloat(it.quantity || 0);
-      const up  = parseFloat(it.unit_price || 0);
-      const lt  = parseFloat(it.total_price || qty * up);
-      return `<tr><td colspan="4">${String(it.product_name).replace(/</g, '&lt;')}</td></tr>
-              <tr>
-                <td style="padding-left:6px;">${qty.toFixed(2)} ${it.unit || ''}</td><td></td>
-                <td style="text-align:right;">${curSym}${fmt(up)}</td>
-                <td style="text-align:right;">${curSym}${fmt(lt)}</td>
+      const safeName = String(it.product_name).replace(/</g, '&lt;');
+      return `<tr>
+                <td>${safeName}</td>
+                <td style="text-align:right; white-space:nowrap;">${qty % 1 === 0 ? qty.toFixed(0) : qty.toFixed(2)} ${it.unit || ''}</td>
               </tr>`;
     }).join('');
     const disc = snap.discount > 0
@@ -829,10 +827,8 @@ const POS = () => {
       <div class="divider">${div}</div>
       <table>
         <tr style="font-size:10px;">
-          <td style="width:42%;font-weight:700;">ITEM</td>
-          <td style="width:18%;text-align:center;font-weight:700;">QTY</td>
-          <td style="width:20%;text-align:right;font-weight:700;">PRICE</td>
-          <td style="width:20%;text-align:right;font-weight:700;">TOTAL</td>
+          <td style="font-weight:700;">ITEM</td>
+          <td style="text-align:right;font-weight:700;">QTY</td>
         </tr>
         ${itemsRows}
       </table>
@@ -1009,26 +1005,19 @@ const POS = () => {
     const div42eq = '='.repeat(42);
     const div42da = '-'.repeat(42);
 
+    // Name + qty only. Per-line PRICE/TOTAL removed per redesign — the
+    // customer sees what they're paying via Subtotal / TOTAL.
     let fallbackHasAltUnit = false;
     const itemsRows = data.items.map(item => {
       const isAltUnit = isNonDefaultUnit(item);
       if (isAltUnit) fallbackHasAltUnit = true;
       const nameLabel = item.product_name + (isAltUnit ? ' **' : '');
-      const lineDisc = parseFloat(item.discount || 0);
-      const grossLineTotal = parseFloat(item.quantity) * parseFloat(item.unit_price);
-      const lineDiscTotal = parseFloat(item.quantity) * lineDisc;
-      const discSubRow = lineDisc > 0
-        ? `<tr><td></td><td colspan="2" style="text-align:right;font-size:10px;color:#444;">discount ${item.quantity} × -${curSym}${fmt(lineDisc)}</td><td style="text-align:right;font-size:10px;color:#444;">-${curSym}${fmt(lineDiscTotal)}</td></tr>`
-        : '';
-      return `
-      <tr><td colspan="4" style="font-weight:700;padding-top:4px;">${nameLabel}</td></tr>
-      <tr>
-        <td></td>
-        <td style="text-align:center;">${item.quantity}&nbsp;${item.unit || ''}</td>
-        <td style="text-align:right;">${curSym}${fmt(item.unit_price)}</td>
-        <td style="text-align:right;">${curSym}${fmt(grossLineTotal)}</td>
-      </tr>
-      ${discSubRow}`;
+      const qty = parseFloat(item.quantity || 0);
+      const qtyStr = qty % 1 === 0 ? qty.toFixed(0) : qty.toFixed(2);
+      return `<tr>
+        <td>${nameLabel}</td>
+        <td style="text-align:right; white-space:nowrap;">${qtyStr} ${item.unit || ''}</td>
+      </tr>`;
     }).join('');
 
     // Total discount on the receipt = line discounts + cart-level discount
@@ -1040,9 +1029,12 @@ const POS = () => {
       ? `<tr><td>Discount</td><td></td><td></td><td style="text-align:right;">-${curSym}${fmt(totalDisc)}</td></tr>`
       : '';
 
+    // Redesign: BALANCE DUE removed from print. CHANGE stays so the
+    // customer sees what they get back. If underpaid, nothing prints
+    // below the payment block.
     const changeRow = data.amountReceived >= data.total
       ? `<tr class="amt"><td>*** CHANGE ***</td><td></td><td></td><td style="text-align:right;">${curSym}${fmt(data.change)}</td></tr>`
-      : `<tr class="amt"><td>*** BALANCE DUE ***</td><td></td><td></td><td style="text-align:right;">${curSym}${fmt(data.total - data.amountReceived)}</td></tr>`;
+      : '';
 
     const html = `<!DOCTYPE html>
 <html>
@@ -1087,10 +1079,8 @@ const POS = () => {
 
   <table>
     <tr style="font-size:10px;">
-      <td style="width:42%;font-weight:700;">ITEM</td>
-      <td style="width:18%;text-align:center;font-weight:700;">QTY</td>
-      <td style="width:20%;text-align:right;font-weight:700;">PRICE</td>
-      <td style="width:20%;text-align:right;font-weight:700;">TOTAL</td>
+      <td style="font-weight:700;">ITEM</td>
+      <td style="text-align:right;font-weight:700;">QTY</td>
     </tr>
     ${itemsRows}
   </table>
