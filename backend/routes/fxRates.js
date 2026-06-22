@@ -50,6 +50,45 @@ function fetchLiveUsdCdf() {
   });
 }
 
+// fawazahmed0/currency-api hosts daily snapshots from 2024-03-06 onwards.
+// jsdelivr URL pattern, no auth required:
+//   https://cdn.jsdelivr.net/npm/@fawazahmed0/currency-api@YYYY-MM-DD/v1/currencies/usd.json
+// Historical entries never change so we cache them forever (process lifetime).
+const historyCache = new Map(); // 'YYYY-MM-DD' -> { rate, fetchedAt }
+const HISTORY_TODAY_TTL_MS = 30 * 60 * 1000;
+
+function fetchUsdCdfOnDate(date) {
+  return new Promise((resolve, reject) => {
+    const url = `https://cdn.jsdelivr.net/npm/@fawazahmed0/currency-api@${date}/v1/currencies/usd.json`;
+    const tryGet = (u, hopsLeft) => {
+      const req = https.get(u, { timeout: 6000, headers: { 'User-Agent': 'sosna-pos/1.0' } }, (res) => {
+        // jsdelivr 301-redirects to a versioned URL on the actual CDN
+        if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location && hopsLeft > 0) {
+          res.resume();
+          return tryGet(res.headers.location, hopsLeft - 1);
+        }
+        if (res.statusCode !== 200) {
+          res.resume();
+          return reject(new Error(`HTTP ${res.statusCode} for ${date}`));
+        }
+        let body = '';
+        res.on('data', c => { body += c; });
+        res.on('end', () => {
+          try {
+            const j = JSON.parse(body);
+            const r = j?.usd?.cdf;
+            if (typeof r !== 'number') return reject(new Error(`No CDF for ${date}`));
+            resolve(r);
+          } catch (e) { reject(e); }
+        });
+      });
+      req.on('timeout', () => { req.destroy(new Error(`Timeout on ${date}`)); });
+      req.on('error', reject);
+    };
+    tryGet(url, 3);
+  });
+}
+
 // ─── List all rates (most recent first) ──────────────────────────────────────
 router.get('/', auth, readOnlyGuard, requirePagePerm('FxRates'), (req, res) => {
   try {
@@ -149,6 +188,47 @@ router.get('/live', auth, readOnlyGuard, async (req, res) => {
     });
   } catch (e) {
     res.status(502).json({ error: e.message || 'Failed to fetch live rate' });
+  }
+});
+
+// ─── Live rate history (last N days) ────────────────────────────────────────
+// Used by the Currency Rates chart. Returns an array of {date, rate} from
+// today going back days-1 days. Missing/failed days come back as rate:null
+// so the chart can break the line rather than failing the whole request.
+router.get('/live-history', auth, readOnlyGuard, async (req, res) => {
+  try {
+    const days = Math.max(1, Math.min(parseInt(req.query.days, 10) || 7, 30));
+    const today = new Date();
+    const todayStr = today.toISOString().slice(0, 10);
+    const dates = [];
+    for (let i = days - 1; i >= 0; i--) {
+      const d = new Date(today);
+      d.setUTCDate(d.getUTCDate() - i);
+      dates.push(d.toISOString().slice(0, 10));
+    }
+    const series = await Promise.all(dates.map(async (date) => {
+      const cached = historyCache.get(date);
+      const isToday = date === todayStr;
+      if (cached && (!isToday || (Date.now() - cached.fetchedAt) < HISTORY_TODAY_TTL_MS)) {
+        return { date, rate: cached.rate };
+      }
+      try {
+        const rate = await fetchUsdCdfOnDate(date);
+        historyCache.set(date, { rate, fetchedAt: Date.now() });
+        return { date, rate };
+      } catch {
+        return { date, rate: null };
+      }
+    }));
+    res.json({
+      source: 'fawazahmed0/currency-api (BCC daily)',
+      base: 'USD',
+      quote: 'CDF',
+      days,
+      series,
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
   }
 });
 

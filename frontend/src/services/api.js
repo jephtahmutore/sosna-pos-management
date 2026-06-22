@@ -435,6 +435,7 @@ export const getCurrentFxRate = () => api.get('/fx-rates/current');
 export const createFxRate = (data) => api.post('/fx-rates', data);
 export const deleteFxRate = (id) => api.delete(`/fx-rates/${id}`);
 export const getLiveFxRate = () => api.get('/fx-rates/live');
+export const getLiveFxRateHistory = (days = 7) => api.get('/fx-rates/live-history', { params: { days } });
 
 // Users
 export const getUsers = () => api.get('/users');
