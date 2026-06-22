@@ -94,6 +94,11 @@ const ItemDetails = () => {
   const [form, setForm] = useState({ code: '', name: '', category_id: '', unit: 'pcs', cost_price: '', selling_price: '', current_stock: '', min_stock: '', min_stock_unit: '', status: 'Active', packagings: [], container_product_sync_id: '', units_per_container: '', default_unit: '' });
   const [formError, setFormError] = useState('');
   const [importMsg, setImportMsg] = useState('');
+  // Per-row breakdown of the last import — {imported_rows:[{row,code,name}],
+  // skipped_rows:[{row,code,name,reason}]} — shown in a collapsible panel
+  // below the status banner so the user can see exactly which CSV rows
+  // landed and which got dropped (and why).
+  const [importDetail, setImportDetail] = useState(null);
   const [importing, setImporting] = useState(false);
   const csvInputRef = React.useRef(null);
   // Admin-password gate: { kind: 'single' | 'all', item?: { id, name } }
@@ -119,9 +124,14 @@ const ItemDetails = () => {
     e.target.value = '';
     setImporting(true);
     setImportMsg('');
+    setImportDetail(null);
     try {
       const res = await importProducts(file);
       setImportMsg(res.data.message);
+      setImportDetail({
+        imported_rows: res.data.imported_rows || [],
+        skipped_rows:  res.data.skipped_rows  || [],
+      });
       await fetchItems();
     } catch (err) {
       setImportMsg(err.response?.data?.error || 'Import failed.');
@@ -617,7 +627,68 @@ const ItemDetails = () => {
       {importMsg && (
         <div style={{ marginBottom: 16, padding: '10px 16px', background: importMsg.includes('failed') || importMsg.includes('error') ? '#fef2f2' : '#f0fdf4', color: importMsg.includes('failed') || importMsg.includes('error') ? '#dc2626' : '#16a34a', borderRadius: 8, fontSize: 13, fontWeight: 500, border: `1px solid ${importMsg.includes('failed') || importMsg.includes('error') ? '#fecaca' : '#bbf7d0'}`, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <span>{importMsg}</span>
-          <button onClick={() => setImportMsg('')} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'inherit' }}><FiX size={14} /></button>
+          <button onClick={() => { setImportMsg(''); setImportDetail(null); }} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'inherit' }}><FiX size={14} /></button>
+        </div>
+      )}
+
+      {importDetail && (importDetail.imported_rows.length > 0 || importDetail.skipped_rows.length > 0) && (
+        <div style={{ marginBottom: 16, display: 'grid', gridTemplateColumns: importDetail.skipped_rows.length > 0 ? '1fr 1fr' : '1fr', gap: 12 }}>
+          {importDetail.imported_rows.length > 0 && (
+            <div style={{ background: '#fff', border: '1px solid #bbf7d0', borderRadius: 8, overflow: 'hidden' }}>
+              <div style={{ padding: '8px 12px', background: '#f0fdf4', color: '#166534', fontSize: 12, fontWeight: 700, borderBottom: '1px solid #bbf7d0' }}>
+                ✓ Imported ({importDetail.imported_rows.length})
+              </div>
+              <div style={{ maxHeight: 220, overflowY: 'auto' }}>
+                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+                  <thead>
+                    <tr style={{ background: '#f8fafc', color: '#64748b' }}>
+                      <th style={{ textAlign: 'left', padding: '6px 10px', fontWeight: 600, width: 40 }}>#</th>
+                      <th style={{ textAlign: 'left', padding: '6px 10px', fontWeight: 600, width: 80 }}>Code</th>
+                      <th style={{ textAlign: 'left', padding: '6px 10px', fontWeight: 600 }}>Name</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {importDetail.imported_rows.map((r, i) => (
+                      <tr key={i} style={{ borderTop: '1px solid #f1f5f9' }}>
+                        <td style={{ padding: '6px 10px', color: '#94a3b8' }}>{r.row}</td>
+                        <td style={{ padding: '6px 10px', fontWeight: 600 }}>{r.code}</td>
+                        <td style={{ padding: '6px 10px' }}>{r.name}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+          {importDetail.skipped_rows.length > 0 && (
+            <div style={{ background: '#fff', border: '1px solid #fde68a', borderRadius: 8, overflow: 'hidden' }}>
+              <div style={{ padding: '8px 12px', background: '#fffbeb', color: '#92400e', fontSize: 12, fontWeight: 700, borderBottom: '1px solid #fde68a' }}>
+                ⚠ Skipped ({importDetail.skipped_rows.length})
+              </div>
+              <div style={{ maxHeight: 220, overflowY: 'auto' }}>
+                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+                  <thead>
+                    <tr style={{ background: '#f8fafc', color: '#64748b' }}>
+                      <th style={{ textAlign: 'left', padding: '6px 10px', fontWeight: 600, width: 40 }}>#</th>
+                      <th style={{ textAlign: 'left', padding: '6px 10px', fontWeight: 600, width: 80 }}>Code</th>
+                      <th style={{ textAlign: 'left', padding: '6px 10px', fontWeight: 600 }}>Name</th>
+                      <th style={{ textAlign: 'left', padding: '6px 10px', fontWeight: 600 }}>Reason</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {importDetail.skipped_rows.map((r, i) => (
+                      <tr key={i} style={{ borderTop: '1px solid #f1f5f9' }}>
+                        <td style={{ padding: '6px 10px', color: '#94a3b8' }}>{r.row}</td>
+                        <td style={{ padding: '6px 10px', fontWeight: 600 }}>{r.code || '—'}</td>
+                        <td style={{ padding: '6px 10px' }}>{r.name || '—'}</td>
+                        <td style={{ padding: '6px 10px', color: '#92400e' }}>{r.reason}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
         </div>
       )}
 

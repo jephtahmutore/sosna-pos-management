@@ -438,7 +438,11 @@ router.post('/import', auth, csvUploadMem.single('file'), (req, res) => {
     const rows = parseCSV(text);
     const tenantId = syncConfig.getTenantId(req);
     const { branchId, deviceId } = syncConfig.getConfig();
-    let imported = 0, skipped = 0;
+    // Per-row receipts so the UI can show exactly which rows landed and
+    // which were dropped (and why). Row numbers are 1-based and reflect
+    // the CSV's data rows (row 1 = first row after the header).
+    const importedRows = [];
+    const skippedRows  = [];
     // 24 columns total = 21 bound (?) + 3 literals (synced=0, created_at=datetime('now'), updated_at=datetime('now')).
     // Earlier this had an extra ? (22 bound), which SQLite rejected on tenant
     // DBs with "25 values for 24 columns" — that's what broke CSV import on
@@ -458,11 +462,19 @@ router.post('/import', auth, csvUploadMem.single('file'), (req, res) => {
        VALUES (?,?,?,?,?,?,?,?,?,?,0,datetime('now'),datetime('now'))`
     );
     db.transaction(() => {
-      for (const row of rows) {
+      for (let i = 0; i < rows.length; i++) {
+        const row = rows[i];
+        const rowNum = i + 1;
         const code = row.code?.trim();
         const name = row.name?.trim();
-        if (!code || !name) { skipped++; continue; }
-        if (checkCodeStmt.get(code)) { skipped++; continue; }
+        if (!code || !name) {
+          skippedRows.push({ row: rowNum, code: code || '', name: name || '', reason: !code && !name ? 'Missing code and name' : !code ? 'Missing code' : 'Missing name' });
+          continue;
+        }
+        if (checkCodeStmt.get(code)) {
+          skippedRows.push({ row: rowNum, code, name, reason: `Duplicate code "${code}" — already exists` });
+          continue;
+        }
         let category_id = null;
         let categorySyncId = null;
         if (row.category?.trim()) {
@@ -494,10 +506,17 @@ router.post('/import', auth, csvUploadMem.single('file'), (req, res) => {
           stockStmt.run(info.lastInsertRowid, productSyncId, 'store', 'opening', current_stock, 'Opening balance (import)',
             randomUUID(), tenantId, branchId, deviceId);
         }
-        imported++;
+        importedRows.push({ row: rowNum, code, name });
       }
     })();
-    res.json({ imported, skipped, message: `Imported ${imported} products. Skipped ${skipped} (duplicates or missing code/name).` });
+    const imported = importedRows.length;
+    const skipped  = skippedRows.length;
+    res.json({
+      imported, skipped,
+      imported_rows: importedRows,
+      skipped_rows:  skippedRows,
+      message: `Imported ${imported} products. Skipped ${skipped} (duplicates or missing code/name).`,
+    });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
