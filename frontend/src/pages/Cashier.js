@@ -13,8 +13,10 @@
 //   totalChangeGiven = givenUSD + givenFRA / buyRate
 //   netRemaining     = changeUSD - totalChangeGiven
 //
-// FX rates: hardcoded SELL=2900, BUY=2600 for now — user will describe the
-// rate-config flow later. Snapshot stored on the order at collect-payment time.
+// FX rates: read from Accounting → Currency Rates (table fx_rates). Falls
+// back to SELL=2900, BUY=2600 when no rate has been saved yet so existing
+// terminals don't break the moment they upgrade. Snapshot stored on the
+// order at collect-payment time so old receipts always replay correctly.
 import React, { useEffect, useState } from 'react';
 import { FiRefreshCw, FiClock, FiUser, FiShoppingCart } from 'react-icons/fi';
 import {
@@ -22,12 +24,13 @@ import {
   getOrder,
   collectOrderPayment,
   getSettings,
+  getCurrentFxRate,
 } from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import printHtml from '../utils/printHtml';
 
-const SELL_RATE = 2900;
-const BUY_RATE  = 2600;
+const FALLBACK_SELL = 2900;
+const FALLBACK_BUY  = 2600;
 
 const fmtUSD = (n) => `$${parseFloat(n || 0).toFixed(2)}`;
 const fmtFRA = (n) => Math.round(parseFloat(n || 0)).toLocaleString('en-US');
@@ -48,6 +51,21 @@ export default function Cashier() {
   // Business header info for the printed receipt — fetched once on mount,
   // same pattern POS.js uses for its sales receipt.
   const [biz, setBiz] = useState({ name: 'SOSNA', phone: '', address: '' });
+  // Live FX rate. Refreshed on mount + when the cashier opens a new order
+  // so an admin's mid-shift rate update is picked up without a hard reload.
+  const [fxRate, setFxRate] = useState({ sell: FALLBACK_SELL, buy: FALLBACK_BUY });
+  const SELL_RATE = fxRate.sell;
+  const BUY_RATE  = fxRate.buy;
+
+  const refreshFxRate = async () => {
+    try {
+      const r = await getCurrentFxRate();
+      if (r.data && r.data.sell_rate > 0 && r.data.buy_rate > 0) {
+        setFxRate({ sell: parseFloat(r.data.sell_rate), buy: parseFloat(r.data.buy_rate) });
+      }
+    } catch { /* keep fallback */ }
+  };
+  useEffect(() => { refreshFxRate(); }, []);
 
   useEffect(() => {
     getSettings().then(r => {
@@ -81,6 +99,8 @@ export default function Cashier() {
     setLoadingDetail(true);
     setAmountPaidUSD(''); setAmountPaidFRA('');
     setChangeGivenUSD(''); setChangeGivenFRA('');
+    // Pick up any rate the admin saved while this terminal sat idle.
+    refreshFxRate();
     try {
       const res = await getOrder(id);
       setSelected(res.data);
@@ -142,6 +162,8 @@ export default function Cashier() {
           calc: confirm,
           cashierName,
           when: new Date(),
+          sellRate: SELL_RATE,
+          buyRate: BUY_RATE,
         }));
       } catch (_) { /* non-fatal — payment is already recorded */ }
 
@@ -452,7 +474,7 @@ export default function Cashier() {
 // mobile, share-sheet on Capacitor APK). FRA rows only appear when the
 // payment actually involved FRA cash or FRA change — keeps USD-only sales
 // from showing useless "FRA: 0" lines.
-function renderCashierReceipt({ biz, order, calc, cashierName, when }) {
+function renderCashierReceipt({ biz, order, calc, cashierName, when, sellRate: _sell, buyRate: _buy }) {
   const fmt = (n) => parseFloat(n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   const fmtFra = (n) => Math.round(parseFloat(n || 0)).toLocaleString('en-US');
   const div = '='.repeat(42);
@@ -469,8 +491,8 @@ function renderCashierReceipt({ biz, order, calc, cashierName, when }) {
             </tr>`;
   }).join('');
   const usedFra = (calc.paidFRA > 0.0001) || (calc.givenFRA > 0.0001);
-  const sellRate = SELL_RATE;
-  const buyRate  = BUY_RATE;
+  const sellRate = _sell;
+  const buyRate  = _buy;
   return `<!DOCTYPE html>
 <html><head><meta charset="UTF-8">
 <style>

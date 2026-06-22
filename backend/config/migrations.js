@@ -1406,6 +1406,39 @@ function initTenantDb(db) {
   // OFF by default — only branches that flip this ON see the legacy
   // pages. HQ host always sees them regardless of this flag.
   addCol('business_settings', 'legacy_procurement_enabled', 'INTEGER NOT NULL DEFAULT 0');
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // v1.4.0 — FX Rates (Accounting → Currency Rates)
+  // ─────────────────────────────────────────────────────────────────────────
+  // Per-branch history of USD ↔ FRA rates. Cashier reads the latest row
+  // where effective_date <= today AND deleted_at IS NULL; receipts replay
+  // with the rate snapshotted on the order (selling_rate_used /
+  // buying_rate_used columns added back in Phase 1) so old prints stay
+  // accurate even after the manager updates the rate.
+  //
+  // Only used by branches with currency_mode='USD+FRA' (Kassumbalesa).
+  // Hardcoded SELL=2900 / BUY=2600 remains as the fallback when the
+  // table is empty.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS fx_rates (
+      id              INTEGER PRIMARY KEY AUTOINCREMENT,
+      effective_date  TEXT NOT NULL,
+      sell_rate       REAL NOT NULL,
+      buy_rate        REAL NOT NULL,
+      notes           TEXT,
+      set_by          INTEGER,
+      set_by_name     TEXT,
+      sync_id         TEXT,
+      tenant_id       TEXT,
+      branch_id       TEXT,
+      device_id       TEXT,
+      synced          INTEGER NOT NULL DEFAULT 0,
+      deleted_at      TEXT,
+      created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_fx_rates_effective ON fx_rates (effective_date);
+  `);
 }
 
 module.exports = { initTenantDb };

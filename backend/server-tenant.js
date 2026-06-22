@@ -79,6 +79,7 @@ app.use('/api/attachments',      require('./routes/attachments'));
 app.use('/api/discount-requests',require('./routes/discountRequests'));
 app.use('/api/sync',             require('./routes/sync'));
 app.use('/api/updates',          require('./routes/updates'));
+app.use('/api/fx-rates',         require('./routes/fxRates'));
 app.use('/api/tenant-admin',     require('./routes/tenantAdmin'));
 app.use('/api/hq',               require('./routes/hq'));
 app.use('/api/hq/purchases',     require('./routes/hqPurchases'));

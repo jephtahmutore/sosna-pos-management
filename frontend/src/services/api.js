@@ -429,6 +429,12 @@ export const createCustomerPayment = (data) => api.post('/customer-payments', da
 export const updateCustomerPayment = (id, data) => api.put(`/customer-payments/${id}`, data);
 export const deleteCustomerPayment = (id) => api.delete(`/customer-payments/${id}`);
 
+// FX Rates (Accounting → Currency Rates) — dual-currency branches only
+export const getFxRates = () => api.get('/fx-rates');
+export const getCurrentFxRate = () => api.get('/fx-rates/current');
+export const createFxRate = (data) => api.post('/fx-rates', data);
+export const deleteFxRate = (id) => api.delete(`/fx-rates/${id}`);
+
 // Users
 export const getUsers = () => api.get('/users');
 export const getUserStats = () => api.get('/users/stats');

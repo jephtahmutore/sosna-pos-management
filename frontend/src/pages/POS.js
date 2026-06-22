@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { getInventory, createOrder, getSettings, openCashDrawer, printReceipt, getQuickItems, addQuickItem, removeQuickItem, getCustomers, createDiscountRequest, getDiscountRequest, cancelDiscountRequest } from '../services/api';
+import { getInventory, createOrder, getSettings, openCashDrawer, printReceipt, getQuickItems, addQuickItem, removeQuickItem, getCustomers, createDiscountRequest, getDiscountRequest, cancelDiscountRequest, getCurrentFxRate } from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import { useCurrency } from '../context/CurrencyContext';
 import { FiSearch, FiShoppingCart, FiX, FiDollarSign, FiUnlock, FiStar, FiFileText, FiTag } from 'react-icons/fi';
@@ -89,15 +89,14 @@ const POS = () => {
   // and lands in the Cashier inbox.
   const [workflowMode, setWorkflowMode] = useState('single_pos');
   const isThreeStation = workflowMode === 'three_station';
-  // Hardcoded FX rates for now — user will describe the rate-config flow
-  // later (per-day? admin only? from where?). Both rates match the Phase 1
-  // schema seed (branches.selling_rate = 2900, branches.buying_rate = 2600).
-  //   SELL_RATE = FRA shop RECEIVES from customer
-  //     paidFRAasUSD = paidFRA / SELL_RATE
-  //   BUY_RATE  = FRA shop GIVES BACK as change
-  //     changeFRAasUSD = changeFRA / BUY_RATE
-  const SELL_RATE = 2900;
-  const BUY_RATE  = 2600;
+  // FX rates: read from Accounting → Currency Rates (table fx_rates).
+  // Falls back to 2900 / 2600 when no row exists yet, so a fresh dual-
+  // currency branch still functions out-of-the-box.
+  //   SELL_RATE = FRA shop RECEIVES from customer (paidFRA / SELL_RATE)
+  //   BUY_RATE  = FRA shop GIVES BACK as change   (changeFRA / BUY_RATE)
+  const [fxRate, setFxRate] = useState({ sell: 2900, buy: 2600 });
+  const SELL_RATE = fxRate.sell;
+  const BUY_RATE  = fxRate.buy;
   const [businessPhone, setBusinessPhone] = useState('');
   const [businessAddress, setBusinessAddress] = useState('');
   const [showReceipt, setShowReceipt] = useState(false);
@@ -392,6 +391,12 @@ const POS = () => {
         const res = await getCustomers();
         setCustomers(res.data || []);
       } catch (err) { /* ignore */ }
+      try {
+        const res = await getCurrentFxRate();
+        if (res.data && res.data.sell_rate > 0 && res.data.buy_rate > 0) {
+          setFxRate({ sell: parseFloat(res.data.sell_rate), buy: parseFloat(res.data.buy_rate) });
+        }
+      } catch (err) { /* keep fallback */ }
     };
     fetchData();
   }, []);

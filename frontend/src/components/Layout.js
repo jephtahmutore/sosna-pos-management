@@ -29,11 +29,12 @@ const Layout = () => {
   const isPOSOnly = user && !isAllAccess() &&
     hasPageAccess('POS') &&
     !hasPageAccess('Items', 'GRN', 'SIV', 'StockAdjustment', 'StockCount', 'Inventory',
-      'CashReceipt', 'PaymentVoucher', 'CashBook', 'AccountPayables', 'AccountReceivables', 'ProfitReport',
+      'CashReceipt', 'PaymentVoucher', 'CashBook', 'FxRates', 'AccountPayables', 'AccountReceivables', 'ProfitReport',
       'Suppliers', 'Customers', 'Sales', 'Reports');
   const { language, changeLanguage, t } = useLanguage();
   // 3-station gate — only kassumbalesa1 sees the Cashier sidebar entry.
-  const { workflowMode, legacyProcurementEnabled } = useCurrency();
+  const { workflowMode, legacyProcurementEnabled, currencyMode } = useCurrency();
+  const isDualCurrency = currencyMode === 'USD+FRA';
   // HQ branch selector — only when the React app is served from the bare
   // sosnazm.com host. On real per-branch subdomains hq=false and the
   // dropdown stays hidden (the host already pins the tenant).
@@ -570,7 +571,7 @@ const Layout = () => {
           )}
 
           {/* Accounting Group */}
-          {!collapsed && hasPageAccess('CashReceipt', 'PaymentVoucher', 'CashBook', 'AccountPayables', 'AccountReceivables', 'ProfitReport') && (
+          {!collapsed && hasPageAccess('CashReceipt', 'PaymentVoucher', 'CashBook', 'FxRates', 'AccountPayables', 'AccountReceivables', 'ProfitReport') && (
             <>
               <div className={`nav-group-header ${isGroupActive(['/accounting']) ? 'active' : ''}`} onClick={() => toggleGroup('accounting')}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
@@ -594,6 +595,11 @@ const Layout = () => {
                   {hasPageAccess('CashBook') && (
                     <div className={`nav-item ${isActive('/accounting/cash-book') ? 'active' : ''}`} onClick={() => navigate('/accounting/cash-book')}>
                       <FiClipboard className="nav-icon" /> <span>{t('cashBook')}</span>
+                    </div>
+                  )}
+                  {isDualCurrency && hasPageAccess('FxRates') && (
+                    <div className={`nav-item ${isActive('/accounting/fx-rates') ? 'active' : ''}`} onClick={() => navigate('/accounting/fx-rates')}>
+                      <FiDollarSign className="nav-icon" /> <span>Currency Rates</span>
                     </div>
                   )}
                   {showLegacyProcurement && hasPageAccess('AccountPayables') && (

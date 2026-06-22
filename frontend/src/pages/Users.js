@@ -46,6 +46,7 @@ const PAGE_GROUPS = [
       { key: 'PaymentVoucher',     label: 'Payment Voucher (PV)' },
       { key: 'PvTypes',            label: 'PV Types' },
       { key: 'CashBook',           label: 'Cash Book' },
+      { key: 'FxRates',            label: 'Currency Rates' },
       { key: 'AccountPayables',    label: 'Account Payables' },
       { key: 'AccountReceivables', label: 'Account Receivables' },
       { key: 'ProfitReport',       label: 'Profit Report' },
@@ -68,7 +69,7 @@ const LEGACY_EXPAND = {
   Stock:      ['Items', 'StockAdjustment', 'StockCount', 'Inventory', 'BinCard', 'Categories'],
   GRN:        ['GRN', 'ExpiryReport'],
   SIV:        ['SIV', 'Production', 'SalesReturns'],
-  Accounting: ['CashReceipt', 'PaymentVoucher', 'PvTypes', 'CashBook', 'AccountPayables', 'AccountReceivables', 'ProfitReport'],
+  Accounting: ['CashReceipt', 'PaymentVoucher', 'PvTypes', 'CashBook', 'FxRates', 'AccountPayables', 'AccountReceivables', 'ProfitReport'],
   Suppliers:  ['Suppliers'],
   Customers:  ['Customers'],
 };

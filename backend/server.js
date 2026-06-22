@@ -817,6 +817,7 @@ app.use('/api/attachments', require('./routes/attachments'));
 app.use('/api/discount-requests', require('./routes/discountRequests'));
 app.use('/api/sync', require('./routes/sync'));
 app.use('/api/updates', require('./routes/updates'));
+app.use('/api/fx-rates', require('./routes/fxRates'));
 app.use('/admin', require('./routes/admin'));
 
 app.get('/api/health', (req, res) => {
