@@ -10,8 +10,8 @@
 // Old rows stay around (soft-deleted only) so backdated receipts replay
 // with the rate that was in effect on the order's date.
 import React, { useEffect, useState } from 'react';
-import { FiRefreshCw, FiPlus, FiTrash2, FiDollarSign } from 'react-icons/fi';
-import { getFxRates, createFxRate, deleteFxRate } from '../services/api';
+import { FiRefreshCw, FiPlus, FiTrash2, FiDollarSign, FiGlobe } from 'react-icons/fi';
+import { getFxRates, createFxRate, deleteFxRate, getLiveFxRate } from '../services/api';
 import { useCurrency } from '../context/CurrencyContext';
 
 const todayISO = () => new Date().toISOString().slice(0, 10);
@@ -29,6 +29,10 @@ export default function FxRates() {
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(false);
   const [toast, setToast] = useState(null);
+  // Live BCC reference rate from open.er-api.com. Cashier does NOT use it
+  // — it's just a sanity check for the manager when typing the manual rate.
+  const [live, setLive] = useState(null);   // { rate, source, fetchedAt, error? }
+  const [liveLoading, setLiveLoading] = useState(false);
   const [form, setForm] = useState({
     effective_date: todayISO(),
     sell_rate: '',
@@ -53,7 +57,18 @@ export default function FxRates() {
     setLoading(false);
   };
 
-  useEffect(() => { if (isDual) refresh(); /* eslint-disable-next-line */ }, [isDual]);
+  const refreshLive = async () => {
+    setLiveLoading(true);
+    try {
+      const r = await getLiveFxRate();
+      setLive({ ...r.data, error: null });
+    } catch (err) {
+      setLive({ error: err?.response?.data?.error || 'Failed to fetch live rate' });
+    }
+    setLiveLoading(false);
+  };
+
+  useEffect(() => { if (isDual) { refresh(); refreshLive(); } /* eslint-disable-next-line */ }, [isDual]);
 
   const save = async (e) => {
     e.preventDefault();
@@ -161,6 +176,39 @@ export default function FxRates() {
             No manual rate set yet. POS &amp; Cashier are using the system default shown above. Add a row below to override.
           </div>
         )}
+      </div>
+
+      {/* Live BCC reference rate (read-only, not used by POS/Cashier) */}
+      <div style={{ background: '#eff6ff', border: '1px solid #bfdbfe', borderRadius: 12, padding: 16, marginBottom: 18 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12, flexWrap: 'wrap' }}>
+          <div style={{ flex: 1, minWidth: 200 }}>
+            <div style={{ color: '#1e40af', fontSize: 11, fontWeight: 700, letterSpacing: 0.4, textTransform: 'uppercase', display: 'flex', alignItems: 'center', gap: 6 }}>
+              <FiGlobe size={12} /> Live Market Rate (BCC official)
+            </div>
+            {live?.error ? (
+              <div style={{ fontSize: 13, color: '#b91c1c', marginTop: 6 }}>{live.error}</div>
+            ) : live?.rate ? (
+              <>
+                <div style={{ fontSize: 22, fontWeight: 800, color: '#0f172a', marginTop: 4, display: 'flex', alignItems: 'baseline', gap: 6 }}>
+                  {fmtRate(live.rate)}
+                  <span style={{ fontSize: 12, color: '#475569', fontWeight: 500 }}>CDF / USD</span>
+                </div>
+                <div style={{ fontSize: 11, color: '#475569', marginTop: 4 }}>
+                  Source: {live.source}{live.time_last_update ? ` · ${new Date(live.time_last_update).toLocaleString()}` : ''}
+                </div>
+              </>
+            ) : (
+              <div style={{ fontSize: 13, color: '#475569', marginTop: 6 }}>{liveLoading ? 'Fetching…' : '—'}</div>
+            )}
+            <div style={{ fontSize: 11, color: '#64748b', marginTop: 6, fontStyle: 'italic' }}>
+              Reference only — this is the central-bank official rate. Street/parallel rate is typically higher. POS &amp; Cashier always use the manual rate above.
+            </div>
+          </div>
+          <button onClick={refreshLive} disabled={liveLoading}
+            style={{ padding: '6px 12px', background: '#1e40af', color: '#fff', border: 'none', borderRadius: 6, cursor: liveLoading ? 'wait' : 'pointer', display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 12, fontWeight: 600 }}>
+            <FiRefreshCw size={12} /> {liveLoading ? '…' : 'Refresh'}
+          </button>
+        </div>
       </div>
 
       {/* Add new rate */}
