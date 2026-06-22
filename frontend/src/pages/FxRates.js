@@ -300,14 +300,16 @@ export default function FxRates() {
           </div>
           <div>
             <label style={lblStyle}>Sell rate (FRA / USD)</label>
-            <input type="number" step="0.01" min="0" value={form.sell_rate}
-              onChange={e => setForm({ ...form, sell_rate: e.target.value })}
+            <input type="text" inputMode="decimal" pattern="[0-9]*\.?[0-9]*"
+              value={form.sell_rate}
+              onChange={e => setForm({ ...form, sell_rate: e.target.value.replace(/[^0-9.]/g, '') })}
               placeholder="e.g. 2900" style={inputStyle} required />
           </div>
           <div>
             <label style={lblStyle}>Buy rate (FRA / USD)</label>
-            <input type="number" step="0.01" min="0" value={form.buy_rate}
-              onChange={e => setForm({ ...form, buy_rate: e.target.value })}
+            <input type="text" inputMode="decimal" pattern="[0-9]*\.?[0-9]*"
+              value={form.buy_rate}
+              onChange={e => setForm({ ...form, buy_rate: e.target.value.replace(/[^0-9.]/g, '') })}
               placeholder="e.g. 2600" style={inputStyle} required />
           </div>
           <div style={{ gridColumn: '1 / -1' }}>
