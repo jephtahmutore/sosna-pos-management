@@ -14,41 +14,15 @@ const { auth, readOnlyGuard, requirePagePerm } = require('../middleware/auth');
 const syncConfig = require('../config/syncConfig');
 const { randomUUID } = require('crypto');
 
-// In-memory cache for the BCC live rate. open.er-api.com refreshes daily,
-// so a 30-minute server-side cache is more than enough and protects the
-// upstream from rapid Refresh-button mashing.
+// In-memory cache for the BCC live rate. fawazahmed0/currency-api refreshes
+// daily, so a 30-minute server-side cache is more than enough and protects
+// the upstream from rapid Refresh-button mashing.
+//
+// Same source as the chart's live-history endpoint — keeps the card value
+// and the chart's most-recent point in lock-step (previously the card used
+// open.er-api.com and the two aggregators disagreed by ~0.5%).
 const LIVE_TTL_MS = 30 * 60 * 1000;
 let liveCache = null; // { fetchedAt, payload }
-
-function fetchLiveUsdCdf() {
-  return new Promise((resolve, reject) => {
-    const req = https.get('https://open.er-api.com/v6/latest/USD', {
-      timeout: 6000,
-      headers: { 'User-Agent': 'sosna-pos/1.0' },
-    }, (res) => {
-      let body = '';
-      res.on('data', chunk => { body += chunk; });
-      res.on('end', () => {
-        try {
-          const j = JSON.parse(body);
-          if (j.result !== 'success' || !j.rates || !j.rates.CDF) {
-            return reject(new Error('Unexpected response from open.er-api.com'));
-          }
-          resolve({
-            source: 'open.er-api.com (BCC official)',
-            base: 'USD',
-            quote: 'CDF',
-            rate: parseFloat(j.rates.CDF),
-            time_last_update: j.time_last_update_utc || null,
-            time_next_update: j.time_next_update_utc || null,
-          });
-        } catch (e) { reject(e); }
-      });
-    });
-    req.on('timeout', () => { req.destroy(new Error('Live rate request timed out')); });
-    req.on('error', reject);
-  });
-}
 
 // fawazahmed0/currency-api hosts daily snapshots from 2024-03-06 onwards.
 // jsdelivr URL pattern, no auth required:
@@ -178,12 +152,25 @@ router.get('/live', auth, readOnlyGuard, async (req, res) => {
   try {
     const fresh = liveCache && (Date.now() - liveCache.fetchedAt) < LIVE_TTL_MS;
     if (!fresh) {
-      const payload = await fetchLiveUsdCdf();
-      liveCache = { fetchedAt: Date.now(), payload };
+      const rate = await fetchUsdCdfOnDate('latest');
+      // Mirror today's value into historyCache so the chart shows the
+      // exact same number on today's point — single source of truth.
+      const todayStr = new Date().toISOString().slice(0, 10);
+      historyCache.set(todayStr, { rate, fetchedAt: Date.now() });
+      liveCache = {
+        fetchedAt: Date.now(),
+        payload: {
+          source: 'fawazahmed0/currency-api (BCC daily)',
+          base: 'USD',
+          quote: 'CDF',
+          rate,
+          time_last_update: new Date().toISOString(),
+        },
+      };
     }
     res.json({
       ...liveCache.payload,
-      cached: !!liveCache && (Date.now() - liveCache.fetchedAt) > 100, // any cache hit
+      cached: !!liveCache && (Date.now() - liveCache.fetchedAt) > 100,
       fetchedAt: new Date(liveCache.fetchedAt).toISOString(),
     });
   } catch (e) {
