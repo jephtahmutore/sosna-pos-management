@@ -1,10 +1,13 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
-import {
-  isHqHost, getHqBranch, setHqBranch, getHqBranches,
-} from '../services/api';
+import { isHqHost, setHqBranch } from '../services/api';
 
+// v1.5.1: HQ login no longer forces a branch pick. On the bare HQ host
+// (sosnazm.com) the user just types email + password — authenticated
+// against the default DB users table. After login, the sidebar's
+// "Active Branch" dropdown still lets HQ admins drop into any branch's
+// data when they need to.
 const Login = () => {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -12,35 +15,17 @@ const Login = () => {
   const [loading, setLoading] = useState(false);
   const { login } = useAuth();
   const navigate = useNavigate();
-
-  // HQ-only: branch picker. On a per-branch subdomain we hide this
-  // entirely — the host already pins the tenant.
   const hq = isHqHost();
-  const [branches, setBranches] = useState([]);
-  const [branch, setBranch] = useState(() => getHqBranch());
-  const [loadingBranches, setLoadingBranches] = useState(false);
-
-  useEffect(() => {
-    if (!hq) return;
-    setLoadingBranches(true);
-    getHqBranches()
-      .then(res => setBranches(res.data?.branches || []))
-      .catch(() => setBranches([]))
-      .finally(() => setLoadingBranches(false));
-  }, [hq]);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
     setError('');
-    if (hq && !branch) {
-      setError('Please choose a branch to sign in to.');
-      return;
-    }
     setLoading(true);
     try {
-      // Persist branch BEFORE the login call so the axios interceptor
-      // already attaches X-Branch to /auth/login.
-      if (hq) setHqBranch(branch);
+      // Make sure no stale branch is attached to the login request — the
+      // axios interceptor reads localStorage hq_branch and would otherwise
+      // route auth/login into a per-branch DB.
+      if (hq) setHqBranch('');
       await login(email, password);
       navigate('/');
     } catch (err) {
@@ -56,24 +41,10 @@ const Login = () => {
         <div className="login-header">
           <div className="login-logo">🚚</div>
           <h1>Sosna{hq ? ' HQ' : ''}</h1>
-          <p>{hq ? 'Head Office — pick a branch to manage' : 'Distribution Management'}</p>
+          <p>{hq ? 'Head Office' : 'Distribution Management'}</p>
         </div>
         {error && <div className="login-error">{error}</div>}
         <form className="login-form" onSubmit={handleSubmit}>
-          {hq && (
-            <div className="form-group">
-              <label>Branch</label>
-              <select value={branch} onChange={e => setBranch(e.target.value)} required
-                style={{ width: '100%', padding: '10px 12px', border: '1px solid #d1d5db', borderRadius: 6, fontSize: 14, boxSizing: 'border-box', background: '#fff' }}>
-                <option value="" disabled>
-                  {loadingBranches ? 'Loading branches…' : 'Select a branch'}
-                </option>
-                {branches.map(b => (
-                  <option key={b.slug} value={b.slug}>{b.name} ({b.slug})</option>
-                ))}
-              </select>
-            </div>
-          )}
           <div className="form-group">
             <label>Username</label>
             <input type="text" value={email} onChange={e => setEmail(e.target.value)} placeholder="Enter your username" required />
@@ -83,7 +54,7 @@ const Login = () => {
             <input type="password" value={password} onChange={e => setPassword(e.target.value)} placeholder="Enter your password" required />
           </div>
           <button type="submit" className="btn btn-primary" disabled={loading}>
-            {loading ? 'Signing in...' : hq ? `Sign In to ${branch || 'Branch'}` : 'Sign In'}
+            {loading ? 'Signing in...' : 'Sign In'}
           </button>
         </form>
       </div>
