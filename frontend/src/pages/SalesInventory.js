@@ -64,7 +64,8 @@ const SalesInventory = () => {
       ]);
       setMonthlySummary(monthRes.data || { total_revenue: 0, gross_profit: 0, net_profit: 0, total_difference: 0, total_cash_difference: 0, total_pv: 0 });
       setProfitSummary(profitRes.data || { revenue: 0, cogs: 0, diff_value: 0, cash_difference: 0, gross_profit: 0, pv_total: 0, stock_adj: 0, net_profit: 0 });
-      const data = res.data || [];
+      // v1.6.3: hide inactive items from operational pages.
+      const data = (res.data || []).filter(p => (p.status || 'Active') !== 'Inactive');
       setProducts(data);
       const savedAB = {}, savedReasons = {}, newSavedRows = {};
       data.forEach(p => {

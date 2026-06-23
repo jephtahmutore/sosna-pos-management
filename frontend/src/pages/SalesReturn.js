@@ -67,7 +67,10 @@ const SalesReturn = () => {
       ]);
       setEntries(eRes.data || []);
       setStats(sRes.data || { total: 0, thisMonth: 0 });
-      setProducts((pRes.data || []).filter(p => parseFloat(p.sales_balance || 0) > 0));
+      // v1.6.3: exclude inactive items from the sales-return picker too.
+      setProducts((pRes.data || []).filter(p =>
+        parseFloat(p.sales_balance || 0) > 0 && (p.status || 'Active') !== 'Inactive'
+      ));
       setNotesHistory(nRes.data || []);
     } catch {}
     setLoading(false);

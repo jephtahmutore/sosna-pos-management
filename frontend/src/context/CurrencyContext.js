@@ -49,7 +49,7 @@ export const CurrencyProvider = ({ children }) => {
       const biz = res.data?.business || {};
       setCurrencies(parseCurrencies(biz.currencies_json));
       const wm = String(biz.workflow_mode || 'single_pos').toLowerCase();
-      setWorkflowMode(wm === 'three_station' ? 'three_station' : 'single_pos');
+      setWorkflowMode(['three_station', 'two_station'].includes(wm) ? wm : 'single_pos');
       const cm = String(biz.currency_mode || 'K').toUpperCase();
       setCurrencyMode(cm === 'USD+FRA' ? 'USD+FRA' : 'K');
       setLegacyProcurementEnabled(!!parseInt(biz.legacy_procurement_enabled || 0, 10));

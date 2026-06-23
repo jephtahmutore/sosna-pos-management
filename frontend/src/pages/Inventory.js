@@ -49,8 +49,9 @@ const Inventory = ({ viewLocation = 'store' }) => {
       if (f)  params.from = f;
       if (t2) params.to   = t2;
       const res = await fetchFn(params);
-      if (res.data?.length > 0) setItems(res.data);
-      else setItems([]);
+      // v1.6.3: hide inactive items from operational pages.
+      const live = (res.data || []).filter(p => (p.status || 'Active') !== 'Inactive');
+      setItems(live);
     } catch (err) { /* keep empty */ }
   };
 

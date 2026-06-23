@@ -100,7 +100,7 @@ const SystemSettings = () => {
         receiptPrinterPort: parseInt(b.receipt_printer_port) || 9100,
         defaultCrateDeposit: parseFloat(b.default_crate_deposit) || 57,
         currencyMode: (String(b.currency_mode || 'K').toUpperCase() === 'USD+FRA') ? 'USD+FRA' : 'K',
-        workflowMode: (String(b.workflow_mode || 'single_pos').toLowerCase() === 'three_station') ? 'three_station' : 'single_pos',
+        workflowMode: ((wm => ['three_station','two_station'].includes(wm) ? wm : 'single_pos')(String(b.workflow_mode || 'single_pos').toLowerCase())),
         legacyProcurementEnabled: !!parseInt(b.legacy_procurement_enabled || 0, 10),
       });
     }).catch(() => {});
@@ -262,11 +262,13 @@ const SystemSettings = () => {
             <h3 className="form-section-title"><FiDollarSign /> Workflow Mode</h3>
             <p style={{ fontSize: 13, color: '#6b7280', marginBottom: 14 }}>
               Controls the POS shape for this branch. Most branches use the <strong>single-screen POS</strong>.
-              Switch to <strong>3-station</strong> only on branches where Sales, Cashier, and Dispatch are separate roles.
+              The <strong>2-station</strong> flow adds a Cashier handoff but skips the separate Dispatch step
+              (stock deducts the moment payment is collected). The <strong>3-station</strong> flow adds Dispatch as a third role.
             </p>
             <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
               {[
                 { val: 'single_pos',    label: 'Single-screen POS',  sub: 'One cashier does everything (default)' },
+                { val: 'two_station',   label: '2-station workflow', sub: 'Sales → Cashier. Stock deducts when paid. No Dispatch.' },
                 { val: 'three_station', label: '3-station workflow', sub: 'Sales → Cashier → Dispatch with order hand-off' },
               ].map(opt => (
                 <label key={opt.val}

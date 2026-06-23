@@ -431,16 +431,17 @@ const Layout = () => {
                       <FiShoppingCart className="nav-icon" /> <span>{t('pos')}</span>
                     </div>
                   )}
-                  {/* Cashier — only shown when this branch is on the 3-station
-                      workflow AND the user has explicit Cashier permission
-                      (separate from POS so non-cashier staff can't take money). */}
-                  {workflowMode === 'three_station' && hasPageAccess('Cashier') && (
+                  {/* Cashier — shown for both two_station and three_station.
+                      Hidden on single_pos (one cashier does everything). */}
+                  {(workflowMode === 'three_station' || workflowMode === 'two_station') && hasPageAccess('Cashier') && (
                     <div className={`nav-item ${isActive('/pos/cashier') ? 'active' : ''}`} onClick={() => navigate('/pos/cashier')}>
                       <FiCreditCard className="nav-icon" /> <span>Cashier</span>
                       {badges.cashier_pending > 0 && <SidebarBadge n={badges.cashier_pending} />}
                     </div>
                   )}
-                  {/* Dispatch — same gate, separate perm. Releases goods on PAID orders. */}
+                  {/* Dispatch — ONLY three_station. In two_station, stock
+                      deducts at Cashier and the order moves straight to
+                      COMPLETED — no dispatch step. */}
                   {workflowMode === 'three_station' && hasPageAccess('Dispatch') && (
                     <div className={`nav-item ${isActive('/pos/dispatch') ? 'active' : ''}`} onClick={() => navigate('/pos/dispatch')}>
                       <FiPackage className="nav-icon" /> <span>Dispatch</span>

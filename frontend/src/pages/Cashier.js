@@ -312,6 +312,33 @@ export default function Cashier() {
                   </div>
                 </div>
 
+                {/* v1.6.3: per-invoice FX rate override. Pre-filled with the
+                    current rate from Accounting → Currency Rates. Whatever the
+                    cashier types is what the receipt + Cash Report show. */}
+                <div style={{ background: '#fef3c7', border: '1px solid #fde68a', borderRadius: 8, padding: 10, marginBottom: 10 }}>
+                  <div style={{ fontSize: 11, color: '#92400e', fontWeight: 700, marginBottom: 6, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <span>FX Rate for this invoice</span>
+                    <button type="button" onClick={refreshFxRate}
+                      style={{ background: 'transparent', border: '1px solid #fde68a', color: '#92400e', borderRadius: 4, padding: '2px 8px', cursor: 'pointer', fontSize: 10, fontWeight: 600 }}>
+                      Reset to default
+                    </button>
+                  </div>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+                    <div>
+                      <label style={{ ...lblStyle, color: '#92400e' }}>Sell rate (paid in FRA)</label>
+                      <input type="number" min="0" step="0.01" value={fxRate.sell}
+                        onChange={e => setFxRate(r => ({ ...r, sell: parseFloat(e.target.value) || 0 }))}
+                        style={inputStyle} />
+                    </div>
+                    <div>
+                      <label style={{ ...lblStyle, color: '#92400e' }}>Buy rate (change in FRA)</label>
+                      <input type="number" min="0" step="0.01" value={fxRate.buy}
+                        onChange={e => setFxRate(r => ({ ...r, buy: parseFloat(e.target.value) || 0 }))}
+                        style={inputStyle} />
+                    </div>
+                  </div>
+                </div>
+
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
                   <div>
                     <label style={lblStyle}>Amount Paid ($)</label>

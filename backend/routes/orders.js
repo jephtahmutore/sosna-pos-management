@@ -418,11 +418,11 @@ router.get('/:id', auth, readOnlyGuard, (req, res) => {
   }
 });
 
-// Cashier collects payment on a PENDING_PAYMENT order — 3-station flow.
-// Records the FX-style payment (USD + FRA buckets like Sirak-POS), flips
-// status to 'PAID', stamps cashier_user_id + paid_at. Stock movements are
-// STILL skipped here — they happen at Dispatch (see memory
-// [[project-sosna-stock-deduction-timing]]).
+// Cashier collects payment on a PENDING_PAYMENT order.
+// 3-station flow: marks PAID; stock deducts later at Dispatch.
+// 2-station flow (v1.6.3): marks DISPATCHED + deducts stock here. No
+// separate dispatch step — used by branches that don't have a dedicated
+// dispatch role. See workflow_mode='two_station' on business_settings.
 router.put('/:id/collect-payment', auth, requirePagePerm('Cashier'), (req, res) => {
   try {
     const {
@@ -457,9 +457,13 @@ router.put('/:id/collect-payment', auth, requirePagePerm('Cashier'), (req, res) 
         throw Object.assign(new Error(`Payment is short by ${unpaid.toFixed(2)} ${order.currency || 'USD'}`), { status: 400 });
       }
 
+      // v1.6.3 — detect workflow mode. two_station = stock deducts here.
+      const wm = (db.prepare("SELECT workflow_mode FROM business_settings LIMIT 1").get()?.workflow_mode || 'three_station').toLowerCase();
+      const isTwoStation = wm === 'two_station';
+
       db.prepare(`
         UPDATE orders
-           SET status            = 'PAID',
+           SET status            = ?,
                cashier_user_id   = ?,
                paid_at           = datetime('now'),
                amount_received   = ?,
@@ -472,10 +476,12 @@ router.put('/:id/collect-payment', auth, requirePagePerm('Cashier'), (req, res) 
                selling_rate_used = ?,
                buying_rate_used  = ?,
                payment_method    = 'Cash',
+               ${isTwoStation ? 'dispatch_user_id = ?, dispatched_at = datetime(\'now\'),' : ''}
                synced            = 0,
                updated_at        = datetime('now')
          WHERE id = ?
-      `).run(
+      `).run(...[
+        isTwoStation ? 'DISPATCHED' : 'PAID',
         req.user.id,
         totalAmountPaid,
         paidUSD,
@@ -484,12 +490,46 @@ router.put('/:id/collect-payment', auth, requirePagePerm('Cashier'), (req, res) 
         givenFRA,
         sellRate || null,
         buyRate  || null,
-        req.params.id
-      );
+        ...(isTwoStation ? [req.user.id] : []),
+        req.params.id,
+      ]);
+
+      // 2-station: also deduct stock from sales location, same as the
+      // confirm-dispatch handler does in 3-station.
+      if (isTwoStation) {
+        const items = db.prepare(
+          `SELECT product_id, product_sync_id, quantity, unit
+           FROM order_items WHERE order_sync_id = ? AND deleted_at IS NULL`
+        ).all(order.sync_id);
+        const tenantId = syncConfig.getTenantId(req);
+        const { branchId, deviceId } = syncConfig.getConfig();
+        const movStmt = db.prepare(
+          `INSERT INTO stock_movements (product_id, product_sync_id, location, movement_type, quantity, reference_id, reference_type, created_by, sync_id, tenant_id, branch_id, device_id, synced, created_at, updated_at, reference_sync_id)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,0,datetime('now'),datetime('now'),?)`
+        );
+        for (const it of items) {
+          const prod = db.prepare('SELECT sync_id, unit, alt_unit, conversion_factor, units_json FROM products WHERE id = ?').get(it.product_id);
+          const productSyncId = it.product_sync_id || prod?.sync_id || null;
+          const lineUnit = (it.unit || '').trim() || prod?.unit || null;
+          const baseQty = parseFloat(it.quantity) * conversionToBase(prod, lineUnit);
+          movStmt.run(
+            it.product_id, productSyncId, 'sales', 'sale', -baseQty,
+            order.id, 'order', req.user.id,
+            randomUUID(), tenantId, branchId, deviceId,
+            order.sync_id
+          );
+        }
+      }
 
       return db.prepare('SELECT * FROM orders WHERE id = ?').get(req.params.id);
     })();
 
+    // 2-station closes the loop here, so trigger the same daily profit
+    // recalc that confirm-dispatch normally would.
+    if (result.status === 'DISPATCHED') {
+      const orderDate = (result.created_at || '').split(' ')[0] || new Date().toISOString().split('T')[0];
+      try { recalculateDailyProfit(db, orderDate, req.user.tenantId); } catch (_) {}
+    }
     res.json(result);
   } catch (error) {
     res.status(error.status || 500).json({ error: error.message });

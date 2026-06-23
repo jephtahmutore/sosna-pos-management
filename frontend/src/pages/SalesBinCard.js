@@ -66,7 +66,10 @@ const SalesBinCard = () => {
   useModalScrollLock(showPrint);
 
   useEffect(() => {
-    getProducts().then(r => setProducts((r.data || []).sort((a, b) => a.name.localeCompare(b.name)))).catch(() => {});
+    // v1.6.3: hide inactive items from the product picker.
+    getProducts().then(r => setProducts(
+      (r.data || []).filter(p => (p.status || 'Active') !== 'Inactive').sort((a, b) => a.name.localeCompare(b.name))
+    )).catch(() => {});
     getSettings().then(r => setBusinessInfo(r.data?.business || {})).catch(() => {});
   }, []);
 

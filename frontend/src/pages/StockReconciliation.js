@@ -41,7 +41,8 @@ const StockReconciliation = () => {
   const loadProducts = useCallback(async () => {
     try {
       const res = await getReconciliationProducts(location, countDate);
-      setProducts(res.data || []);
+      // v1.6.3: hide inactive items.
+      setProducts((res.data || []).filter(p => (p.status || 'Active') !== 'Inactive'));
       // Reset counts when location or date changes — old values would compare
       // against the wrong system_qty.
       setCounts({});
