@@ -1,6 +1,9 @@
 const router = require('express').Router();
 const db = require('../config/database');
 const { auth, readOnlyGuard, withTenantDb } = require('../middleware/auth');
+const { isHqRequest, pushCategoryToBranches } = require('../middleware/hqPush');
+const { listTenants } = require('../config/masterDb');
+const { getTenantDb } = require('../config/tenantDb');
 const syncConfig = require('../config/syncConfig');
 const { randomUUID } = require('crypto');
 const multer = require('multer');
@@ -38,26 +41,38 @@ router.post('/', auth, (req, res) => {
     const { branchId, deviceId } = syncConfig.getConfig();
     const mainCat = main_category_id ? db.prepare('SELECT sync_id FROM main_categories WHERE id = ?').get(main_category_id) : null;
     const mainCatSyncId = mainCat?.sync_id || null;
+    const fromHq = isHqRequest(req);
     const info = db.prepare(
-      "INSERT INTO categories (name, color, main_category_id, main_category_sync_id, sync_id, tenant_id, branch_id, device_id, synced, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,0,datetime('now'),datetime('now'))"
-    ).run(name, color, main_category_id || null, mainCatSyncId, randomUUID(), tenantId, branchId, deviceId);
+      "INSERT INTO categories (name, color, main_category_id, main_category_sync_id, is_hq_owned, sync_id, tenant_id, branch_id, device_id, synced, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,0,datetime('now'),datetime('now'))"
+    ).run(name, color, main_category_id || null, mainCatSyncId, fromHq ? 1 : 0, randomUUID(), tenantId, branchId, deviceId);
     const row = db.prepare('SELECT * FROM categories WHERE id = ?').get(info.lastInsertRowid);
+    if (fromHq) {
+      try { pushCategoryToBranches(row, { listTenants, getTenantDb }); } catch (_) { /* best-effort */ }
+    }
     res.status(201).json(row);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
 });
 
-router.put('/:id', (req, res) => {
+router.put('/:id', auth, (req, res) => {
   try {
     const { name, color, main_category_id } = req.body;
+    const existing = db.prepare('SELECT id, is_hq_owned, sync_id FROM categories WHERE id = ?').get(req.params.id);
+    if (!existing) return res.status(404).json({ error: 'Category not found' });
+    const fromHq = isHqRequest(req);
+    if (existing.is_hq_owned && !fromHq) {
+      return res.status(403).json({ error: 'This category is managed by HQ and cannot be edited at the branch.' });
+    }
     const mainCat = main_category_id ? db.prepare('SELECT sync_id FROM main_categories WHERE id = ?').get(main_category_id) : null;
     const mainCatSyncId = mainCat?.sync_id || null;
-    const info = db.prepare(
+    db.prepare(
       "UPDATE categories SET name=?, color=?, main_category_id=?, main_category_sync_id=?, updated_at=datetime('now'), synced=0 WHERE id=?"
     ).run(name, color, main_category_id || null, mainCatSyncId, req.params.id);
-    if (info.changes === 0) return res.status(404).json({ error: 'Category not found' });
     const row = db.prepare('SELECT * FROM categories WHERE id = ?').get(req.params.id);
+    if (fromHq) {
+      try { pushCategoryToBranches(row, { listTenants, getTenantDb }); } catch (_) { /* best-effort */ }
+    }
     res.json(row);
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -108,8 +123,12 @@ router.post('/import', auth, csvUpload.single('file'), withTenantDb, (req, res) 
 // Delete category — blocked if any product still uses it. Returns names of products.
 router.delete('/:id', auth, (req, res) => {
   try {
-    const cat = db.prepare('SELECT id, name FROM categories WHERE id = ?').get(req.params.id);
+    const cat = db.prepare('SELECT id, name, is_hq_owned, sync_id FROM categories WHERE id = ?').get(req.params.id);
     if (!cat) return res.status(404).json({ error: 'Category not found' });
+    const fromHq = isHqRequest(req);
+    if (cat.is_hq_owned && !fromHq) {
+      return res.status(403).json({ error: 'This category is managed by HQ and cannot be deleted at the branch.' });
+    }
 
     const usingProducts = db.prepare(
       "SELECT name FROM products WHERE category_id = ? AND deleted_at IS NULL ORDER BY name LIMIT 10"
@@ -125,6 +144,10 @@ router.delete('/:id', auth, (req, res) => {
     }
 
     db.prepare("UPDATE categories SET deleted_at=datetime('now'), updated_at=datetime('now'), synced=0 WHERE id=?").run(req.params.id);
+    if (fromHq) {
+      const row = db.prepare('SELECT * FROM categories WHERE id = ?').get(req.params.id);
+      try { pushCategoryToBranches(row, { listTenants, getTenantDb }); } catch (_) {}
+    }
     res.json({ message: 'Category deleted' });
   } catch (error) {
     res.status(500).json({ error: error.message });

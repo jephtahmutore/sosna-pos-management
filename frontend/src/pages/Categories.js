@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { getCategories, createCategory, updateCategory, deleteCategory, deleteAllCategories, importCategories,
          getMainCategories, createMainCategory, updateMainCategory, deleteMainCategory,
-         getUnits, createUnit, updateUnit, deleteUnit } from '../services/api';
+         getUnits, createUnit, updateUnit, deleteUnit, isHqHost } from '../services/api';
 import { FiPlus, FiEdit2, FiTrash2, FiX, FiTag, FiUpload, FiDownload, FiAlertTriangle, FiLayers, FiHash } from 'react-icons/fi';
 import Toast from '../components/Toast';
 import { useAuth } from '../context/AuthContext';
@@ -20,6 +20,10 @@ const PRESET_COLORS = [
 ];
 
 const Categories = () => {
+  // v1.6.0: Categories / Main categories / Units are now HQ-owned. Branch
+  // hosts can read the list but can't edit / delete rows where
+  // is_hq_owned=1, and can't add new ones either. Backend enforces it too.
+  const isBranch = !isHqHost();
   const [activeTab, setActiveTab] = useState('categories'); // 'categories' | 'main' | 'units'
 
   const [categories, setCategories] = useState([]);
@@ -357,17 +361,21 @@ const Categories = () => {
         <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
           {activeTab === 'categories' && (
             <>
-              <button onClick={handleDownloadSample} style={{ display: 'inline-flex', alignItems: 'center', gap: 7, padding: '10px 18px', background: '#f3f4f6', color: '#374151', border: '1px solid #d1d5db', borderRadius: 50, cursor: 'pointer', fontSize: 13, fontWeight: 600 }}>
-                <FiDownload size={14} /> Sample CSV
-              </button>
-              <button onClick={() => csvInputRef.current?.click()} disabled={importing} style={{ display: 'inline-flex', alignItems: 'center', gap: 7, padding: '10px 18px', background: importing ? '#d1fae5' : 'linear-gradient(135deg,#059669,#10b981)', color: '#fff', border: 'none', borderRadius: 50, cursor: 'pointer', fontSize: 13, fontWeight: 600, boxShadow: '0 3px 10px rgba(16,185,129,0.3)' }}>
-                <FiUpload size={14} /> {importing ? 'Importing...' : 'Import CSV'}
-              </button>
-              <input ref={csvInputRef} type="file" accept=".csv" style={{ display: 'none' }} onChange={handleImport} />
-              <button onClick={handleDeleteAll} style={{ display: 'inline-flex', alignItems: 'center', gap: 7, padding: '10px 18px', background: 'linear-gradient(135deg,#dc2626,#ef4444)', color: '#fff', border: 'none', borderRadius: 50, cursor: 'pointer', fontSize: 13, fontWeight: 600, boxShadow: '0 3px 10px rgba(220,38,38,0.3)' }}>
-                <FiAlertTriangle size={14} /> Delete All
-              </button>
-              {hasPermission('Categories:Add') && (
+              {!isBranch && (
+                <>
+                  <button onClick={handleDownloadSample} style={{ display: 'inline-flex', alignItems: 'center', gap: 7, padding: '10px 18px', background: '#f3f4f6', color: '#374151', border: '1px solid #d1d5db', borderRadius: 50, cursor: 'pointer', fontSize: 13, fontWeight: 600 }}>
+                    <FiDownload size={14} /> Sample CSV
+                  </button>
+                  <button onClick={() => csvInputRef.current?.click()} disabled={importing} style={{ display: 'inline-flex', alignItems: 'center', gap: 7, padding: '10px 18px', background: importing ? '#d1fae5' : 'linear-gradient(135deg,#059669,#10b981)', color: '#fff', border: 'none', borderRadius: 50, cursor: 'pointer', fontSize: 13, fontWeight: 600, boxShadow: '0 3px 10px rgba(16,185,129,0.3)' }}>
+                    <FiUpload size={14} /> {importing ? 'Importing...' : 'Import CSV'}
+                  </button>
+                  <input ref={csvInputRef} type="file" accept=".csv" style={{ display: 'none' }} onChange={handleImport} />
+                  <button onClick={handleDeleteAll} style={{ display: 'inline-flex', alignItems: 'center', gap: 7, padding: '10px 18px', background: 'linear-gradient(135deg,#dc2626,#ef4444)', color: '#fff', border: 'none', borderRadius: 50, cursor: 'pointer', fontSize: 13, fontWeight: 600, boxShadow: '0 3px 10px rgba(220,38,38,0.3)' }}>
+                    <FiAlertTriangle size={14} /> Delete All
+                  </button>
+                </>
+              )}
+              {!isBranch && hasPermission('Categories:Add') && (
                 <button className="cat-add-btn" onClick={openAdd}>
                   <span className="plus-circle"><FiPlus size={14} /></span>
                   Add Category
@@ -375,13 +383,13 @@ const Categories = () => {
               )}
             </>
           )}
-          {activeTab === 'main' && hasPermission('Categories:Add') && (
+          {activeTab === 'main' && !isBranch && hasPermission('Categories:Add') && (
             <button className="cat-add-btn" onClick={openAddMain}>
               <span className="plus-circle"><FiPlus size={14} /></span>
               Add Main Category
             </button>
           )}
-          {activeTab === 'units' && hasPermission('Categories:Add') && (
+          {activeTab === 'units' && !isBranch && hasPermission('Categories:Add') && (
             <button className="cat-add-btn" onClick={openAddUnit}>
               <span className="plus-circle"><FiPlus size={14} /></span>
               Add Unit
@@ -514,15 +522,18 @@ const Categories = () => {
                         </td>
                         <td>
                           <div style={{ display: 'flex', gap: 8, justifyContent: 'center' }}>
-                            {hasPermission('Categories:Edit') && (
+                            {hasPermission('Categories:Edit') && !(isBranch && cat.is_hq_owned) && (
                               <button className="cat-edit-btn" onClick={() => openEdit(cat)} title="Edit category">
                                 <FiEdit2 size={15} />
                               </button>
                             )}
-                            {hasPermission('Categories:Delete') && (
+                            {hasPermission('Categories:Delete') && !(isBranch && cat.is_hq_owned) && (
                               <button className="cat-del-btn" onClick={() => handleDelete(cat)} title="Delete category">
                                 <FiTrash2 size={15} />
                               </button>
+                            )}
+                            {isBranch && cat.is_hq_owned && (
+                              <span style={{ fontSize: 10, color: '#92400e', background: '#fef3c7', padding: '2px 6px', borderRadius: 8, fontWeight: 700 }} title="Managed by HQ">HQ</span>
                             )}
                           </div>
                         </td>
@@ -619,15 +630,18 @@ const Categories = () => {
                         </td>
                         <td>
                           <div style={{ display: 'flex', gap: 8, justifyContent: 'center' }}>
-                            {hasPermission('Categories:Edit') && (
+                            {hasPermission('Categories:Edit') && !(isBranch && m.is_hq_owned) && (
                               <button className="cat-edit-btn" onClick={() => openEditMain(m)} title="Edit">
                                 <FiEdit2 size={15} />
                               </button>
                             )}
-                            {hasPermission('Categories:Delete') && (
+                            {hasPermission('Categories:Delete') && !(isBranch && m.is_hq_owned) && (
                               <button className="cat-del-btn" onClick={() => handleDeleteMain(m)} title="Delete">
                                 <FiTrash2 size={15} />
                               </button>
+                            )}
+                            {isBranch && m.is_hq_owned && (
+                              <span style={{ fontSize: 10, color: '#92400e', background: '#fef3c7', padding: '2px 6px', borderRadius: 8, fontWeight: 700 }} title="Managed by HQ">HQ</span>
                             )}
                           </div>
                         </td>
@@ -698,15 +712,18 @@ const Categories = () => {
                       </td>
                       <td>
                         <div style={{ display: 'flex', gap: 8, justifyContent: 'center' }}>
-                          {hasPermission('Categories:Edit') && (
+                          {hasPermission('Categories:Edit') && !(isBranch && u.is_hq_owned) && (
                             <button className="cat-edit-btn" onClick={() => openEditUnit(u)} title="Edit">
                               <FiEdit2 size={15} />
                             </button>
                           )}
-                          {hasPermission('Categories:Delete') && (
+                          {hasPermission('Categories:Delete') && !(isBranch && u.is_hq_owned) && (
                             <button className="cat-del-btn" onClick={() => handleDeleteUnit(u)} title="Delete">
                               <FiTrash2 size={15} />
                             </button>
+                          )}
+                          {isBranch && u.is_hq_owned && (
+                            <span style={{ fontSize: 10, color: '#92400e', background: '#fef3c7', padding: '2px 6px', borderRadius: 8, fontWeight: 700 }} title="Managed by HQ">HQ</span>
                           )}
                         </div>
                       </td>

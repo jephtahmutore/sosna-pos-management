@@ -1450,6 +1450,13 @@ function initTenantDb(db) {
   // PUT /api/products/:id ALSO enforces this server-side so a hostile
   // client can't bypass the UI lock.
   addCol('products', 'is_hq_owned', 'INTEGER NOT NULL DEFAULT 0');
+
+  // v1.6.0 — Categories, main_categories and units are also HQ-owned now.
+  // Same mechanism as products: HQ writes push to every branch with
+  // is_hq_owned=1; branches can't edit/delete those rows.
+  addCol('categories',      'is_hq_owned', 'INTEGER NOT NULL DEFAULT 0');
+  addCol('main_categories', 'is_hq_owned', 'INTEGER NOT NULL DEFAULT 0');
+  addCol('units',           'is_hq_owned', 'INTEGER NOT NULL DEFAULT 0');
 }
 
 module.exports = { initTenantDb };

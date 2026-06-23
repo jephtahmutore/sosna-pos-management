@@ -1,6 +1,9 @@
 const router = require('express').Router();
 const db = require('../config/database');
 const { auth, readOnlyGuard } = require('../middleware/auth');
+const { isHqRequest, pushUnitToBranches } = require('../middleware/hqPush');
+const { listTenants } = require('../config/masterDb');
+const { getTenantDb } = require('../config/tenantDb');
 const syncConfig = require('../config/syncConfig');
 const { randomUUID } = require('crypto');
 
@@ -47,33 +50,45 @@ router.get('/', auth, readOnlyGuard, (req, res) => {
   }
 });
 
-// POST /api/units — create
+// POST /api/units — create. On HQ host, also pushes to every branch.
 router.post('/', auth, (req, res) => {
   try {
     const { name, abbreviation } = req.body;
     if (!name || !name.trim()) return res.status(400).json({ error: 'Name is required' });
     const tenantId = syncConfig.getTenantId(req);
     const { branchId, deviceId } = syncConfig.getConfig();
+    const fromHq = isHqRequest(req);
     const info = db.prepare(
-      "INSERT INTO units (name, abbreviation, sync_id, tenant_id, branch_id, device_id, synced, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 0, datetime('now'), datetime('now'))"
-    ).run(name.trim(), (abbreviation || '').trim() || null, randomUUID(), tenantId, branchId, deviceId);
+      "INSERT INTO units (name, abbreviation, is_hq_owned, sync_id, tenant_id, branch_id, device_id, synced, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, 0, datetime('now'), datetime('now'))"
+    ).run(name.trim(), (abbreviation || '').trim() || null, fromHq ? 1 : 0, randomUUID(), tenantId, branchId, deviceId);
     const row = db.prepare('SELECT * FROM units WHERE id = ?').get(info.lastInsertRowid);
+    if (fromHq) {
+      try { pushUnitToBranches(row, { listTenants, getTenantDb }); } catch (_) {}
+    }
     res.status(201).json(row);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
 });
 
-// PUT /api/units/:id — edit
+// PUT /api/units/:id — edit. HQ-owned rows reject branch edits.
 router.put('/:id', auth, (req, res) => {
   try {
     const { name, abbreviation } = req.body;
     if (!name || !name.trim()) return res.status(400).json({ error: 'Name is required' });
-    const info = db.prepare(
-      "UPDATE units SET name=?, abbreviation=?, updated_at=datetime('now'), synced=0 WHERE id=? AND tenant_id=?"
-    ).run(name.trim(), (abbreviation || '').trim() || null, req.params.id, req.user.tenantId);
-    if (info.changes === 0) return res.status(404).json({ error: 'Unit not found' });
+    const existing = db.prepare('SELECT id, is_hq_owned FROM units WHERE id = ?').get(req.params.id);
+    if (!existing) return res.status(404).json({ error: 'Unit not found' });
+    const fromHq = isHqRequest(req);
+    if (existing.is_hq_owned && !fromHq) {
+      return res.status(403).json({ error: 'This unit is managed by HQ and cannot be edited at the branch.' });
+    }
+    db.prepare(
+      "UPDATE units SET name=?, abbreviation=?, updated_at=datetime('now'), synced=0 WHERE id=?"
+    ).run(name.trim(), (abbreviation || '').trim() || null, req.params.id);
     const row = db.prepare('SELECT * FROM units WHERE id = ?').get(req.params.id);
+    if (fromHq) {
+      try { pushUnitToBranches(row, { listTenants, getTenantDb }); } catch (_) {}
+    }
     res.json(row);
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -83,8 +98,12 @@ router.put('/:id', auth, (req, res) => {
 // DELETE /api/units/:id — blocked if any product uses this unit (base or alt)
 router.delete('/:id', auth, (req, res) => {
   try {
-    const u = db.prepare('SELECT id, name FROM units WHERE id = ? AND tenant_id = ?').get(req.params.id, req.user.tenantId);
+    const u = db.prepare('SELECT id, name, is_hq_owned, sync_id FROM units WHERE id = ?').get(req.params.id);
     if (!u) return res.status(404).json({ error: 'Unit not found' });
+    const fromHq = isHqRequest(req);
+    if (u.is_hq_owned && !fromHq) {
+      return res.status(403).json({ error: 'This unit is managed by HQ and cannot be deleted at the branch.' });
+    }
 
     const usingProducts = db.prepare(
       "SELECT name FROM products WHERE (unit = ? OR alt_unit = ?) AND deleted_at IS NULL AND tenant_id = ? ORDER BY name LIMIT 10"
@@ -102,8 +121,12 @@ router.delete('/:id', auth, (req, res) => {
     }
 
     db.prepare(
-      "UPDATE units SET deleted_at=datetime('now'), updated_at=datetime('now'), synced=0 WHERE id=? AND tenant_id=?"
-    ).run(req.params.id, req.user.tenantId);
+      "UPDATE units SET deleted_at=datetime('now'), updated_at=datetime('now'), synced=0 WHERE id=?"
+    ).run(req.params.id);
+    if (fromHq) {
+      const row = db.prepare('SELECT * FROM units WHERE id = ?').get(req.params.id);
+      try { pushUnitToBranches(row, { listTenants, getTenantDb }); } catch (_) {}
+    }
     res.json({ message: 'Unit deleted' });
   } catch (error) {
     res.status(500).json({ error: error.message });
