@@ -34,7 +34,9 @@ const Layout = () => {
   const { language, changeLanguage, t } = useLanguage();
   // 3-station gate — only kassumbalesa1 sees the Cashier sidebar entry.
   const { workflowMode, legacyProcurementEnabled, currencyMode } = useCurrency();
-  const isDualCurrency = currencyMode === 'USD+FRA';
+  // v1.7.0: triple-currency mode 'USD+FRA+K' also counts as "dual/multi
+  // currency" for sidebar gating — same Currency Rates page handles both.
+  const isDualCurrency = currencyMode === 'USD+FRA' || currencyMode === 'USD+FRA+K';
   // HQ branch selector — only when the React app is served from the bare
   // sosnazm.com host. On real per-branch subdomains hq=false and the
   // dropdown stays hidden (the host already pins the tenant).
