@@ -101,7 +101,10 @@ const ItemDetails = () => {
   const [editItem, setEditItem] = useState(null);
   // packagings: additional larger units (e.g. [{ name: 'Pack', conv: 6, price: 11 }, { name: 'Box', conv: 24, price: 40 }]).
   // The base unit (form.unit) is always the smallest packaging and lives in its own fields.
-  const [form, setForm] = useState({ code: '', name: '', category_id: '', unit: 'pcs', cost_price: '', selling_price: '', current_stock: '', min_stock: '', min_stock_unit: '', status: 'Active', packagings: [], container_product_sync_id: '', units_per_container: '', default_unit: '' });
+  // v1.7.2 — opening_base + per-packaging `opening` mirrors Grocery's pattern:
+  // user enters how many of each unit they have ("46 Box + 10 Bottle"); save
+  // collapses to a single base-unit total stored as current_stock in DB.
+  const [form, setForm] = useState({ code: '', name: '', category_id: '', unit: 'pcs', cost_price: '', selling_price: '', current_stock: '', opening_base: '', min_stock: '', min_stock_unit: '', status: 'Active', packagings: [], container_product_sync_id: '', units_per_container: '', default_unit: '' });
   const [formError, setFormError] = useState('');
   const [importMsg, setImportMsg] = useState('');
   // Per-row breakdown of the last import — {imported_rows:[{row,code,name}],
@@ -206,7 +209,7 @@ const ItemDetails = () => {
       } else {
         // Open Add New with scanned code pre-filled
         setEditItem(null);
-        setForm({ code, name: '', category_id: '', unit: 'pcs', cost_price: '', selling_price: '', current_stock: '', min_stock: '', min_stock_unit: '', product_type: 'sellable', status: 'Active', packagings: [], container_product_sync_id: '', units_per_container: '', default_unit: '' });
+        setForm({ code, name: '', category_id: '', unit: 'pcs', cost_price: '', selling_price: '', current_stock: '', opening_base: '', min_stock: '', min_stock_unit: '', product_type: 'sellable', status: 'Active', packagings: [], container_product_sync_id: '', units_per_container: '', default_unit: '' });
         setImageFile(null); setImagePreview(null); setFormError('');
         setShowModal(true);
       }
@@ -283,7 +286,10 @@ const ItemDetails = () => {
     }
     if (form.cost_price !== '' && parseFloat(form.cost_price) < 0) { setFormError('Cost Price cannot be negative.'); return; }
     if (form.selling_price !== '' && parseFloat(form.selling_price) < 0) { setFormError('Selling Price cannot be negative.'); return; }
-    if (form.current_stock !== '' && parseFloat(form.current_stock) < 0) { setFormError('Opening Stock cannot be negative.'); return; }
+    if (form.opening_base !== '' && parseFloat(form.opening_base) < 0) { setFormError('Opening Stock cannot be negative.'); return; }
+    for (const p of (form.packagings || [])) {
+      if (p.opening !== '' && p.opening != null && parseFloat(p.opening) < 0) { setFormError(`Opening for "${p.name}" cannot be negative.`); return; }
+    }
     if (form.min_stock !== '' && parseFloat(form.min_stock) < 0) { setFormError('Min. Stock cannot be negative.'); return; }
     // Validate additional packagings: each must have a name + positive conversion factor.
     const seenNames = new Set([(form.unit || '').trim().toLowerCase()]);
@@ -313,11 +319,21 @@ const ItemDetails = () => {
         ? (units.find(u => u.name === minStockUnit)?.conv || 1)
         : 1;
       const minStockEntered = form.min_stock === '' ? 10 : parseFloat(form.min_stock);
+      // v1.7.2 (Grocery pattern): total opening stock = base qty + Σ(pack.qty × pack.conv).
+      // The form lets the user type "46 Box + 10 Bottle"; we collapse it to a single
+      // base-unit number (1114 Bottle) before saving. DB stores the total only.
+      const openingBaseQty = parseFloat(form.opening_base) || 0;
+      const openingPackQty = (form.packagings || []).reduce((sum, p) => {
+        const q = parseFloat(p.opening) || 0;
+        const c = parseFloat(p.conv) || 0;
+        return sum + (q * c);
+      }, 0);
+      const totalOpening = openingBaseQty + openingPackQty;
       const data = {
         ...form,
         cost_price:    form.cost_price    === '' ? 0  : parseFloat(form.cost_price),
         selling_price: form.selling_price === '' ? 0  : parseFloat(form.selling_price),
-        current_stock: form.current_stock === '' ? 0  : parseFloat(form.current_stock),
+        current_stock: totalOpening,
         min_stock:     minStockEntered * minStockConv,
         category_id:   form.category_id   === '' ? null : parseInt(form.category_id),
         units,
@@ -325,6 +341,7 @@ const ItemDetails = () => {
         units_per_container: form.units_per_container === '' ? null : parseFloat(form.units_per_container),
       };
       delete data.packagings;
+      delete data.opening_base;
       delete data.min_stock_unit;
       let savedProduct;
       if (editItem) {
@@ -395,7 +412,7 @@ const ItemDetails = () => {
     const taken = new Set(items.map(i => i.code));
     let n = 1, code;
     do { code = `IT${String(n).padStart(3, '0')}`; n++; } while (taken.has(code));
-    setForm({ code, name: '', category_id: '', unit: 'pcs', cost_price: '', selling_price: '', current_stock: '', min_stock: '', min_stock_unit: '', product_type: 'sellable', status: 'Active', packagings: [], container_product_sync_id: '', units_per_container: '', default_unit: '' });
+    setForm({ code, name: '', category_id: '', unit: 'pcs', cost_price: '', selling_price: '', current_stock: '', opening_base: '', min_stock: '', min_stock_unit: '', product_type: 'sellable', status: 'Active', packagings: [], container_product_sync_id: '', units_per_container: '', default_unit: '' });
     setImageFile(null); setImagePreview(null); setFormError('');
     setActiveTab('details');
     setShowModal(true);
@@ -411,12 +428,12 @@ const ItemDetails = () => {
       // _locked: this row was loaded from the saved product, so its conversion factor is fixed
       // (historical stock movements rely on it). Price stays editable; users can add NEW packagings freely.
       return arr.filter(u => !u.is_base && (u.name || '').trim()).map(u => ({
-        name: u.name, conv: String(u.conv ?? ''), price: String(u.price ?? ''), _locked: true,
+        name: u.name, conv: String(u.conv ?? ''), price: String(u.price ?? ''), opening: '', _locked: true,
       }));
     }
     // Legacy fallback — single alt_unit row.
     if (item.alt_unit) {
-      return [{ name: item.alt_unit, conv: String(item.conversion_factor ?? ''), price: String(item.alt_price ?? ''), _locked: true }];
+      return [{ name: item.alt_unit, conv: String(item.conversion_factor ?? ''), price: String(item.alt_price ?? ''), opening: '', _locked: true }];
     }
     return [];
   };
@@ -432,6 +449,10 @@ const ItemDetails = () => {
       code: item.code, name: item.name, category_id: item.category_id, unit: item.unit,
       cost_price: item.cost_price, selling_price: item.selling_price,
       current_stock: item.current_stock,
+      // DB stores only the collapsed base-unit total. Seed opening_base with it
+      // so re-saving is idempotent. Users who want "46 Box + 10 Bottle" form
+      // can zero this and fill in the packaging rows.
+      opening_base: item.current_stock != null ? String(item.current_stock) : '',
       min_stock: minStockInDispUnit ? String(minStockInDispUnit) : '',
       min_stock_unit: dispUnit.name || item.unit || '',
       product_type: item.product_type || 'finished',
@@ -1224,54 +1245,140 @@ const ItemDetails = () => {
               </div>
               </>)}{/* end tab===details block B — packagings/default/container */}
               {tab === 'pricing' && (<>
+              {/* v1.7.2 (Grocery pattern): one Opening input per unit (base + each
+                  packaging). User types "46 Box + 10 Bottle"; save collapses to
+                  base total. Editing here replaces the prior opening movement. */}
               <div className="form-row">
                 <div className="form-group">
-                  <label>Opening Stock</label>
-                  <input type="number" min="0" step="1" value={form.current_stock}
-                    onChange={e => setForm({ ...form, current_stock: e.target.value })}
-                    onBlur={e => { if (e.target.value !== '' && parseFloat(e.target.value) < 0) setForm(f => ({ ...f, current_stock: '0' })); }} />
+                  <label>Opening Stock ({form.unit || 'unit'})</label>
+                  <input type="number" min="0" step="0.01" value={form.opening_base}
+                    onChange={e => setForm({ ...form, opening_base: e.target.value })}
+                    onBlur={e => { if (e.target.value !== '' && parseFloat(e.target.value) < 0) setForm(f => ({ ...f, opening_base: '0' })); }}
+                    placeholder={`how many loose ${form.unit || 'pcs'}`} />
                   {editItem && (
                     <div style={{ fontSize: 10, color: '#92400e', marginTop: 4 }}>
-                      Editing this replaces the prior opening balance — the original 'opening' stock movement is voided and a new one is created.
+                      Saving voids the prior opening movement and writes a new one with the total below.
                     </div>
                   )}
                 </div>
-                <div className="form-group">
-                  <label>Min. Stock</label>
-                  <div style={{ display: 'flex', gap: 6 }}>
-                    <input type="number" min="0" step="0.01" value={form.min_stock}
-                      onChange={e => setForm({ ...form, min_stock: e.target.value })}
-                      onBlur={e => { if (e.target.value !== '' && parseFloat(e.target.value) < 0) setForm(f => ({ ...f, min_stock: '0' })); }}
-                      style={{ flex: 2, minWidth: 0, width: '100%' }} />
-                    {(() => {
-                      // All units the user has configured on this product (base + extras).
-                      const baseName = (form.unit || 'pcs').trim() || 'pcs';
-                      const opts = [
-                        { name: baseName, conv: 1 },
-                        ...(form.packagings || [])
-                          .filter(p => (p.name || '').trim() && parseFloat(p.conv) > 0)
-                          .map(p => ({ name: p.name.trim(), conv: parseFloat(p.conv) })),
-                      ];
-                      const currentUnit = form.min_stock_unit || form.default_unit || baseName;
-                      // Short label — just the unit name (full "(1=24 pcs)" suffix
-                      // squeezed the number input. The Default Unit dropdown above
-                      // already shows the conversion, so no need to repeat it here.
-                      return (
-                        <select
-                          value={currentUnit}
-                          onChange={e => setForm({ ...form, min_stock_unit: e.target.value })}
-                          style={{ flex: 1, minWidth: 70, padding: '6px 8px', border: '1px solid #d1d5db', borderRadius: 6, background: '#fff', fontSize: 13 }}
-                        >
-                          {opts.map(o => (
-                            <option key={o.name} value={o.name}>{o.name}</option>
-                          ))}
-                        </select>
-                      );
-                    })()}
+              </div>
+
+              {/* Per-packaging opening + price (only when item has packagings). */}
+              {(form.packagings || []).length > 0 && (
+                <div style={{ background: '#f9fafb', border: '1px solid #e5e7eb', borderRadius: 10, padding: 14, marginTop: 12 }}>
+                  <div style={{ fontSize: 13, fontWeight: 700, color: '#374151', marginBottom: 8 }}>Packaging pricing &amp; opening</div>
+                  <div style={{ display: 'grid', gap: 8 }}>
+                    {(form.packagings || []).map((p, idx) => (
+                      <div key={idx} style={{ background: '#fff', padding: 10, borderRadius: 8, border: '1px solid #e5e7eb' }}>
+                        <div style={{ fontSize: 12, fontWeight: 600, color: '#111827', marginBottom: 8 }}>
+                          {p.name || '(unnamed packaging)'}
+                          <span style={{ marginLeft: 8, color: '#6b7280', fontWeight: 400, fontSize: 11 }}>
+                            (1 {p.name || 'unit'} = {p.conv || '?'} {form.unit || 'pcs'})
+                          </span>
+                        </div>
+                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8, alignItems: 'end' }}>
+                          <div className="form-group" style={{ margin: 0 }}>
+                            <label style={{ fontSize: 11 }}>Cost ({curSym} / {p.name || 'unit'})</label>
+                            <input type="number" min="0" step="0.01"
+                              value={(() => {
+                                const conv = parseFloat(p.conv) || 0;
+                                if (conv <= 0) return '';
+                                const base = parseFloat(form.cost_price);
+                                if (!base) return '';
+                                return (base * conv).toFixed(2);
+                              })()}
+                              onChange={e => {
+                                const conv = parseFloat(p.conv) || 0;
+                                if (conv <= 0) return;
+                                const entered = parseFloat(e.target.value);
+                                const base = isNaN(entered) ? '' : (entered / conv);
+                                setForm(f => ({ ...f, cost_price: base === '' ? '' : base.toFixed(4) }));
+                              }}
+                              placeholder="0.00" />
+                          </div>
+                          <div className="form-group" style={{ margin: 0 }}>
+                            <label style={{ fontSize: 11 }}>Selling ({curSym} / {p.name || 'unit'})</label>
+                            <input type="number" min="0" step="0.01" value={p.price}
+                              onChange={e => setForm(f => ({ ...f, packagings: f.packagings.map((q, i) => i === idx ? { ...q, price: e.target.value } : q) }))}
+                              placeholder="0.00" />
+                          </div>
+                          <div className="form-group" style={{ margin: 0 }}>
+                            <label style={{ fontSize: 11 }}>Opening ({p.name || 'unit'})</label>
+                            <input type="number" min="0" step="0.01" value={p.opening || ''}
+                              onChange={e => setForm(f => ({ ...f, packagings: f.packagings.map((q, i) => i === idx ? { ...q, opening: e.target.value } : q) }))}
+                              placeholder="0" />
+                          </div>
+                        </div>
+                      </div>
+                    ))}
                   </div>
                 </div>
-              </div>
-              </>)}{/* end tab===pricing block B — opening stock + min stock */}
+              )}
+
+              {/* Total Opening Balance + Min Stock summary card. */}
+              {(() => {
+                const baseName = (form.unit || 'pcs').trim() || 'pcs';
+                const openingBase = parseFloat(form.opening_base) || 0;
+                const packs = (form.packagings || []).map(p => ({
+                  name: (p.name || '').trim(),
+                  conv: parseFloat(p.conv) || 0,
+                  qty: parseFloat(p.opening) || 0,
+                })).filter(p => p.qty > 0 && p.conv > 0);
+                const totalBase = openingBase + packs.reduce((s, p) => s + p.qty * p.conv, 0);
+                const dfltName = (form.default_unit || '').trim() || baseName;
+                const dfltConv = dfltName === baseName ? 1 : ((form.packagings || []).find(p => (p.name || '').trim() === dfltName)?.conv || 1);
+                const totalInDflt = dfltConv > 0 ? totalBase / dfltConv : totalBase;
+                const breakdown = [
+                  ...packs.map(p => `${p.qty} ${p.name}`),
+                  openingBase > 0 ? `${openingBase} ${baseName}` : null,
+                ].filter(Boolean).join(' + ');
+                return (
+                  <div style={{ background: 'linear-gradient(135deg, #1F213F 0%, #494D6F 100%)', borderRadius: 12, padding: 16, marginTop: 12, color: '#fff' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+                      <span style={{ fontSize: 18 }}>📦</span>
+                      <div style={{ fontSize: 12, fontWeight: 600, letterSpacing: 0.5, textTransform: 'uppercase', color: '#F6C96B' }}>Total Opening Balance</div>
+                    </div>
+                    <div style={{ fontSize: 28, fontWeight: 800, lineHeight: 1.1 }}>
+                      {totalInDflt.toLocaleString(undefined, { maximumFractionDigits: 3 })} <span style={{ fontSize: 16, fontWeight: 600, opacity: 0.85 }}>{dfltName}</span>
+                    </div>
+                    {breakdown && (
+                      <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.7)', marginTop: 4 }}>
+                        = {breakdown} = {totalBase.toLocaleString(undefined, { maximumFractionDigits: 3 })} {baseName}
+                      </div>
+                    )}
+                    <div style={{ marginTop: 14, paddingTop: 12, borderTop: '1px solid rgba(255,255,255,0.15)' }}>
+                      <div style={{ fontSize: 11, fontWeight: 600, color: '#F6C96B', marginBottom: 6, textTransform: 'uppercase', letterSpacing: 0.5 }}>Minimum Stock</div>
+                      <div style={{ display: 'flex', gap: 6, maxWidth: 280 }}>
+                        <input type="number" min="0" step="0.01" value={form.min_stock}
+                          onChange={e => setForm({ ...form, min_stock: e.target.value })}
+                          onBlur={e => { if (e.target.value !== '' && parseFloat(e.target.value) < 0) setForm(f => ({ ...f, min_stock: '0' })); }}
+                          style={{ flex: 2, minWidth: 0, width: '100%', padding: '7px 10px', border: '1px solid rgba(255,255,255,0.2)', borderRadius: 6, background: 'rgba(255,255,255,0.1)', color: '#fff', fontSize: 13 }} />
+                        {(() => {
+                          const opts = [
+                            { name: baseName, conv: 1 },
+                            ...(form.packagings || [])
+                              .filter(pp => (pp.name || '').trim() && parseFloat(pp.conv) > 0)
+                              .map(pp => ({ name: pp.name.trim(), conv: parseFloat(pp.conv) })),
+                          ];
+                          const currentUnit = form.min_stock_unit || form.default_unit || baseName;
+                          return (
+                            <select
+                              value={currentUnit}
+                              onChange={e => setForm({ ...form, min_stock_unit: e.target.value })}
+                              style={{ flex: 1, minWidth: 70, padding: '6px 8px', border: '1px solid rgba(255,255,255,0.2)', borderRadius: 6, background: 'rgba(255,255,255,0.1)', color: '#fff', fontSize: 13 }}
+                            >
+                              {opts.map(o => (
+                                <option key={o.name} value={o.name} style={{ color: '#1F213F' }}>{o.name}</option>
+                              ))}
+                            </select>
+                          );
+                        })()}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })()}
+              </>)}{/* end tab===pricing block B — opening stock + packagings + total */}
               {tab === 'details' && (<>
               <div className="form-group" style={{ marginTop: 4 }}>
                 <label>Product Photo</label>
