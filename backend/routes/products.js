@@ -1,7 +1,7 @@
 const router = require('express').Router();
 const db = require('../config/database');
 const { auth, readOnlyGuard, withTenantDb } = require('../middleware/auth');
-const { isHqRequest, pushProductToBranches } = require('../middleware/hqPush');
+const { isHqRequest, pushProductToBranches, pushCategoryToBranches, pushMainCategoryToBranches } = require('../middleware/hqPush');
 const { listTenants } = require('../config/masterDb');
 const { getTenantDb } = require('../config/tenantDb');
 const multer = require('multer');
@@ -494,6 +494,13 @@ router.post('/import', auth, csvUploadMem.single('file'), withTenantDb, (req, re
     const skippedRows  = [];
     // Newly inserted rows we'll push to branches at the end (HQ only).
     const pushQueue    = [];
+    // v1.6.8: also track auto-created reference data so we can push it
+    // alongside products. Without these pushes, branches receive products
+    // whose category_sync_id / main_category_sync_id point to rows that
+    // don't exist on the branch — yields "no category" display + units
+    // dropdown gaps.
+    const pushCatIds       = new Set();
+    const pushMainCatIds   = new Set();
 
     // Auto-generate codes for rows that have a name but no code.
     const existingCodes = new Set(
@@ -555,16 +562,17 @@ router.post('/import', auth, csvUploadMem.single('file'), withTenantDb, (req, re
         }
 
         // Auto-create main_category / category on HQ if the CSV references
-        // a name that doesn't exist yet. Skips on branch (branches can't
-        // create HQ-owned reference data).
+        // a name that doesn't exist yet. Track ids so we push them after
+        // the transaction commits (v1.6.8).
         let mainCatId = null, mainCatSyncId = null;
         const mainName = row.main_category?.trim();
         if (mainName) {
           let mc = getMainCatStmt.get(mainName);
           if (!mc && fromHq) {
             const mcSync = randomUUID();
-            insertMainCatStmt.run(mainName, '#6B7280', 1, mcSync, tenantId, branchId, deviceId);
+            const r = insertMainCatStmt.run(mainName, '#6B7280', 1, mcSync, tenantId, branchId, deviceId);
             mc = getMainCatStmt.get(mainName);
+            if (mc?.id) pushMainCatIds.add(mc.id);
           }
           mainCatId = mc?.id || null;
           mainCatSyncId = mc?.sync_id || null;
@@ -577,6 +585,7 @@ router.post('/import', auth, csvUploadMem.single('file'), withTenantDb, (req, re
             const cSync = randomUUID();
             insertCatStmt.run(catName, '#6b7280', mainCatId, mainCatSyncId, 1, cSync, tenantId, branchId, deviceId);
             c = getCatStmt.get(catName);
+            if (c?.id) pushCatIds.add(c.id);
           }
           category_id = c?.id || null;
           categorySyncId = c?.sync_id || null;
@@ -621,7 +630,23 @@ router.post('/import', auth, csvUploadMem.single('file'), withTenantDb, (req, re
     // (errors per branch surface in the response but don't roll back the
     // HQ-side insert).
     const pushErrors = [];
-    if (fromHq && pushQueue.length > 0) {
+    if (fromHq) {
+      // v1.6.8: order matters. Push main_categories first (categories
+      // FK reference them), then categories (products reference them by
+      // sync_id), then products. Without this order, the branch product
+      // INSERT can't find its category_sync_id at the branch.
+      for (const mcId of pushMainCatIds) {
+        const row = db.prepare('SELECT * FROM main_categories WHERE id = ?').get(mcId);
+        if (!row) continue;
+        try { pushMainCategoryToBranches(row, { listTenants, getTenantDb }); }
+        catch (e) { pushErrors.push({ main_category: row.name, error: e.message }); }
+      }
+      for (const cId of pushCatIds) {
+        const row = db.prepare('SELECT * FROM categories WHERE id = ?').get(cId);
+        if (!row) continue;
+        try { pushCategoryToBranches(row, { listTenants, getTenantDb }); }
+        catch (e) { pushErrors.push({ category: row.name, error: e.message }); }
+      }
       for (const newId of pushQueue) {
         const row = db.prepare('SELECT * FROM products WHERE id = ?').get(newId);
         try {

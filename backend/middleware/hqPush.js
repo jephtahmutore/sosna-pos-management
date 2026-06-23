@@ -227,6 +227,11 @@ function pushProductToBranches(prodRow, { listTenants, getTenantDb }) {
         branchCategoryId = c?.id || null;
       }
 
+      // v1.6.8: alt_unit / conversion_factor are HQ-owned (they describe
+      // the packaging structure HQ defines). alt_price is NOT — that's
+      // the branch's per-packaging selling price. So we push the structural
+      // alt_unit + conversion_factor but leave alt_price alone (only set
+      // it on the initial INSERT when the row doesn't exist yet).
       const existing = db.prepare('SELECT id FROM products WHERE sync_id = ? AND deleted_at IS NULL').get(prodRow.sync_id);
       if (existing) {
         db.prepare(`
@@ -237,6 +242,7 @@ function pushProductToBranches(prodRow, { listTenants, getTenantDb }) {
                  ub_number_start = ?, ub_number_length = ?,
                  ub_quantity_start = ?, ub_quantity_length = ?,
                  ub_decimal_start = ?,
+                 alt_unit = ?, conversion_factor = ?,
                  is_hq_owned = 1,
                  updated_at = datetime('now'), synced = 0
            WHERE id = ?
@@ -250,6 +256,7 @@ function pushProductToBranches(prodRow, { listTenants, getTenantDb }) {
           prodRow.ub_number_start ?? 1, prodRow.ub_number_length ?? 6,
           prodRow.ub_quantity_start ?? 7, prodRow.ub_quantity_length ?? 0,
           prodRow.ub_decimal_start ?? 2,
+          prodRow.alt_unit || null, prodRow.conversion_factor || null,
           existing.id
         );
         out.updated += 1;
@@ -261,9 +268,10 @@ function pushProductToBranches(prodRow, { listTenants, getTenantDb }) {
              container_product_sync_id, units_per_container,
              ub_number_start, ub_number_length, ub_quantity_start,
              ub_quantity_length, ub_decimal_start,
+             alt_unit, conversion_factor, alt_price,
              status, is_hq_owned, product_type,
              sync_id, tenant_id, branch_id, device_id, synced, created_at, updated_at)
-          VALUES (?,?,?,?,?,0,0,0,0,?,?,?,?,?,?,?,?,?,?,'Active',1,'finished',?,?,?,?,0,datetime('now'),datetime('now'))
+          VALUES (?,?,?,?,?,0,0,0,0,?,?,?,?,?,?,?,?,?,?,?,?,?,'Active',1,'finished',?,?,?,?,0,datetime('now'),datetime('now'))
         `).run(
           prodRow.code || null, prodRow.name,
           branchCategoryId, prodRow.category_sync_id || null,
@@ -274,6 +282,7 @@ function pushProductToBranches(prodRow, { listTenants, getTenantDb }) {
           prodRow.ub_number_start ?? 1, prodRow.ub_number_length ?? 6,
           prodRow.ub_quantity_start ?? 7, prodRow.ub_quantity_length ?? 0,
           prodRow.ub_decimal_start ?? 2,
+          prodRow.alt_unit || null, prodRow.conversion_factor || null, null /* alt_price branch-owned */,
           prodRow.sync_id, branchTenantId, null, null
         );
         out.pushed += 1;
