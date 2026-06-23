@@ -489,106 +489,156 @@ router.post('/import', auth, csvUploadMem.single('file'), withTenantDb, (req, re
     const rows = parseCSV(text);
     const tenantId = syncConfig.getTenantId(req);
     const { branchId, deviceId } = syncConfig.getConfig();
-    // Per-row receipts so the UI can show exactly which rows landed and
-    // which were dropped (and why). Row numbers are 1-based and reflect
-    // the CSV's data rows (row 1 = first row after the header).
+    const fromHq = isHqRequest(req);
     const importedRows = [];
     const skippedRows  = [];
+    // Newly inserted rows we'll push to branches at the end (HQ only).
+    const pushQueue    = [];
 
-    // Auto-generate codes for rows that have a name but no code (matches
-    // the New Item modal's IT### auto-fill). Seeded from existing DB
-    // codes + codes assigned earlier in this same import batch so we
-    // never clash. Format: IT001, IT002, … Pad to 3 digits.
+    // Auto-generate codes for rows that have a name but no code.
     const existingCodes = new Set(
       db.prepare("SELECT code FROM products WHERE deleted_at IS NULL").all().map(r => r.code)
     );
     let autoCounter = 1;
     const nextAutoCode = () => {
       let code;
-      do {
-        code = `IT${String(autoCounter).padStart(3, '0')}`;
-        autoCounter++;
-      } while (existingCodes.has(code));
+      do { code = `IT${String(autoCounter).padStart(3, '0')}`; autoCounter++; }
+      while (existingCodes.has(code));
       existingCodes.add(code);
       return code;
     };
-    // 24 columns total = 21 bound (?) + 3 literals (synced=0, created_at=datetime('now'), updated_at=datetime('now')).
-    // Earlier this had an extra ? (22 bound), which SQLite rejected on tenant
-    // DBs with "25 values for 24 columns" — that's what broke CSV import on
-    // the web build (the Electron DB had been migrated with an extra column
-    // at some point so the mismatch wasn't visible there).
+
+    // v1.6.2 — INSERT now stores HQ-owned + branch-owned columns in one
+    // shot. On HQ import we force branch-owned to 0 / null (set
+    // is_hq_owned=1) so branches receive a clean record they can price
+    // themselves. On branch import (legacy) branch fields come from the
+    // CSV as before.
+    // 28 columns total = 25 bound (?) + 3 literals.
     const insertStmt = db.prepare(
-      `INSERT INTO products (code, name, category_id, category_sync_id, unit, cost_price, selling_price, current_stock, min_stock,
+      `INSERT INTO products (code, name, category_id, category_sync_id, unit,
+       cost_price, selling_price, current_stock, min_stock,
        ub_number_start, ub_number_length, ub_quantity_start, ub_quantity_length, ub_decimal_start,
        alt_unit, conversion_factor, alt_price,
-       sync_id, tenant_id, branch_id, device_id, synced, created_at, updated_at)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,datetime('now'),datetime('now'))`
+       default_unit, units_per_container, is_hq_owned,
+       sync_id, tenant_id, branch_id, device_id, status,
+       synced, created_at, updated_at)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,datetime('now'),datetime('now'))`
     );
     const checkCodeStmt = db.prepare("SELECT id FROM products WHERE code = ? AND deleted_at IS NULL");
-    const getCatStmt = db.prepare("SELECT id, sync_id FROM categories WHERE name = ? AND deleted_at IS NULL");
+    const getCatStmt = db.prepare("SELECT id, sync_id, main_category_id FROM categories WHERE LOWER(name) = LOWER(?) AND deleted_at IS NULL");
+    const getMainCatStmt = db.prepare("SELECT id, sync_id FROM main_categories WHERE LOWER(name) = LOWER(?) AND deleted_at IS NULL");
+    const insertCatStmt = db.prepare(
+      "INSERT INTO categories (name, color, main_category_id, main_category_sync_id, is_hq_owned, sync_id, tenant_id, branch_id, device_id, synced, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,0,datetime('now'),datetime('now'))"
+    );
+    const insertMainCatStmt = db.prepare(
+      "INSERT INTO main_categories (name, color, is_hq_owned, sync_id, tenant_id, branch_id, device_id, synced, created_at, updated_at) VALUES (?,?,?,?,?,?,?,0,datetime('now'),datetime('now'))"
+    );
     const stockStmt = db.prepare(
       `INSERT INTO stock_movements (product_id, product_sync_id, location, movement_type, quantity, notes, sync_id, tenant_id, branch_id, device_id, synced, created_at, updated_at)
        VALUES (?,?,?,?,?,?,?,?,?,?,0,datetime('now'),datetime('now'))`
     );
+
     db.transaction(() => {
       for (let i = 0; i < rows.length; i++) {
         const row = rows[i];
         const rowNum = i + 1;
         let code = row.code?.trim();
         const name = row.name?.trim();
-        // Name is mandatory. Code is auto-generated when missing.
         if (!name) {
           skippedRows.push({ row: rowNum, code: code || '', name: '', reason: 'Missing name' });
           continue;
         }
-        if (!code) {
-          code = nextAutoCode();
-        }
+        if (!code) code = nextAutoCode();
         if (checkCodeStmt.get(code)) {
           skippedRows.push({ row: rowNum, code, name, reason: `Duplicate code "${code}" — already exists` });
           continue;
         }
-        let category_id = null;
-        let categorySyncId = null;
-        if (row.category?.trim()) {
-          const cat = getCatStmt.get(row.category.trim());
-          category_id = cat ? cat.id : null;
-          categorySyncId = cat ? cat.sync_id : null;
+
+        // Auto-create main_category / category on HQ if the CSV references
+        // a name that doesn't exist yet. Skips on branch (branches can't
+        // create HQ-owned reference data).
+        let mainCatId = null, mainCatSyncId = null;
+        const mainName = row.main_category?.trim();
+        if (mainName) {
+          let mc = getMainCatStmt.get(mainName);
+          if (!mc && fromHq) {
+            const mcSync = randomUUID();
+            insertMainCatStmt.run(mainName, '#6B7280', 1, mcSync, tenantId, branchId, deviceId);
+            mc = getMainCatStmt.get(mainName);
+          }
+          mainCatId = mc?.id || null;
+          mainCatSyncId = mc?.sync_id || null;
         }
-        const unit = row.unit?.trim() || 'pcs';
-        const altUnit = row.alt_unit?.trim() || null;
-        const convFactor = altUnit && row.conversion_factor ? parseFloat(row.conversion_factor) : null;
-        const altPrice = altUnit && row.alt_price ? parseFloat(row.alt_price) : null;
-        const cost_price = parseFloat(row.cost_price) || 0;
-        const selling_price = parseFloat(row.selling_price) || 0;
-        const current_stock = parseFloat(row.current_stock) || 0;
-        const min_stock = parseFloat(row.min_stock) || 10;
-        const ub_number_start = parseInt(row.ub_number_start) || 1;
-        const ub_number_length = parseInt(row.ub_number_length) || 6;
-        const ub_quantity_start = parseInt(row.ub_quantity_start) || 7;
+        let category_id = null, categorySyncId = null;
+        const catName = row.category?.trim();
+        if (catName) {
+          let c = getCatStmt.get(catName);
+          if (!c && fromHq) {
+            const cSync = randomUUID();
+            insertCatStmt.run(catName, '#6b7280', mainCatId, mainCatSyncId, 1, cSync, tenantId, branchId, deviceId);
+            c = getCatStmt.get(catName);
+          }
+          category_id = c?.id || null;
+          categorySyncId = c?.sync_id || null;
+        }
+
+        const unit         = row.unit?.trim() || 'pcs';
+        const defaultUnit  = row.default_unit?.trim() || null;
+        const altUnit      = row.alt_unit?.trim() || null;
+        const convFactor   = altUnit && row.conversion_factor ? parseFloat(row.conversion_factor) : null;
+        const upc          = row.units_per_container ? parseFloat(row.units_per_container) : null;
+        // Branch-owned fields — IGNORED when importing on HQ.
+        const cost_price    = fromHq ? 0 : (parseFloat(row.cost_price) || 0);
+        const selling_price = fromHq ? 0 : (parseFloat(row.selling_price) || 0);
+        const altPrice      = fromHq ? null : (altUnit && row.alt_price ? parseFloat(row.alt_price) : null);
+        const current_stock = fromHq ? 0 : (parseFloat(row.current_stock) || 0);
+        const min_stock     = fromHq ? 0 : (parseFloat(row.min_stock) || 10);
+        const ub_number_start    = parseInt(row.ub_number_start)    || 1;
+        const ub_number_length   = parseInt(row.ub_number_length)   || 6;
+        const ub_quantity_start  = parseInt(row.ub_quantity_start)  || 7;
         const ub_quantity_length = parseInt(row.ub_quantity_length) || 0;
-        const ub_decimal_start = parseInt(row.ub_decimal_start) || 2;
+        const ub_decimal_start   = parseInt(row.ub_decimal_start)   || 2;
         const productSyncId = randomUUID();
+
         const info = insertStmt.run(
-          code, name, category_id, categorySyncId, unit, cost_price, selling_price, current_stock, min_stock,
+          code, name, category_id, categorySyncId, unit,
+          cost_price, selling_price, current_stock, min_stock,
           ub_number_start, ub_number_length, ub_quantity_start, ub_quantity_length, ub_decimal_start,
           altUnit, convFactor, altPrice,
-          productSyncId, tenantId, branchId, deviceId
+          defaultUnit, upc, fromHq ? 1 : 0,
+          productSyncId, tenantId, branchId, deviceId, 'Active'
         );
         if (current_stock > 0) {
           stockStmt.run(info.lastInsertRowid, productSyncId, 'store', 'opening', current_stock, 'Opening balance (import)',
             randomUUID(), tenantId, branchId, deviceId);
         }
         importedRows.push({ row: rowNum, code, name });
+        if (fromHq) pushQueue.push(info.lastInsertRowid);
       }
     })();
+
+    // On HQ: push each newly-inserted product to every branch. Best-effort
+    // (errors per branch surface in the response but don't roll back the
+    // HQ-side insert).
+    const pushErrors = [];
+    if (fromHq && pushQueue.length > 0) {
+      for (const newId of pushQueue) {
+        const row = db.prepare('SELECT * FROM products WHERE id = ?').get(newId);
+        try {
+          const r = pushProductToBranches(row, { listTenants, getTenantDb });
+          if (r.errors?.length) pushErrors.push(...r.errors.map(e => ({ ...e, product: row.name })));
+        } catch (e) { pushErrors.push({ product: row.name, error: e.message }); }
+      }
+    }
+
     const imported = importedRows.length;
     const skipped  = skippedRows.length;
     res.json({
       imported, skipped,
       imported_rows: importedRows,
       skipped_rows:  skippedRows,
-      message: `Imported ${imported} products. Skipped ${skipped} (duplicates or missing code/name).`,
+      push_errors:   pushErrors,
+      message: `Imported ${imported} products. Skipped ${skipped} (duplicates or missing name).${fromHq ? ` Pushed to all branches.` : ''}`,
     });
   } catch (error) {
     res.status(500).json({ error: error.message });

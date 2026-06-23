@@ -151,20 +151,20 @@ const ItemDetails = () => {
   };
 
   const handleDownloadSample = () => {
-    // Sosna sample with realistic SKUs and the multi-unit columns (alt_unit /
-    // conversion_factor / alt_price) the importer actually uses today. Barcode
-    // (ub_*) columns are optional with sensible defaults, so they're omitted
-    // here to keep the sample focused on the common fields.
+    // v1.6.2 — HQ-only columns. Branch-owned (cost/selling/current_stock/
+    // min_stock/alt_price) are intentionally absent: branches set those
+    // on their own Item Details page. Backend ignores them on HQ import
+    // even if present in the file.
     const csv =
-      'code,name,category,unit,cost_price,selling_price,current_stock,min_stock,alt_unit,conversion_factor,alt_price\n' +
-      'CL001,Castlite 330 ml RB,Beer,pcs,7.50,12.00,0,24,Crate,24,280.00\n' +
-      'EC001,Eagle Cassava 375 ml RB,Beer,pcs,5.00,7.50,0,24,Crate,24,170.00\n' +
-      'SV001,Savanna 330 ml,Cider,pcs,18.00,28.00,0,12,Pack,12,330.00\n' +
-      'HG001,Hunter Gold 750 ml,Spirits,pcs,180.00,250.00,0,6,Box,6,1450.00\n';
+      'code,name,category,main_category,unit,default_unit,alt_unit,conversion_factor,units_per_container\n' +
+      'CL001,Castlite 330ml RB,Beer,Beverage,Bottle,Crate,Crate,24,24\n' +
+      'EC001,Eagle Cassava 375ml RB,Beer,Beverage,Bottle,Crate,Crate,24,24\n' +
+      'SV001,Savanna 330ml,Cider,Beverage,Bottle,Pack,Pack,12,12\n' +
+      'HG001,Hunter Gold 750ml,Spirits,Beverage,Bottle,Box,Box,6,6\n';
     const blob = new Blob([csv], { type: 'text/csv' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
-    a.href = url; a.download = 'sample_products.csv'; a.click();
+    a.href = url; a.download = 'sosna_hq_items.csv'; a.click();
     URL.revokeObjectURL(url);
   };
 
