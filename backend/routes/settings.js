@@ -101,8 +101,11 @@ router.put('/business', auth, (req, res) => {
       // mansa1); 'USD+FRA' = dual currency, unlocks FX rate inputs, dual-
       // currency payment modal, USD+FRA receipt lines (kassumbalesa1).
       // Anything else is normalised to 'K' to avoid bad string slipping through.
+      // v1.7.0: now accepts a third value 'USD+FRA+K' (triple-currency
+      // cash acceptance — items still priced in USD).
       if (currency_mode !== undefined) {
-        const cm = String(currency_mode || 'K').toUpperCase() === 'USD+FRA' ? 'USD+FRA' : 'K';
+        const raw = String(currency_mode || 'K').toUpperCase();
+        const cm = ['USD+FRA+K', 'USD+FRA'].includes(raw) ? raw : 'K';
         sets.push('currency_mode=?'); vals.push(cm);
       }
       // workflow_mode is a per-branch UI gate.

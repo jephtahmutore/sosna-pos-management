@@ -23,7 +23,9 @@ const fmtRate = (n) => parseFloat(n || 0).toLocaleString(undefined, { minimumFra
 
 export default function FxRates() {
   const { currencyMode } = useCurrency();
-  const isDual = currencyMode === 'USD+FRA';
+  // v1.7.0: 'USD+FRA' = dual (FRA only), 'USD+FRA+K' = triple (also Kwacha).
+  const isDual  = currencyMode === 'USD+FRA' || currencyMode === 'USD+FRA+K';
+  const hasK    = currencyMode === 'USD+FRA+K';
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(false);
   const [toast, setToast] = useState(null);
@@ -34,10 +36,13 @@ export default function FxRates() {
   // 7-day live BCC history, for the chart. [{date:'YYYY-MM-DD', rate:Number|null}]
   const [liveHistory, setLiveHistory] = useState([]);
   const [historyLoading, setHistoryLoading] = useState(false);
+  // v1.7.0: optional K rate fields. Only saved when currency_mode includes K.
   const [form, setForm] = useState({
     effective_date: todayISO(),
     sell_rate: '',
     buy_rate: '',
+    sell_rate_k: '',
+    buy_rate_k: '',
     notes: '',
   });
   const [saving, setSaving] = useState(false);
@@ -106,9 +111,13 @@ export default function FxRates() {
     e.preventDefault();
     const sell = parseFloat(form.sell_rate);
     const buy = parseFloat(form.buy_rate);
+    const sellK = hasK && form.sell_rate_k !== '' ? parseFloat(form.sell_rate_k) : null;
+    const buyK  = hasK && form.buy_rate_k  !== '' ? parseFloat(form.buy_rate_k)  : null;
     if (!form.effective_date) return flash('Effective date is required', 'error');
     if (!isFinite(sell) || sell <= 0) return flash('Sell rate must be > 0', 'error');
     if (!isFinite(buy)  || buy  <= 0) return flash('Buy rate must be > 0', 'error');
+    if (sellK !== null && (!isFinite(sellK) || sellK <= 0)) return flash('Sell rate (K) must be > 0', 'error');
+    if (buyK  !== null && (!isFinite(buyK)  || buyK  <= 0)) return flash('Buy rate (K) must be > 0', 'error');
     if (buy >= sell) {
       // Cashier change is given via Buy rate, so Buy < Sell is the normal
       // direction. Warn but allow — operator may have a real reason.
@@ -120,10 +129,12 @@ export default function FxRates() {
         effective_date: form.effective_date,
         sell_rate: sell,
         buy_rate: buy,
+        sell_rate_k: sellK,
+        buy_rate_k:  buyK,
         notes: form.notes || null,
       });
       flash('Rate saved', 'success');
-      setForm({ effective_date: todayISO(), sell_rate: '', buy_rate: '', notes: '' });
+      setForm({ effective_date: todayISO(), sell_rate: '', buy_rate: '', sell_rate_k: '', buy_rate_k: '', notes: '' });
       await refresh();
     } catch (err) {
       flash(err?.response?.data?.error || 'Failed to save', 'error');
@@ -312,6 +323,24 @@ export default function FxRates() {
               onChange={e => setForm({ ...form, buy_rate: e.target.value.replace(/[^0-9.]/g, '') })}
               placeholder="e.g. 2600" style={inputStyle} required />
           </div>
+          {hasK && (
+            <>
+              <div>
+                <label style={lblStyle}>Sell rate (K / USD)</label>
+                <input type="text" inputMode="decimal" pattern="[0-9]*\.?[0-9]*"
+                  value={form.sell_rate_k}
+                  onChange={e => setForm({ ...form, sell_rate_k: e.target.value.replace(/[^0-9.]/g, '') })}
+                  placeholder="e.g. 25" style={inputStyle} />
+              </div>
+              <div>
+                <label style={lblStyle}>Buy rate (K / USD)</label>
+                <input type="text" inputMode="decimal" pattern="[0-9]*\.?[0-9]*"
+                  value={form.buy_rate_k}
+                  onChange={e => setForm({ ...form, buy_rate_k: e.target.value.replace(/[^0-9.]/g, '') })}
+                  placeholder="e.g. 23" style={inputStyle} />
+              </div>
+            </>
+          )}
           <div style={{ gridColumn: '1 / -1' }}>
             <label style={lblStyle}>Notes (optional)</label>
             <input type="text" value={form.notes}
@@ -342,8 +371,10 @@ export default function FxRates() {
             <thead>
               <tr style={{ background: '#f8fafc', color: '#64748b', fontSize: 11, textTransform: 'uppercase', letterSpacing: 0.4 }}>
                 <th style={thStyle}>Effective</th>
-                <th style={{ ...thStyle, textAlign: 'right' }}>Sell</th>
-                <th style={{ ...thStyle, textAlign: 'right' }}>Buy</th>
+                <th style={{ ...thStyle, textAlign: 'right' }}>Sell FRA</th>
+                <th style={{ ...thStyle, textAlign: 'right' }}>Buy FRA</th>
+                {hasK && <th style={{ ...thStyle, textAlign: 'right' }}>Sell K</th>}
+                {hasK && <th style={{ ...thStyle, textAlign: 'right' }}>Buy K</th>}
                 <th style={thStyle}>Notes</th>
                 <th style={thStyle}>Set by</th>
                 <th style={thStyle}>Saved</th>
@@ -356,6 +387,8 @@ export default function FxRates() {
                   <td style={tdStyle}>{r.effective_date}</td>
                   <td style={{ ...tdStyle, textAlign: 'right', fontWeight: 700 }}>{fmtRate(r.sell_rate)}</td>
                   <td style={{ ...tdStyle, textAlign: 'right', fontWeight: 700 }}>{fmtRate(r.buy_rate)}</td>
+                  {hasK && <td style={{ ...tdStyle, textAlign: 'right', fontWeight: 700 }}>{r.sell_rate_k ? fmtRate(r.sell_rate_k) : '—'}</td>}
+                  {hasK && <td style={{ ...tdStyle, textAlign: 'right', fontWeight: 700 }}>{r.buy_rate_k ? fmtRate(r.buy_rate_k) : '—'}</td>}
                   <td style={tdStyle}>{r.notes || '—'}</td>
                   <td style={tdStyle}>{r.set_by_name || '—'}</td>
                   <td style={{ ...tdStyle, color: '#94a3b8', fontSize: 11 }}>

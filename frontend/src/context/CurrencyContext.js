@@ -50,8 +50,9 @@ export const CurrencyProvider = ({ children }) => {
       setCurrencies(parseCurrencies(biz.currencies_json));
       const wm = String(biz.workflow_mode || 'single_pos').toLowerCase();
       setWorkflowMode(['three_station', 'two_station'].includes(wm) ? wm : 'single_pos');
+      // v1.7.0: third value 'USD+FRA+K' enables triple-currency cash at till.
       const cm = String(biz.currency_mode || 'K').toUpperCase();
-      setCurrencyMode(cm === 'USD+FRA' ? 'USD+FRA' : 'K');
+      setCurrencyMode(['USD+FRA+K', 'USD+FRA'].includes(cm) ? cm : 'K');
       setLegacyProcurementEnabled(!!parseInt(biz.legacy_procurement_enabled || 0, 10));
     } catch { /* keep defaults */ }
   }, []);

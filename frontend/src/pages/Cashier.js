@@ -27,41 +27,59 @@ import {
   getCurrentFxRate,
 } from '../services/api';
 import { useAuth } from '../context/AuthContext';
+import { useCurrency } from '../context/CurrencyContext';
 import printHtml from '../utils/printHtml';
 
-const FALLBACK_SELL = 2900;
-const FALLBACK_BUY  = 2600;
+const FALLBACK_SELL   = 2900;
+const FALLBACK_BUY    = 2600;
+const FALLBACK_SELL_K = 25;   // placeholder until set in Currency Rates
+const FALLBACK_BUY_K  = 23;
 
 const fmtUSD = (n) => `$${parseFloat(n || 0).toFixed(2)}`;
 const fmtFRA = (n) => Math.round(parseFloat(n || 0)).toLocaleString('en-US');
+const fmtK   = (n) => Math.round(parseFloat(n || 0)).toLocaleString('en-US');
 
 export default function Cashier() {
   const { user } = useAuth();
+  // v1.7.0: currency_mode='USD+FRA+K' enables a third K (Kwacha) input row.
+  // 'USD+FRA' = FRA only (legacy). 'K' = USD-only at Cashier.
+  const { currencyMode } = useCurrency();
+  const hasFra = currencyMode === 'USD+FRA' || currencyMode === 'USD+FRA+K';
+  const hasK   = currencyMode === 'USD+FRA+K';
   const [inbox, setInbox] = useState([]);
   const [loadingInbox, setLoadingInbox] = useState(false);
   const [selected, setSelected] = useState(null);
   const [loadingDetail, setLoadingDetail] = useState(false);
   const [amountPaidUSD, setAmountPaidUSD] = useState('');
   const [amountPaidFRA, setAmountPaidFRA] = useState('');
+  const [amountPaidK,   setAmountPaidK]   = useState('');
   const [changeGivenUSD, setChangeGivenUSD] = useState('');
   const [changeGivenFRA, setChangeGivenFRA] = useState('');
+  const [changeGivenK,   setChangeGivenK]   = useState('');
   const [confirm, setConfirm] = useState(null);   // { ...calc }
   const [submitting, setSubmitting] = useState(false);
   const [toast, setToast] = useState(null);
-  // Business header info for the printed receipt — fetched once on mount,
-  // same pattern POS.js uses for its sales receipt.
   const [biz, setBiz] = useState({ name: 'SOSNA', phone: '', address: '' });
-  // Live FX rate. Refreshed on mount + when the cashier opens a new order
-  // so an admin's mid-shift rate update is picked up without a hard reload.
-  const [fxRate, setFxRate] = useState({ sell: FALLBACK_SELL, buy: FALLBACK_BUY });
-  const SELL_RATE = fxRate.sell;
-  const BUY_RATE  = fxRate.buy;
+  // Live FX rates — refreshed on mount + when opening a new order so a
+  // mid-shift rate change is picked up without a hard reload. K rates
+  // default to the FALLBACK_*_K constants until the admin sets them in
+  // Accounting → Currency Rates.
+  const [fxRate, setFxRate] = useState({ sell: FALLBACK_SELL, buy: FALLBACK_BUY, sellK: FALLBACK_SELL_K, buyK: FALLBACK_BUY_K });
+  const SELL_RATE   = fxRate.sell;
+  const BUY_RATE    = fxRate.buy;
+  const SELL_RATE_K = fxRate.sellK;
+  const BUY_RATE_K  = fxRate.buyK;
 
   const refreshFxRate = async () => {
     try {
       const r = await getCurrentFxRate();
-      if (r.data && r.data.sell_rate > 0 && r.data.buy_rate > 0) {
-        setFxRate({ sell: parseFloat(r.data.sell_rate), buy: parseFloat(r.data.buy_rate) });
+      if (r.data) {
+        setFxRate(prev => ({
+          sell:  parseFloat(r.data.sell_rate)  > 0 ? parseFloat(r.data.sell_rate)  : prev.sell,
+          buy:   parseFloat(r.data.buy_rate)   > 0 ? parseFloat(r.data.buy_rate)   : prev.buy,
+          sellK: parseFloat(r.data.sell_rate_k)> 0 ? parseFloat(r.data.sell_rate_k): prev.sellK,
+          buyK:  parseFloat(r.data.buy_rate_k) > 0 ? parseFloat(r.data.buy_rate_k) : prev.buyK,
+        }));
       }
     } catch { /* keep fallback */ }
   };
@@ -97,9 +115,8 @@ export default function Cashier() {
 
   const openOrder = async (id) => {
     setLoadingDetail(true);
-    setAmountPaidUSD(''); setAmountPaidFRA('');
-    setChangeGivenUSD(''); setChangeGivenFRA('');
-    // Pick up any rate the admin saved while this terminal sat idle.
+    setAmountPaidUSD(''); setAmountPaidFRA(''); setAmountPaidK('');
+    setChangeGivenUSD(''); setChangeGivenFRA(''); setChangeGivenK('');
     refreshFxRate();
     try {
       const res = await getOrder(id);
@@ -108,29 +125,43 @@ export default function Cashier() {
     setLoadingDetail(false);
   };
 
-  // Sirak math, single source of truth for the right panel.
+  // Sirak math, extended with K (v1.7.0). Three foreign-cash buckets:
+  //   paidFRAasUSD = paidFRA / sellRate
+  //   paidKasUSD   = paidK   / sellRateK
+  //   totalAmountPaid = paidUSD + paidFRAasUSD + paidKasUSD
+  // Change displays in all currencies (read-only); cashier picks which
+  // currency to physically hand back.
   const computePayment = () => {
     if (!selected) return null;
     const totalDue = parseFloat(selected.total_amount || 0);
     const paidUSD  = parseFloat(amountPaidUSD || 0) || 0;
     const paidFRA  = parseFloat(amountPaidFRA || 0) || 0;
-    const paidFRAasUSD    = SELL_RATE > 0 ? paidFRA / SELL_RATE : 0;
-    const totalAmountPaid = paidUSD + paidFRAasUSD;
+    const paidK    = parseFloat(amountPaidK   || 0) || 0;
+    const paidFRAasUSD    = SELL_RATE   > 0 ? paidFRA / SELL_RATE   : 0;
+    const paidKasUSD      = SELL_RATE_K > 0 ? paidK   / SELL_RATE_K : 0;
+    const totalAmountPaid = paidUSD + paidFRAasUSD + paidKasUSD;
     const unpaidBalance   = Math.max(0, totalDue - totalAmountPaid);
-    const unpaidBalanceFRA= SELL_RATE > 0 ? unpaidBalance * SELL_RATE : 0;
+    const unpaidBalanceFRA= SELL_RATE   > 0 ? unpaidBalance * SELL_RATE   : 0;
+    const unpaidBalanceK  = SELL_RATE_K > 0 ? unpaidBalance * SELL_RATE_K : 0;
     const changeUSD       = Math.max(0, totalAmountPaid - totalDue);
-    const changeFRA       = BUY_RATE > 0 ? changeUSD * BUY_RATE : 0;
+    const changeFRA       = BUY_RATE   > 0 ? changeUSD * BUY_RATE   : 0;
+    const changeK         = BUY_RATE_K > 0 ? changeUSD * BUY_RATE_K : 0;
     const isOverpaid      = changeUSD > 0.001;
     const givenUSD        = parseFloat(changeGivenUSD || 0) || 0;
     const givenFRA        = parseFloat(changeGivenFRA || 0) || 0;
-    const totalChangeGiven= givenUSD + (BUY_RATE > 0 ? givenFRA / BUY_RATE : 0);
+    const givenK          = parseFloat(changeGivenK   || 0) || 0;
+    const totalChangeGiven = givenUSD
+                           + (BUY_RATE   > 0 ? givenFRA / BUY_RATE   : 0)
+                           + (BUY_RATE_K > 0 ? givenK   / BUY_RATE_K : 0);
     const netRemaining    = changeUSD - totalChangeGiven;
-    const netRemainingFRA = BUY_RATE > 0 ? netRemaining * BUY_RATE : 0;
+    const netRemainingFRA = BUY_RATE   > 0 ? netRemaining * BUY_RATE   : 0;
+    const netRemainingK   = BUY_RATE_K > 0 ? netRemaining * BUY_RATE_K : 0;
     return {
-      totalDue, paidUSD, paidFRA, paidFRAasUSD, totalAmountPaid,
-      unpaidBalance, unpaidBalanceFRA,
-      changeUSD, changeFRA, isOverpaid,
-      givenUSD, givenFRA, totalChangeGiven, netRemaining, netRemainingFRA,
+      totalDue, paidUSD, paidFRA, paidK, paidFRAasUSD, paidKasUSD, totalAmountPaid,
+      unpaidBalance, unpaidBalanceFRA, unpaidBalanceK,
+      changeUSD, changeFRA, changeK, isOverpaid,
+      givenUSD, givenFRA, givenK, totalChangeGiven,
+      netRemaining, netRemainingFRA, netRemainingK,
     };
   };
 
@@ -145,12 +176,16 @@ export default function Cashier() {
     setSubmitting(true);
     try {
       await collectOrderPayment(selected.id, {
-        paid_usd:  confirm.paidUSD,
-        paid_fra:  confirm.paidFRA,
-        given_usd: confirm.givenUSD,
-        given_fra: confirm.givenFRA,
-        buy_rate:  BUY_RATE,
-        sell_rate: SELL_RATE,
+        paid_usd:     confirm.paidUSD,
+        paid_fra:     confirm.paidFRA,
+        paid_k:       confirm.paidK,
+        given_usd:    confirm.givenUSD,
+        given_fra:    confirm.givenFRA,
+        given_k:      confirm.givenK,
+        buy_rate:     BUY_RATE,
+        sell_rate:    SELL_RATE,
+        buy_rate_k:   BUY_RATE_K,
+        sell_rate_k:  SELL_RATE_K,
       });
 
       // Snapshot for the printed receipt BEFORE we clear state.
@@ -162,8 +197,10 @@ export default function Cashier() {
           calc: confirm,
           cashierName,
           when: new Date(),
-          sellRate: SELL_RATE,
-          buyRate: BUY_RATE,
+          sellRate:  SELL_RATE,
+          buyRate:   BUY_RATE,
+          sellRateK: SELL_RATE_K,
+          buyRateK:  BUY_RATE_K,
         }));
       } catch (_) { /* non-fatal — payment is already recorded */ }
 
@@ -307,14 +344,17 @@ export default function Cashier() {
                 <div style={{ background: '#f0f9ff', border: '1px solid #bae6fd', borderRadius: 8, padding: '12px 14px', marginBottom: 14 }}>
                   <div style={{ fontSize: 11, color: '#0369a1', fontWeight: 600 }}>Total Due</div>
                   <div style={{ fontSize: 26, fontWeight: 800, color: '#0c4a6e', lineHeight: 1.1 }}>{fmtUSD(selected.total_amount)}</div>
-                  <div style={{ fontSize: 11, color: '#0369a1', marginTop: 2 }}>
-                    or {fmtFRA(parseFloat(selected.total_amount) * SELL_RATE)} FRA (sell {SELL_RATE.toLocaleString()})
-                  </div>
+                  {hasFra && (
+                    <div style={{ fontSize: 11, color: '#0369a1', marginTop: 2 }}>
+                      or {fmtFRA(parseFloat(selected.total_amount) * SELL_RATE)} FRA (sell {SELL_RATE.toLocaleString()})
+                      {hasK && <> · or {fmtK(parseFloat(selected.total_amount) * SELL_RATE_K)} K (sell {SELL_RATE_K.toLocaleString()})</>}
+                    </div>
+                  )}
                 </div>
 
-                {/* v1.6.3: per-invoice FX rate override. Pre-filled with the
-                    current rate from Accounting → Currency Rates. Whatever the
-                    cashier types is what the receipt + Cash Report show. */}
+                {/* v1.6.3 + v1.7.0: per-invoice FX rate override. K row only
+                    appears when currency_mode='USD+FRA+K'. */}
+                {hasFra && (
                 <div style={{ background: '#fef3c7', border: '1px solid #fde68a', borderRadius: 8, padding: 10, marginBottom: 10 }}>
                   <div style={{ fontSize: 11, color: '#92400e', fontWeight: 700, marginBottom: 6, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                     <span>FX Rate for this invoice</span>
@@ -337,42 +377,70 @@ export default function Cashier() {
                         style={inputStyle} />
                     </div>
                   </div>
+                  {hasK && (
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginTop: 8, borderTop: '1px dashed #fde68a', paddingTop: 8 }}>
+                      <div>
+                        <label style={{ ...lblStyle, color: '#92400e' }}>Sell rate (paid in K)</label>
+                        <input type="number" min="0" step="0.01" value={fxRate.sellK}
+                          onChange={e => setFxRate(r => ({ ...r, sellK: parseFloat(e.target.value) || 0 }))}
+                          style={inputStyle} />
+                      </div>
+                      <div>
+                        <label style={{ ...lblStyle, color: '#92400e' }}>Buy rate (change in K)</label>
+                        <input type="number" min="0" step="0.01" value={fxRate.buyK}
+                          onChange={e => setFxRate(r => ({ ...r, buyK: parseFloat(e.target.value) || 0 }))}
+                          style={inputStyle} />
+                      </div>
+                    </div>
+                  )}
                 </div>
+                )}
 
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+                <div style={{ display: 'grid', gridTemplateColumns: hasK ? '1fr 1fr 1fr' : (hasFra ? '1fr 1fr' : '1fr'), gap: 10 }}>
                   <div>
                     <label style={lblStyle}>Amount Paid ($)</label>
                     <input type="number" min="0" step="0.01" value={amountPaidUSD}
                       onChange={e => setAmountPaidUSD(e.target.value)} placeholder="0.00" style={inputStyle} />
                   </div>
-                  <div>
-                    <label style={lblStyle}>Amount Paid (FRA)</label>
-                    <input type="number" min="0" step="1" value={amountPaidFRA}
-                      onChange={e => setAmountPaidFRA(e.target.value)} placeholder="0" style={inputStyle} />
-                  </div>
+                  {hasFra && (
+                    <div>
+                      <label style={lblStyle}>Amount Paid (FRA)</label>
+                      <input type="number" min="0" step="1" value={amountPaidFRA}
+                        onChange={e => setAmountPaidFRA(e.target.value)} placeholder="0" style={inputStyle} />
+                    </div>
+                  )}
+                  {hasK && (
+                    <div>
+                      <label style={lblStyle}>Amount Paid (K)</label>
+                      <input type="number" min="0" step="1" value={amountPaidK}
+                        onChange={e => setAmountPaidK(e.target.value)} placeholder="0" style={inputStyle} />
+                    </div>
+                  )}
                 </div>
 
-                {calc && (calc.paidUSD > 0 || calc.paidFRA > 0) && (
+                {calc && (calc.paidUSD > 0 || calc.paidFRA > 0 || calc.paidK > 0) && (
                   <div style={{ marginTop: 12 }}>
                     {calc.isOverpaid ? (
                       <div style={{ background: '#ecfdf5', border: '1px solid #a7f3d0', borderRadius: 8, padding: '10px 12px' }}>
                         <div style={{ fontSize: 11, color: '#047857', fontWeight: 600 }}>Change</div>
-                        <div style={{ fontSize: 20, fontWeight: 800, color: '#065f46' }}>
-                          {fmtUSD(calc.changeUSD)}{' '}
-                          <span style={{ fontSize: 12, color: '#047857', fontWeight: 600 }}>
+                        <div style={{ fontSize: 20, fontWeight: 800, color: '#065f46' }}>{fmtUSD(calc.changeUSD)}</div>
+                        {hasFra && (
+                          <div style={{ fontSize: 12, color: '#047857', fontWeight: 600, marginTop: 4 }}>
                             ≈ FRA {fmtFRA(calc.changeFRA)} (buy {BUY_RATE.toLocaleString()})
-                          </span>
-                        </div>
+                            {hasK && <> · ≈ K {fmtK(calc.changeK)} (buy {BUY_RATE_K.toLocaleString()})</>}
+                          </div>
+                        )}
                       </div>
                     ) : (
                       <div style={{ background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 8, padding: '10px 12px' }}>
                         <div style={{ fontSize: 11, color: '#b91c1c', fontWeight: 600 }}>Unpaid Balance</div>
-                        <div style={{ fontSize: 20, fontWeight: 800, color: '#991b1b' }}>
-                          {fmtUSD(calc.unpaidBalance)}{' '}
-                          <span style={{ fontSize: 12, color: '#b91c1c', fontWeight: 600 }}>
+                        <div style={{ fontSize: 20, fontWeight: 800, color: '#991b1b' }}>{fmtUSD(calc.unpaidBalance)}</div>
+                        {hasFra && (
+                          <div style={{ fontSize: 12, color: '#b91c1c', fontWeight: 600, marginTop: 4 }}>
                             ≈ FRA {fmtFRA(calc.unpaidBalanceFRA)} (sell {SELL_RATE.toLocaleString()})
-                          </span>
-                        </div>
+                            {hasK && <> · ≈ K {fmtK(calc.unpaidBalanceK)} (sell {SELL_RATE_K.toLocaleString()})</>}
+                          </div>
+                        )}
                       </div>
                     )}
                   </div>
@@ -381,31 +449,49 @@ export default function Cashier() {
                 {calc?.isOverpaid && (
                   <div style={{ marginTop: 12 }}>
                     <div style={{ fontSize: 11, color: '#64748b', fontWeight: 600, marginBottom: 6 }}>Change Given</div>
-                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+                    <div style={{ display: 'grid', gridTemplateColumns: hasK ? '1fr 1fr 1fr' : (hasFra ? '1fr 1fr' : '1fr'), gap: 10 }}>
                       <div>
                         <label style={lblStyle}>Given ($)</label>
                         <input type="number" min="0" step="0.01" value={changeGivenUSD}
                           onChange={e => {
                             const v = parseFloat(e.target.value) || 0;
-                            const otherUSD = BUY_RATE > 0 ? (parseFloat(changeGivenFRA || 0) || 0) / BUY_RATE : 0;
-                            if (v + otherUSD > calc.changeUSD + 0.001) return;
+                            const otherFRAusd = BUY_RATE   > 0 ? (parseFloat(changeGivenFRA || 0) || 0) / BUY_RATE   : 0;
+                            const otherKusd   = BUY_RATE_K > 0 ? (parseFloat(changeGivenK   || 0) || 0) / BUY_RATE_K : 0;
+                            if (v + otherFRAusd + otherKusd > calc.changeUSD + 0.001) return;
                             setChangeGivenUSD(e.target.value);
                           }}
                           placeholder="0.00" style={inputStyle} />
                       </div>
+                      {hasFra && (
                       <div>
                         <label style={lblStyle}>Given (FRA)</label>
                         <input type="number" min="0" step="1" value={changeGivenFRA}
                           onChange={e => {
-                            const vAsUSD = BUY_RATE > 0 ? (parseFloat(e.target.value) || 0) / BUY_RATE : 0;
-                            const otherUSD = parseFloat(changeGivenUSD || 0) || 0;
-                            if (otherUSD + vAsUSD > calc.changeUSD + 0.001) return;
+                            const vAsUSD     = BUY_RATE   > 0 ? (parseFloat(e.target.value) || 0) / BUY_RATE   : 0;
+                            const otherUSD   = parseFloat(changeGivenUSD || 0) || 0;
+                            const otherKusd  = BUY_RATE_K > 0 ? (parseFloat(changeGivenK   || 0) || 0) / BUY_RATE_K : 0;
+                            if (otherUSD + vAsUSD + otherKusd > calc.changeUSD + 0.001) return;
                             setChangeGivenFRA(e.target.value);
                           }}
                           placeholder="0" style={inputStyle} />
                       </div>
+                      )}
+                      {hasK && (
+                      <div>
+                        <label style={lblStyle}>Given (K)</label>
+                        <input type="number" min="0" step="1" value={changeGivenK}
+                          onChange={e => {
+                            const vAsUSD     = BUY_RATE_K > 0 ? (parseFloat(e.target.value) || 0) / BUY_RATE_K : 0;
+                            const otherUSD   = parseFloat(changeGivenUSD || 0) || 0;
+                            const otherFRAusd= BUY_RATE   > 0 ? (parseFloat(changeGivenFRA || 0) || 0) / BUY_RATE   : 0;
+                            if (otherUSD + vAsUSD + otherFRAusd > calc.changeUSD + 0.001) return;
+                            setChangeGivenK(e.target.value);
+                          }}
+                          placeholder="0" style={inputStyle} />
+                      </div>
+                      )}
                     </div>
-                    {(calc.givenUSD > 0 || calc.givenFRA > 0) && (
+                    {(calc.givenUSD > 0 || calc.givenFRA > 0 || calc.givenK > 0) && (
                       <div style={{ marginTop: 10, padding: '10px 12px',
                                     background: Math.abs(calc.netRemaining) < 0.01 ? '#ecfdf5' : '#fef3c7',
                                     border: `1px solid ${Math.abs(calc.netRemaining) < 0.01 ? '#a7f3d0' : '#fde68a'}`,
@@ -415,7 +501,8 @@ export default function Cashier() {
                         </div>
                         {Math.abs(calc.netRemaining) >= 0.01 && (
                           <div style={{ fontSize: 16, fontWeight: 800, color: '#78350f' }}>
-                            {fmtUSD(calc.netRemaining)} <span style={{ fontSize: 11, fontWeight: 600 }}>(FRA {fmtFRA(calc.netRemainingFRA)})</span>
+                            {fmtUSD(calc.netRemaining)}{' '}
+                            {hasFra && <span style={{ fontSize: 11, fontWeight: 600 }}>(FRA {fmtFRA(calc.netRemainingFRA)}{hasK && <> · K {fmtK(calc.netRemainingK)}</>})</span>}
                           </div>
                         )}
                       </div>
@@ -501,7 +588,7 @@ export default function Cashier() {
 // mobile, share-sheet on Capacitor APK). FRA rows only appear when the
 // payment actually involved FRA cash or FRA change — keeps USD-only sales
 // from showing useless "FRA: 0" lines.
-function renderCashierReceipt({ biz, order, calc, cashierName, when, sellRate: _sell, buyRate: _buy }) {
+function renderCashierReceipt({ biz, order, calc, cashierName, when, sellRate: _sell, buyRate: _buy, sellRateK: _sellK, buyRateK: _buyK }) {
   const fmt = (n) => parseFloat(n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   const fmtFra = (n) => Math.round(parseFloat(n || 0)).toLocaleString('en-US');
   const div = '='.repeat(42);
@@ -518,8 +605,11 @@ function renderCashierReceipt({ biz, order, calc, cashierName, when, sellRate: _
             </tr>`;
   }).join('');
   const usedFra = (calc.paidFRA > 0.0001) || (calc.givenFRA > 0.0001);
-  const sellRate = _sell;
-  const buyRate  = _buy;
+  const usedK   = (calc.paidK   > 0.0001) || (calc.givenK   > 0.0001);
+  const sellRate  = _sell;
+  const buyRate   = _buy;
+  const sellRateK = _sellK || 0;
+  const buyRateK  = _buyK  || 0;
   return `<!DOCTYPE html>
 <html><head><meta charset="UTF-8">
 <style>
@@ -542,7 +632,7 @@ function renderCashierReceipt({ biz, order, calc, cashierName, when, sellRate: _
   ${biz.phone ? `<div class="c" style="font-size:11px;">Tel: ${biz.phone}</div>` : ''}
   <div class="divider">${div}</div>
   <div class="c" style="font-weight:700;font-size:12px;">SALES RECEIPT</div>
-  ${usedFra ? `<div class="c" style="font-size:10px;">(USD + FRA payment)</div>` : ''}
+  ${usedK ? `<div class="c" style="font-size:10px;">(USD + FRA + K payment)</div>` : usedFra ? `<div class="c" style="font-size:10px;">(USD + FRA payment)</div>` : ''}
   <div class="divider">${div}</div>
   <table>
     <tr><td>Receipt #:</td><td></td><td style="text-align:right;">${order.order_number || ''}</td></tr>
@@ -574,6 +664,10 @@ function renderCashierReceipt({ biz, order, calc, cashierName, when, sellRate: _
       <tr><td>Cash Paid (FRA)</td><td></td><td></td><td style="text-align:right;">FRA ${fmtFra(calc.paidFRA)}</td></tr>
       <tr><td class="sub">  at sell rate ${sellRate.toLocaleString()}</td><td></td><td></td><td style="text-align:right;" class="sub">≈ $${fmt(calc.paidFRAasUSD)}</td></tr>
     ` : ''}
+    ${calc.paidK > 0.0001 ? `
+      <tr><td>Cash Paid (K)</td><td></td><td></td><td style="text-align:right;">K ${fmtFra(calc.paidK)}</td></tr>
+      <tr><td class="sub">  at sell rate ${sellRateK.toLocaleString()}</td><td></td><td></td><td style="text-align:right;" class="sub">≈ $${fmt(calc.paidKasUSD)}</td></tr>
+    ` : ''}
     <tr class="amt"><td>Total Paid ($)</td><td></td><td></td><td style="text-align:right;">$${fmt(calc.totalAmountPaid)}</td></tr>
   </table>
   <div class="divider">${da}</div>
@@ -581,12 +675,14 @@ function renderCashierReceipt({ biz, order, calc, cashierName, when, sellRate: _
     <table>
       <tr class="amt"><td>*** CHANGE ***</td><td></td><td></td><td style="text-align:right;">$${fmt(calc.changeUSD)}</td></tr>
       ${usedFra ? `<tr><td class="sub">  ≈ at buy rate ${buyRate.toLocaleString()}</td><td></td><td></td><td style="text-align:right;" class="sub">FRA ${fmtFra(calc.changeFRA)}</td></tr>` : ''}
+      ${usedK   ? `<tr><td class="sub">  ≈ at K buy rate ${sellRateK ? buyRateK.toLocaleString() : '—'}</td><td></td><td></td><td style="text-align:right;" class="sub">K ${fmtFra(calc.changeK)}</td></tr>` : ''}
     </table>
-    ${(calc.givenUSD > 0.0001 || calc.givenFRA > 0.0001) ? `
+    ${(calc.givenUSD > 0.0001 || calc.givenFRA > 0.0001 || calc.givenK > 0.0001) ? `
       <div class="divider">${da}</div>
       <table>
         ${calc.givenUSD > 0.0001 ? `<tr><td>Change Given ($)</td><td></td><td></td><td style="text-align:right;">$${fmt(calc.givenUSD)}</td></tr>` : ''}
         ${calc.givenFRA > 0.0001 ? `<tr><td>Change Given (FRA)</td><td></td><td></td><td style="text-align:right;">FRA ${fmtFra(calc.givenFRA)}</td></tr>` : ''}
+        ${calc.givenK   > 0.0001 ? `<tr><td>Change Given (K)</td><td></td><td></td><td style="text-align:right;">K ${fmtFra(calc.givenK)}</td></tr>` : ''}
       </table>
     ` : ''}
   ` : ''}

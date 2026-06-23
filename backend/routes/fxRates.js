@@ -99,6 +99,7 @@ router.get('/', auth, readOnlyGuard, requirePagePerm('FxRates'), (req, res) => {
   try {
     const rows = db.prepare(`
       SELECT id, sync_id, effective_date, sell_rate, buy_rate,
+             sell_rate_k, buy_rate_k,
              notes, set_by, set_by_name, created_at, updated_at
       FROM fx_rates
       WHERE deleted_at IS NULL AND tenant_id = ?
@@ -117,7 +118,9 @@ router.get('/', auth, readOnlyGuard, requirePagePerm('FxRates'), (req, res) => {
 router.get('/current', auth, readOnlyGuard, (req, res) => {
   try {
     const row = db.prepare(`
-      SELECT id, sync_id, effective_date, sell_rate, buy_rate, notes, set_by_name
+      SELECT id, sync_id, effective_date, sell_rate, buy_rate,
+             sell_rate_k, buy_rate_k,
+             notes, set_by_name
       FROM fx_rates
       WHERE deleted_at IS NULL AND tenant_id = ?
         AND effective_date <= DATE('now')
@@ -131,26 +134,32 @@ router.get('/current', auth, readOnlyGuard, (req, res) => {
 });
 
 // ─── Add a new rate ──────────────────────────────────────────────────────────
+// v1.7.0: optional sell_rate_k / buy_rate_k for K (third currency). Both are
+// optional — branches on USD+FRA mode just omit them.
 router.post('/', auth, requirePagePerm('FxRates'), (req, res) => {
   try {
     const effective_date = (req.body.effective_date || '').slice(0, 10);
     const sell = parseFloat(req.body.sell_rate);
     const buy  = parseFloat(req.body.buy_rate);
+    const sellK = req.body.sell_rate_k !== undefined && req.body.sell_rate_k !== '' ? parseFloat(req.body.sell_rate_k) : null;
+    const buyK  = req.body.buy_rate_k  !== undefined && req.body.buy_rate_k  !== '' ? parseFloat(req.body.buy_rate_k)  : null;
     const notes = req.body.notes ? String(req.body.notes).trim() : null;
     if (!effective_date || !/^\d{4}-\d{2}-\d{2}$/.test(effective_date)) {
       return res.status(400).json({ error: 'effective_date (YYYY-MM-DD) is required' });
     }
     if (!isFinite(sell) || sell <= 0) return res.status(400).json({ error: 'sell_rate must be > 0' });
     if (!isFinite(buy)  || buy  <= 0) return res.status(400).json({ error: 'buy_rate must be > 0' });
+    if (sellK !== null && (!isFinite(sellK) || sellK <= 0)) return res.status(400).json({ error: 'sell_rate_k must be > 0 if provided' });
+    if (buyK  !== null && (!isFinite(buyK)  || buyK  <= 0)) return res.status(400).json({ error: 'buy_rate_k must be > 0 if provided'  });
 
     const cfg = syncConfig.getConfig() || {};
     const result = db.prepare(`
       INSERT INTO fx_rates
-        (sync_id, effective_date, sell_rate, buy_rate, notes,
+        (sync_id, effective_date, sell_rate, buy_rate, sell_rate_k, buy_rate_k, notes,
          set_by, set_by_name, tenant_id, branch_id, device_id, synced)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
     `).run(
-      randomUUID(), effective_date, sell, buy, notes,
+      randomUUID(), effective_date, sell, buy, sellK, buyK, notes,
       req.user.id, req.user.name || req.user.email || null,
       req.user.tenantId, cfg.branchId || null, cfg.deviceId || null,
     );

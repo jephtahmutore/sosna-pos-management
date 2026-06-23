@@ -428,13 +428,20 @@ router.put('/:id/collect-payment', auth, requirePagePerm('Cashier'), (req, res) 
     const {
       paid_usd, paid_fra, given_usd, given_fra,
       buy_rate, sell_rate,
+      // v1.7.0 — third currency (K). Optional; cashier sends 0 / null when
+      // not using K. Math: same Sirak pattern as FRA, just adds a 3rd term.
+      paid_k, given_k, sell_rate_k, buy_rate_k,
     } = req.body;
     const paidUSD = parseFloat(paid_usd || 0) || 0;
     const paidFRA = parseFloat(paid_fra || 0) || 0;
+    const paidK   = parseFloat(paid_k   || 0) || 0;
     const givenUSD = parseFloat(given_usd || 0) || 0;
     const givenFRA = parseFloat(given_fra || 0) || 0;
-    const sellRate = parseFloat(sell_rate || 0) || 0;
-    const buyRate  = parseFloat(buy_rate  || 0) || 0;
+    const givenK   = parseFloat(given_k   || 0) || 0;
+    const sellRate  = parseFloat(sell_rate    || 0) || 0;
+    const buyRate   = parseFloat(buy_rate     || 0) || 0;
+    const sellRateK = parseFloat(sell_rate_k  || 0) || 0;
+    const buyRateK  = parseFloat(buy_rate_k   || 0) || 0;
 
     const result = db.transaction(() => {
       const order = db.prepare('SELECT * FROM orders WHERE id = ? AND deleted_at IS NULL AND tenant_id = ?')
@@ -444,12 +451,13 @@ router.put('/:id/collect-payment', auth, requirePagePerm('Cashier'), (req, res) 
         throw Object.assign(new Error('Order is not awaiting payment'), { status: 400 });
       }
 
-      // Sirak math, mirrored exactly:
-      //   totalAmountPaid = paid_usd + paid_fra / sell_rate
-      //   unpaidBalance   = max(0, total_due - totalAmountPaid)
-      //   change          = max(0, totalAmountPaid - total_due)
-      const paidFRAasUSD = sellRate > 0 ? paidFRA / sellRate : 0;
-      const totalAmountPaid = paidUSD + paidFRAasUSD;
+      // Math (v1.7.0, extended):
+      //   paidFRAasUSD     = paidFRA / sellRate
+      //   paidKasUSD       = paidK   / sellRateK
+      //   totalAmountPaid  = paidUSD + paidFRAasUSD + paidKasUSD
+      const paidFRAasUSD = sellRate  > 0 ? paidFRA / sellRate  : 0;
+      const paidKasUSD   = sellRateK > 0 ? paidK   / sellRateK : 0;
+      const totalAmountPaid = paidUSD + paidFRAasUSD + paidKasUSD;
       const totalDue = parseFloat(order.total_amount || 0);
       const change   = Math.max(0, totalAmountPaid - totalDue);
       const unpaid   = Math.max(0, totalDue - totalAmountPaid);
@@ -463,22 +471,26 @@ router.put('/:id/collect-payment', auth, requirePagePerm('Cashier'), (req, res) 
 
       db.prepare(`
         UPDATE orders
-           SET status            = ?,
-               cashier_user_id   = ?,
-               paid_at           = datetime('now'),
-               amount_received   = ?,
-               cash_received     = ?,
-               momo_received     = 0,
-               bank_received     = 0,
-               change_amount     = ?,
-               fra_received      = ?,
-               fra_change_given  = ?,
-               selling_rate_used = ?,
-               buying_rate_used  = ?,
-               payment_method    = 'Cash',
+           SET status              = ?,
+               cashier_user_id     = ?,
+               paid_at             = datetime('now'),
+               amount_received     = ?,
+               cash_received       = ?,
+               momo_received       = 0,
+               bank_received       = 0,
+               change_amount       = ?,
+               fra_received        = ?,
+               fra_change_given    = ?,
+               selling_rate_used   = ?,
+               buying_rate_used    = ?,
+               k_received          = ?,
+               k_change_given      = ?,
+               selling_rate_k_used = ?,
+               buying_rate_k_used  = ?,
+               payment_method      = 'Cash',
                ${isTwoStation ? 'dispatch_user_id = ?, dispatched_at = datetime(\'now\'),' : ''}
-               synced            = 0,
-               updated_at        = datetime('now')
+               synced              = 0,
+               updated_at          = datetime('now')
          WHERE id = ?
       `).run(...[
         isTwoStation ? 'DISPATCHED' : 'PAID',
@@ -486,10 +498,8 @@ router.put('/:id/collect-payment', auth, requirePagePerm('Cashier'), (req, res) 
         totalAmountPaid,
         paidUSD,
         change,
-        paidFRA,
-        givenFRA,
-        sellRate || null,
-        buyRate  || null,
+        paidFRA, givenFRA, sellRate || null, buyRate || null,
+        paidK,   givenK,   sellRateK || null, buyRateK || null,
         ...(isTwoStation ? [req.user.id] : []),
         req.params.id,
       ]);

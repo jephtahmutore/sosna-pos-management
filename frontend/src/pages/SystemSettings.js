@@ -99,7 +99,7 @@ const SystemSettings = () => {
         receiptPrinterIp:   b.receipt_printer_ip   || '',
         receiptPrinterPort: parseInt(b.receipt_printer_port) || 9100,
         defaultCrateDeposit: parseFloat(b.default_crate_deposit) || 57,
-        currencyMode: (String(b.currency_mode || 'K').toUpperCase() === 'USD+FRA') ? 'USD+FRA' : 'K',
+        currencyMode: ((cm => ['USD+FRA+K','USD+FRA'].includes(cm) ? cm : 'K')(String(b.currency_mode || 'K').toUpperCase())),
         workflowMode: ((wm => ['three_station','two_station'].includes(wm) ? wm : 'single_pos')(String(b.workflow_mode || 'single_pos').toLowerCase())),
         legacyProcurementEnabled: !!parseInt(b.legacy_procurement_enabled || 0, 10),
       });
@@ -229,8 +229,9 @@ const SystemSettings = () => {
             </p>
             <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
               {[
-                { val: 'K',       label: 'Kwacha only',       sub: 'Single-currency POS (default)' },
-                { val: 'USD+FRA', label: 'USD + FRA (dual)',  sub: 'Unlocks FX rates, dual-currency payment, USD+FRA receipt' },
+                { val: 'K',         label: 'Kwacha only',           sub: 'Single-currency POS (default)' },
+                { val: 'USD+FRA',   label: 'USD + FRA (dual)',      sub: 'Unlocks FX rates, dual-currency payment, USD+FRA receipt' },
+                { val: 'USD+FRA+K', label: 'USD + FRA + K (triple)',sub: 'Adds Kwacha as a 3rd cash-acceptance currency at Cashier' },
               ].map(opt => (
                 <label key={opt.val}
                        style={{ flex: '1 1 240px', display: 'flex', alignItems: 'flex-start', gap: 10,

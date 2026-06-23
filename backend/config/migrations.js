@@ -1457,6 +1457,19 @@ function initTenantDb(db) {
   addCol('categories',      'is_hq_owned', 'INTEGER NOT NULL DEFAULT 0');
   addCol('main_categories', 'is_hq_owned', 'INTEGER NOT NULL DEFAULT 0');
   addCol('units',           'is_hq_owned', 'INTEGER NOT NULL DEFAULT 0');
+
+  // v1.7.0 — Triple currency (USD + FRA + K). Adds a parallel set of K
+  // columns to fx_rates + orders, mirroring the FRA columns from v1.4.0
+  // / v1.0. K is a foreign-cash currency the cashier may accept; items
+  // stay priced in USD (base). currency_mode='USD+FRA+K' enables it
+  // (existing 'K' single-currency mode and 'USD+FRA' dual mode are
+  // unchanged).
+  addCol('fx_rates', 'sell_rate_k', 'REAL');
+  addCol('fx_rates', 'buy_rate_k',  'REAL');
+  addCol('orders',   'k_received',         'REAL DEFAULT 0');
+  addCol('orders',   'k_change_given',     'REAL DEFAULT 0');
+  addCol('orders',   'selling_rate_k_used','REAL');
+  addCol('orders',   'buying_rate_k_used', 'REAL');
 }
 
 module.exports = { initTenantDb };
