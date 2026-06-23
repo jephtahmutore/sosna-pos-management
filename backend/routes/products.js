@@ -1,6 +1,9 @@
 const router = require('express').Router();
 const db = require('../config/database');
 const { auth, readOnlyGuard, withTenantDb } = require('../middleware/auth');
+const { isHqRequest, pushProductToBranches } = require('../middleware/hqPush');
+const { listTenants } = require('../config/masterDb');
+const { getTenantDb } = require('../config/tenantDb');
 const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
@@ -223,25 +226,37 @@ function normaliseUnits(body) {
 router.post('/', auth, (req, res) => {
   try {
     const { code, name, category_id, cost_price, current_stock, min_stock,
-            container_product_sync_id, units_per_container, default_unit } = req.body;
+            container_product_sync_id, units_per_container, default_unit,
+            image_url, ub_number_start, ub_number_length, ub_quantity_start,
+            ub_quantity_length, ub_decimal_start } = req.body;
     const { units, legacy } = normaliseUnits(req.body);
     const tenantId = syncConfig.getTenantId(req);
     const { branchId, deviceId } = syncConfig.getConfig();
     const cat = category_id ? db.prepare('SELECT sync_id FROM categories WHERE id = ?').get(category_id) : null;
     const categorySyncId = cat?.sync_id || null;
     const productSyncId = randomUUID();
+    const fromHq = isHqRequest(req);
     const info = db.prepare(
       `INSERT INTO products (code, name, category_id, category_sync_id, unit, cost_price, selling_price, current_stock, min_stock, product_type,
        alt_unit, conversion_factor, alt_price, units_json,
-       container_product_sync_id, units_per_container, default_unit,
+       container_product_sync_id, units_per_container, default_unit, image_url,
+       ub_number_start, ub_number_length, ub_quantity_start, ub_quantity_length, ub_decimal_start,
+       is_hq_owned,
        sync_id, tenant_id, branch_id, device_id, synced, created_at, updated_at)
-       VALUES (?,?,?,?,?,?,?,?,?,'finished',?,?,?,?,?,?,?,?,?,?,?,0,datetime('now'),datetime('now'))`
+       VALUES (?,?,?,?,?,?,?,?,?,'finished',?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,datetime('now'),datetime('now'))`
     ).run(code, name, category_id, categorySyncId, legacy.unit, cost_price, legacy.selling_price, current_stock || 0, min_stock || 10,
           legacy.alt_unit, legacy.conversion_factor, legacy.alt_price,
           JSON.stringify(units),
           container_product_sync_id || null,
           units_per_container ? parseFloat(units_per_container) : null,
           default_unit || null,
+          image_url || null,
+          parseInt(ub_number_start) || 1,
+          parseInt(ub_number_length) || 6,
+          parseInt(ub_quantity_start) || 7,
+          parseInt(ub_quantity_length) || 0,
+          parseInt(ub_decimal_start) || 2,
+          fromHq ? 1 : 0,
           productSyncId, tenantId, branchId, deviceId);
     const newProduct = db.prepare('SELECT * FROM products WHERE id = ?').get(info.lastInsertRowid);
     if (parseFloat(current_stock) > 0) {
@@ -250,6 +265,9 @@ router.post('/', auth, (req, res) => {
          VALUES (?,?,?,?,?,?,?,?,?,?,0,datetime('now'),datetime('now'))`
       ).run(newProduct.id, productSyncId, 'store', 'opening', current_stock, 'Opening balance',
             randomUUID(), tenantId, branchId, deviceId);
+    }
+    if (fromHq) {
+      try { pushProductToBranches(newProduct, { listTenants, getTenantDb }); } catch (_) { /* best-effort */ }
     }
     res.status(201).json(newProduct);
   } catch (error) {
@@ -351,6 +369,13 @@ router.put('/:id', auth, (req, res) => {
       }
     })();
     const row = db.prepare('SELECT * FROM products WHERE id = ?').get(req.params.id);
+    // v1.6.1: when HQ edits a product, the HQ-owned columns are
+    // re-pushed to every branch so each branch sees the latest name /
+    // unit / packagings etc. Branch-owned columns at each branch are
+    // untouched by the push helper.
+    if (isHqRequest(req)) {
+      try { pushProductToBranches(row, { listTenants, getTenantDb }); } catch (_) {}
+    }
     res.json(row);
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -570,11 +595,17 @@ router.post('/import', auth, csvUploadMem.single('file'), withTenantDb, (req, re
   }
 });
 
-// Delete product — blocked if referenced by GRN or SIV
+// Delete product — blocked if referenced by GRN or SIV. v1.6.1: branches
+// can't delete HQ-owned items; HQ deletes propagate the soft-delete to
+// every branch.
 router.delete('/:id', auth, (req, res) => {
   try {
-    const prod = db.prepare('SELECT sync_id, name FROM products WHERE id = ?').get(req.params.id);
+    const prod = db.prepare('SELECT sync_id, name, is_hq_owned FROM products WHERE id = ?').get(req.params.id);
     if (!prod) return res.status(404).json({ error: 'Product not found' });
+    const fromHq = isHqRequest(req);
+    if (prod.is_hq_owned && !fromHq) {
+      return res.status(403).json({ error: 'This item is managed by HQ and cannot be deleted at the branch.' });
+    }
 
     const grnCount = db.prepare('SELECT COUNT(*) AS c FROM grn_items WHERE product_sync_id = ? AND deleted_at IS NULL').get(prod.sync_id);
     const sivCount = db.prepare('SELECT COUNT(*) AS c FROM siv_items WHERE product_sync_id = ? AND deleted_at IS NULL').get(prod.sync_id);
@@ -589,6 +620,10 @@ router.delete('/:id', auth, (req, res) => {
     }
 
     db.prepare("UPDATE products SET deleted_at=datetime('now'), updated_at=datetime('now'), synced=0 WHERE id=?").run(req.params.id);
+    if (fromHq) {
+      const row = db.prepare('SELECT * FROM products WHERE id = ?').get(req.params.id);
+      try { pushProductToBranches(row, { listTenants, getTenantDb }); } catch (_) {}
+    }
     res.json({ message: 'Product deleted successfully' });
   } catch (error) {
     res.status(500).json({ error: error.message });

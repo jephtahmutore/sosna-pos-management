@@ -80,10 +80,16 @@ const ItemDetails = () => {
   const { t } = useLanguage();
   const { hasPermission, user: authUser } = useAuth();
   const { symbol: curSym } = useCurrency();
-  // v1.5.0: branches don't create products — HQ is the only source. Hide
-  // New Item / Import CSV / Sample CSV on branch hosts. Edit-modal also
-  // locks HQ-owned fields per row (see EditModal: `locked = !!editItem?.is_hq_owned`).
+  // v1.6.1: HQ uses the same Item Details page that branches use. HQ
+  // sees the New/Import/Sample buttons; branches don't (only HQ creates).
+  // Inside the modal the form is split into two tabs — Item Details
+  // (HQ-owned fields) and Pricing & Stock (branch-owned fields). HQ sees
+  // only Tab 1; branches see both but Tab 1 is read-only for is_hq_owned=1
+  // rows.
   const isBranch = !isHqHost();
+  const isHq     = !isBranch;
+  // Modal tab state — 'details' (Tab 1) or 'pricing' (Tab 2).
+  const [activeTab, setActiveTab] = useState('details');
   const [items, setItems] = useState([]);
   const [dbCategories, setDbCategories] = useState([]);
   const [dbMainCategories, setDbMainCategories] = useState([]);
@@ -387,6 +393,7 @@ const ItemDetails = () => {
     do { code = `IT${String(n).padStart(3, '0')}`; n++; } while (taken.has(code));
     setForm({ code, name: '', category_id: '', unit: 'pcs', cost_price: '', selling_price: '', current_stock: '', min_stock: '', min_stock_unit: '', product_type: 'sellable', status: 'Active', packagings: [], container_product_sync_id: '', units_per_container: '', default_unit: '' });
     setImageFile(null); setImagePreview(null); setFormError('');
+    setActiveTab('details');
     setShowModal(true);
   };
 
@@ -433,6 +440,9 @@ const ItemDetails = () => {
     setImageFile(null);
     setImagePreview(item.image_url ? `${API_BASE}${item.image_url}` : null);
     setFormError('');
+    // Branch editing an HQ-owned item → land on Pricing tab (since Details
+    // is read-only there). HQ + non-HQ items → land on Details tab.
+    setActiveTab(isBranch && item.is_hq_owned ? 'pricing' : 'details');
     setShowModal(true);
   };
 
@@ -841,18 +851,64 @@ const ItemDetails = () => {
 
       {/* ── Add / Edit Modal ──────────────────────────────────────── */}
       {showModal && (() => {
-        // v1.5.0: HQ-owned products lock the HQ-fields (code, name, category,
-        // unit, packagings, default unit, container, UB barcode, photo).
-        // Only Cost / Selling / Alt Price / Min Stock / Status / Opening
-        // Stock / Notes are branch-editable. Backend PUT enforces this too.
-        const hqLocked = !!(editItem && editItem.is_hq_owned);
+        // v1.6.1: HQ + branches share this same modal, split into two tabs:
+        //   Tab 1 (details) — HQ-owned: code, name, category, unit,
+        //     packagings, default unit, container, photo, UB barcode.
+        //   Tab 2 (pricing) — Branch-owned: cost, selling, min stock,
+        //     status, opening stock, notes.
+        // HQ sees only Tab 1 (saves push to all branches).
+        // Branches see both tabs but Tab 1 is read-only for is_hq_owned
+        // items (Tab 2 is where the branch fills its own prices).
+        const hqLocked = !!(editItem && editItem.is_hq_owned && isBranch);
+        const showDetailsTab = true;            // both hosts can view it
+        const showPricingTab = isBranch;        // HQ doesn't price; branch does
+        // For new items on branch (shouldn't happen via UI, but if it does)
+        // both tabs work normally without HQ lock.
+        const tab = (!showPricingTab && activeTab === 'pricing') ? 'details'
+                  : (showPricingTab && hqLocked && !editItem ? 'details' : activeTab);
         return (
         <Portal>
         <div className="modal-overlay">
-          <div className="modal" onClick={e => e.stopPropagation()} style={{ width: 640 }}>
-            <div className="modal-header">
-              <h3>{editItem ? `${t('edit')} Item` : `${t('newEntry')} Item`}</h3>
-              <button className="modal-close" onClick={closeModal}>×</button>
+          <div className="modal" onClick={e => e.stopPropagation()} style={{ width: 680 }}>
+            {/* Sticky header — item name + breadcrumb (code · category · unit) */}
+            <div className="modal-header" style={{ flexDirection: 'column', alignItems: 'stretch', gap: 0 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%' }}>
+                <h3 style={{ margin: 0 }}>
+                  {editItem
+                    ? (form.name || editItem.name || 'Item')
+                    : `${t('newEntry')} Item`}
+                </h3>
+                <button className="modal-close" onClick={closeModal}>×</button>
+              </div>
+              {editItem && (
+                <div style={{ fontSize: 12, color: '#64748b', marginTop: 4 }}>
+                  {(form.code || editItem.code) && <span style={{ fontFamily: 'monospace' }}>{form.code || editItem.code}</span>}
+                  {editItem.category_name && <> · {editItem.category_name}</>}
+                  {(form.unit || editItem.unit) && <> · {form.unit || editItem.unit}</>}
+                  {editItem.is_hq_owned ? <span style={{ marginLeft: 8, background: '#fef3c7', color: '#92400e', padding: '1px 8px', borderRadius: 8, fontSize: 10, fontWeight: 700, letterSpacing: 0.3 }}>HQ</span> : null}
+                </div>
+              )}
+              {/* Tabs — only when BOTH are visible (branch). HQ sees one
+                  panel without tabs. */}
+              {(showDetailsTab && showPricingTab) && (
+                <div style={{ display: 'flex', gap: 0, marginTop: 12, borderBottom: '1px solid #e5e7eb' }}>
+                  {[
+                    { key: 'details', label: 'Item Details' },
+                    { key: 'pricing', label: 'Pricing & Stock' },
+                  ].map(({ key, label }) => (
+                    <button key={key} type="button" onClick={() => setActiveTab(key)}
+                      style={{
+                        padding: '8px 16px', background: 'transparent', border: 'none', cursor: 'pointer',
+                        fontSize: 13, fontWeight: tab === key ? 700 : 500,
+                        color: tab === key ? '#0ea5e9' : '#64748b',
+                        borderBottom: tab === key ? '2px solid #0ea5e9' : '2px solid transparent',
+                        marginBottom: -1,
+                      }}>
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
             <div className="modal-body">
               {formError && (
@@ -861,31 +917,12 @@ const ItemDetails = () => {
                   <span>{formError}</span>
                 </div>
               )}
-              {hqLocked && (
+              {hqLocked && tab === 'details' && (
                 <div style={{ marginBottom: 14, padding: '8px 12px', background: '#fef3c7', border: '1px solid #fde68a', borderRadius: 6, fontSize: 12, color: '#92400e' }}>
-                  <strong>HQ-owned item.</strong> Code, name, category, unit, packagings, photo, container &amp; barcode are managed by HQ. You can only edit <strong>Cost · Selling · Min Stock · Status · Opening Stock</strong>.
+                  <strong>HQ-owned item.</strong> These fields are managed centrally and can't be edited at the branch. Switch to <strong>Pricing &amp; Stock</strong> to set Cost / Selling / Min Stock / Status / Opening Stock.
                 </div>
               )}
-              {editItem && !hqLocked && (
-                <div style={{ marginBottom: 14, padding: '8px 12px', background: '#eff6ff', border: '1px solid #bfdbfe', borderRadius: 6, fontSize: 12, color: '#1e40af', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
-                  <span>
-                    Editable: <strong>Name · Category · Opening Order Price · Selling Price · Alt Selling Price · Status</strong>. Other fields are locked.
-                  </span>
-                  <div style={{ display: 'inline-flex', background: '#fff', border: '1px solid #cbd5e1', borderRadius: 8, overflow: 'hidden' }}>
-                    {['Active', 'Inactive'].map(s => (
-                      <button key={s} type="button"
-                        onClick={() => setForm({ ...form, status: s })}
-                        style={{
-                          padding: '5px 14px', border: 'none', cursor: 'pointer', fontSize: 12, fontWeight: 700,
-                          background: form.status === s ? (s === 'Active' ? '#16a34a' : '#6b7280') : '#fff',
-                          color: form.status === s ? '#fff' : '#374151',
-                        }}>
-                        {s}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              )}
+              {tab === 'details' && (<>
               <div className="form-row">
                 <div className="form-group">
                   <label>
@@ -952,6 +989,8 @@ const ItemDetails = () => {
                   </select>
                 </div>
               </div>
+              </>)}{/* end tab===details block A — code/name/unit/category */}
+              {tab === 'pricing' && (<>
               <div className="form-row">
                 <div className="form-group">
                   <label>Opening Order Price ({curSym} / {form.unit || 'unit'})</label>
@@ -994,6 +1033,8 @@ const ItemDetails = () => {
                     onBlur={e => { if (e.target.value !== '' && parseFloat(e.target.value) < 0) setForm(f => ({ ...f, selling_price: '0' })); }} />
                 </div>
               </div>
+              </>)}{/* end tab===pricing block A — cost/selling */}
+              {tab === 'details' && (<>
 
               {/* Multi-Unit (Packagings) Section — N alternative larger units per product. */}
               <div style={{ background: '#f9fafb', border: '1px solid #e5e7eb', borderRadius: 10, padding: 14, marginTop: 4 }}>
@@ -1164,7 +1205,8 @@ const ItemDetails = () => {
                   </div>
                 </div>
               </div>
-
+              </>)}{/* end tab===details block B — packagings/default/container */}
+              {tab === 'pricing' && (<>
               <div className="form-row">
                 <div className="form-group">
                   <label>Opening Stock</label>
@@ -1212,6 +1254,8 @@ const ItemDetails = () => {
                   </div>
                 </div>
               </div>
+              </>)}{/* end tab===pricing block B — opening stock + min stock */}
+              {tab === 'details' && (<>
               <div className="form-group" style={{ marginTop: 4 }}>
                 <label>Product Photo</label>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 14, marginTop: 6 }}>
@@ -1243,6 +1287,7 @@ const ItemDetails = () => {
                   </div>
                 </div>
               </div>
+              </>)}{/* end tab===details block C — photo */}
             </div>
             <div className="modal-footer">
               <button className="btn btn-secondary" onClick={closeModal}>{t('cancel')}</button>

@@ -360,10 +360,10 @@ const Layout = () => {
               {!collapsed && <span>HQ Cash Position</span>}
             </div>
           )}
-          {/* HQ Products — master catalogue. Pushed to every branch's
-              products table on save; branches keep their own selling
-              price unless HQ ticks "force-push prices". */}
-          {hq && (
+          {/* HQ Products — v1.6.1 hidden. HQ now uses the standard
+              Store → Item Details page; saves push to all branches
+              automatically. Route still exists for deep-links. */}
+          {false && hq && (
             <div className={`nav-item ${isActive('/hq/products') ? 'active' : ''}`} onClick={() => navigate('/hq/products')}>
               <FiPackage className="nav-icon" />
               {!collapsed && <span>HQ Products</span>}

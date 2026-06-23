@@ -177,7 +177,104 @@ function readSyncTenantId(db) {
   } catch { return null; }
 }
 
+// v1.6.1: Products now follow the same flow as Categories/Units. HQ uses
+// the standard Item Details page; saves auto-push to every branch with
+// is_hq_owned=1. Branches lock the HQ-owned columns via the tab UI.
+//
+// HQ-owned columns (pushed/overwritten on UPDATE):
+//   code, name, unit, units_json, default_unit, image_url,
+//   container_product_sync_id, units_per_container,
+//   ub_number_start/length, ub_quantity_start/length, ub_decimal_start,
+//   category (resolved by sync_id, same lookup as branches receive).
+// Branch-owned columns (never touched after first INSERT):
+//   cost_price, selling_price, alt_price, min_stock, status,
+//   current_stock, notes.
+function pushProductToBranches(prodRow, { listTenants, getTenantDb }) {
+  const out = { pushed: 0, updated: 0, errors: [] };
+  for (const t of listTenants()) {
+    try {
+      const db = getTenantDb(t.slug);
+      const branchTenantId = t.tenant_id || readSyncTenantId(db);
+      if (!branchTenantId) { out.errors.push({ slug: t.slug, error: 'No tenant_id discoverable' }); continue; }
+
+      if (prodRow.deleted_at) {
+        const info = db.prepare(`
+          UPDATE products
+             SET deleted_at = datetime('now'), updated_at = datetime('now'), synced = 0
+           WHERE sync_id = ? AND deleted_at IS NULL
+        `).run(prodRow.sync_id);
+        if (info.changes > 0) out.updated += 1;
+        continue;
+      }
+
+      // Resolve category_id at the branch by sync_id (HQ category was
+      // pushed earlier via pushCategoryToBranches so the row exists).
+      let branchCategoryId = null;
+      if (prodRow.category_sync_id) {
+        const c = db.prepare('SELECT id FROM categories WHERE sync_id = ? AND deleted_at IS NULL').get(prodRow.category_sync_id);
+        branchCategoryId = c?.id || null;
+      }
+
+      const existing = db.prepare('SELECT id FROM products WHERE sync_id = ? AND deleted_at IS NULL').get(prodRow.sync_id);
+      if (existing) {
+        db.prepare(`
+          UPDATE products
+             SET code = ?, name = ?, category_id = ?, category_sync_id = ?,
+                 unit = ?, units_json = ?, default_unit = ?, image_url = ?,
+                 container_product_sync_id = ?, units_per_container = ?,
+                 ub_number_start = ?, ub_number_length = ?,
+                 ub_quantity_start = ?, ub_quantity_length = ?,
+                 ub_decimal_start = ?,
+                 is_hq_owned = 1,
+                 updated_at = datetime('now'), synced = 0
+           WHERE id = ?
+        `).run(
+          prodRow.code || null, prodRow.name,
+          branchCategoryId, prodRow.category_sync_id || null,
+          prodRow.unit || 'pcs', prodRow.units_json || null,
+          prodRow.default_unit || null, prodRow.image_url || null,
+          prodRow.container_product_sync_id || null,
+          prodRow.units_per_container || null,
+          prodRow.ub_number_start ?? 1, prodRow.ub_number_length ?? 6,
+          prodRow.ub_quantity_start ?? 7, prodRow.ub_quantity_length ?? 0,
+          prodRow.ub_decimal_start ?? 2,
+          existing.id
+        );
+        out.updated += 1;
+      } else {
+        db.prepare(`
+          INSERT INTO products
+            (code, name, category_id, category_sync_id, unit, cost_price, selling_price,
+             current_stock, min_stock, units_json, default_unit, image_url,
+             container_product_sync_id, units_per_container,
+             ub_number_start, ub_number_length, ub_quantity_start,
+             ub_quantity_length, ub_decimal_start,
+             status, is_hq_owned, product_type,
+             sync_id, tenant_id, branch_id, device_id, synced, created_at, updated_at)
+          VALUES (?,?,?,?,?,0,0,0,0,?,?,?,?,?,?,?,?,?,?,'Active',1,'finished',?,?,?,?,0,datetime('now'),datetime('now'))
+        `).run(
+          prodRow.code || null, prodRow.name,
+          branchCategoryId, prodRow.category_sync_id || null,
+          prodRow.unit || 'pcs',
+          prodRow.units_json || null, prodRow.default_unit || null, prodRow.image_url || null,
+          prodRow.container_product_sync_id || null,
+          prodRow.units_per_container || null,
+          prodRow.ub_number_start ?? 1, prodRow.ub_number_length ?? 6,
+          prodRow.ub_quantity_start ?? 7, prodRow.ub_quantity_length ?? 0,
+          prodRow.ub_decimal_start ?? 2,
+          prodRow.sync_id, branchTenantId, null, null
+        );
+        out.pushed += 1;
+      }
+    } catch (e) {
+      out.errors.push({ slug: t.slug, error: e.message });
+    }
+  }
+  return out;
+}
+
 module.exports = {
   isHqRequest, isHqOrSkip, getHostSlug,
   pushCategoryToBranches, pushMainCategoryToBranches, pushUnitToBranches,
+  pushProductToBranches,
 };
