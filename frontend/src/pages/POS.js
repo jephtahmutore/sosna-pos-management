@@ -88,7 +88,13 @@ const POS = () => {
   // payment modal opens — the order is saved with status='PENDING_PAYMENT'
   // and lands in the Cashier inbox.
   const [workflowMode, setWorkflowMode] = useState('single_pos');
+  // v1.6.6: 2-station + 3-station both use the Sales → Cashier handoff.
+  // POS button becomes "Confirm & Send to Cashier" for both modes; the
+  // ONLY difference between them is whether stock deducts at Cashier
+  // (2-station) or at a separate Dispatch step (3-station). single_pos
+  // keeps the inline Pay modal — one cashier does everything.
   const isThreeStation = workflowMode === 'three_station';
+  const sendsToCashier = workflowMode === 'three_station' || workflowMode === 'two_station';
   // FX rates: read from Accounting → Currency Rates (table fx_rates).
   // Falls back to 2900 / 2600 when no row exists yet, so a fresh dual-
   // currency branch still functions out-of-the-box.
@@ -387,7 +393,7 @@ const POS = () => {
         const cm = String(res.data?.business?.currency_mode || 'K').toUpperCase();
         setCurrencyMode(cm === 'USD+FRA' ? 'USD+FRA' : 'K');
         const wm = String(res.data?.business?.workflow_mode || 'single_pos').toLowerCase();
-        setWorkflowMode(wm === 'three_station' ? 'three_station' : 'single_pos');
+        setWorkflowMode(['three_station', 'two_station'].includes(wm) ? wm : 'single_pos');
       } catch (err) { /* use default */ }
       try {
         const res = await getQuickItems();
@@ -1511,7 +1517,7 @@ const POS = () => {
                 >
                   <FiFileText /> Credit Sale →
                 </button>
-              ) : isThreeStation ? (
+              ) : sendsToCashier ? (
                 <button
                   className="btn-checkout"
                   onClick={handleSendToCashier}
