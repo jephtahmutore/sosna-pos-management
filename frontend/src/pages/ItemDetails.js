@@ -113,6 +113,10 @@ const ItemDetails = () => {
   const csvInputRef = React.useRef(null);
   // Admin-password gate: { kind: 'single' | 'all', item?: { id, name } }
   const [pendingDelete, setPendingDelete] = useState(null);
+  // v1.6.7: same gate for unlocking a saved packaging row's conversion
+  // factor. Holds the row index that the admin wants to unlock so the
+  // password prompt knows which row to flip _locked=false on.
+  const [pendingUnlockPack, setPendingUnlockPack] = useState(null);
 
   const handleDeleteAll = () => {
     setPendingDelete({ kind: 'all' });
@@ -1135,10 +1139,23 @@ const ItemDetails = () => {
                               }}
                               placeholder="0.00" />
                           </div>
+                          {/* v1.6.7: when a saved packaging is locked,
+                              admin can unlock the conversion via password
+                              prompt. After unlock, name/conv/remove are
+                              editable. hqLocked rows can't be unlocked
+                              from a branch (HQ owns the structure). */}
+                          {lockConv && !hqLocked && p._locked && (
+                            <button type="button"
+                              onClick={() => setPendingUnlockPack(idx)}
+                              title="Unlock with admin password to edit conversion or remove"
+                              style={{ height: 36, width: 36, background: '#fffbeb', color: '#92400e', border: '1px solid #fde68a', borderRadius: 6, cursor: 'pointer', fontSize: 14 }}>
+                              🔒
+                            </button>
+                          )}
                           <button type="button"
                             disabled={lockConv}
                             onClick={() => setForm(f => ({ ...f, packagings: f.packagings.filter((_, i) => i !== idx) }))}
-                            title={lockConv ? 'Saved packagings cannot be removed (history depends on them)' : 'Remove this packaging'}
+                            title={lockConv ? 'Saved packagings cannot be removed (history depends on them) — click the 🔒 to unlock' : 'Remove this packaging'}
                             style={{ height: 36, width: 36, background: lockConv ? '#f3f4f6' : '#fee2e2', color: lockConv ? '#9ca3af' : '#dc2626', border: 'none', borderRadius: 6, cursor: lockConv ? 'not-allowed' : 'pointer', fontSize: 14, fontWeight: 700 }}>
                             ×
                           </button>
@@ -1583,6 +1600,28 @@ const ItemDetails = () => {
         actionLabel={pendingDelete?.kind === 'all' ? 'Delete All' : 'Confirm Delete'}
         onConfirm={confirmDelete}
         onCancel={() => setPendingDelete(null)}
+      />
+
+      {/* v1.6.7: unlock a saved packaging row's conversion / remove with
+          admin password. Safer than dropping the lock entirely because
+          historical movements may depend on the existing conversion. */}
+      <AdminPasswordPrompt
+        open={pendingUnlockPack !== null}
+        subject={pendingUnlockPack !== null && form.packagings?.[pendingUnlockPack]
+          ? `Edit packaging: ${form.packagings[pendingUnlockPack].name || 'unit'} (existing stock movements rely on the current conversion)`
+          : 'Edit packaging'}
+        actionLabel="Unlock"
+        onConfirm={() => {
+          if (pendingUnlockPack !== null) {
+            const idx = pendingUnlockPack;
+            setForm(f => ({
+              ...f,
+              packagings: f.packagings.map((q, i) => i === idx ? { ...q, _locked: false } : q),
+            }));
+          }
+          setPendingUnlockPack(null);
+        }}
+        onCancel={() => setPendingUnlockPack(null)}
       />
     </div>
   );

@@ -435,12 +435,15 @@ const POS = () => {
     }
   };
 
+  // v1.6.7: hide items with no sales-floor stock (sales_balance <= 0) and
+  // tag low-stock items so the tile renders in red. Threshold = product's
+  // min_stock if set, else 10.
   const filteredProducts = products.filter(p => {
     const hasSalesStock = parseFloat(p.sales_balance || 0) > 0;
     const matchCategory = selectedCategory === 'All' || p.category_name === selectedCategory;
     const words = search.toLowerCase().split(' ').filter(Boolean);
     const matchSearch = words.length === 0 || words.every(w => p.name.toLowerCase().includes(w) || (p.code || '').toLowerCase().includes(w));
-    return matchCategory && matchSearch;
+    return matchCategory && matchSearch && hasSalesStock;
   });
 
   // How many base units of `product` are currently committed across ALL cart
@@ -1264,11 +1267,16 @@ const POS = () => {
               const units = unitsForProduct(product);
               const displayUnit = pickDisplayUnit(product);
               const stockBlocked = blockOversell && salesBalance <= 0;
+              // v1.6.7: low-stock highlight. Threshold = the product's own
+              // min_stock if set (> 0), else 10. Items already ran the
+              // <= 0 hide filter above so salesBalance is always > 0 here.
+              const lowThreshold = parseFloat(product.min_stock || 0) > 0 ? parseFloat(product.min_stock) : 10;
+              const isLowStock = salesBalance > 0 && salesBalance < lowThreshold;
               return (
                 <div key={product.id} className="product-card"
                   onClick={() => { if (!stockBlocked) addToCart(product); }}
-                  title={stockBlocked ? `${product.name} is out of stock` : ''}
-                  style={{ display: 'flex', alignItems: 'center', gap: 10, border: salesBalance <= 0 ? '2px solid #fca5a5' : undefined, background: salesBalance <= 0 ? '#fff5f5' : undefined, position: 'relative', cursor: stockBlocked ? 'not-allowed' : 'pointer' }}>
+                  title={stockBlocked ? `${product.name} is out of stock` : (isLowStock ? `Low stock — only ${salesBalance} left (threshold ${lowThreshold})` : '')}
+                  style={{ display: 'flex', alignItems: 'center', gap: 10, border: isLowStock ? '2px solid #dc2626' : (salesBalance <= 0 ? '2px solid #fca5a5' : undefined), background: isLowStock ? '#fef2f2' : (salesBalance <= 0 ? '#fff5f5' : undefined), position: 'relative', cursor: stockBlocked ? 'not-allowed' : 'pointer' }}>
                   {/* Star pin button */}
                   <button
                     onClick={e => { e.stopPropagation(); toggleQuickItem(product); }}
@@ -1286,7 +1294,10 @@ const POS = () => {
                       {product.category_name}
                     </span>
                     <h3>{product.name}</h3>
-                    <p className="stock-info">In Stock: {formatStockForProduct(salesBalance, product, { showBaseInParens: false })}</p>
+                    <p className="stock-info" style={isLowStock ? { color: '#dc2626', fontWeight: 700 } : undefined}>
+                      In Stock: {formatStockForProduct(salesBalance, product, { showBaseInParens: false })}
+                      {isLowStock && <span style={{ marginLeft: 6, fontSize: 10, background: '#dc2626', color: '#fff', padding: '1px 6px', borderRadius: 8, fontWeight: 700 }}>LOW</span>}
+                    </p>
                     <div className="product-price">
                       <div className="price">{curSym}{displayUnit.price} <span>/ {displayUnit.name}</span></div>
                     </div>
