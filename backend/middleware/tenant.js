@@ -1,6 +1,27 @@
 const { getTenantDb } = require('../config/tenantDb');
 const { runWithDb } = require('../config/database');
-const { isRegistered } = require('../config/masterDb');
+const { isRegistered, masterDb } = require('../config/masterDb');
+
+// v1.6.5: resolve a branch's tenant_id from any of the four places it can
+// live. Branches activated via HQ have `tenant:<slug>` (HQ-style), branches
+// activated via direct login have `tenant_id` (per-branch style), and fully
+// fresh branches have neither (we then fall back to master.branches which
+// the central registration stamps at activation).
+function resolveBranchTenantId(slug, branchDb) {
+  try {
+    const r = masterDb?.prepare('SELECT tenant_id FROM branches WHERE slug = ? LIMIT 1').get(slug);
+    if (r?.tenant_id) return r.tenant_id;
+  } catch (_) {}
+  try {
+    const r = branchDb.prepare("SELECT value FROM sync_config WHERE key = 'tenant_id' OR key = ? ORDER BY (key = 'tenant_id') DESC LIMIT 1").get(`tenant:${slug}`);
+    if (r?.value) return r.value;
+  } catch (_) {}
+  try {
+    const r = branchDb.prepare("SELECT tenant_id FROM products WHERE tenant_id IS NOT NULL AND tenant_id != '' LIMIT 1").get();
+    if (r?.tenant_id) return r.tenant_id;
+  } catch (_) {}
+  return null;
+}
 
 // Subdomains that bypass per-tenant DB routing. The bare domain hits here as
 // 'sosnazm' (the first dot-split of 'sosnazm.com'); this is the HQ /
@@ -36,13 +57,14 @@ module.exports = function tenantMiddleware(req, res, next) {
       }
       try {
         const branchDb = getTenantDb(xBranch);
-        // Look up the tenant_id stored in this branch's sync_config so the
-        // auth middleware can override req.user.tenantId (the JWT was issued
-        // from one branch but the user is now operating on another).
-        try {
-          const row = branchDb.prepare("SELECT value FROM sync_config WHERE key = 'tenant_id'").get();
-          if (row?.value) req.hqBranchTenantId = row.value;
-        } catch (_) { /* fresh DB — no row yet */ }
+        // v1.6.5: resolve from master.branches (authoritative) or any of
+        // the 3 fallback locations. Previously this only checked the plain
+        // 'tenant_id' key, which is missing on branches activated via HQ
+        // (they have 'tenant:<slug>' instead) → req.hqBranchTenantId
+        // stayed undefined → auth.js didn't override req.user.tenantId →
+        // GET /products WHERE tenant_id='local-only' returned 0 rows.
+        const tid = resolveBranchTenantId(xBranch, branchDb);
+        if (tid) req.hqBranchTenantId = tid;
         req.hqBranchSlug = xBranch;
         // Stash on req so handlers can re-enter the runWithDb context after
         // async middleware (multer, etc.) that drops the AsyncLocalStorage.

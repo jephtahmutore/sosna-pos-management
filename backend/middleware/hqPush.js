@@ -40,7 +40,7 @@ function pushCategoryToBranches(catRow, { listTenants, getTenantDb }) {
   for (const t of listTenants()) {
     try {
       const db = getTenantDb(t.slug);
-      const branchTenantId = t.tenant_id || readSyncTenantId(db);
+      const branchTenantId = t.tenant_id || readSyncTenantId(db, t.slug);
       if (!branchTenantId) { out.errors.push({ slug: t.slug, error: 'No tenant_id discoverable' }); continue; }
 
       if (catRow.deleted_at) {
@@ -93,7 +93,7 @@ function pushMainCategoryToBranches(mcRow, { listTenants, getTenantDb }) {
   for (const t of listTenants()) {
     try {
       const db = getTenantDb(t.slug);
-      const branchTenantId = t.tenant_id || readSyncTenantId(db);
+      const branchTenantId = t.tenant_id || readSyncTenantId(db, t.slug);
       if (!branchTenantId) { out.errors.push({ slug: t.slug, error: 'No tenant_id discoverable' }); continue; }
 
       if (mcRow.deleted_at) {
@@ -134,7 +134,7 @@ function pushUnitToBranches(unitRow, { listTenants, getTenantDb }) {
   for (const t of listTenants()) {
     try {
       const db = getTenantDb(t.slug);
-      const branchTenantId = t.tenant_id || readSyncTenantId(db);
+      const branchTenantId = t.tenant_id || readSyncTenantId(db, t.slug);
       if (!branchTenantId) { out.errors.push({ slug: t.slug, error: 'No tenant_id discoverable' }); continue; }
 
       if (unitRow.deleted_at) {
@@ -170,10 +170,22 @@ function pushUnitToBranches(unitRow, { listTenants, getTenantDb }) {
   return out;
 }
 
-function readSyncTenantId(db) {
+// v1.6.5: also checks the slug-prefixed key (`tenant:<slug>`) that HQ-
+// activated branches use, and falls back to any existing products row's
+// tenant_id. listTenants() in masterDb already JOINs branches.tenant_id
+// so callers pass t.tenant_id first; this helper is the fallback when
+// that's null (fresh branch never logged into).
+function readSyncTenantId(db, slug = null) {
   try {
-    const row = db.prepare("SELECT value FROM sync_config WHERE key = 'tenant_id'").get();
-    return row?.value || null;
+    const sql = slug
+      ? "SELECT value FROM sync_config WHERE key = 'tenant_id' OR key = ? ORDER BY (key = 'tenant_id') DESC LIMIT 1"
+      : "SELECT value FROM sync_config WHERE key = 'tenant_id' LIMIT 1";
+    const row = slug ? db.prepare(sql).get(`tenant:${slug}`) : db.prepare(sql).get();
+    if (row?.value) return row.value;
+  } catch (_) {}
+  try {
+    const r = db.prepare("SELECT tenant_id FROM products WHERE tenant_id IS NOT NULL AND tenant_id != '' LIMIT 1").get();
+    return r?.tenant_id || null;
   } catch { return null; }
 }
 
@@ -194,7 +206,7 @@ function pushProductToBranches(prodRow, { listTenants, getTenantDb }) {
   for (const t of listTenants()) {
     try {
       const db = getTenantDb(t.slug);
-      const branchTenantId = t.tenant_id || readSyncTenantId(db);
+      const branchTenantId = t.tenant_id || readSyncTenantId(db, t.slug);
       if (!branchTenantId) { out.errors.push({ slug: t.slug, error: 'No tenant_id discoverable' }); continue; }
 
       if (prodRow.deleted_at) {
