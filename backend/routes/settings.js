@@ -105,11 +105,14 @@ router.put('/business', auth, (req, res) => {
         const cm = String(currency_mode || 'K').toUpperCase() === 'USD+FRA' ? 'USD+FRA' : 'K';
         sets.push('currency_mode=?'); vals.push(cm);
       }
-      // workflow_mode is a per-branch UI gate. 'single_pos' = one cashier does
-      // everything (lusaka1, mansa1 — default). 'three_station' = Sales →
-      // Cashier → Dispatch flow with order status state machine (kasumbalesa1).
+      // workflow_mode is a per-branch UI gate.
+      //   'single_pos'    = one cashier does everything (default)
+      //   'two_station'   = Sales → Cashier (stock deducts on payment, no Dispatch) — v1.6.3
+      //   'three_station' = Sales → Cashier → Dispatch with the full state machine
+      // Anything else falls back to 'single_pos' so a bad value can't break the page.
       if (workflow_mode !== undefined) {
-        const wm = String(workflow_mode || 'single_pos').toLowerCase() === 'three_station' ? 'three_station' : 'single_pos';
+        const raw = String(workflow_mode || 'single_pos').toLowerCase();
+        const wm = ['three_station', 'two_station'].includes(raw) ? raw : 'single_pos';
         sets.push('workflow_mode=?'); vals.push(wm);
       }
       // legacy_procurement_enabled re-exposes the legacy GRN + Suppliers
