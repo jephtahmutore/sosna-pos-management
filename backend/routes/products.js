@@ -304,11 +304,13 @@ router.put('/:id', auth, (req, res) => {
     db.transaction(() => {
       const cat = category_id ? db.prepare('SELECT sync_id FROM categories WHERE id = ?').get(category_id) : null;
       const categorySyncId = cat?.sync_id || null;
-      // For HQ-owned products, the HQ-owned columns are forced back to
-      // whatever HQ pushed. Branch-owned columns (price/min/status/stock)
-      // come from the request. For branch-owned products (legacy/non-HQ),
-      // the existing behaviour stands.
-      const useHqFields = isHq;
+      // For HQ-owned products edited FROM A BRANCH, the HQ-owned columns are
+      // forced back to whatever HQ pushed. Branch-owned columns (price/min/
+      // status/stock) come from the request.
+      // v1.7.3 — when the request comes from HQ itself, HQ must be able to
+      // edit those columns (packagings, default unit, category, etc.) or
+      // changes silently disappear on save. So lock only for non-HQ requests.
+      const useHqFields = isHq && !isHqRequest(req);
       const finalCode      = useHqFields ? existingProduct.code      : code;
       const finalName      = useHqFields ? existingProduct.name      : name;
       const finalCategoryId       = useHqFields ? existingProduct.category_id      : category_id;
