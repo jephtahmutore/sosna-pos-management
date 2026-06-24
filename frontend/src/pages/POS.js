@@ -1299,7 +1299,10 @@ const POS = () => {
                       {isLowStock && <span style={{ marginLeft: 6, fontSize: 10, background: '#dc2626', color: '#fff', padding: '1px 6px', borderRadius: 8, fontWeight: 700 }}>LOW</span>}
                     </p>
                     <div className="product-price">
-                      <div className="price">{curSym}{displayUnit.price} <span>/ {displayUnit.name}</span></div>
+                      {/* v1.8.4: format with 2dp so derived per-packaging
+                          prices (basePrice × conv with non-terminating base)
+                          don't print as '28.000080000000004'. */}
+                      <div className="price">{curSym}{(parseFloat(displayUnit.price) || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} <span>/ {displayUnit.name}</span></div>
                     </div>
                     {/* Alt-unit buttons only — the default unit is added by
                         tapping the card body, so its button would be redundant. */}
@@ -1312,7 +1315,7 @@ const POS = () => {
                             <button
                               key={u.name}
                               onClick={e => { e.stopPropagation(); addToCart(product, 1, u.name); }}
-                              title={`Add 1 ${u.name} (${curSym}${u.price})`}
+                              title={`Add 1 ${u.name} (${curSym}${(parseFloat(u.price) || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })})`}
                               style={{
                                 padding: '6px 12px', borderRadius: 14, fontSize: 12.5, fontWeight: 700, cursor: 'pointer',
                                 minHeight: 30,
