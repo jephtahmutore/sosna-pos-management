@@ -7,20 +7,28 @@ export const unitsForProduct = (product) => {
     try { arr = JSON.parse(product.units_json); } catch { arr = null; }
   }
   if (Array.isArray(arr) && arr.length) {
-    return arr.map(u => ({
-      name: u.name,
-      conv: parseFloat(u.conv) || 1,
-      price: parseFloat(u.price) || 0,
-      is_base: !!u.is_base,
-    }));
+    // v1.7.6: auto-derive a non-base unit's price from base × conv when its
+    // own stored price is 0 / missing. Mirrors what the Item modal now does
+    // and keeps POS / Cashier / Inventory cards from showing $0 when only the
+    // base selling_price has been entered.
+    const base = arr.find(u => u.is_base);
+    const basePrice = parseFloat(base?.price) || parseFloat(product?.selling_price) || 0;
+    return arr.map(u => {
+      const stored = parseFloat(u.price);
+      const conv   = parseFloat(u.conv) || 1;
+      const price  = (stored > 0) ? stored : (u.is_base ? basePrice : basePrice * conv);
+      return { name: u.name, conv, price, is_base: !!u.is_base };
+    });
   }
   const baseName = product?.unit || 'pcs';
   const out = [{ name: baseName, conv: 1, price: parseFloat(product?.selling_price) || 0, is_base: true }];
   if (product?.alt_unit && parseFloat(product.conversion_factor) > 0) {
+    const altConv = parseFloat(product.conversion_factor);
+    const altStored = parseFloat(product.alt_price);
     out.push({
       name: product.alt_unit,
-      conv: parseFloat(product.conversion_factor),
-      price: parseFloat(product.alt_price) || 0,
+      conv: altConv,
+      price: altStored > 0 ? altStored : (out[0].price * altConv),
       is_base: false,
     });
   }
