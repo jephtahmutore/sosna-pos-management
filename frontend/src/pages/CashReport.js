@@ -64,6 +64,10 @@ const CashReport = () => {
   // v1.8.10 — current FX rates so Total can convert FRA/K into USD before
   // comparing against Expected (which is the order total_amount sum in USD).
   const [fxRate, setFxRate] = useState({ sell: 0, sellK: 0 });
+  // v1.8.11 — per-currency Expected. Snapshot of what the POS says was
+  // received per currency (net of change), independent of what the cashier
+  // typed into the form. Difference per currency = counted − expected.
+  const [expectedByCcy, setExpectedByCcy] = useState({ usd: 0, fra: 0, k: 0 });
 
   // Expenses list modal
   const [showExpenses, setShowExpenses] = useState(false);
@@ -158,6 +162,12 @@ const CashReport = () => {
     const daily = await fetchDaily(d, cid);
     if (daily) {
       setDailyRevenue(parseFloat(daily.total_revenue || 0));
+      // v1.8.11 — snapshot per-currency expected from POS (orders).
+      setExpectedByCcy({
+        usd: parseFloat(daily.usd_received || 0) || 0,
+        fra: parseFloat(daily.fra_received || 0) || 0,
+        k:   parseFloat(daily.k_received   || 0) || 0,
+      });
     }
 
     const saved = reports.find(r => r.date && r.date.split('T')[0] === d && String(r.cashier_id ?? 0) === String(cid));
@@ -238,12 +248,11 @@ const CashReport = () => {
     }).catch(() => {});
   }, [date, reports]); // eslint-disable-line
 
-  // Auto-calculate. v1.8.10 — Total is in USD-equivalent so it can be compared
-  // against Expected (sum of order totals in USD). FRA and K are converted via
-  // the current sell rate (same direction the till uses when accepting them as
-  // payment: paid_FRA / sell_rate = USD value collected). If a rate is missing
-  // that currency's contribution is excluded from the Total (better than
-  // pretending K = USD numerically).
+  // v1.8.11 — no more USD-equivalent total. Each currency reconciles
+  // independently: counted − expected, status per currency. The single
+  // total/after_change/difference/status fields stay in form state for
+  // backwards compatibility with the POST handler + history table.
+  // total = sum of counted in their own units (purely informational).
   useEffect(() => {
     const ic   = parseFloat(form.initial_change) || 0;
     const usd  = parseFloat(form.usd_received)   || 0;
@@ -251,15 +260,13 @@ const CashReport = () => {
     const k    = parseFloat(form.k_received)     || 0;
     const exp  = parseFloat(form.expenses)       || 0;
     const pend = parseFloat(form.pending)        || 0;
-    const fraAsUsd = fxRate.sell  > 0 ? fra / fxRate.sell  : 0;
-    const kAsUsd   = fxRate.sellK > 0 ? k   / fxRate.sellK : 0;
-    const total        = usd + fraAsUsd + kAsUsd + pend + exp;
+    const total = usd + pend + exp; // legacy single value, USD bucket only
     const after_change = total - ic;
-    const expected     = dailyRevenue;
-    const diff         = after_change - expected;
-    const status       = getStatus(diff);
+    const expected = dailyRevenue;
+    const diff     = after_change - expected;
+    const status   = getStatus(diff);
     setForm(prev => ({ ...prev, total: total.toFixed(2), after_change: after_change.toFixed(2), expected: expected.toFixed(2), difference: diff.toFixed(2), status }));
-  }, [form.initial_change, form.usd_received, form.fra_received, form.k_received, form.expenses, form.pending, dailyRevenue, fxRate.sell, fxRate.sellK]); // eslint-disable-line
+  }, [form.initial_change, form.usd_received, form.fra_received, form.k_received, form.expenses, form.pending, dailyRevenue]); // eslint-disable-line
 
   const handleSave = async () => {
     if (!selectedCashier) { setMessage('Please select a cashier before saving.'); return; }
@@ -638,8 +645,11 @@ const CashReport = () => {
         </div>
       </div>
 
-      {/* ── Day Summary Bar ──────────────────────────────────────── */}
-      {(() => {
+      {/* v1.8.11 — Top USD-aggregated bar removed (Total Expected / Total
+          Cash Received / Difference). Per-currency reconciliation lives in
+          each currency card below. Kept the IIFE wrapping the (now empty)
+          conditional in case anyone adds a per-currency summary later. */}
+      {false && (() => {
         const diff = daySummary.totalCash - daySummary.totalExpected;
         const diffColor = diff === 0 ? '#6b7280' : diff > 0 ? '#16a34a' : '#dc2626';
         const fmtS = (v) => Math.abs(v).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -692,33 +702,38 @@ const CashReport = () => {
         )}
 
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 16 }}>
-          {/* v1.8.1 — triple-currency cash (USD / FRA / K). Each in its own
-              currency. Net of change given in the same currency. Auto-filled
-              from POS orders, cashier can edit if physical count differs. */}
-          <div className="form-group">
-            <label>USD Cash ($)</label>
-            <input type="number" value={form.usd_received}
-              onChange={e => setForm({ ...form, usd_received: e.target.value })}
-              disabled={!editMode} placeholder="0.00" step="0.01"
-              style={inputStyle(editMode)} />
-            <small style={{ color: '#6b7280', fontSize: 11 }}>Net USD received (received − change given in USD).</small>
-          </div>
-          <div className="form-group">
-            <label>FRA Cash</label>
-            <input type="number" value={form.fra_received}
-              onChange={e => setForm({ ...form, fra_received: e.target.value })}
-              disabled={!editMode} placeholder="0" step="1"
-              style={inputStyle(editMode)} />
-            <small style={{ color: '#6b7280', fontSize: 11 }}>Net FRA received (received − change given in FRA).</small>
-          </div>
-          <div className="form-group">
-            <label>K Cash</label>
-            <input type="number" value={form.k_received}
-              onChange={e => setForm({ ...form, k_received: e.target.value })}
-              disabled={!editMode} placeholder="0" step="1"
-              style={inputStyle(editMode)} />
-            <small style={{ color: '#6b7280', fontSize: 11 }}>Net K (Kwacha) received (received − change given in K).</small>
-          </div>
+          {/* v1.8.11 — per-currency cards. Each stays in its own currency
+              end-to-end: counted (cashier input), expected (from POS),
+              difference, status. No USD-equivalent conversion. */}
+          {[
+            { key: 'usd_received', label: 'USD Cash ($)',  ccy: 'USD', symbol: '$',  dec: 2, exp: expectedByCcy.usd, step: '0.01', color: '#16a34a' },
+            { key: 'fra_received', label: 'FRA Cash',      ccy: 'FRA', symbol: '',   dec: 0, exp: expectedByCcy.fra, step: '1',    color: '#7c3aed' },
+            { key: 'k_received',   label: 'K Cash',        ccy: 'K',   symbol: '',   dec: 0, exp: expectedByCcy.k,   step: '1',    color: '#ea580c' },
+          ].map(c => {
+            const counted = parseFloat(form[c.key] || 0) || 0;
+            const diff    = counted - c.exp;
+            const eps     = c.dec === 2 ? 0.01 : 1;
+            const status  = Math.abs(diff) < eps ? 'OK'
+                          : diff > 0 ? (diff < 10 ? 'Slight Surplus' : 'Surplus')
+                          : (diff > -10 ? 'Slight Short' : 'Short');
+            const isOk    = status === 'OK';
+            const fmt     = (n) => `${c.symbol}${parseFloat(n || 0).toLocaleString(undefined, { minimumFractionDigits: c.dec, maximumFractionDigits: c.dec })}`;
+            return (
+              <div key={c.key} className="form-group" style={{ borderLeft: `4px solid ${c.color}`, paddingLeft: 10 }}>
+                <label style={{ color: c.color, fontWeight: 700 }}>{c.label}</label>
+                <input type="number" value={form[c.key]}
+                  onChange={e => setForm({ ...form, [c.key]: e.target.value })}
+                  disabled={!editMode} placeholder={c.dec === 2 ? '0.00' : '0'} step={c.step}
+                  style={inputStyle(editMode)} />
+                <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 4, fontSize: 11, gap: 6, flexWrap: 'wrap' }}>
+                  <span style={{ color: '#6b7280' }}>Expected: <strong>{fmt(c.exp)}</strong></span>
+                  <span style={{ color: isOk ? '#16a34a' : diff > 0 ? '#d97706' : '#dc2626', fontWeight: 700 }}>
+                    {diff > 0 ? '+' : ''}{fmt(diff)} {status}
+                  </span>
+                </div>
+              </div>
+            );
+          })}
 
           {/* Expenses — read-only with + button */}
           <div className="form-group">
@@ -773,28 +788,10 @@ const CashReport = () => {
               style={inputStyle(editMode)} />
             <small style={{ color: '#6b7280', fontSize: 11 }}>Today's unpaid balance issued on credit (becomes receivable).</small>
           </div>
-          <div className="form-group">
-            <label>Total ($ equivalent)</label>
-            <input type="number" value={form.total} disabled style={{ background: '#f3f4f6', fontWeight: 600 }} />
-            <small style={{ color: '#6b7280', fontSize: 11 }}>
-              USD + (FRA ÷ {fxRate.sell || '—'}) + (K ÷ {fxRate.sellK || '—'}) + credit + expenses
-            </small>
-          </div>
-          <div className="form-group">
-            <label>Expected ($)</label>
-            <input type="number" value={form.expected} disabled style={{ background: '#f3f4f6', fontWeight: 600 }} />
-            <small style={{ color: '#6b7280', fontSize: 11 }}>Sum of paid order totals (always USD).</small>
-          </div>
-          <div className="form-group">
-            <label>Difference ({curSym})</label>
-            <input type="number" value={form.difference} disabled
-              style={{ background: '#f3f4f6', fontWeight: 600, color: statusColor(computedStatus) }} />
-          </div>
-          <div className="form-group">
-            <label>Status</label>
-            <input value={computedStatus} disabled
-              style={{ background: '#f3f4f6', fontWeight: 600, color: statusColor(computedStatus) }} />
-          </div>
+          {/* v1.8.11 — single Total/Expected/Difference/Status fields removed.
+              Reconciliation lives under each currency card above. The form
+              still saves total/expected/difference/status for backwards
+              compat (USD-only bucket; FRA/K reconcile per-currency only). */}
           <div className="form-group" style={{ gridColumn: 'span 2' }}>
             <label>Comment</label>
             <input value={form.comment}
