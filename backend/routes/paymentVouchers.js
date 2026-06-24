@@ -54,27 +54,31 @@ router.get('/stats', auth, readOnlyGuard, (req, res) => {
 router.post('/', auth, (req, res) => {
   try {
     const { paid_to, description, category, amount, date, paid_from, cashier_id, invoice_attachment,
-            cash_amount, bank_amount, momo_amount } = req.body;
+            cash_amount, bank_amount, momo_amount,
+            usd_amount, fra_amount, k_amount } = req.body;
     const voucherNum = syncConfig.generateNumber('PV', 'payment_vouchers');
     const tenantId = syncConfig.getTenantId(req);
     const { branchId, deviceId } = syncConfig.getConfig();
     const cashierId = cashier_id !== undefined ? parseInt(cashier_id) : 0;
     const resolvedPaidFrom = paid_from || 'Main cashier';
-    // Prefer client-sent per-method splits (the new PV form sends them directly).
-    // Fall back to deriving from paid_from for any older caller.
-    const sumSplits = (parseFloat(cash_amount) || 0) + (parseFloat(bank_amount) || 0) + (parseFloat(momo_amount) || 0);
-    const splits = sumSplits > 0
-      ? { cash: parseFloat(cash_amount) || 0, bank: parseFloat(bank_amount) || 0, momo: parseFloat(momo_amount) || 0 }
-      : derivePVSplits(resolvedPaidFrom, amount);
-    const totalAmount = sumSplits > 0 ? sumSplits : parseFloat(amount) || 0;
+    // v1.8.5 — triple-currency. Each in its own currency. Legacy
+    // cash/bank/momo still accepted but zeroed when usd/fra/k are sent.
+    const usdAmt = parseFloat(usd_amount ?? cash_amount ?? 0) || 0;
+    const fraAmt = parseFloat(fra_amount ?? bank_amount ?? 0) || 0;
+    const kAmt   = parseFloat(k_amount   ?? momo_amount ?? 0) || 0;
+    const sumSplits = usdAmt + fraAmt + kAmt;
+    // For the legacy total `amount` column we use whatever the caller sent
+    // (the USD-equivalent header), falling back to USD-only if missing.
+    const totalAmount = parseFloat(amount) > 0 ? parseFloat(amount) : (sumSplits > 0 ? usdAmt : 0);
     const info = db.prepare(
       `INSERT INTO payment_vouchers (voucher_number, paid_to, description, category, amount,
                                      cash_amount, bank_amount, momo_amount,
+                                     usd_amount, fra_amount, k_amount,
                                      date, paid_from, cashier_id, invoice_attachment, created_by,
                                      sync_id, tenant_id, branch_id, device_id, synced, created_at, updated_at)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,datetime('now'),datetime('now'))`
+       VALUES (?,?,?,?,?, 0,0,0, ?,?,?, ?,?,?,?,?, ?,?,?,?, 0,datetime('now'),datetime('now'))`
     ).run(voucherNum, paid_to, description, category, totalAmount,
-          splits.cash, splits.bank, splits.momo,
+          usdAmt, fraAmt, kAmt,
           date || new Date().toISOString().split('T')[0],
           resolvedPaidFrom,
           cashierId,
@@ -92,33 +96,37 @@ router.post('/', auth, (req, res) => {
 router.put('/:id', auth, (req, res) => {
   try {
     const { paid_to, description, category, amount, date, paid_from, invoice_attachment,
-            cash_amount, bank_amount, momo_amount } = req.body;
+            cash_amount, bank_amount, momo_amount,
+            usd_amount, fra_amount, k_amount } = req.body;
     const pvDate = date || new Date().toISOString().split('T')[0];
     const resolvedPaidFrom = paid_from || 'Main cashier';
-    const sumSplits = (parseFloat(cash_amount) || 0) + (parseFloat(bank_amount) || 0) + (parseFloat(momo_amount) || 0);
-    const splits = sumSplits > 0
-      ? { cash: parseFloat(cash_amount) || 0, bank: parseFloat(bank_amount) || 0, momo: parseFloat(momo_amount) || 0 }
-      : derivePVSplits(resolvedPaidFrom, amount);
-    const totalAmount = sumSplits > 0 ? sumSplits : parseFloat(amount) || 0;
+    // v1.8.5 — triple-currency. Same merge as POST.
+    const usdAmt = parseFloat(usd_amount ?? cash_amount ?? 0) || 0;
+    const fraAmt = parseFloat(fra_amount ?? bank_amount ?? 0) || 0;
+    const kAmt   = parseFloat(k_amount   ?? momo_amount ?? 0) || 0;
+    const sumSplits = usdAmt + fraAmt + kAmt;
+    const totalAmount = parseFloat(amount) > 0 ? parseFloat(amount) : (sumSplits > 0 ? usdAmt : 0);
     // invoice_attachment: pass null to clear, omit to keep existing
     const keepAttachment = invoice_attachment === undefined;
     const sql = keepAttachment
       ? `UPDATE payment_vouchers
             SET paid_to=?, description=?, category=?, amount=?,
-                cash_amount=?, bank_amount=?, momo_amount=?,
+                cash_amount=0, bank_amount=0, momo_amount=0,
+                usd_amount=?, fra_amount=?, k_amount=?,
                 date=?, paid_from=?, updated_at=datetime('now'), synced=0
           WHERE id=?`
       : `UPDATE payment_vouchers
             SET paid_to=?, description=?, category=?, amount=?,
-                cash_amount=?, bank_amount=?, momo_amount=?,
+                cash_amount=0, bank_amount=0, momo_amount=0,
+                usd_amount=?, fra_amount=?, k_amount=?,
                 date=?, paid_from=?, invoice_attachment=?, updated_at=datetime('now'), synced=0
           WHERE id=?`;
     const args = keepAttachment
       ? [paid_to, description, category, totalAmount,
-         splits.cash, splits.bank, splits.momo,
+         usdAmt, fraAmt, kAmt,
          pvDate, resolvedPaidFrom, req.params.id]
       : [paid_to, description, category, totalAmount,
-         splits.cash, splits.bank, splits.momo,
+         usdAmt, fraAmt, kAmt,
          pvDate, resolvedPaidFrom, invoice_attachment || null, req.params.id];
     const info = db.prepare(sql).run(...args);
     if (info.changes === 0) return res.status(404).json({ error: 'Voucher not found' });

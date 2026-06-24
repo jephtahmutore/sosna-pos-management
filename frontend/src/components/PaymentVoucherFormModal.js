@@ -23,9 +23,11 @@ const PaymentVoucherFormModal = ({
   const { symbol: curSym } = useCurrency();
 
   const [pvTypes, setPvTypes] = useState([]);
+  // v1.8.5 — triple-currency. USD ($), FRA, K each in own currency. Legacy
+  // cash_amount/bank_amount/momo_amount columns still in DB, kept at 0.
   const [form, setForm] = useState({
     paid_to: '', description: '', category: 'Other',
-    cash_amount: '', bank_amount: '', momo_amount: '',
+    usd_amount: '', fra_amount: '', k_amount: '',
     date: todayStr(), paid_from: defaultPaidFrom || 'Main cashier',
     invoice_attachment: null,
   });
@@ -41,24 +43,20 @@ const PaymentVoucherFormModal = ({
   useEffect(() => {
     if (!open) return;
     if (editVoucher) {
-      // Prefer split columns when populated; else drop legacy `amount` into
-      // the bucket implied by `paid_from` so the form is editable.
-      const ca = parseFloat(editVoucher.cash_amount || 0) || 0;
-      const ba = parseFloat(editVoucher.bank_amount || 0) || 0;
-      const ma = parseFloat(editVoucher.momo_amount || 0) || 0;
-      const splitsSum = ca + ba + ma;
-      const legacy = parseFloat(editVoucher.amount || 0) || 0;
-      const pf  = (editVoucher.paid_from || '').toLowerCase();
-      const legacyBucket = (pf.includes('bank') || pf.includes('cheque')) ? 'bank_amount'
-                         : (pf.includes('mobile') || pf.includes('momo'))  ? 'momo_amount'
-                         : 'cash_amount';
+      // v1.8.5 — prefer new usd/fra/k columns; fall back to legacy
+      // cash/bank/momo (where the same amounts were stored before the rename).
+      const usd = parseFloat(editVoucher.usd_amount || editVoucher.cash_amount || 0) || 0;
+      const fra = parseFloat(editVoucher.fra_amount || editVoucher.bank_amount || 0) || 0;
+      const k   = parseFloat(editVoucher.k_amount   || editVoucher.momo_amount || 0) || 0;
+      const splitsSum = usd + fra + k;
+      const legacyAmount = parseFloat(editVoucher.amount || 0) || 0;
       setForm({
         paid_to:     editVoucher.paid_to     || '',
         description: editVoucher.description || '',
         category:    editVoucher.category    || 'Other',
-        cash_amount: splitsSum > 0 ? (ca > 0 ? String(ca) : '') : (legacyBucket === 'cash_amount' && legacy > 0 ? String(legacy) : ''),
-        bank_amount: splitsSum > 0 ? (ba > 0 ? String(ba) : '') : (legacyBucket === 'bank_amount' && legacy > 0 ? String(legacy) : ''),
-        momo_amount: splitsSum > 0 ? (ma > 0 ? String(ma) : '') : (legacyBucket === 'momo_amount' && legacy > 0 ? String(legacy) : ''),
+        usd_amount:  splitsSum > 0 ? (usd > 0 ? String(usd) : '') : (legacyAmount > 0 ? String(legacyAmount) : ''),
+        fra_amount:  fra > 0 ? String(fra) : '',
+        k_amount:    k   > 0 ? String(k)   : '',
         date:        editVoucher.date ? editVoucher.date.split('T')[0] : (defaultDate || todayStr()),
         paid_from:   editVoucher.paid_from   || defaultPaidFrom || 'Main cashier',
         invoice_attachment: editVoucher.invoice_attachment || null,
@@ -66,7 +64,7 @@ const PaymentVoucherFormModal = ({
     } else {
       setForm({
         paid_to: '', description: '', category: 'Other',
-        cash_amount: '', bank_amount: '', momo_amount: '',
+        usd_amount: '', fra_amount: '', k_amount: '',
         date: defaultDate || todayStr(),
         paid_from: defaultPaidFrom || 'Main cashier',
         invoice_attachment: null,
@@ -80,35 +78,33 @@ const PaymentVoucherFormModal = ({
   const handleSave = async () => {
     setError('');
     if (!form.paid_to.trim()) return setError('Paid To is required.');
-    const cash = parseFloat(form.cash_amount || 0) || 0;
-    const bank = parseFloat(form.bank_amount || 0) || 0;
-    const momo = parseFloat(form.momo_amount || 0) || 0;
-    const total = cash + bank + momo;
-    if (total <= 0) return setError('Total amount must be greater than 0.');
+    const usd = parseFloat(form.usd_amount || 0) || 0;
+    const fra = parseFloat(form.fra_amount || 0) || 0;
+    const k   = parseFloat(form.k_amount   || 0) || 0;
+    // Total in USD equivalent = USD only. FRA & K need rates to convert; for
+    // the header `amount` column we keep USD as the canonical figure (the
+    // legacy reports + Cash Book read this). Per-currency amounts live in
+    // their own columns. Future: convert FRA/K via current FX rate if needed.
+    const totalUsd = usd;
+    if (usd <= 0 && fra <= 0 && k <= 0) return setError('Enter an amount in at least one currency.');
 
     if (editVoucher) {
       if (!window.confirm('Are you sure you want to update this record?')) return;
     }
     setSaving(true);
     try {
-      // Derive paid_from label: if Cash Drawer is locked (e.g. Cash Report),
-      // keep that exact value; otherwise produce a clean label from the splits.
-      const nonZero = [cash > 0, bank > 0, momo > 0].filter(Boolean).length;
       let resolvedPaidFrom = form.paid_from;
       if (!lockPaidFrom) {
-        if (nonZero > 1)        resolvedPaidFrom = 'Mixed';
-        else if (cash > 0)      resolvedPaidFrom = 'Cash drawer';
-        else if (bank > 0)      resolvedPaidFrom = 'Bank';
-        else if (momo > 0)      resolvedPaidFrom = 'Mobile Money';
+        resolvedPaidFrom = 'Cash drawer';
       }
       const payload = {
         paid_to:     form.paid_to.trim(),
         description: (form.description || '').trim(),
         category:    form.category,
-        amount:      total,
-        cash_amount: cash,
-        bank_amount: bank,
-        momo_amount: momo,
+        amount:      totalUsd,
+        usd_amount:  usd,
+        fra_amount:  fra,
+        k_amount:    k,
         date:        form.date,
         paid_from:   resolvedPaidFrom,
         invoice_attachment: form.invoice_attachment,
@@ -172,24 +168,24 @@ const PaymentVoucherFormModal = ({
               </label>
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10 }}>
                 {[
-                  { key: 'cash_amount', label: 'Cash', color: '#16a34a' },
-                  { key: 'bank_amount', label: 'Bank', color: '#2563eb' },
-                  { key: 'momo_amount', label: 'MoMo', color: '#f59e0b' },
+                  { key: 'usd_amount', label: 'USD ($)', color: '#16a34a', step: '0.01', placeholder: '0.00' },
+                  { key: 'fra_amount', label: 'FRA',     color: '#7c3aed', step: '1',    placeholder: '0' },
+                  { key: 'k_amount',   label: 'K',       color: '#ea580c', step: '1',    placeholder: '0' },
                 ].map((f) => (
                   <div key={f.key}>
                     <label style={{ fontSize: 11, color: f.color, fontWeight: 700, textTransform: 'uppercase', marginBottom: 3, display: 'block' }}>{f.label}</label>
-                    <input type="number" min="0" step="0.01"
+                    <input type="number" min="0" step={f.step}
                       value={form[f.key]}
                       onChange={e => setForm(prev => ({ ...prev, [f.key]: e.target.value }))}
-                      placeholder="0.00"
+                      placeholder={f.placeholder}
                       style={{ width: '100%', padding: '8px 10px', border: `2px solid ${parseFloat(form[f.key] || 0) > 0 ? f.color : '#d1d5db'}`, borderRadius: 6, fontSize: 14, fontWeight: 600, color: parseFloat(form[f.key] || 0) > 0 ? f.color : '#374151', boxSizing: 'border-box' }} />
                   </div>
                 ))}
               </div>
               <div style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 10px', background: '#f9fafb', borderRadius: 6, fontSize: 13, marginTop: 8 }}>
-                <span style={{ color: '#6b7280' }}>Total</span>
+                <span style={{ color: '#6b7280' }}>Header total (USD only)</span>
                 <span style={{ fontWeight: 800, color: '#1d4ed8' }}>
-                  {curSym}{(parseFloat(form.cash_amount || 0) + parseFloat(form.bank_amount || 0) + parseFloat(form.momo_amount || 0)).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                  ${(parseFloat(form.usd_amount || 0)).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                 </span>
               </div>
             </div>

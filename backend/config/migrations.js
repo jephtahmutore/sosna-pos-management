@@ -798,6 +798,11 @@ function initTenantDb(db) {
   addCol('payment_vouchers',   'cash_amount', 'REAL NOT NULL DEFAULT 0');
   addCol('payment_vouchers',   'bank_amount', 'REAL NOT NULL DEFAULT 0');
   addCol('payment_vouchers',   'momo_amount', 'REAL NOT NULL DEFAULT 0');
+  // v1.8.5 — triple-currency payment vouchers. Each in its own currency
+  // (USD in $, FRA in FRA, K in K). Legacy cash/bank/momo kept at 0.
+  addCol('payment_vouchers',   'usd_amount',  'REAL NOT NULL DEFAULT 0');
+  addCol('payment_vouchers',   'fra_amount',  'REAL NOT NULL DEFAULT 0');
+  addCol('payment_vouchers',   'k_amount',    'REAL NOT NULL DEFAULT 0');
   // Invoice attachment — stored under uploads/invoices/. The column holds the
   // relative path (e.g. "invoices/grn_1700000000_abcd.pdf") so the same file
   // can be served from /uploads/<path> on any host.
