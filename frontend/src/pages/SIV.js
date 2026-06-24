@@ -1275,19 +1275,27 @@ const SIV = () => {
                   <tbody>
                     {items.map((item, index) => {
                       const prod = products.find(pp => String(pp.id) === String(item.product_id));
-                      // Compute remaining in BASE units first (subtract user's qty converted to base if alt unit)
+                      // v1.7.4: convert balance via units_json (supports N packagings)
+                      // instead of the legacy single-alt_unit fallback. Looks up the
+                      // selected unit row and uses its conv; falls back to alt_unit
+                      // for old items that have no units_json yet.
                       let remaining = null;
                       let displayUnit = '';
                       if (prod) {
                         const storeBase = parseFloat(prod.store_balance || 0);
                         const qty = parseFloat(item.quantity || 0);
-                        const conv = parseFloat(prod.conversion_factor || 1);
-                        const isAlt = !!(prod.alt_unit && item.unit === prod.alt_unit);
-                        const qtyBase = isAlt ? qty * conv : qty;
+                        let units = [];
+                        try { units = JSON.parse(prod.units_json || '[]'); } catch { units = []; }
+                        const selectedName = (item.unit || prod.unit || '').trim();
+                        const selectedRow = units.find(u => (u.name || '').trim() === selectedName);
+                        const legacyAlt = prod.alt_unit && selectedName === prod.alt_unit;
+                        const conv = selectedRow
+                          ? (parseFloat(selectedRow.conv) || 1)
+                          : (legacyAlt ? (parseFloat(prod.conversion_factor) || 1) : 1);
+                        const qtyBase = qty * conv;
                         const remainingBase = storeBase - qtyBase;
-                        // Display remaining in the SELECTED unit (so it matches what user is entering)
-                        remaining = isAlt && conv > 0 ? remainingBase / conv : remainingBase;
-                        displayUnit = isAlt ? prod.alt_unit : prod.unit;
+                        remaining = conv > 0 ? remainingBase / conv : remainingBase;
+                        displayUnit = selectedName || prod.unit;
                       }
                       return (
                         <tr key={index}>
