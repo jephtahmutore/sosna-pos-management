@@ -16,7 +16,10 @@ const _d = new Date(); const today = `${_d.getFullYear()}-${String(_d.getMonth()
 // touching amount_received. For partial returns, use Sales Return / Credit
 // Notes instead. The backend route still exists; flip this flag back to
 // `true` to re-enable the UI without any other changes.
-const PARTIAL_REVERSE_ENABLED = false;
+// v1.8.12 — flipped to true for Sosna. Per-line reverse now refunds cash
+// proportionally across USD/FRA/K (mirroring how the customer paid), so the
+// Cash Report's per-currency buckets stay in sync after a partial reverse.
+const PARTIAL_REVERSE_ENABLED = true;
 
 const SalesReport = () => {
   const { hasPermission, user: authUser } = useAuth();

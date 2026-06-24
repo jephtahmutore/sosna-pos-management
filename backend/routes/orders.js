@@ -647,12 +647,49 @@ router.put('/:id/items/:itemId/reverse', auth, (req, res) => {
       const newSubtotal = Math.max(0, parseFloat(order.subtotal) - refund);
       const newTotal = Math.max(0, parseFloat(order.total_amount) - refund);
 
+      // v1.8.12 — refund the customer in the same currency mix they paid with.
+      // Otherwise the per-currency cash buckets stay overstated on the Cash
+      // Report (status='Partial' leaves the order in the SUM, and cash_received
+      // wouldn't drop). Distribution: each currency's USD-equivalent share of
+      // the original amount_received determines its share of the refund.
+      const oldCash = parseFloat(order.cash_received || 0);
+      const oldFra  = parseFloat(order.fra_received  || 0);
+      const oldK    = parseFloat(order.k_received    || 0);
+      const sellRate  = parseFloat(order.selling_rate_used   || 0);
+      const sellRateK = parseFloat(order.selling_rate_k_used || 0);
+      const oldAmtRecv = parseFloat(order.amount_received || 0);
+      let newCash = oldCash, newFra = oldFra, newK = oldK;
+      let newAmtRecv = oldAmtRecv;
+      if (oldAmtRecv > 0.0001 && refund > 0.0001) {
+        // Each currency's USD-equivalent contribution
+        const usdShare = oldCash;
+        const fraShare = sellRate  > 0 ? (oldFra / sellRate)  : 0;
+        const kShare   = sellRateK > 0 ? (oldK   / sellRateK) : 0;
+        const totalShare = usdShare + fraShare + kShare;
+        if (totalShare > 0.0001) {
+          const refundUsd = refund * (usdShare / totalShare);
+          const refundFra = refund * (fraShare / totalShare) * (sellRate  || 0);
+          const refundK   = refund * (kShare   / totalShare) * (sellRateK || 0);
+          newCash = Math.max(0, oldCash - refundUsd);
+          newFra  = Math.max(0, oldFra  - refundFra);
+          newK    = Math.max(0, oldK    - refundK);
+          newAmtRecv = Math.max(0, oldAmtRecv - refund);
+        }
+      }
+
       // Order status: 'Reversed' if every item is fully reversed, else 'Partial' (or original status if nothing reversed)
       const remaining = db.prepare('SELECT COUNT(*) AS cnt FROM order_items WHERE order_sync_id = ? AND reversed = 0 AND deleted_at IS NULL').get(order.sync_id);
       const allReversed = remaining.cnt === 0;
 
-      db.prepare('UPDATE orders SET subtotal = ?, total_amount = ?, status = ?, synced=0 WHERE id = ?').run(
-        newSubtotal, newTotal, allReversed ? 'Reversed' : 'Partial', req.params.id
+      db.prepare(`UPDATE orders
+         SET subtotal = ?, total_amount = ?, status = ?,
+             cash_received = ?, fra_received = ?, k_received = ?,
+             amount_received = ?,
+             synced = 0
+         WHERE id = ?`).run(
+        newSubtotal, newTotal, allReversed ? 'Reversed' : 'Partial',
+        newCash, newFra, newK, newAmtRecv,
+        req.params.id
       );
 
       const updatedOrder = db.prepare('SELECT * FROM orders WHERE id = ?').get(req.params.id);
