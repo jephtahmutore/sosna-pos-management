@@ -72,6 +72,9 @@ const CashReport = () => {
   // Subtracted from each currency's Expected so the diff stays accurate
   // (USD expenses don't deplete FRA drawer, etc.).
   const [expensesByCcy, setExpensesByCcy] = useState({ usd: 0, fra: 0, k: 0 });
+  // v1.8.20 — POS-snapshot of today's credit (issued unpaid balance).
+  // Independent of form.pending which is editable by the cashier.
+  const [creditExpected, setCreditExpected] = useState(0);
 
   // Expenses list modal
   const [showExpenses, setShowExpenses] = useState(false);
@@ -181,6 +184,9 @@ const CashReport = () => {
         fra: parseFloat(daily.fra_expenses || 0) || 0,
         k:   parseFloat(daily.k_expenses   || 0) || 0,
       });
+      // v1.8.20 — POS snapshot of credit issued today (so the card can show
+      // Counted vs Expected the same way the cash cards do).
+      setCreditExpected(parseFloat(daily.credit_sales || 0) + parseFloat(daily.pending || 0));
     }
 
     const saved = reports.find(r => r.date && r.date.split('T')[0] === d && String(r.cashier_id ?? 0) === String(cid));
@@ -570,10 +576,24 @@ const CashReport = () => {
   const openVoucherForm = (currency = null) => { setVoucherDefaultCcy(currency); setShowVoucher(true); };
 
   // Called by PaymentVoucherFormModal after a successful save.
-  // Refresh the daily report so the new expense total flows into the form.
+  // v1.8.20 — refresh ALL daily-derived state so the new expense flows into
+  // every per-currency card immediately (not just the legacy single field).
   const handleVoucherSaved = async () => {
     const daily = await fetchDaily(date);
-    if (daily) setForm(prev => ({ ...prev, expenses: daily.expenses || '' }));
+    if (daily) {
+      setForm(prev => ({ ...prev, expenses: daily.expenses || '' }));
+      setExpensesByCcy({
+        usd: parseFloat(daily.usd_expenses || 0) || 0,
+        fra: parseFloat(daily.fra_expenses || 0) || 0,
+        k:   parseFloat(daily.k_expenses   || 0) || 0,
+      });
+      setExpectedByCcy({
+        usd: parseFloat(daily.usd_received || 0) || 0,
+        fra: parseFloat(daily.fra_received || 0) || 0,
+        k:   parseFloat(daily.k_received   || 0) || 0,
+      });
+      setCreditExpected(parseFloat(daily.credit_sales || 0) + parseFloat(daily.pending || 0));
+    }
     setEditMode(true);
   };
   // ──────────────────────────────────────────────────────────────────
@@ -661,6 +681,8 @@ const CashReport = () => {
             style={{ padding: '8px 12px', border: '1px solid #e5e7eb', borderRadius: 8, fontSize: 14, background: '#fff', color: '#374151' }}
           >
             {salesCashiers.length === 0 && <option value="">{t('noSalesToday')}</option>}
+            {/* v1.8.20 — All Cashiers aggregate (cashier_id=0 on the backend). */}
+            {salesCashiers.length > 0 && <option value="0">All Cashiers</option>}
             {salesCashiers.map(u => (
               <option key={u.id} value={u.id}>{u.first_name} {u.last_name}</option>
             ))}
@@ -824,14 +846,62 @@ const CashReport = () => {
               now lives INSIDE the per-currency card above for clearer linkage
               (USD card → USD expenses, FRA card → FRA expenses, etc.). */}
 
-          <div className="form-group">
-            <label>Credit Sales / On Account ({curSym})</label>
-            <input type="number" value={form.pending}
-              onChange={e => setForm({ ...form, pending: e.target.value })}
-              disabled={!editMode} placeholder="0.00" step="0.01"
-              style={inputStyle(editMode)} />
-            <small style={{ color: '#6b7280', fontSize: 11 }}>Today's unpaid balance issued on credit (becomes receivable).</small>
-          </div>
+          {/* v1.8.20 — Credit Sales card. Styled like the cash cards but in
+              red (money owed). No expenses subtraction (credit doesn't come
+              out of any drawer). No view/+ buttons. */}
+          {(() => {
+            const counted = parseFloat(form.pending || 0) || 0;
+            const diff    = counted - creditExpected;
+            const isOk    = Math.abs(diff) < 0.01;
+            const status  = isOk ? 'OK'
+                          : diff > 0 ? (diff < 10 ? 'Slight Surplus' : 'Surplus')
+                          : (diff > -10 ? 'Slight Short' : 'Short');
+            const fmt     = (n) => `$${parseFloat(n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+            return (
+              <div style={{
+                background: '#fef2f2',
+                border: '1.5px solid #fecaca',
+                borderLeft: '5px solid #dc2626',
+                borderRadius: 10,
+                padding: 14,
+                display: 'flex',
+                flexDirection: 'column',
+                gap: 10,
+              }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <span style={{ color: '#dc2626', fontWeight: 800, fontSize: 14, textTransform: 'uppercase', letterSpacing: 0.4 }}>Credit Sales ($)</span>
+                </div>
+
+                <div>
+                  <label style={{ fontSize: 10, color: '#6b7280', fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.4 }}>Counted</label>
+                  <input type="number" value={form.pending}
+                    onChange={e => setForm({ ...form, pending: e.target.value })}
+                    disabled={!editMode} placeholder="0.00" step="0.01"
+                    style={{ ...inputStyle(editMode), marginTop: 4, fontSize: 16, fontWeight: 600 }} />
+                </div>
+
+                <div style={{ fontSize: 12, color: '#475569', display: 'flex', flexDirection: 'column', gap: 2, padding: '8px 10px', background: '#fff', borderRadius: 6, border: '1px solid #e5e7eb' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                    <span>POS net</span><strong>{fmt(creditExpected)}</strong>
+                  </div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', borderTop: '1px dashed #e5e7eb', paddingTop: 3, marginTop: 2 }}>
+                    <span style={{ fontWeight: 700 }}>= Expected</span><strong style={{ color: '#dc2626' }}>{fmt(creditExpected)}</strong>
+                  </div>
+                </div>
+
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '6px 10px', background: isOk ? '#dcfce7' : diff > 0 ? '#fef3c7' : '#fee2e2', border: `1px solid ${isOk ? '#86efac' : diff > 0 ? '#fde68a' : '#fecaca'}`, borderRadius: 6 }}>
+                  <span style={{ fontSize: 11, color: '#475569', fontWeight: 600 }}>Diff</span>
+                  <span style={{ color: isOk ? '#16a34a' : diff > 0 ? '#d97706' : '#dc2626', fontWeight: 800, fontSize: 13 }}>
+                    {diff > 0 ? '+' : ''}{fmt(diff)} · {status}
+                  </span>
+                </div>
+
+                <small style={{ color: '#7c2d12', fontSize: 10, lineHeight: 1.4 }}>
+                  Today's unpaid balance issued on credit (becomes receivable). Not paid from any drawer.
+                </small>
+              </div>
+            );
+          })()}
           {/* v1.8.11 — single Total/Expected/Difference/Status fields removed.
               Reconciliation lives under each currency card above. The form
               still saves total/expected/difference/status for backwards
