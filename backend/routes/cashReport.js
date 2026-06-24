@@ -126,16 +126,16 @@ router.get('/daily', auth, readOnlyGuard, (req, res) => {
       `SELECT COALESCE(SUM(amount), 0) AS total FROM payment_vouchers
        WHERE deleted_at IS NULL AND tenant_id = ? AND date = ? AND paid_from = 'Cash Drawer' AND cashier_id = ?`
     ).get(...expensesParams);
-    // v1.8.14 — per-currency expenses. A PV recorded in FRA reduces FRA
-    // drawer (not USD). usd_amount / fra_amount / k_amount come from
-    // payment_vouchers (v1.8.5 schema); legacy cash_amount fall back into
-    // the USD bucket for older rows. The single `expenses` total above
-    // is kept for back-compat with anything that still reads it.
+    // v1.8.14 + v1.8.17 — per-currency expenses. A PV recorded in FRA
+    // reduces FRA drawer (not USD). Prefer the new usd_amount column when
+    // set, else fall back to the legacy cash_amount (per row — adding the
+    // two columns together double-counts the rows where both got populated
+    // during the v1.8.5 transition).
     const expensesByCcy = db.prepare(
       `SELECT
-         COALESCE(SUM(usd_amount), 0) + COALESCE(SUM(cash_amount), 0) AS usd,
-         COALESCE(SUM(fra_amount), 0) AS fra,
-         COALESCE(SUM(k_amount),   0) AS k
+         COALESCE(SUM(CASE WHEN COALESCE(usd_amount, 0) > 0 THEN usd_amount ELSE COALESCE(cash_amount, 0) END), 0) AS usd,
+         COALESCE(SUM(CASE WHEN COALESCE(fra_amount, 0) > 0 THEN fra_amount ELSE COALESCE(bank_amount, 0) END), 0) AS fra,
+         COALESCE(SUM(CASE WHEN COALESCE(k_amount,   0) > 0 THEN k_amount   ELSE COALESCE(momo_amount, 0) END), 0) AS k
        FROM payment_vouchers
        WHERE deleted_at IS NULL AND tenant_id = ? AND date = ? AND paid_from = 'Cash Drawer' AND cashier_id = ?`
     ).get(...expensesParams);
