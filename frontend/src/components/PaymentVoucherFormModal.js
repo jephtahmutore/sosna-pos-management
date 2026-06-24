@@ -30,7 +30,7 @@ const PaymentVoucherFormModal = ({
   // v1.8.5 — triple-currency. USD ($), FRA, K each in own currency. Legacy
   // cash_amount/bank_amount/momo_amount columns still in DB, kept at 0.
   const [form, setForm] = useState({
-    paid_to: '', description: '', category: 'Other',
+    paid_to: '', description: '', category: '',
     usd_amount: '', fra_amount: '', k_amount: '',
     date: todayStr(), paid_from: defaultPaidFrom || 'Main cashier',
     invoice_attachment: null,
@@ -57,7 +57,7 @@ const PaymentVoucherFormModal = ({
       setForm({
         paid_to:     editVoucher.paid_to     || '',
         description: editVoucher.description || '',
-        category:    editVoucher.category    || 'Other',
+        category:    editVoucher.category    || '',
         usd_amount:  splitsSum > 0 ? (usd > 0 ? String(usd) : '') : (legacyAmount > 0 ? String(legacyAmount) : ''),
         fra_amount:  fra > 0 ? String(fra) : '',
         k_amount:    k   > 0 ? String(k)   : '',
@@ -83,6 +83,9 @@ const PaymentVoucherFormModal = ({
   const handleSave = async () => {
     setError('');
     if (!form.paid_to.trim()) return setError('Paid To is required.');
+    // v1.8.25 — Type is required. Forces a conscious pick instead of
+    // accidentally saving with the wrong default.
+    if (!form.category) return setError('Type is required — pick one from the dropdown.');
     const usd = parseFloat(form.usd_amount || 0) || 0;
     const fra = parseFloat(form.fra_amount || 0) || 0;
     const k   = parseFloat(form.k_amount   || 0) || 0;
@@ -148,7 +151,13 @@ const PaymentVoucherFormModal = ({
               </div>
               <div className="form-group">
                 <label>Type</label>
-                <select value={form.category} onChange={e => setForm({ ...form, category: e.target.value })}>
+                {/* v1.8.25 — start blank so the user can't save with the
+                    wrong default ('Council' wasn't always right). Save
+                    handler rejects empty category with an error. */}
+                <select value={form.category}
+                  onChange={e => setForm({ ...form, category: e.target.value })}
+                  style={{ borderColor: form.category ? '' : '#fbbf24', background: form.category ? '' : '#fffbeb' }}>
+                  <option value="">— Select Type —</option>
                   {pvTypes.length === 0
                     ? <option value="Other">Other</option>
                     : pvTypes.map(t => <option key={t.id} value={t.name}>{t.name}</option>)}

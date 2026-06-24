@@ -36,15 +36,31 @@ router.get('/', auth, readOnlyGuard, (req, res) => {
 router.get('/stats', auth, readOnlyGuard, (req, res) => {
   try {
     const tenantId = req.user.tenantId;
-    const today = db.prepare("SELECT COALESCE(SUM(amount),0) AS total FROM payment_vouchers WHERE deleted_at IS NULL AND tenant_id = ? AND date = DATE('now')").get(tenantId);
-    const month = db.prepare("SELECT COALESCE(SUM(amount),0) AS total FROM payment_vouchers WHERE deleted_at IS NULL AND tenant_id = ? AND date >= date('now', 'start of month')").get(tenantId);
+    // v1.8.25 — per-currency totals. Prefer the new usd/fra/k columns and
+    // fall back to legacy cash/bank/momo only when the new ones are 0
+    // (mirrors the cashReport.js v1.8.17 fix to avoid double-counting
+    // transition rows where both columns happen to be populated).
+    const usdExpr = `COALESCE(SUM(CASE WHEN COALESCE(usd_amount,0) > 0 THEN usd_amount ELSE COALESCE(cash_amount,0) END), 0)`;
+    const fraExpr = `COALESCE(SUM(CASE WHEN COALESCE(fra_amount,0) > 0 THEN fra_amount ELSE COALESCE(bank_amount,0) END), 0)`;
+    const kExpr   = `COALESCE(SUM(CASE WHEN COALESCE(k_amount,  0) > 0 THEN k_amount   ELSE COALESCE(momo_amount,0) END), 0)`;
+    const totalsRow = (whereExtra, params) => db.prepare(
+      `SELECT ${usdExpr} AS usd, ${fraExpr} AS fra, ${kExpr} AS k
+       FROM payment_vouchers WHERE deleted_at IS NULL AND tenant_id = ?${whereExtra}`
+    ).get(...params);
+    const today = totalsRow(" AND date = DATE('now')", [tenantId]);
+    const month = totalsRow(" AND date >= date('now', 'start of month')", [tenantId]);
+    const all   = totalsRow('', [tenantId]);
     const count = db.prepare('SELECT COUNT(*) AS cnt FROM payment_vouchers WHERE deleted_at IS NULL AND tenant_id = ?').get(tenantId);
-    const avg = db.prepare('SELECT COALESCE(AVG(amount),0) AS avg FROM payment_vouchers WHERE deleted_at IS NULL AND tenant_id = ?').get(tenantId);
     res.json({
-      todayPayments: parseFloat(today.total),
-      thisMonth: parseFloat(month.total),
+      // Legacy USD-only fields kept for back-compat with anything still reading them.
+      todayPayments: parseFloat(today.usd) || 0,
+      thisMonth:     parseFloat(month.usd) || 0,
       totalVouchers: count.cnt,
-      avgPayment: Math.round(parseFloat(avg.avg))
+      avgPayment:    count.cnt > 0 ? Math.round((parseFloat(all.usd) || 0) / count.cnt) : 0,
+      // v1.8.25 — per-currency breakdowns.
+      today: { usd: parseFloat(today.usd) || 0, fra: parseFloat(today.fra) || 0, k: parseFloat(today.k) || 0 },
+      month: { usd: parseFloat(month.usd) || 0, fra: parseFloat(month.fra) || 0, k: parseFloat(month.k) || 0 },
+      total: { usd: parseFloat(all.usd)   || 0, fra: parseFloat(all.fra)   || 0, k: parseFloat(all.k)   || 0 },
     });
   } catch (error) {
     res.status(500).json({ error: error.message });

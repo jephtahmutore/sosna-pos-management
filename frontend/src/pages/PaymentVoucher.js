@@ -22,7 +22,13 @@ const PaymentVoucher = () => {
   const { hasPermission } = useAuth();
   const { symbol: curSym } = useCurrency();
   const { t } = useLanguage();
-  const [stats, setStats]       = useState({ todayPayments: 0, thisMonth: 0, totalVouchers: 0 });
+  // v1.8.25 — stats now include per-currency totals (today / month / all).
+  const [stats, setStats]       = useState({
+    todayPayments: 0, thisMonth: 0, totalVouchers: 0,
+    today: { usd: 0, fra: 0, k: 0 },
+    month: { usd: 0, fra: 0, k: 0 },
+    total: { usd: 0, fra: 0, k: 0 },
+  });
   const [vouchers, setVouchers] = useState([]);
   const [showForm, setShowForm] = useState(false);
   const [editVoucher, setEditVoucher] = useState(null); // null = new; voucher object = edit
@@ -303,28 +309,49 @@ const PaymentVoucher = () => {
         </div>
       </div>
 
-      {/* ── Stat Cards ──────────────────────────────────────────────── */}
-      <div className="stat-cards">
-        <div className="stat-card red">
-          <div className="stat-icon"><FiDollarSign /></div>
-          <div><div className="stat-label">{t('todaysPayments')}</div><div className="stat-value">{hasPermission('PaymentVoucher:View') ? `${curSym}${fmt2(stats.todayPayments)}` : 'N/A'}</div></div>
-        </div>
-        <div className="stat-card blue">
-          <div className="stat-icon"><FiCalendar /></div>
-          <div><div className="stat-label">{t('thisMonth')}</div><div className="stat-value">{hasPermission('PaymentVoucher:View') ? `${curSym}${fmt2(stats.thisMonth)}` : 'N/A'}</div></div>
-        </div>
-        <div className="stat-card green">
-          <div className="stat-icon"><FiFileText /></div>
-          <div><div className="stat-label">{t('totalVouchers')}</div><div className="stat-value">{hasPermission('PaymentVoucher:View') ? stats.totalVouchers : 'N/A'}</div></div>
-        </div>
-        <div className="stat-card orange">
-          <div className="stat-icon"><FiDollarSign /></div>
-          <div>
-            <div className="stat-label">{t('totalAmount')}</div>
-            <div className="stat-value" style={{ fontSize: 18 }}>{hasPermission('PaymentVoucher:View') ? `${curSym}${fmt2(allTotal)}` : 'N/A'}</div>
+      {/* v1.8.25 — per-currency stat cards. Today / This Month / Total
+          Amount each show 3 lines (USD/FRA/K) instead of a single $ figure.
+          'Total Vouchers' stays as a count. */}
+      {(() => {
+        const allowed = hasPermission('PaymentVoucher:View');
+        const fmtU = (n) => `$${fmt2(n)}`;
+        const fmtN = (n) => Math.round(parseFloat(n || 0)).toLocaleString('en-US');
+        const Line = ({ label, val, color }) => (
+          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, lineHeight: 1.6 }}>
+            <span style={{ opacity: 0.85 }}>{label}</span><strong style={{ color }}>{val}</strong>
           </div>
-        </div>
-      </div>
+        );
+        const Card = ({ label, ccyData, bg, icon }) => (
+          <div style={{ borderRadius: 14, padding: '14px 18px', background: bg, color: '#fff', boxShadow: '0 4px 16px rgba(0,0,0,0.1)', position: 'relative', overflow: 'hidden' }}>
+            <div style={{ position: 'absolute', right: -10, top: -10, width: 60, height: 60, borderRadius: '50%', background: 'rgba(255,255,255,0.1)' }} />
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+              {icon} <div style={{ fontSize: 11, fontWeight: 700, opacity: 0.9, textTransform: 'uppercase', letterSpacing: 0.5 }}>{label}</div>
+            </div>
+            {allowed ? (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
+                <Line label="USD" val={fmtU(ccyData?.usd || 0)} color="#fff" />
+                <Line label="FRA" val={fmtN(ccyData?.fra || 0)} color="#fff" />
+                <Line label="K"   val={fmtN(ccyData?.k   || 0)} color="#fff" />
+              </div>
+            ) : <div style={{ fontSize: 18, fontWeight: 800 }}>N/A</div>}
+          </div>
+        );
+        return (
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 14, marginBottom: 18 }}>
+            <Card label={t('todaysPayments')} ccyData={stats.today} bg="linear-gradient(135deg,#ef4444,#dc2626)" icon={<FiDollarSign size={20} />} />
+            <Card label={t('thisMonth')}      ccyData={stats.month} bg="linear-gradient(135deg,#3b82f6,#1d4ed8)" icon={<FiCalendar size={20} />} />
+            <div style={{ borderRadius: 14, padding: '14px 18px', background: 'linear-gradient(135deg,#22c55e,#15803d)', color: '#fff', boxShadow: '0 4px 16px rgba(0,0,0,0.1)', position: 'relative', overflow: 'hidden', display: 'flex', alignItems: 'center', gap: 14 }}>
+              <div style={{ position: 'absolute', right: -10, top: -10, width: 60, height: 60, borderRadius: '50%', background: 'rgba(255,255,255,0.1)' }} />
+              <FiFileText size={28} />
+              <div>
+                <div style={{ fontSize: 11, fontWeight: 700, opacity: 0.9, textTransform: 'uppercase', letterSpacing: 0.5 }}>{t('totalVouchers')}</div>
+                <div style={{ fontSize: 28, fontWeight: 800 }}>{allowed ? stats.totalVouchers : 'N/A'}</div>
+              </div>
+            </div>
+            <Card label={t('totalAmount')} ccyData={stats.total} bg="linear-gradient(135deg,#f97316,#c2410c)" icon={<FiDollarSign size={20} />} />
+          </div>
+        );
+      })()}
 
       {/* ── Tabs ─────────────────────────────────────────────────────── */}
       <div style={{ display: 'flex', gap: 4, marginBottom: 14, borderBottom: '2px solid #e5e7eb' }}>
@@ -473,11 +500,22 @@ const PaymentVoucher = () => {
             <thead>
               <tr>
                 <th>{t('voucherNumber')}</th><th>{t('date')}</th><th>{t('paidFrom')}</th><th>{t('paidTo')}</th>
-                <th>{t('description')}</th><th>{t('category')}</th><th>{t('amount')}</th><th>{t('actions')}</th>
+                <th>{t('description')}</th><th>{t('category')}</th>
+                {/* v1.8.25 — split Amount into 3 per-currency columns. */}
+                <th style={{ textAlign: 'right', color: '#16a34a' }}>USD ($)</th>
+                <th style={{ textAlign: 'right', color: '#7c3aed' }}>FRA</th>
+                <th style={{ textAlign: 'right', color: '#ea580c' }}>K</th>
+                <th>{t('actions')}</th>
               </tr>
             </thead>
             <tbody>
-              {filteredVouchers.map(v => (
+              {filteredVouchers.map(v => {
+                // Prefer new usd/fra/k columns, fall back to legacy cash/bank/momo.
+                const vu = parseFloat(v.usd_amount) > 0 ? parseFloat(v.usd_amount) : parseFloat(v.cash_amount || 0);
+                const vf = parseFloat(v.fra_amount) > 0 ? parseFloat(v.fra_amount) : parseFloat(v.bank_amount || 0);
+                const vk = parseFloat(v.k_amount)   > 0 ? parseFloat(v.k_amount)   : parseFloat(v.momo_amount || 0);
+                const dash = <span style={{ color: '#cbd5e1' }}>—</span>;
+                return (
                 <tr key={v.id}>
                   <td style={{ fontWeight: 500 }}>{v.voucher_number}</td>
                   <td>{formatDate(v.date)}</td>
@@ -494,7 +532,9 @@ const PaymentVoucher = () => {
                   <td>{v.paid_to}</td>
                   <td style={{ color: '#6b7280' }}>{v.description || '—'}</td>
                   <td><span className={`badge ${getCategoryColor(v.category)}`}>{v.category}</span></td>
-                  <td style={{ color: '#dc2626', fontWeight: 600 }}>{curSym}{fmt2(v.amount)}</td>
+                  <td style={{ textAlign: 'right', color: vu > 0 ? '#16a34a' : '', fontWeight: vu > 0 ? 700 : 400 }}>{vu > 0 ? `$${fmt2(vu)}` : dash}</td>
+                  <td style={{ textAlign: 'right', color: vf > 0 ? '#7c3aed' : '', fontWeight: vf > 0 ? 700 : 400 }}>{vf > 0 ? Math.round(vf).toLocaleString('en-US') : dash}</td>
+                  <td style={{ textAlign: 'right', color: vk > 0 ? '#ea580c' : '', fontWeight: vk > 0 ? 700 : 400 }}>{vk > 0 ? Math.round(vk).toLocaleString('en-US') : dash}</td>
                   <td style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
                     <button
                       onClick={() => setViewVoucher(v)}
@@ -541,16 +581,26 @@ const PaymentVoucher = () => {
                     )}
                   </td>
                 </tr>
-              ))}
+                );
+              })}
             </tbody>
             <tfoot>
+              {/* v1.8.25 — per-currency footer totals. */}
               <tr style={{ fontWeight: 700, borderTop: '2px solid #e5e7eb', background: '#f9fafb' }}>
-                <td colSpan={7} style={{ padding: '10px 14px', textAlign: 'right', color: '#374151', fontSize: 13 }}>
+                <td colSpan={6} style={{ padding: '10px 14px', textAlign: 'right', color: '#374151', fontSize: 13 }}>
                   Total ({filteredVouchers.length} voucher{filteredVouchers.length !== 1 ? 's' : ''})
                 </td>
-                <td style={{ padding: '10px 14px', color: '#dc2626', fontWeight: 700, fontSize: 14 }}>
-                  {curSym}{fmt2(filteredTotal)}
-                </td>
+                {(() => {
+                  const tu = filteredVouchers.reduce((s, v) => s + (parseFloat(v.usd_amount) > 0 ? parseFloat(v.usd_amount) : parseFloat(v.cash_amount || 0)), 0);
+                  const tf = filteredVouchers.reduce((s, v) => s + (parseFloat(v.fra_amount) > 0 ? parseFloat(v.fra_amount) : parseFloat(v.bank_amount || 0)), 0);
+                  const tk = filteredVouchers.reduce((s, v) => s + (parseFloat(v.k_amount)   > 0 ? parseFloat(v.k_amount)   : parseFloat(v.momo_amount || 0)), 0);
+                  return (<>
+                    <td style={{ padding: '10px 14px', textAlign: 'right', color: '#16a34a', fontWeight: 700, fontSize: 13 }}>${fmt2(tu)}</td>
+                    <td style={{ padding: '10px 14px', textAlign: 'right', color: '#7c3aed', fontWeight: 700, fontSize: 13 }}>{Math.round(tf).toLocaleString('en-US')}</td>
+                    <td style={{ padding: '10px 14px', textAlign: 'right', color: '#ea580c', fontWeight: 700, fontSize: 13 }}>{Math.round(tk).toLocaleString('en-US')}</td>
+                    <td></td>
+                  </>);
+                })()}
               </tr>
             </tfoot>
           </table>
