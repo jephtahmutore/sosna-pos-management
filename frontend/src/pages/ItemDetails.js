@@ -1298,8 +1298,30 @@ const ItemDetails = () => {
                           </div>
                           <div className="form-group" style={{ margin: 0 }}>
                             <label style={{ fontSize: 11 }}>Selling ({curSym} / {p.name || 'unit'})</label>
-                            <input type="number" min="0" step="0.01" value={p.price}
-                              onChange={e => setForm(f => ({ ...f, packagings: f.packagings.map((q, i) => i === idx ? { ...q, price: e.target.value } : q) }))}
+                            <input type="number" min="0" step="0.01"
+                              value={(() => {
+                                // v1.7.5: mirror Cost — if no per-packaging price stored,
+                                // derive from base × conv so this matches what the list
+                                // view + POS already show. User edit overrides + back-
+                                // solves base selling_price (same UX as Cost editor).
+                                const stored = parseFloat(p.price);
+                                if (stored > 0) return p.price;
+                                const conv = parseFloat(p.conv) || 0;
+                                const base = parseFloat(form.selling_price);
+                                if (conv <= 0 || !base) return p.price || '';
+                                return (base * conv).toFixed(2);
+                              })()}
+                              onChange={e => {
+                                const conv = parseFloat(p.conv) || 0;
+                                if (conv <= 0) return;
+                                const entered = parseFloat(e.target.value);
+                                const base = isNaN(entered) ? '' : (entered / conv);
+                                setForm(f => ({
+                                  ...f,
+                                  selling_price: base === '' ? '' : base.toFixed(4),
+                                  packagings: f.packagings.map((q, i) => i === idx ? { ...q, price: e.target.value } : q),
+                                }));
+                              }}
                               placeholder="0.00" />
                           </div>
                           <div className="form-group" style={{ margin: 0 }}>
