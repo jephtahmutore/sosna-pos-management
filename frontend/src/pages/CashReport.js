@@ -765,15 +765,27 @@ const CashReport = () => {
             );
           })}
 
-          {/* Expenses — read-only with + button */}
-          <div className="form-group">
-            <label>Expenses ({curSym})</label>
-            <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-              <input
-                type="number" value={form.expenses} disabled
-                placeholder="0.00" step="0.01"
-                style={{ background: '#f3f4f6', fontWeight: 600, flex: 1 }}
-              />
+          {/* v1.8.16 — per-currency Expenses paid from drawer. Read-only
+              (driven by PVs). One field per currency; +/eye buttons stay
+              shared on the right. */}
+          <div className="form-group" style={{ gridColumn: '1 / -1' }}>
+            <label>Expenses Paid From Drawer</label>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr auto auto', gap: 8, alignItems: 'end' }}>
+              <div>
+                <small style={{ fontSize: 11, color: '#16a34a', fontWeight: 700, display: 'block', marginBottom: 3 }}>USD ($)</small>
+                <input type="number" disabled value={expensesByCcy.usd || 0}
+                  style={{ background: '#f3f4f6', fontWeight: 600, width: '100%', boxSizing: 'border-box' }} />
+              </div>
+              <div>
+                <small style={{ fontSize: 11, color: '#7c3aed', fontWeight: 700, display: 'block', marginBottom: 3 }}>FRA</small>
+                <input type="number" disabled value={expensesByCcy.fra || 0}
+                  style={{ background: '#f3f4f6', fontWeight: 600, width: '100%', boxSizing: 'border-box' }} />
+              </div>
+              <div>
+                <small style={{ fontSize: 11, color: '#ea580c', fontWeight: 700, display: 'block', marginBottom: 3 }}>K</small>
+                <input type="number" disabled value={expensesByCcy.k || 0}
+                  style={{ background: '#f3f4f6', fontWeight: 600, width: '100%', boxSizing: 'border-box' }} />
+              </div>
               <button
                 onClick={openExpensesList}
                 title="View expenses"
@@ -782,11 +794,7 @@ const CashReport = () => {
                   width: 34, height: 34, borderRadius: 8, border: '1.5px solid #e5e7eb', flexShrink: 0,
                   background: '#fff', color: '#6b7280', cursor: 'pointer',
                   display: 'flex', alignItems: 'center', justifyContent: 'center',
-                  transition: 'all 0.15s',
-                }}
-                onMouseEnter={e => { e.currentTarget.style.borderColor = '#6b7280'; e.currentTarget.style.color = '#374151'; }}
-                onMouseLeave={e => { e.currentTarget.style.borderColor = '#e5e7eb'; e.currentTarget.style.color = '#6b7280'; }}
-              >
+                }}>
                 <FiEye size={15} />
               </button>
               <button
@@ -799,15 +807,13 @@ const CashReport = () => {
                   background: selectedCashier ? '#2563eb' : '#d1d5db', color: '#fff',
                   cursor: selectedCashier ? 'pointer' : 'not-allowed',
                   display: 'flex', alignItems: 'center', justifyContent: 'center',
-                  boxShadow: selectedCashier ? '0 2px 6px rgba(37,99,235,0.35)' : 'none',
-                  transition: 'background 0.15s',
-                }}
-                onMouseEnter={e => { if (selectedCashier) e.currentTarget.style.background = '#1d4ed8'; }}
-                onMouseLeave={e => { if (selectedCashier) e.currentTarget.style.background = '#2563eb'; }}
-              >
+                }}>
                 <FiPlus size={16} />
               </button>
             </div>
+            <small style={{ color: '#6b7280', fontSize: 11, marginTop: 4, display: 'block' }}>
+              Subtracted from the matching currency's Expected above. A USD PV reduces USD drawer; a FRA PV reduces FRA drawer.
+            </small>
           </div>
 
           <div className="form-group">
