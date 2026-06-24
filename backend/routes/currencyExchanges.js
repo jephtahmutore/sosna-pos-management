@@ -34,16 +34,18 @@ router.get('/', auth, readOnlyGuard, (req, res) => {
       return res.status(400).json({ error: 'scope must be drawer or book' });
     }
     const params = [req.user.tenantId, scope];
-    let where = 'tenant_id = ? AND scope = ?';
+    // v1.8.10: every column in the WHERE has to be qualified with `ce.`
+    // because the JOIN with users also has tenant_id (ambiguous otherwise).
+    let where = 'ce.tenant_id = ? AND ce.scope = ?';
     if (req.query.date) {
-      where += ' AND date = ?';
+      where += ' AND ce.date = ?';
       params.push(String(req.query.date).slice(0, 10));
     } else {
-      if (req.query.from) { where += ' AND date >= ?'; params.push(String(req.query.from).slice(0, 10)); }
-      if (req.query.to)   { where += ' AND date <= ?'; params.push(String(req.query.to).slice(0, 10)); }
+      if (req.query.from) { where += ' AND ce.date >= ?'; params.push(String(req.query.from).slice(0, 10)); }
+      if (req.query.to)   { where += ' AND ce.date <= ?'; params.push(String(req.query.to).slice(0, 10)); }
     }
     if (scope === 'drawer' && req.query.cashier_id !== undefined) {
-      where += ' AND cashier_id = ?';
+      where += ' AND ce.cashier_id = ?';
       params.push(parseInt(req.query.cashier_id) || 0);
     }
     const rows = db.prepare(`
@@ -71,6 +73,7 @@ router.get('/net', auth, readOnlyGuard, (req, res) => {
     if (!['drawer', 'book'].includes(scope)) {
       return res.status(400).json({ error: 'scope must be drawer or book' });
     }
+    // v1.8.10: this query doesn't JOIN so no ambiguity, but keep consistent.
     const params = [req.user.tenantId, scope];
     let where = 'tenant_id = ? AND scope = ?';
     if (req.query.date) { where += ' AND date = ?'; params.push(String(req.query.date).slice(0, 10)); }

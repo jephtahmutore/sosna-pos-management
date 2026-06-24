@@ -6,7 +6,7 @@ import { FiSave, FiCalendar, FiEdit2, FiPlus, FiPrinter, FiEye, FiX } from 'reac
 import Portal from '../utils/Portal';
 import useModalScrollLock from '../utils/useModalScrollLock';
 import PaymentVoucherFormModal from '../components/PaymentVoucherFormModal';
-import { getPaymentVouchers, getSettings, createCashReceipt, updateCashReceipt, checkSalesCashReceipt, getSalesCashiers, getCurrencyExchangesNet } from '../services/api';
+import { getPaymentVouchers, getSettings, createCashReceipt, updateCashReceipt, checkSalesCashReceipt, getSalesCashiers, getCurrencyExchangesNet, getCurrentFxRate } from '../services/api';
 import CurrencyExchangePanel from '../components/CurrencyExchangePanel';
 
 const API_BASE = process.env.REACT_APP_API_URL || 'http://localhost:5300/api';
@@ -61,6 +61,9 @@ const CashReport = () => {
   // (after every save) without remounting the whole report.
   const [exchangeNet, setExchangeNet] = useState({ usd_net: 0, fra_net: 0, k_net: 0 });
   const [exchangeRefreshKey, setExchangeRefreshKey] = useState(0);
+  // v1.8.10 — current FX rates so Total can convert FRA/K into USD before
+  // comparing against Expected (which is the order total_amount sum in USD).
+  const [fxRate, setFxRate] = useState({ sell: 0, sellK: 0 });
 
   // Expenses list modal
   const [showExpenses, setShowExpenses] = useState(false);
@@ -203,6 +206,13 @@ const CashReport = () => {
     fetchSalesCashiers(today);
     getSalesCashiers().then(r => setAllSalesCashiers(r.data || [])).catch(() => {});
     getSettings().then(r => setBusinessInfo(r.data?.business || {})).catch(() => {});
+    // v1.8.10 — load current FX so Total computes in USD-equivalent.
+    getCurrentFxRate()
+      .then(r => setFxRate({
+        sell:  parseFloat(r.data?.sell_rate)   > 0 ? parseFloat(r.data.sell_rate)   : 0,
+        sellK: parseFloat(r.data?.sell_rate_k) > 0 ? parseFloat(r.data.sell_rate_k) : 0,
+      }))
+      .catch(() => {});
   }, []);
   // v1.8.6 — refetch the net drawer-exchange impact for this date+cashier.
   // Bumped by the panel after every save; also re-runs on date/cashier change.
@@ -228,24 +238,28 @@ const CashReport = () => {
     }).catch(() => {});
   }, [date, reports]); // eslint-disable-line
 
-  // Auto-calculate. v1.8.1: total = sum of all three currencies (kept as USD
-  // for compatibility with the reconciliation math — each cashier counts in
-  // their own currency; expected vs total is informational only here).
-  // Per-currency totals are shown separately in the form below.
+  // Auto-calculate. v1.8.10 — Total is in USD-equivalent so it can be compared
+  // against Expected (sum of order totals in USD). FRA and K are converted via
+  // the current sell rate (same direction the till uses when accepting them as
+  // payment: paid_FRA / sell_rate = USD value collected). If a rate is missing
+  // that currency's contribution is excluded from the Total (better than
+  // pretending K = USD numerically).
   useEffect(() => {
-    const ic = parseFloat(form.initial_change) || 0;
-    const usd = parseFloat(form.usd_received) || 0;
-    const fra = parseFloat(form.fra_received) || 0;
-    const k   = parseFloat(form.k_received)   || 0;
-    const exp = parseFloat(form.expenses) || 0;
-    const pend = parseFloat(form.pending) || 0;
-    const total = usd + fra + k + pend + exp;
+    const ic   = parseFloat(form.initial_change) || 0;
+    const usd  = parseFloat(form.usd_received)   || 0;
+    const fra  = parseFloat(form.fra_received)   || 0;
+    const k    = parseFloat(form.k_received)     || 0;
+    const exp  = parseFloat(form.expenses)       || 0;
+    const pend = parseFloat(form.pending)        || 0;
+    const fraAsUsd = fxRate.sell  > 0 ? fra / fxRate.sell  : 0;
+    const kAsUsd   = fxRate.sellK > 0 ? k   / fxRate.sellK : 0;
+    const total        = usd + fraAsUsd + kAsUsd + pend + exp;
     const after_change = total - ic;
-    const expected = dailyRevenue;
-    const diff = after_change - expected;
-    const status = getStatus(diff);
+    const expected     = dailyRevenue;
+    const diff         = after_change - expected;
+    const status       = getStatus(diff);
     setForm(prev => ({ ...prev, total: total.toFixed(2), after_change: after_change.toFixed(2), expected: expected.toFixed(2), difference: diff.toFixed(2), status }));
-  }, [form.initial_change, form.usd_received, form.fra_received, form.k_received, form.expenses, form.pending, dailyRevenue]); // eslint-disable-line
+  }, [form.initial_change, form.usd_received, form.fra_received, form.k_received, form.expenses, form.pending, dailyRevenue, fxRate.sell, fxRate.sellK]); // eslint-disable-line
 
   const handleSave = async () => {
     if (!selectedCashier) { setMessage('Please select a cashier before saving.'); return; }
@@ -258,7 +272,10 @@ const CashReport = () => {
       const kAmt = parseFloat(form.k_received)     || 0;
       const exp  = parseFloat(form.expenses)       || 0;
       const pend = parseFloat(form.pending)        || 0;
-      const total       = usd + fra + kAmt + pend + exp;
+      // v1.8.10 — convert FRA/K to USD before summing (same as auto-calc).
+      const fraAsUsd = fxRate.sell  > 0 ? fra / fxRate.sell  : 0;
+      const kAsUsd   = fxRate.sellK > 0 ? kAmt / fxRate.sellK : 0;
+      const total       = usd + fraAsUsd + kAsUsd + pend + exp;
       const afterChange = total - ic;
       const expected    = dailyRevenue;
       const difference  = afterChange - expected;
@@ -757,12 +774,16 @@ const CashReport = () => {
             <small style={{ color: '#6b7280', fontSize: 11 }}>Today's unpaid balance issued on credit (becomes receivable).</small>
           </div>
           <div className="form-group">
-            <label>Total ({curSym})</label>
+            <label>Total ($ equivalent)</label>
             <input type="number" value={form.total} disabled style={{ background: '#f3f4f6', fontWeight: 600 }} />
+            <small style={{ color: '#6b7280', fontSize: 11 }}>
+              USD + (FRA ÷ {fxRate.sell || '—'}) + (K ÷ {fxRate.sellK || '—'}) + credit + expenses
+            </small>
           </div>
           <div className="form-group">
-            <label>Expected ({curSym})</label>
+            <label>Expected ($)</label>
             <input type="number" value={form.expected} disabled style={{ background: '#f3f4f6', fontWeight: 600 }} />
+            <small style={{ color: '#6b7280', fontSize: 11 }}>Sum of paid order totals (always USD).</small>
           </div>
           <div className="form-group">
             <label>Difference ({curSym})</label>
