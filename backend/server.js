@@ -455,7 +455,7 @@ db.exec(`
   const allTables = [
     'users', 'categories', 'main_categories', 'units', 'products', 'customers', 'suppliers',
     'orders', 'order_items', 'grn', 'grn_items', 'siv', 'siv_items',
-    'stock_movements', 'cash_receipts', 'payment_vouchers', 'cash_book',
+    'stock_movements', 'cash_receipts', 'payment_vouchers', 'cash_book', 'currency_exchanges',
     'business_settings', 'cash_reports', 'stock_adjustments', 'daily_actual_balance', 'daily_cost_snapshot',
     'production', 'production_inputs', 'production_outputs',
     'sales_returns', 'sales_return_items', 'ap_payments', 'daily_profit_summary',
@@ -805,6 +805,7 @@ app.use('/api/dashboard', require('./routes/dashboard'));
 app.use('/api/settings', require('./routes/settings'));
 app.use('/api/inventory', require('./routes/inventory'));
 app.use('/api/cash-reports', require('./routes/cashReport'));
+app.use('/api/currency-exchanges', require('./routes/currencyExchanges'));
 app.use('/api/stock-adjustments', require('./routes/stockAdjustments'));
 app.use('/api/stock-reconciliation', require('./routes/stockReconciliation'));
 app.use('/api/customer-payments', require('./routes/customerPayments'));

@@ -1,13 +1,16 @@
 import React, { useState, useEffect } from 'react';
 import { getCashBook, getCashBookStats, setOpeningBalance, getSettings, getSalesRangeSummary, createCashTransfer } from '../services/api';
 import { useAuth } from '../context/AuthContext';
+import CurrencyExchangePanel from '../components/CurrencyExchangePanel';
 import { useCurrency } from '../context/CurrencyContext';
 import { useLanguage } from '../context/LanguageContext';
 import { FiTrendingUp, FiTrendingDown, FiDollarSign, FiEdit2, FiSave, FiX, FiPrinter, FiFilter, FiRefreshCw } from 'react-icons/fi';
 import Portal from '../utils/Portal';
 import useModalScrollLock from '../utils/useModalScrollLock';
 const CashBook = () => {
-  const { hasPermission } = useAuth();
+  const { hasPermission, user: authUser } = useAuth();
+  // v1.8.6 — tab toggle between the ledger view and the Exchanges ledger.
+  const [activeTab, setActiveTab] = useState('ledger');
   const { symbol: curSym } = useCurrency();
   const { t } = useLanguage();
   const [stats, setStats] = useState({
@@ -308,6 +311,36 @@ const CashBook = () => {
         </div>
       </div>
 
+      {/* v1.8.6 — Tab strip: Ledger (existing entries view) vs Exchanges. */}
+      <div style={{ display: 'flex', gap: 4, marginBottom: 16, borderBottom: '2px solid #e5e7eb' }}>
+        {[
+          { key: 'ledger',    label: 'Ledger' },
+          { key: 'exchanges', label: 'Exchanges' },
+        ].map(tab => (
+          <button key={tab.key} onClick={() => setActiveTab(tab.key)}
+            style={{
+              padding: '10px 22px', border: 'none', background: 'none',
+              cursor: 'pointer', fontSize: 14, fontWeight: 700,
+              color: activeTab === tab.key ? '#2563eb' : '#6b7280',
+              borderBottom: activeTab === tab.key ? '3px solid #2563eb' : '3px solid transparent',
+              marginBottom: -2, transition: 'color 0.15s',
+            }}>
+            {tab.label}
+          </button>
+        ))}
+      </div>
+
+      {activeTab === 'exchanges' && (
+        <CurrencyExchangePanel
+          scope="book"
+          from={from}
+          to={to}
+          user={authUser}
+          title="Currency Exchanges (Cash Book)"
+        />
+      )}
+
+      {activeTab === 'ledger' && (<>
       {/* Date Filter */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 16, flexWrap: 'wrap' }}>
         <label style={{ fontSize: 13, color: '#6b7280', fontWeight: 600 }}>{t('from')}:</label>
@@ -598,6 +631,7 @@ const CashBook = () => {
           </div>
         );
       })()}
+      </>)}{/* end activeTab === 'ledger' wrapper (v1.8.6) */}
 
       {/* Cash Transfer Modal — moves money between Cash / Bank / Mobile Money buckets */}
       {showTransfer && (

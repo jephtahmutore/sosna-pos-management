@@ -6,7 +6,8 @@ import { FiSave, FiCalendar, FiEdit2, FiPlus, FiPrinter, FiEye, FiX } from 'reac
 import Portal from '../utils/Portal';
 import useModalScrollLock from '../utils/useModalScrollLock';
 import PaymentVoucherFormModal from '../components/PaymentVoucherFormModal';
-import { getPaymentVouchers, getSettings, createCashReceipt, updateCashReceipt, checkSalesCashReceipt, getSalesCashiers } from '../services/api';
+import { getPaymentVouchers, getSettings, createCashReceipt, updateCashReceipt, checkSalesCashReceipt, getSalesCashiers, getCurrencyExchangesNet } from '../services/api';
+import CurrencyExchangePanel from '../components/CurrencyExchangePanel';
 
 const API_BASE = process.env.REACT_APP_API_URL || 'http://localhost:5300/api';
 
@@ -55,6 +56,11 @@ const CashReport = () => {
 
   const [dailyRevenue, setDailyRevenue] = useState(0);
   const [daySummary, setDaySummary] = useState({ totalExpected: 0, totalCash: 0 });
+  // v1.8.6 — net per-currency impact of drawer exchanges for this date+cashier.
+  // Bump exchangeRefreshKey to force the CurrencyExchangePanel to re-load
+  // (after every save) without remounting the whole report.
+  const [exchangeNet, setExchangeNet] = useState({ usd_net: 0, fra_net: 0, k_net: 0 });
+  const [exchangeRefreshKey, setExchangeRefreshKey] = useState(0);
 
   // Expenses list modal
   const [showExpenses, setShowExpenses] = useState(false);
@@ -198,6 +204,15 @@ const CashReport = () => {
     getSalesCashiers().then(r => setAllSalesCashiers(r.data || [])).catch(() => {});
     getSettings().then(r => setBusinessInfo(r.data?.business || {})).catch(() => {});
   }, []);
+  // v1.8.6 — refetch the net drawer-exchange impact for this date+cashier.
+  // Bumped by the panel after every save; also re-runs on date/cashier change.
+  useEffect(() => {
+    if (!date) return;
+    const cid = selectedCashier ? parseInt(selectedCashier) : 0;
+    getCurrencyExchangesNet({ scope: 'drawer', date, cashier_id: cid })
+      .then(r => setExchangeNet(r.data || { usd_net: 0, fra_net: 0, k_net: 0 }))
+      .catch(() => setExchangeNet({ usd_net: 0, fra_net: 0, k_net: 0 }));
+  }, [date, selectedCashier, exchangeRefreshKey]);
   useEffect(() => { if (reports.length >= 0) loadDate(date); }, [reports]); // eslint-disable-line
   useEffect(() => {
     fetchDaily(date, '0').then(all => {
@@ -768,6 +783,36 @@ const CashReport = () => {
           </div>
         </div>
       </div>
+
+      {/* v1.8.6 — Currency Exchanges for this date+cashier (drawer scope).
+          Append-only ledger; reverse a mistake by recording the opposite. */}
+      <CurrencyExchangePanel
+        scope="drawer"
+        date={date}
+        cashierId={selectedCashier ? parseInt(selectedCashier) : 0}
+        user={authUser}
+        title="Currency Exchanges (Drawer)"
+        onChanged={() => setExchangeRefreshKey(k => k + 1)}
+      />
+      {(exchangeNet.usd_net || exchangeNet.fra_net || exchangeNet.k_net) && (
+        <div style={{ marginTop: 10, padding: '10px 14px', background: '#f5f3ff', border: '1px solid #ddd6fe', borderRadius: 10, fontSize: 12, color: '#5b21b6' }}>
+          <strong>Net drawer impact:</strong>{' '}
+          USD <span style={{ fontWeight: 700, color: exchangeNet.usd_net >= 0 ? '#16a34a' : '#dc2626' }}>
+            {exchangeNet.usd_net >= 0 ? '+' : ''}${parseFloat(exchangeNet.usd_net).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+          </span>
+          {' · '}
+          FRA <span style={{ fontWeight: 700, color: exchangeNet.fra_net >= 0 ? '#16a34a' : '#dc2626' }}>
+            {exchangeNet.fra_net >= 0 ? '+' : ''}{parseFloat(exchangeNet.fra_net).toLocaleString(undefined, { maximumFractionDigits: 0 })}
+          </span>
+          {' · '}
+          K <span style={{ fontWeight: 700, color: exchangeNet.k_net >= 0 ? '#16a34a' : '#dc2626' }}>
+            {exchangeNet.k_net >= 0 ? '+' : ''}{parseFloat(exchangeNet.k_net).toLocaleString(undefined, { maximumFractionDigits: 0 })}
+          </span>
+          <span style={{ color: '#7c3aed', marginLeft: 8 }}>
+            (already factored into the auto-filled cash inputs above when applicable)
+          </span>
+        </div>
+      )}
 
       {/* ── History Filter Bar ───────────────────────────────────── */}
       <div className="no-print" style={{

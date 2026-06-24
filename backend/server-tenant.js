@@ -67,6 +67,7 @@ app.use('/api/dashboard',        require('./routes/dashboard'));
 app.use('/api/settings',         require('./routes/settings'));
 app.use('/api/inventory',        require('./routes/inventory'));
 app.use('/api/cash-reports',     require('./routes/cashReport'));
+app.use('/api/currency-exchanges', require('./routes/currencyExchanges'));
 app.use('/api/stock-adjustments',require('./routes/stockAdjustments'));
 app.use('/api/stock-count',      require('./routes/stockCount'));
 app.use('/api/stock-reconciliation', require('./routes/stockReconciliation'));

@@ -706,7 +706,7 @@ function initTenantDb(db) {
   const allTables = [
     'users', 'categories', 'products', 'customers', 'suppliers',
     'orders', 'order_items', 'grn', 'grn_items', 'siv', 'siv_items',
-    'stock_movements', 'cash_receipts', 'payment_vouchers', 'cash_book',
+    'stock_movements', 'cash_receipts', 'payment_vouchers', 'cash_book', 'currency_exchanges',
     'business_settings', 'cash_reports', 'stock_adjustments', 'daily_actual_balance',
     'production', 'production_inputs', 'production_outputs',
     'sales_returns', 'sales_return_items', 'ap_payments',
@@ -803,6 +803,36 @@ function initTenantDb(db) {
   addCol('payment_vouchers',   'usd_amount',  'REAL NOT NULL DEFAULT 0');
   addCol('payment_vouchers',   'fra_amount',  'REAL NOT NULL DEFAULT 0');
   addCol('payment_vouchers',   'k_amount',    'REAL NOT NULL DEFAULT 0');
+
+  // v1.8.6 — currency_exchanges. Append-only ledger; mistakes corrected by
+  // a reverse entry, never deleted (so deleted_at column omitted on purpose).
+  //   scope='drawer' → cashier's till exchange (shown on Cash Report)
+  //   scope='book'   → cash book / accounting ledger exchange (Cash Book tab)
+  db.prepare(`
+    CREATE TABLE IF NOT EXISTS currency_exchanges (
+      id              INTEGER PRIMARY KEY AUTOINCREMENT,
+      sync_id         TEXT UNIQUE,
+      scope           TEXT NOT NULL CHECK (scope IN ('drawer','book')),
+      date            TEXT NOT NULL,
+      time            TEXT,
+      from_currency   TEXT NOT NULL CHECK (from_currency IN ('USD','FRA','K')),
+      from_amount     REAL NOT NULL,
+      to_currency     TEXT NOT NULL CHECK (to_currency IN ('USD','FRA','K')),
+      to_amount       REAL NOT NULL,
+      rate            REAL,
+      notes           TEXT,
+      cashier_id      INTEGER REFERENCES users(id),
+      created_by      INTEGER REFERENCES users(id),
+      tenant_id       TEXT,
+      branch_id       TEXT,
+      device_id       TEXT,
+      synced          INTEGER NOT NULL DEFAULT 0,
+      created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+  `).run();
+  db.prepare(`CREATE INDEX IF NOT EXISTS idx_currency_exchanges_scope_date ON currency_exchanges(scope, date)`).run();
+  db.prepare(`CREATE INDEX IF NOT EXISTS idx_currency_exchanges_cashier ON currency_exchanges(scope, date, cashier_id)`).run();
   // Invoice attachment — stored under uploads/invoices/. The column holds the
   // relative path (e.g. "invoices/grn_1700000000_abcd.pdf") so the same file
   // can be served from /uploads/<path> on any host.
@@ -1131,7 +1161,7 @@ function initTenantDb(db) {
     'orders', 'order_items', 'grn', 'grn_items', 'siv', 'siv_items',
     'production', 'production_inputs', 'production_outputs',
     'sales_returns', 'sales_return_items',
-    'stock_movements', 'cash_receipts', 'payment_vouchers', 'cash_book',
+    'stock_movements', 'cash_receipts', 'payment_vouchers', 'cash_book', 'currency_exchanges',
     'business_settings', 'cash_reports', 'stock_adjustments', 'daily_actual_balance',
     'ap_payments', 'daily_profit_summary',
   ];

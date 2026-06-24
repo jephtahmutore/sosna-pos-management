@@ -96,6 +96,11 @@ export const deleteAllProducts = () => api.delete('/products/all');
 // v1.8.1 — Transfer all store stock to sales floor as a single SIV.
 // Password-gated server-side (must equal '108120').
 export const bulkSivStoreToSales = (password) => api.post('/products/bulk-siv-store-to-sales', { password });
+
+// v1.8.6 — Currency Exchanges (append-only ledger, scope='drawer'|'book').
+export const getCurrencyExchanges = (params = {}) => api.get('/currency-exchanges', { params });
+export const getCurrencyExchangesNet = (params = {}) => api.get('/currency-exchanges/net', { params });
+export const createCurrencyExchange = (data) => api.post('/currency-exchanges', data);
 export const importProducts = (file) => {
   const form = new FormData();
   form.append('file', file);
