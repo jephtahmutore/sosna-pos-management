@@ -1300,10 +1300,11 @@ const ItemDetails = () => {
                             <label style={{ fontSize: 11 }}>Selling ({curSym} / {p.name || 'unit'})</label>
                             <input type="number" min="0" step="0.01"
                               value={(() => {
-                                // v1.7.5: mirror Cost — if no per-packaging price stored,
-                                // derive from base × conv so this matches what the list
-                                // view + POS already show. User edit overrides + back-
-                                // solves base selling_price (same UX as Cost editor).
+                                // v1.7.7: if user hasn't set a per-packaging price yet,
+                                // display the derived base × conv as a hint. Do NOT back-
+                                // solve to selling_price on edit — that truncation lost
+                                // precision (e.g. 29.30/24 → 1.2208 → ×24 → 29.2992).
+                                // Just store the typed value in packagings[idx].price.
                                 const stored = parseFloat(p.price);
                                 if (stored > 0) return p.price;
                                 const conv = parseFloat(p.conv) || 0;
@@ -1312,13 +1313,8 @@ const ItemDetails = () => {
                                 return (base * conv).toFixed(2);
                               })()}
                               onChange={e => {
-                                const conv = parseFloat(p.conv) || 0;
-                                if (conv <= 0) return;
-                                const entered = parseFloat(e.target.value);
-                                const base = isNaN(entered) ? '' : (entered / conv);
                                 setForm(f => ({
                                   ...f,
-                                  selling_price: base === '' ? '' : base.toFixed(4),
                                   packagings: f.packagings.map((q, i) => i === idx ? { ...q, price: e.target.value } : q),
                                 }));
                               }}
