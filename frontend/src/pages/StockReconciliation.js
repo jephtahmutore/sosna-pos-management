@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { FiSave, FiClock, FiCheckCircle, FiChevronDown, FiChevronUp, FiTrash2, FiAlertTriangle, FiPrinter } from 'react-icons/fi';
+import { FiSave, FiClock, FiCheckCircle, FiChevronDown, FiChevronUp, FiTrash2, FiAlertTriangle, FiPrinter, FiFileText } from 'react-icons/fi';
 import { useAuth } from '../context/AuthContext';
-import { getReconciliationProducts, getReconciliations, getReconciliation, createReconciliation, deleteReconciliation, printCountWorksheet } from '../services/api';
+import { getReconciliationProducts, getReconciliations, getReconciliation, createReconciliation, deleteReconciliation, printCountWorksheet, getSettings } from '../services/api';
 import { formatStock, formatStockForProduct } from '../utils/unitFormat';
 import { unitsForProduct as unitsForProductFE, pickDisplayUnit } from '../utils/productUnits';
 import { useCurrency } from '../context/CurrencyContext';
@@ -116,6 +116,125 @@ const StockReconciliation = () => {
     }
   };
 
+  // ── Export the count sheet as an A4 PDF (mirrors GRN/SIV design) ─────────
+  // Includes any physical quantities the user has already entered (so a
+  // partially-counted sheet prints with their progress) and leaves the rest
+  // blank with an underline for hand-filling in the warehouse.
+  const handleExportPDF = async () => {
+    if (filteredProducts.length === 0) return;
+    let businessName = 'Stock Count Sheet';
+    let businessPhone = '';
+    try {
+      const s = await getSettings();
+      const biz = s?.data?.business || {};
+      businessName = biz.business_name || businessName;
+      businessPhone = biz.business_phone || '';
+    } catch (_) { /* ignore — fall back to defaults */ }
+
+    const fmt = (v) => parseFloat(v || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    const printedAt = new Date().toLocaleString('en-US', { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+    const countedBy = `${user?.firstName || ''} ${user?.lastName || ''}`.trim() || '—';
+    const locLabel = location === 'sales' ? 'Sales Floor' : 'Store Floor';
+    const dateLabel = countDate ? new Date(countDate + 'T00:00:00').toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' }) : '—';
+
+    const rows = filteredProducts.map((p, idx) => {
+      const c = counts[p.id] || {};
+      const hasPhysical = c.physical_qty !== '' && c.physical_qty != null && !isNaN(parseFloat(c.physical_qty));
+      const physicalCell = hasPhysical
+        ? `${fmt(c.physical_qty)} ${c.unit || p.unit}`
+        : `<span style="display:inline-block;border-bottom:1px solid #000;min-width:60px;height:14px"></span>`;
+      const variance = hasPhysical ? lineVariance(p, c) : null;
+      const varianceCell = variance == null
+        ? `<span style="color:#999">—</span>`
+        : `<span style="font-weight:700;color:${variance < 0 ? '#b91c1c' : variance > 0 ? '#15803d' : '#000'}">${variance > 0 ? '+' : ''}${fmt(variance)} ${p.unit}</span>`;
+      const reasonCell = c.reason
+        ? c.reason
+        : `<span style="display:inline-block;border-bottom:1px solid #000;min-width:80px;height:14px"></span>`;
+      const baseQty = parseFloat(p.system_qty) || 0;
+      const systemDisplay = formatStockForProduct(baseQty, p, { showBaseInParens: false });
+      return `<tr style="background:${idx % 2 === 1 ? '#f5f5f5' : '#fff'};border-bottom:1px solid #ddd">
+        <td style="padding:6px 8px;color:#000;font-size:10px">${idx + 1}</td>
+        <td style="padding:6px 8px;font-size:10px;font-family:monospace">${p.code || '—'}</td>
+        <td style="padding:6px 8px;font-weight:600;font-size:10.5px">${p.name}</td>
+        <td style="padding:6px 8px;text-align:right;font-family:monospace;font-size:10.5px">${systemDisplay}</td>
+        <td style="padding:6px 8px;text-align:right;font-family:monospace;font-size:10.5px">${physicalCell}</td>
+        <td style="padding:6px 8px;text-align:center;font-size:10px">${c.unit || p.unit}</td>
+        <td style="padding:6px 8px;text-align:right;font-family:monospace;font-size:10px">${varianceCell}</td>
+        <td style="padding:6px 8px;font-size:10px;color:#444">${reasonCell}</td>
+      </tr>`;
+    }).join('');
+
+    const counted = filteredProducts.filter(p => {
+      const c = counts[p.id] || {};
+      return c.physical_qty !== '' && c.physical_qty != null && !isNaN(parseFloat(c.physical_qty));
+    }).length;
+
+    const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Stock Reconciliation — ${locLabel} — ${dateLabel}</title><style>
+      @page{size:A4 portrait;margin:12mm}*{box-sizing:border-box;margin:0;padding:0}
+      body{font-family:"Segoe UI",Arial,sans-serif;font-size:12px;color:#000}
+      table{width:100%;border-collapse:collapse}
+      th{padding:7px 8px;font-weight:700;color:#000;border-bottom:1.5px solid #000;font-size:10px;background:#f0f0f0;text-align:left}
+      td{font-size:10.5px}
+      tfoot td{padding:8px;font-weight:700;background:#f0f0f0;border-top:2px solid #000}
+    </style></head><body>
+      <div style="border-bottom:3px solid #000;padding-bottom:12px;margin-bottom:14px;display:flex;justify-content:space-between;align-items:flex-start">
+        <div>
+          <div style="font-size:21px;font-weight:800;letter-spacing:0.3px;margin-bottom:4px">${businessName}</div>
+          <div style="font-size:10px;color:#000;line-height:1.7">${businessPhone}</div>
+        </div>
+        <div style="text-align:right">
+          <div style="font-size:9px;letter-spacing:2px;text-transform:uppercase;color:#000;margin-bottom:4px">Stock Reconciliation</div>
+          <div style="font-size:15px;font-weight:700">${dateLabel}</div>
+          <div style="font-size:9px;color:#000;margin-top:3px">Printed: ${printedAt}</div>
+        </div>
+      </div>
+      <div style="display:flex;gap:10px;margin-bottom:12px">
+        ${[
+          ['Location', locLabel],
+          ['Count Date', dateLabel],
+          ['Products', filteredProducts.length],
+          ['Counted', `${counted} / ${filteredProducts.length}`],
+        ].map(([lbl, val]) => `
+          <div style="flex:1;padding:8px 10px;border:1.5px solid #000;text-align:center">
+            <div style="font-size:8px;letter-spacing:0.8px;text-transform:uppercase;font-weight:600;margin-bottom:3px">${lbl}</div>
+            <div style="font-size:13px;font-weight:800">${val}</div>
+          </div>`).join('')}
+      </div>
+      ${notes ? `<div style="margin-bottom:10px;padding:8px 10px;border:1px solid #888;background:#fafafa;font-size:10.5px"><strong>Notes:</strong> ${notes}</div>` : ''}
+      <div style="border:1.5px solid #000;margin-bottom:14px">
+        <table>
+          <thead><tr>
+            <th style="width:24px">#</th>
+            <th style="width:60px">Code</th>
+            <th>Product</th>
+            <th style="text-align:right">System Qty</th>
+            <th style="text-align:right">Physical Qty</th>
+            <th style="text-align:center;width:40px">Unit</th>
+            <th style="text-align:right">Variance</th>
+            <th style="width:90px">Reason</th>
+          </tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:20px;margin-top:28px;margin-bottom:14px">
+        ${[['Counted By', countedBy], ['Verified By', ''], ['Posted By', '']].map(([label, name]) => `
+          <div>
+            <div style="font-size:9px;letter-spacing:0.8px;text-transform:uppercase;font-weight:700;margin-bottom:6px">${label}</div>
+            <div style="font-size:11px;font-weight:600;min-height:18px;margin-bottom:6px">${name}</div>
+            <div style="height:30px;border-bottom:1.5px solid #000;margin-bottom:4px"></div>
+            <div style="font-size:9px;text-align:center">Name / Signature / Date</div>
+          </div>`).join('')}
+      </div>
+      <div style="border-top:1px solid #bbb;padding-top:6px;display:flex;justify-content:space-between">
+        <span style="font-size:9px;color:#000">${businessName} — Confidential</span>
+        <span style="font-size:9px;color:#000">Printed: ${printedAt}</span>
+      </div>
+    </body></html>`;
+
+    const w = window.open('', '_blank');
+    if (w) { w.document.write(html); w.document.close(); w.focus(); setTimeout(() => { w.print(); }, 300); }
+  };
+
   const postCount = async () => {
     const items = products
       .map(p => {
@@ -198,6 +317,11 @@ const StockReconciliation = () => {
         </div>
         {tab === 'count' && hasPermission('StockReconciliation:Add') !== false && (
           <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            <button onClick={handleExportPDF} disabled={filteredProducts.length === 0}
+              title="Export an A4 count sheet as PDF"
+              style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '10px 16px', background: '#2563eb', color: '#fff', border: 'none', borderRadius: 8, cursor: filteredProducts.length === 0 ? 'not-allowed' : 'pointer', fontSize: 14, fontWeight: 600, opacity: filteredProducts.length === 0 ? 0.55 : 1 }}>
+              <FiFileText size={14} /> Export PDF
+            </button>
             <button onClick={printWorksheet} disabled={printingSheet || filteredProducts.length === 0}
               title="Print a thermal worksheet for the warehouse"
               style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '10px 16px', background: '#fff', color: '#374151', border: '1px solid #d1d5db', borderRadius: 8, cursor: printingSheet || filteredProducts.length === 0 ? 'not-allowed' : 'pointer', fontSize: 14, fontWeight: 600, opacity: printingSheet || filteredProducts.length === 0 ? 0.55 : 1 }}>
