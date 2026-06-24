@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { useCurrency } from '../context/CurrencyContext';
 import { useLanguage } from '../context/LanguageContext';
@@ -83,6 +83,12 @@ const CashReport = () => {
   // v1.8.20 — POS-snapshot of today's credit (issued unpaid balance).
   // Independent of form.pending which is editable by the cashier.
   const [creditExpected, setCreditExpected] = useState(0);
+  // v1.8.23 — stale-fetch guard. Each loadDate call bumps this counter and
+  // captures its own number; the call only commits state if its number is
+  // still the latest. Without this, an earlier loadDate (cid='' on mount)
+  // would lose its race with the later one (cid='Nahom') and overwrite
+  // Nahom's values with the all-cashier auto-fill.
+  const loadSeq = useRef(0);
 
   // Expenses list modal
   const [showExpenses, setShowExpenses] = useState(false);
@@ -173,11 +179,18 @@ const CashReport = () => {
   };
 
   const loadDate = async (d, cashierId) => {
+    // v1.8.23 — claim a sequence number for this call. Any setState below
+    // is guarded by a check that this is still the latest call. Stale
+    // results (e.g. the pre-Nahom load that lost the race) get dropped.
+    const seq = ++loadSeq.current;
+    const isLatest = () => seq === loadSeq.current;
+
     setDate(d);
     setMessage('');
 
     const cid = cashierId !== undefined ? cashierId : selectedCashier;
     const daily = await fetchDaily(d, cid);
+    if (!isLatest()) return; // stale: a newer loadDate has already started
     if (daily) {
       setDailyRevenue(parseFloat(daily.total_revenue || 0));
       // v1.8.11 — snapshot per-currency expected from POS (orders).
@@ -237,6 +250,7 @@ const CashReport = () => {
           const r = await getCurrencyExchangesNet({ scope: 'drawer', date: d, cashier_id: cidNum });
           exNet = r.data || exNet;
         } catch { /* keep zeros */ }
+        if (!isLatest()) return; // stale: a newer loadDate has already started
         const usdDrawer = (parseFloat(daily.usd_received || 0) || 0) - (parseFloat(daily.usd_expenses || 0) || 0) + (parseFloat(exNet.usd_net || 0) || 0);
         const fraDrawer = (parseFloat(daily.fra_received || 0) || 0) - (parseFloat(daily.fra_expenses || 0) || 0) + (parseFloat(exNet.fra_net || 0) || 0);
         const kDrawer   = (parseFloat(daily.k_received   || 0) || 0) - (parseFloat(daily.k_expenses   || 0) || 0) + (parseFloat(exNet.k_net   || 0) || 0);
