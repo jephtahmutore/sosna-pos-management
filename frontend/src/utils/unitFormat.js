@@ -87,25 +87,32 @@ export function formatStockForProduct(qty, product, opts = {}) {
     return formatStock(q, base, product?.alt_unit, product?.conversion_factor, opts);
   }
 
-  // Only the BIGGEST packaging + base unit are shown. Middle packagings (e.g. 6-pack)
-  // are deliberately skipped so the display stays "1 big unit + remainder in smallest".
+  // v1.8.3: cascade through every configured packaging from largest to smallest
+  // before falling back to base. e.g. HUNTER DRY (Box=24, Six Pack=6, Bottle):
+  // 350 Box + 6 Bottle remainder → "350 Box + 1 Six Pack" (collapses cleanly).
   const nonBase = units
     .filter(u => !u.is_base && parseFloat(u.conv) > 1)
     .map(u => ({ name: u.name, conv: parseFloat(u.conv) }))
     .sort((a, b) => b.conv - a.conv);
 
-  const big = nonBase[0]; // largest only
+  const big = nonBase[0]; // largest
   if (!big || q <= 0 || q < big.conv) {
     return `${round2(q).toFixed(decimals)} ${base}`.trim();
   }
 
-  const numBig = Math.floor(q / big.conv);
-  const remainder = round2(q - numBig * big.conv);
+  // Greedy break-down from largest to smallest packaging.
+  let remaining = q;
+  const parts = [];
+  for (const u of nonBase) {
+    const n = Math.floor(remaining / u.conv);
+    if (n > 0) {
+      parts.push(`${n} ${u.name}`);
+      remaining = round2(remaining - n * u.conv);
+    }
+  }
+  if (remaining > 0) parts.push(`${remaining.toFixed(decimals)} ${base}`);
 
-  const core = remainder === 0
-    ? `${numBig} ${big.name}`
-    : `${numBig} ${big.name} + ${remainder.toFixed(decimals)} ${base}`;
-
+  const core = parts.join(' + ');
   return showBaseInParens
     ? `${core} (${round2(q).toFixed(decimals)} ${base})`
     : core;
