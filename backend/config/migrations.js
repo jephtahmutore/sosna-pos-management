@@ -1141,6 +1141,13 @@ function initTenantDb(db) {
   addCol('cash_reports',   'usd_received',          'REAL NOT NULL DEFAULT 0');
   addCol('cash_reports',   'fra_received',          'REAL NOT NULL DEFAULT 0');
   addCol('cash_reports',   'k_received',            'REAL NOT NULL DEFAULT 0');
+  // v1.8.13 — per-currency Expected snapshot at save time. The difference
+  // per currency = received - expected, computed at read. Stored so the
+  // history shows what the POS said vs what the cashier counted, even if
+  // the order table changes later (reversals, edits, etc.).
+  addCol('cash_reports',   'usd_expected',          'REAL NOT NULL DEFAULT 0');
+  addCol('cash_reports',   'fra_expected',          'REAL NOT NULL DEFAULT 0');
+  addCol('cash_reports',   'k_expected',            'REAL NOT NULL DEFAULT 0');
   addCol('payment_vouchers','cashier_id',           'INTEGER DEFAULT 0');
   addCol('siv',            'production_id',         'INTEGER');
   addCol('siv',            'production_sync_id',    'TEXT');

@@ -155,13 +155,18 @@ router.post('/', auth, (req, res) => {
   try {
     // v1.8.1 — accept triple-currency fields. Legacy cash/mobile_money/bank
     // still accepted for backwards compatibility (ignored if usd/fra/k sent).
+    // v1.8.13 — also accept per-currency Expected snapshots.
     const { date, initial_change, expenses, pending, total,
             after_change, expected, difference, status, comment, cashier_id,
             usd_received, fra_received, k_received,
+            usd_expected, fra_expected, k_expected,
             mobile_money, cash, bank } = req.body;
     const usdAmt = parseFloat(usd_received ?? cash ?? 0);
     const fraAmt = parseFloat(fra_received ?? mobile_money ?? 0);
     const kAmt   = parseFloat(k_received   ?? bank ?? 0);
+    const usdExp = parseFloat(usd_expected ?? 0) || 0;
+    const fraExp = parseFloat(fra_expected ?? 0) || 0;
+    const kExp   = parseFloat(k_expected   ?? 0) || 0;
 
     const cashierId = cashier_id !== undefined ? parseInt(cashier_id) : 0; // 0 = All
     const tenantId = syncConfig.getTenantId(req);
@@ -176,12 +181,14 @@ router.post('/', auth, (req, res) => {
       db.prepare(
         `UPDATE cash_reports SET
           initial_change=?, usd_received=?, fra_received=?, k_received=?,
+          usd_expected=?, fra_expected=?, k_expected=?,
           mobile_money=0, cash=0, bank=0,
           expenses=?, pending=?, total=?,
           after_change=?, expected=?, difference=?, status=?, comment=?,
           cashier_id=?, updated_at=datetime('now'), synced=0
          WHERE date=? AND cashier_id=? AND deleted_at IS NULL`
       ).run(initial_change, usdAmt, fraAmt, kAmt,
+             usdExp, fraExp, kExp,
              expenses, pending, total,
              after_change, expected, difference, status, comment,
              cashierId, date, cashierId);
@@ -190,13 +197,15 @@ router.post('/', auth, (req, res) => {
       const info = db.prepare(
         `INSERT INTO cash_reports (date, initial_change,
           usd_received, fra_received, k_received,
+          usd_expected, fra_expected, k_expected,
           mobile_money, cash, bank,
           expenses, pending, total,
           after_change, expected, difference, status, comment, cashier_id, created_by,
           sync_id, tenant_id, branch_id, device_id, synced, created_at, updated_at)
-         VALUES (?,?, ?,?,?, 0,0,0, ?,?,?,?,?,?,?,?,?,?, ?,?,?,?, 0,datetime('now'),datetime('now'))`
+         VALUES (?,?, ?,?,?, ?,?,?, 0,0,0, ?,?,?,?,?,?,?,?,?,?, ?,?,?,?, 0,datetime('now'),datetime('now'))`
       ).run(date, initial_change,
              usdAmt, fraAmt, kAmt,
+             usdExp, fraExp, kExp,
              expenses, pending, total,
              after_change, expected, difference, status, comment,
              cashierId, req.user.id,

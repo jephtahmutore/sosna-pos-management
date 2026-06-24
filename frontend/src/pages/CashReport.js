@@ -172,6 +172,13 @@ const CashReport = () => {
 
     const saved = reports.find(r => r.date && r.date.split('T')[0] === d && String(r.cashier_id ?? 0) === String(cid));
     if (saved) {
+      // v1.8.13 — restore the per-currency Expected snapshot stored at save
+      // time. Falls back to current /daily figure for legacy rows.
+      setExpectedByCcy({
+        usd: parseFloat(saved.usd_expected || daily?.usd_received || 0) || 0,
+        fra: parseFloat(saved.fra_expected || daily?.fra_received || 0) || 0,
+        k:   parseFloat(saved.k_expected   || daily?.k_received   || 0) || 0,
+      });
       setForm({
         initial_change: saved.initial_change || '0',
         // v1.8.1: prefer new triple-currency fields, fall back to legacy
@@ -297,6 +304,11 @@ const CashReport = () => {
           usd_received: usd,
           fra_received: fra,
           k_received:   kAmt,
+          // v1.8.13 — snapshot per-currency Expected so the saved row carries
+          // its own reconciliation (no need to re-derive from orders later).
+          usd_expected: parseFloat(expectedByCcy.usd) || 0,
+          fra_expected: parseFloat(expectedByCcy.fra) || 0,
+          k_expected:   parseFloat(expectedByCcy.k)   || 0,
           expenses: exp,
           pending: pend,
           total,
@@ -971,33 +983,45 @@ const CashReport = () => {
           <thead>
             <tr>
               <th>Date</th><th>Cashier</th>
-              <th>USD ($)</th><th>FRA</th><th>K</th>
-              <th>Expenses</th><th>Credit Sales</th><th>Total</th>
-              <th>Expected</th><th>Difference</th>
-              <th>Status</th><th>Comment</th>
+              <th>USD ($)</th><th>Diff $</th>
+              <th>FRA</th><th>Diff FRA</th>
+              <th>K</th><th>Diff K</th>
+              <th>Expenses</th><th>Credit Sales</th>
+              <th>Comment</th>
             </tr>
           </thead>
           <tbody>
             {filteredReports.length === 0 ? (
-              <tr><td colSpan="12" style={{ textAlign: 'center', color: '#9ca3af', padding: 40 }}>No reports found for the selected period.</td></tr>
-            ) : filteredReports.map(r => (
-              <tr key={r.id} style={{ cursor: 'pointer' }} onClick={() => { const cid = r.cashier_id ? String(r.cashier_id) : ''; setSelectedCashier(cid); loadDate(r.date.split('T')[0], cid); }}>
-                <td style={{ fontWeight: 500 }}>{formatDate(r.date)}</td>
-                <td style={{ fontSize: 12, color: '#6b7280' }}>{r.cashier_name || '—'}</td>
-                <td>${parseFloat(r.usd_received || r.cash || 0).toLocaleString()}</td>
-                <td>{parseFloat(r.fra_received || r.mobile_money || 0).toLocaleString()} FRA</td>
-                <td>{parseFloat(r.k_received   || r.bank || 0).toLocaleString()} K</td>
-                <td style={{ color: '#dc2626' }}>{curSym}{parseFloat(r.expenses || 0).toLocaleString()}</td>
-                <td>{curSym}{parseFloat(r.pending || 0).toLocaleString()}</td>
-                <td style={{ fontWeight: 600 }}>{curSym}{parseFloat(r.total || 0).toLocaleString()}</td>
-                <td style={{ fontWeight: 500 }}>{curSym}{parseFloat(r.expected || 0).toLocaleString()}</td>
-                {(() => { const d = parseFloat(r.difference || 0); const s = getStatus(d); return (<>
-                <td style={{ fontWeight: 600, color: statusColor(s) }}>{curSym}{d.toLocaleString()}</td>
-                <td><span className={`badge ${statusBadge(s)}`}>{s}</span></td>
-                </>); })()}
-                <td style={{ color: '#6b7280', fontSize: 12, maxWidth: 150, overflow: 'hidden', textOverflow: 'ellipsis' }}>{r.comment || '—'}</td>
-              </tr>
-            ))}
+              <tr><td colSpan="11" style={{ textAlign: 'center', color: '#9ca3af', padding: 40 }}>No reports found for the selected period.</td></tr>
+            ) : filteredReports.map(r => {
+              // v1.8.13 — per-currency Diff = Received − Expected.
+              const usdR = parseFloat(r.usd_received || r.cash || 0);
+              const fraR = parseFloat(r.fra_received || r.mobile_money || 0);
+              const kR   = parseFloat(r.k_received   || r.bank || 0);
+              const usdE = parseFloat(r.usd_expected || 0);
+              const fraE = parseFloat(r.fra_expected || 0);
+              const kE   = parseFloat(r.k_expected   || 0);
+              const usdD = usdR - usdE;
+              const fraD = fraR - fraE;
+              const kD   = kR   - kE;
+              const diffColor = (d, eps) => Math.abs(d) < eps ? '#16a34a' : d > 0 ? '#d97706' : '#dc2626';
+              const sign = (d) => d > 0 ? '+' : '';
+              return (
+                <tr key={r.id} style={{ cursor: 'pointer' }} onClick={() => { const cid = r.cashier_id ? String(r.cashier_id) : ''; setSelectedCashier(cid); loadDate(r.date.split('T')[0], cid); }}>
+                  <td style={{ fontWeight: 500 }}>{formatDate(r.date)}</td>
+                  <td style={{ fontSize: 12, color: '#6b7280' }}>{r.cashier_name || '—'}</td>
+                  <td>${usdR.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+                  <td style={{ fontWeight: 600, color: diffColor(usdD, 0.01) }}>{sign(usdD)}${usdD.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+                  <td>{fraR.toLocaleString(undefined, { maximumFractionDigits: 0 })}</td>
+                  <td style={{ fontWeight: 600, color: diffColor(fraD, 1) }}>{sign(fraD)}{fraD.toLocaleString(undefined, { maximumFractionDigits: 0 })}</td>
+                  <td>{kR.toLocaleString(undefined, { maximumFractionDigits: 0 })}</td>
+                  <td style={{ fontWeight: 600, color: diffColor(kD, 1) }}>{sign(kD)}{kD.toLocaleString(undefined, { maximumFractionDigits: 0 })}</td>
+                  <td style={{ color: '#dc2626' }}>${parseFloat(r.expenses || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+                  <td>${parseFloat(r.pending || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+                  <td style={{ color: '#6b7280', fontSize: 12, maxWidth: 150, overflow: 'hidden', textOverflow: 'ellipsis' }}>{r.comment || '—'}</td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       </div>
