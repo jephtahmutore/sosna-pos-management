@@ -706,7 +706,7 @@ function initTenantDb(db) {
   const allTables = [
     'users', 'categories', 'products', 'customers', 'suppliers',
     'orders', 'order_items', 'grn', 'grn_items', 'siv', 'siv_items',
-    'stock_movements', 'cash_receipts', 'payment_vouchers', 'cash_book', 'currency_exchanges',
+    'stock_movements', 'cash_receipts', 'payment_vouchers', 'cash_book',
     'business_settings', 'cash_reports', 'stock_adjustments', 'daily_actual_balance',
     'production', 'production_inputs', 'production_outputs',
     'sales_returns', 'sales_return_items', 'ap_payments',
@@ -1161,7 +1161,7 @@ function initTenantDb(db) {
     'orders', 'order_items', 'grn', 'grn_items', 'siv', 'siv_items',
     'production', 'production_inputs', 'production_outputs',
     'sales_returns', 'sales_return_items',
-    'stock_movements', 'cash_receipts', 'payment_vouchers', 'cash_book', 'currency_exchanges',
+    'stock_movements', 'cash_receipts', 'payment_vouchers', 'cash_book',
     'business_settings', 'cash_reports', 'stock_adjustments', 'daily_actual_balance',
     'ap_payments', 'daily_profit_summary',
   ];
