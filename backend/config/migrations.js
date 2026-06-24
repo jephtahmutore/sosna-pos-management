@@ -1471,6 +1471,11 @@ function initTenantDb(db) {
   // unchanged).
   addCol('fx_rates', 'sell_rate_k', 'REAL');
   addCol('fx_rates', 'buy_rate_k',  'REAL');
+  // v1.8.2: rate intra-day timestamps. Rates can change multiple times in
+  // one day (typical Sosna street-rate cadence). effective_at stores the
+  // exact moment the rate becomes active so the Cashier picks the right
+  // one based on the order's created_at, and the chart can plot intra-day.
+  addCol('fx_rates', 'effective_at', 'TEXT'); // SQLite DATETIME (YYYY-MM-DD HH:MM:SS)
   addCol('orders',   'k_received',         'REAL DEFAULT 0');
   addCol('orders',   'k_change_given',     'REAL DEFAULT 0');
   addCol('orders',   'selling_rate_k_used','REAL');

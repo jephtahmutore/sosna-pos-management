@@ -37,8 +37,10 @@ export default function FxRates() {
   const [liveHistory, setLiveHistory] = useState([]);
   const [historyLoading, setHistoryLoading] = useState(false);
   // v1.7.0: optional K rate fields. Only saved when currency_mode includes K.
+  // v1.8.2: effective_time (HH:MM) for intra-day rate changes.
   const [form, setForm] = useState({
     effective_date: todayISO(),
+    effective_time: new Date().toTimeString().slice(0, 5),
     sell_rate: '',
     buy_rate: '',
     sell_rate_k: '',
@@ -46,6 +48,8 @@ export default function FxRates() {
     notes: '',
   });
   const [saving, setSaving] = useState(false);
+  // v1.8.2 — chart period selector: '1d' | '7d' | '1m'
+  const [chartPeriod, setChartPeriod] = useState('7d');
 
   const flash = (text, type) => {
     setToast({ text, type });
@@ -74,16 +78,22 @@ export default function FxRates() {
     setLiveLoading(false);
   };
 
-  const refreshHistory = async () => {
+  const refreshHistory = async (period) => {
     setHistoryLoading(true);
+    // v1.8.2 — days per chart period. '1d' uses 1 (intra-day plot),
+    // '7d' 7, '1m' 30.
+    const p = period || chartPeriod;
+    const days = p === '1d' ? 1 : p === '1m' ? 30 : 7;
     try {
-      const r = await getLiveFxRateHistory(7);
+      const r = await getLiveFxRateHistory(days);
       setLiveHistory(r.data?.series || []);
     } catch { setLiveHistory([]); }
     setHistoryLoading(false);
   };
 
   useEffect(() => { if (isDual) { refresh(); refreshLive(); refreshHistory(); } /* eslint-disable-next-line */ }, [isDual]);
+  // v1.8.2 — re-fetch history when the user flips the chart period tab.
+  useEffect(() => { if (isDual) refreshHistory(chartPeriod); /* eslint-disable-next-line */ }, [chartPeriod]);
 
   // Build the 7-day chart series. For each date we surface:
   //   - sell / buy : the manual rate effective on that date (most-recent
@@ -127,6 +137,7 @@ export default function FxRates() {
     try {
       await createFxRate({
         effective_date: form.effective_date,
+        effective_time: form.effective_time || null,
         sell_rate: sell,
         buy_rate: buy,
         sell_rate_k: sellK,
@@ -134,7 +145,11 @@ export default function FxRates() {
         notes: form.notes || null,
       });
       flash('Rate saved', 'success');
-      setForm({ effective_date: todayISO(), sell_rate: '', buy_rate: '', sell_rate_k: '', buy_rate_k: '', notes: '' });
+      setForm({
+        effective_date: todayISO(),
+        effective_time: new Date().toTimeString().slice(0, 5),
+        sell_rate: '', buy_rate: '', sell_rate_k: '', buy_rate_k: '', notes: '',
+      });
       await refresh();
     } catch (err) {
       flash(err?.response?.data?.error || 'Failed to save', 'error');
@@ -254,16 +269,34 @@ export default function FxRates() {
         </div>
       </div>
 
-      {/* 7-day chart — manual sell/buy vs live BCC */}
+      {/* v1.8.2 — rate chart with 1d / 7d / 1m period tabs. */}
       <div style={{ background: '#fff', border: '1px solid #e5e7eb', borderRadius: 12, padding: 16, marginBottom: 18 }}>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10, flexWrap: 'wrap', gap: 8 }}>
           <h3 style={{ margin: 0, fontSize: 14, color: '#0f172a', display: 'flex', alignItems: 'center', gap: 6 }}>
-            <FiTrendingUp /> Last 7 days
+            <FiTrendingUp /> Rate history — {chartPeriod === '1d' ? 'today' : chartPeriod === '1m' ? 'last 30 days' : 'last 7 days'}
           </h3>
-          <button onClick={refreshHistory} disabled={historyLoading}
-            style={{ padding: '4px 10px', background: 'transparent', color: '#0ea5e9', border: '1px solid #bae6fd', borderRadius: 6, cursor: historyLoading ? 'wait' : 'pointer', display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 11, fontWeight: 600 }}>
-            <FiRefreshCw size={11} /> {historyLoading ? '…' : 'Refresh'}
-          </button>
+          <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
+            {[
+              { key: '1d', label: '1D' },
+              { key: '7d', label: '7D' },
+              { key: '1m', label: '1M' },
+            ].map(p => (
+              <button key={p.key} onClick={() => setChartPeriod(p.key)}
+                style={{
+                  padding: '4px 12px',
+                  background: chartPeriod === p.key ? '#0ea5e9' : 'transparent',
+                  color: chartPeriod === p.key ? '#fff' : '#0ea5e9',
+                  border: '1px solid #bae6fd', borderRadius: 6,
+                  cursor: 'pointer', fontSize: 11, fontWeight: 700,
+                }}>
+                {p.label}
+              </button>
+            ))}
+            <button onClick={() => refreshHistory(chartPeriod)} disabled={historyLoading}
+              style={{ padding: '4px 10px', background: 'transparent', color: '#0ea5e9', border: '1px solid #bae6fd', borderRadius: 6, cursor: historyLoading ? 'wait' : 'pointer', display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 11, fontWeight: 600 }}>
+              <FiRefreshCw size={11} /> {historyLoading ? '…' : 'Refresh'}
+            </button>
+          </div>
         </div>
         {chartData.length === 0 ? (
           <div style={{ padding: 20, color: '#94a3b8', fontSize: 13 }}>
@@ -307,6 +340,14 @@ export default function FxRates() {
             <label style={lblStyle}>Effective date</label>
             <input type="date" value={form.effective_date}
               onChange={e => setForm({ ...form, effective_date: e.target.value })}
+              style={inputStyle} required />
+          </div>
+          {/* v1.8.2 — intra-day timestamp. Rates can change multiple times
+              per day; the Cashier picks whichever was in force at sale time. */}
+          <div>
+            <label style={lblStyle}>Effective time</label>
+            <input type="time" value={form.effective_time}
+              onChange={e => setForm({ ...form, effective_time: e.target.value })}
               style={inputStyle} required />
           </div>
           <div>
@@ -371,6 +412,7 @@ export default function FxRates() {
             <thead>
               <tr style={{ background: '#f8fafc', color: '#64748b', fontSize: 11, textTransform: 'uppercase', letterSpacing: 0.4 }}>
                 <th style={thStyle}>Effective</th>
+                <th style={thStyle}>Time</th>
                 <th style={{ ...thStyle, textAlign: 'right' }}>Sell FRA</th>
                 <th style={{ ...thStyle, textAlign: 'right' }}>Buy FRA</th>
                 {hasK && <th style={{ ...thStyle, textAlign: 'right' }}>Sell K</th>}
@@ -385,6 +427,9 @@ export default function FxRates() {
               {rows.map(r => (
                 <tr key={r.id} style={{ borderTop: '1px solid #f1f5f9', fontSize: 13 }}>
                   <td style={tdStyle}>{r.effective_date}</td>
+                  <td style={{ ...tdStyle, color: '#475569', fontFamily: 'monospace' }}>
+                    {r.effective_at ? (r.effective_at.length >= 16 ? r.effective_at.slice(11, 16) : '—') : '—'}
+                  </td>
                   <td style={{ ...tdStyle, textAlign: 'right', fontWeight: 700 }}>{fmtRate(r.sell_rate)}</td>
                   <td style={{ ...tdStyle, textAlign: 'right', fontWeight: 700 }}>{fmtRate(r.buy_rate)}</td>
                   {hasK && <td style={{ ...tdStyle, textAlign: 'right', fontWeight: 700 }}>{r.sell_rate_k ? fmtRate(r.sell_rate_k) : '—'}</td>}

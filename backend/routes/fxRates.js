@@ -95,16 +95,25 @@ function fetchUsdCdfOnDate(date) {
 }
 
 // ─── List all rates (most recent first) ──────────────────────────────────────
+// v1.8.2: optional `since` query (YYYY-MM-DD) to fetch rates effective from
+// that date onwards — used by the chart's 1d / 7d / 1m tabs.
 router.get('/', auth, readOnlyGuard, requirePagePerm('FxRates'), (req, res) => {
   try {
+    const since = (req.query.since || '').slice(0, 10);
+    const params = [req.user.tenantId];
+    let where = 'deleted_at IS NULL AND tenant_id = ?';
+    if (since && /^\d{4}-\d{2}-\d{2}$/.test(since)) {
+      where += ' AND effective_date >= ?';
+      params.push(since);
+    }
     const rows = db.prepare(`
-      SELECT id, sync_id, effective_date, sell_rate, buy_rate,
+      SELECT id, sync_id, effective_date, effective_at, sell_rate, buy_rate,
              sell_rate_k, buy_rate_k,
              notes, set_by, set_by_name, created_at, updated_at
       FROM fx_rates
-      WHERE deleted_at IS NULL AND tenant_id = ?
-      ORDER BY effective_date DESC, id DESC
-    `).all(req.user.tenantId);
+      WHERE ${where}
+      ORDER BY COALESCE(effective_at, effective_date || ' 00:00:00') DESC, id DESC
+    `).all(...params);
     res.json(rows);
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -112,19 +121,19 @@ router.get('/', auth, readOnlyGuard, requirePagePerm('FxRates'), (req, res) => {
 });
 
 // ─── Current effective rate (used by Cashier / POS) ──────────────────────────
-// No perm gate — every authenticated user needs to read it to compute
-// totals, and it leaks no sensitive data. Returns null when no row exists
-// yet so the caller can fall back to its hardcoded default (2900/2600).
+// v1.8.2: picks the latest rate whose effective_at <= NOW() (or effective_date
+// if no effective_at set). Rates can now flip mid-day; this returns whatever
+// is in force right now.
 router.get('/current', auth, readOnlyGuard, (req, res) => {
   try {
     const row = db.prepare(`
-      SELECT id, sync_id, effective_date, sell_rate, buy_rate,
+      SELECT id, sync_id, effective_date, effective_at, sell_rate, buy_rate,
              sell_rate_k, buy_rate_k,
              notes, set_by_name
       FROM fx_rates
       WHERE deleted_at IS NULL AND tenant_id = ?
-        AND effective_date <= DATE('now')
-      ORDER BY effective_date DESC, id DESC
+        AND COALESCE(effective_at, effective_date || ' 00:00:00') <= datetime('now')
+      ORDER BY COALESCE(effective_at, effective_date || ' 00:00:00') DESC, id DESC
       LIMIT 1
     `).get(req.user.tenantId);
     res.json(row || null);
@@ -139,6 +148,20 @@ router.get('/current', auth, readOnlyGuard, (req, res) => {
 router.post('/', auth, requirePagePerm('FxRates'), (req, res) => {
   try {
     const effective_date = (req.body.effective_date || '').slice(0, 10);
+    // v1.8.2: optional intra-day timestamp. Accept either:
+    //   effective_at  — full 'YYYY-MM-DD HH:MM' / 'YYYY-MM-DDTHH:MM' string, OR
+    //   effective_time — 'HH:MM' (combined with effective_date)
+    // Falls back to NOW() when neither is provided.
+    let effective_at = req.body.effective_at;
+    if (!effective_at && req.body.effective_time) {
+      effective_at = `${effective_date} ${String(req.body.effective_time).slice(0, 5)}:00`;
+    }
+    if (effective_at) {
+      effective_at = String(effective_at).replace('T', ' ').slice(0, 19);
+      if (effective_at.length === 16) effective_at += ':00'; // add seconds
+    } else {
+      effective_at = `${effective_date} ${new Date().toTimeString().slice(0, 8)}`;
+    }
     const sell = parseFloat(req.body.sell_rate);
     const buy  = parseFloat(req.body.buy_rate);
     const sellK = req.body.sell_rate_k !== undefined && req.body.sell_rate_k !== '' ? parseFloat(req.body.sell_rate_k) : null;
@@ -155,11 +178,11 @@ router.post('/', auth, requirePagePerm('FxRates'), (req, res) => {
     const cfg = syncConfig.getConfig() || {};
     const result = db.prepare(`
       INSERT INTO fx_rates
-        (sync_id, effective_date, sell_rate, buy_rate, sell_rate_k, buy_rate_k, notes,
+        (sync_id, effective_date, effective_at, sell_rate, buy_rate, sell_rate_k, buy_rate_k, notes,
          set_by, set_by_name, tenant_id, branch_id, device_id, synced)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
     `).run(
-      randomUUID(), effective_date, sell, buy, sellK, buyK, notes,
+      randomUUID(), effective_date, effective_at, sell, buy, sellK, buyK, notes,
       req.user.id, req.user.name || req.user.email || null,
       req.user.tenantId, cfg.branchId || null, cfg.deviceId || null,
     );
