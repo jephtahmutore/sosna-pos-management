@@ -93,6 +93,9 @@ export const updateProduct = (id, data) => api.put(`/products/${id}`, data);
 export const updateProductBarcode = (id, data) => api.patch(`/products/${id}/barcode`, data);
 export const deleteProduct = (id) => api.delete(`/products/${id}`);
 export const deleteAllProducts = () => api.delete('/products/all');
+// v1.8.1 — Transfer all store stock to sales floor as a single SIV.
+// Password-gated server-side (must equal '108120').
+export const bulkSivStoreToSales = (password) => api.post('/products/bulk-siv-store-to-sales', { password });
 export const importProducts = (file) => {
   const form = new FormData();
   form.append('file', file);

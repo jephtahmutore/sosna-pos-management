@@ -1,9 +1,9 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { getProducts, createProduct, updateProduct, updateProductBarcode, deleteProduct, uploadProductImage, deleteProductImage, getSettings, getCategories, getMainCategories, getUnits, deleteAllProducts, importProducts, isHqHost } from '../services/api';
+import { getProducts, createProduct, updateProduct, updateProductBarcode, deleteProduct, uploadProductImage, deleteProductImage, getSettings, getCategories, getMainCategories, getUnits, deleteAllProducts, importProducts, isHqHost, bulkSivStoreToSales } from '../services/api';
 import CategoryFilter from '../components/CategoryFilter';
 import { useLanguage } from '../context/LanguageContext';
 import { useAuth } from '../context/AuthContext';
-import { FiSearch, FiPlus, FiEdit2, FiTrash2, FiCamera, FiX, FiZap, FiPrinter, FiUpload, FiDownload, FiAlertTriangle } from 'react-icons/fi';
+import { FiSearch, FiPlus, FiEdit2, FiTrash2, FiCamera, FiX, FiZap, FiPrinter, FiUpload, FiDownload, FiAlertTriangle, FiTruck } from 'react-icons/fi';
 import { FaBarcode } from 'react-icons/fa';
 import { formatStock, formatStockForProduct } from '../utils/unitFormat';
 import { unitsForProduct, pickDisplayUnit, displayInDefaultUnit, displayPriceInDefaultUnit } from '../utils/productUnits';
@@ -99,6 +99,11 @@ const ItemDetails = () => {
   const [search, setSearch] = useState('');
   const [showModal, setShowModal] = useState(false);
   const [editItem, setEditItem] = useState(null);
+  // v1.8.1 — Bulk "Transfer all store stock to Sales" modal state.
+  const [bulkSivOpen, setBulkSivOpen] = useState(false);
+  const [bulkSivPassword, setBulkSivPassword] = useState('');
+  const [bulkSivSubmitting, setBulkSivSubmitting] = useState(false);
+  const [bulkSivError, setBulkSivError] = useState('');
   // packagings: additional larger units (e.g. [{ name: 'Pack', conv: 6, price: 11 }, { name: 'Box', conv: 24, price: 40 }]).
   // The base unit (form.unit) is always the smallest packaging and lives in its own fields.
   // v1.7.2 — opening_base + per-packaging `opening` mirrors Grocery's pattern:
@@ -383,6 +388,23 @@ const ItemDetails = () => {
     setPendingDelete({ kind: 'single', item: { id: item.id, name: item.name } });
   };
 
+  // v1.8.1 — Submit the bulk-SIV transfer with password.
+  const runBulkSiv = async () => {
+    setBulkSivError('');
+    if (!bulkSivPassword) { setBulkSivError('Password required'); return; }
+    setBulkSivSubmitting(true);
+    try {
+      const r = await bulkSivStoreToSales(bulkSivPassword);
+      setBulkSivOpen(false);
+      setBulkSivPassword('');
+      setImportMsg(`✓ ${r.data.siv_number} — ${r.data.lines} item${r.data.lines === 1 ? '' : 's'} moved to Sales (value $${parseFloat(r.data.total_value || 0).toFixed(2)})`);
+      fetchItems();
+    } catch (err) {
+      setBulkSivError(err.response?.data?.error || err.message || 'Failed');
+    }
+    setBulkSivSubmitting(false);
+  };
+
   const runDeleteSingle = async (id) => {
     try {
       await deleteProduct(id);
@@ -659,6 +681,16 @@ const ItemDetails = () => {
           >
             <FiPrinter size={16} /> {t('print')}
           </button>
+          {/* v1.8.1 — Bulk transfer Store → Sales (branch-only, password-gated). */}
+          {isBranch && (
+            <button
+              onClick={() => { setBulkSivOpen(true); setBulkSivPassword(''); setBulkSivError(''); }}
+              style={{ display: 'inline-flex', alignItems: 'center', gap: 7, padding: '9px 18px', borderRadius: 8, border: '1.5px solid #fde68a', background: '#fffbeb', cursor: 'pointer', fontSize: 14, fontWeight: 600, color: '#92400e' }}
+              title="Issue one SIV that moves every item with store balance > 0 onto the sales floor"
+            >
+              <FiTruck size={16} /> Transfer All to Sales
+            </button>
+          )}
           {!isBranch && hasPermission('Items:Add') && (
           <button className="btn btn-primary" onClick={openNew}>
             <FiPlus /> {t('newItem')}
@@ -666,6 +698,41 @@ const ItemDetails = () => {
           )}
         </div>
       </div>
+
+      {/* v1.8.1 — Bulk Transfer to Sales password modal. */}
+      {bulkSivOpen && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', zIndex: 1100, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
+          <div style={{ background: '#fff', borderRadius: 12, width: '100%', maxWidth: 440, padding: 20, boxShadow: '0 20px 60px rgba(0,0,0,0.3)' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
+              <FiTruck size={20} color="#92400e" />
+              <h3 style={{ margin: 0, fontSize: 17 }}>Transfer All Store Stock to Sales</h3>
+            </div>
+            <p style={{ fontSize: 13, color: '#475569', lineHeight: 1.5, margin: '0 0 14px 0' }}>
+              This will issue ONE SIV that moves every item with store balance &gt; 0 onto the sales floor. Enter the manager password to confirm.
+            </p>
+            <input
+              type="password"
+              value={bulkSivPassword}
+              onChange={e => { setBulkSivPassword(e.target.value); setBulkSivError(''); }}
+              onKeyDown={e => { if (e.key === 'Enter') runBulkSiv(); }}
+              autoFocus
+              placeholder="Password"
+              style={{ width: '100%', padding: '10px 12px', border: '1.5px solid #d1d5db', borderRadius: 8, fontSize: 14, marginBottom: 8, boxSizing: 'border-box' }}
+            />
+            {bulkSivError && <div style={{ color: '#dc2626', fontSize: 12, marginBottom: 8 }}>{bulkSivError}</div>}
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 6 }}>
+              <button onClick={() => setBulkSivOpen(false)} disabled={bulkSivSubmitting}
+                style={{ padding: '9px 16px', borderRadius: 8, border: '1.5px solid #e5e7eb', background: '#fff', cursor: 'pointer', fontSize: 13, fontWeight: 600 }}>
+                Cancel
+              </button>
+              <button onClick={runBulkSiv} disabled={bulkSivSubmitting}
+                style={{ padding: '9px 16px', borderRadius: 8, border: 'none', background: '#92400e', color: '#fff', cursor: bulkSivSubmitting ? 'wait' : 'pointer', fontSize: 13, fontWeight: 700 }}>
+                {bulkSivSubmitting ? 'Transferring…' : 'Transfer Now'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {importMsg && (
         <div style={{ marginBottom: 16, padding: '10px 16px', background: importMsg.includes('failed') || importMsg.includes('error') ? '#fef2f2' : '#f0fdf4', color: importMsg.includes('failed') || importMsg.includes('error') ? '#dc2626' : '#16a34a', borderRadius: 8, fontSize: 13, fontWeight: 500, border: `1px solid ${importMsg.includes('failed') || importMsg.includes('error') ? '#fecaca' : '#bbf7d0'}`, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>

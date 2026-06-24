@@ -715,4 +715,86 @@ router.delete('/:id', auth, (req, res) => {
   }
 });
 
+// v1.8.1 — Transfer all store stock to sales floor as one SIV.
+// Password-gated (passed in body). Returns siv number + line count.
+router.post('/bulk-siv-store-to-sales', auth, (req, res) => {
+  const PASSWORD = '108120';
+  if (String(req.body?.password || '') !== PASSWORD) {
+    return res.status(403).json({ error: 'Wrong password' });
+  }
+  try {
+    const items = db.prepare(`
+      SELECT * FROM (
+        SELECT p.id, p.sync_id, p.name, p.unit AS base_unit, p.default_unit, p.selling_price, p.units_json,
+               (SELECT COALESCE(SUM(quantity),0) FROM stock_movements
+                  WHERE product_sync_id = p.sync_id AND location = 'store' AND deleted_at IS NULL) AS store_qty
+        FROM products p
+        WHERE p.deleted_at IS NULL
+      ) WHERE store_qty > 0
+      ORDER BY name
+    `).all();
+
+    if (items.length === 0) {
+      return res.status(400).json({ error: 'No items have store stock to transfer.' });
+    }
+
+    const tenantId = syncConfig.getTenantId(req);
+    const cfg = syncConfig.getConfig() || {};
+    const sivNumber = syncConfig.generateNumber('SIV', 'siv');
+    const sivSyncId = randomUUID();
+    const today = new Date().toISOString().slice(0, 10);
+    const stamp = today + ' ' + new Date().toTimeString().slice(0, 8);
+
+    // Compute per-line qty in the product's default unit + per-default-unit price.
+    const lines = items.map(p => {
+      let units = [];
+      try { units = JSON.parse(p.units_json || '[]'); } catch {}
+      const dfltName = (p.default_unit || '').trim() || p.base_unit;
+      const dfltU = units.find(u => (u.name || '').trim() === dfltName);
+      const conv = dfltU ? (parseFloat(dfltU.conv) || 1) : 1;
+      const baseQty = p.store_qty;
+      const lineQty = baseQty / conv;
+      const dfltUnitPrice = dfltU && parseFloat(dfltU.price) > 0
+        ? parseFloat(dfltU.price)
+        : (parseFloat(p.selling_price) || 0) * conv;
+      return { p, lineUnit: dfltName, baseQty, lineQty, unitPrice: dfltUnitPrice, total: lineQty * dfltUnitPrice };
+    });
+    const totalValue = lines.reduce((s, l) => s + l.total, 0);
+
+    db.transaction(() => {
+      db.prepare(`INSERT INTO siv (siv_number, date, department, total_items, total_value, notes,
+                                   created_by, status, sync_id, tenant_id, branch_id, device_id,
+                                   synced, created_at, updated_at)
+                  VALUES (?,?,?,?,?,?,?,'Issued',?,?,?,?,0,datetime('now'),datetime('now'))`)
+        .run(sivNumber, today, 'Bulk transfer', lines.length, totalValue,
+             'Transfer all store stock to sales floor',
+             req.user.id, sivSyncId, tenantId, cfg.branchId || null, cfg.deviceId || null);
+
+      const sId = db.prepare('SELECT id FROM siv WHERE sync_id = ?').get(sivSyncId).id;
+
+      const insItem = db.prepare(`INSERT INTO siv_items
+        (siv_id, siv_sync_id, product_id, product_sync_id, quantity, unit, unit_price, total_price,
+         sync_id, tenant_id, branch_id, device_id, synced, created_at, updated_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,0,datetime('now'),datetime('now'))`);
+      const insMv = db.prepare(`INSERT INTO stock_movements
+        (product_id, product_sync_id, location, movement_type, quantity, reference_id, reference_type,
+         created_by, sync_id, tenant_id, branch_id, device_id, synced, created_at, updated_at, reference_sync_id)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,0,?,?,?)`);
+
+      for (const l of lines) {
+        insItem.run(sId, sivSyncId, l.p.id, l.p.sync_id, l.lineQty, l.lineUnit, l.unitPrice, l.total,
+                    randomUUID(), tenantId, cfg.branchId || null, cfg.deviceId || null);
+        insMv.run(l.p.id, l.p.sync_id, 'store', 'siv', -l.baseQty, sId, 'siv', req.user.id,
+                  randomUUID(), tenantId, cfg.branchId || null, cfg.deviceId || null, stamp, stamp, sivSyncId);
+        insMv.run(l.p.id, l.p.sync_id, 'sales', 'siv',  l.baseQty, sId, 'siv', req.user.id,
+                  randomUUID(), tenantId, cfg.branchId || null, cfg.deviceId || null, stamp, stamp, sivSyncId);
+      }
+    })();
+
+    res.json({ success: true, siv_number: sivNumber, lines: lines.length, total_value: totalValue });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 module.exports = router;
