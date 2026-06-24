@@ -412,8 +412,9 @@ const Layout = () => {
             </div>
           )}
 
-          {/* Sales Group */}
-          {hasPageAccess('POS', 'Cashier', 'Dispatch', 'SalesReport', 'SalesInventory', 'CashReport', 'SalesBinCard') && (collapsed ? (
+          {/* Sales Group — hidden at HQ (v1.8.9). HQ doesn't ring up sales,
+              has no till queue, and uses the dedicated HQ Sales Report. */}
+          {!hq && hasPageAccess('POS', 'Cashier', 'Dispatch', 'SalesReport', 'SalesInventory', 'CashReport', 'SalesBinCard') && (collapsed ? (
             <div className={`nav-item ${isGroupActive(['/pos']) ? 'active' : ''}`} onClick={() => navigate('/pos')}>
               <FiShoppingCart className="nav-icon" />
             </div>
@@ -497,29 +498,32 @@ const Layout = () => {
                       <FiFileText className="nav-icon" /> <span>{t('itemDetails')}</span>
                     </div>
                   )}
-                  {showLegacyProcurement && hasPageAccess('GRN') && (
+                  {/* v1.8.9 — at HQ, the Store group keeps only Item Details
+                      + Categories and Units (HQ-owned data pushed to branches).
+                      Everything else here (GRN, SIV, Sales Damages, Bin Card,
+                      Stock Count, Incoming Stock, Inter-Branch Transfers …)
+                      is branch-side operational. Hidden when !hq is false. */}
+                  {!hq && showLegacyProcurement && hasPageAccess('GRN') && (
                     <div className={`nav-item ${isActive('/stock/grn') ? 'active' : ''}`} onClick={() => navigate('/stock/grn')}>
                       <FiDownload className="nav-icon" /> <span>{t('grn')}</span>
                     </div>
                   )}
-                  {/* Empty Returns hidden — superseded by Credit Notes →
-                      Crate Return. Route still exists for deep-links. */}
-                  {!branchOnly && hasPageAccess('SIV') && (
+                  {!hq && !branchOnly && hasPageAccess('SIV') && (
                     <div className={`nav-item ${isActive('/stock/siv') ? 'active' : ''}`} onClick={() => navigate('/stock/siv')}>
                       <FiUpload className="nav-icon" /> <span>{t('siv')}</span>
                     </div>
                   )}
-                  {hasPageAccess('SalesReturns') && (
+                  {!hq && hasPageAccess('SalesReturns') && (
                     <div className={`nav-item ${isActive('/stock/sales-damages') ? 'active' : ''}`} onClick={() => navigate('/stock/sales-damages')}>
                       <FiCornerDownLeft className="nav-icon" /> <span>Sales Damages</span>
                     </div>
                   )}
-                  {hasPageAccess('Inventory') && (
+                  {!hq && hasPageAccess('Inventory') && (
                     <div className={`nav-item ${isActive('/stock/inventory') ? 'active' : ''}`} onClick={() => navigate('/stock/inventory')}>
                       <FiList className="nav-icon" /> <span>{t('inventory')}</span>
                     </div>
                   )}
-                  {hasPageAccess('BinCard') && (
+                  {!hq && hasPageAccess('BinCard') && (
                     <div className={`nav-item ${isActive('/stock/bin-card') ? 'active' : ''}`} onClick={() => navigate('/stock/bin-card')}>
                       <FiList className="nav-icon" /> <span>{t('binCard')}</span>
                     </div>
@@ -530,7 +534,7 @@ const Layout = () => {
                       <FiSliders className="nav-icon" /> <span>{t('stockAdjustment')}</span>
                     </div>
                   )}
-                  {hasPageAccess('StockReconciliation') && (
+                  {!hq && hasPageAccess('StockReconciliation') && (
                     <div className={`nav-item ${isActive('/stock/reconciliation') ? 'active' : ''}`} onClick={() => navigate('/stock/reconciliation')}>
                       <FiCheckCircle className="nav-icon" /> <span>Stock Reconciliation</span>
                     </div>
@@ -540,28 +544,23 @@ const Layout = () => {
                       <FiList className="nav-icon" /> <span>Categories and Units</span>
                     </div>
                   )}
-                  {hasPageAccess('ExpiryReport') && (
+                  {!hq && hasPageAccess('ExpiryReport') && (
                     <div className={`nav-item ${isActive('/stock/expiry-report') ? 'active' : ''}`} onClick={() => navigate('/stock/expiry-report')}>
                       <FiAlertTriangle className="nav-icon" /> <span>Expiry Report</span>
                     </div>
                   )}
-                  {hasPageAccess('StockCount') && (
+                  {!hq && hasPageAccess('StockCount') && (
                     <div className={`nav-item ${isActive('/stock/stock-count') ? 'active' : ''}`} onClick={() => navigate('/stock/stock-count')}>
                       <FiClipboard className="nav-icon" /> <span>Stock Count</span>
                     </div>
                   )}
-                  {/* Incoming Stock — HQ Purchases waiting for branch confirmation.
-                      Universal: every branch has its own queue (filtered server-side
-                      by destination_slug). */}
-                  {hasPageAccess('Inventory') && (
+                  {!hq && hasPageAccess('Inventory') && (
                     <div className={`nav-item ${isActive('/stock/incoming') ? 'active' : ''}`} onClick={() => navigate('/stock/incoming')}>
                       <FiInbox className="nav-icon" /> <span>Incoming Stock</span>
                       {badges.incoming_stock > 0 && <SidebarBadge n={badges.incoming_stock} />}
                     </div>
                   )}
-                  {/* Stock Transfers — Inter-branch (Mansa surplus → Lusaka shortage).
-                      Different from HQ Purchases: source stock IS decremented here. */}
-                  {hasPageAccess('Inventory') && (
+                  {!hq && hasPageAccess('Inventory') && (
                     <div className={`nav-item ${isActive('/stock/transfers') ? 'active' : ''}`} onClick={() => navigate('/stock/transfers')}>
                       <FiTruck className="nav-icon" /> <span>Inter-Branch Transfers</span>
                       {badges.incoming_transfers > 0 && <SidebarBadge n={badges.incoming_transfers} />}
@@ -572,8 +571,9 @@ const Layout = () => {
             </>
           )}
 
-          {/* Accounting Group */}
-          {!collapsed && hasPageAccess('CashReceipt', 'PaymentVoucher', 'CashBook', 'FxRates', 'AccountPayables', 'AccountReceivables', 'ProfitReport') && (
+          {/* Accounting Group — hidden at HQ (v1.8.9). HQ has no per-tenant
+              till, no AR/AP, no FX rates of its own. */}
+          {!hq && !collapsed && hasPageAccess('CashReceipt', 'PaymentVoucher', 'CashBook', 'FxRates', 'AccountPayables', 'AccountReceivables', 'ProfitReport') && (
             <>
               <div className={`nav-group-header ${isGroupActive(['/accounting']) ? 'active' : ''}`} onClick={() => toggleGroup('accounting')}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
@@ -649,8 +649,10 @@ const Layout = () => {
             </>
           )}
 
-          {/* Suppliers & Customers Group */}
-          {!collapsed && hasPageAccess('Suppliers', 'Customers') && (
+          {/* Suppliers & Customers Group — hidden at HQ (v1.8.9). HQ uses
+              the dedicated HQ Suppliers entry at the top; no branch
+              customers at HQ level. */}
+          {!hq && !collapsed && hasPageAccess('Suppliers', 'Customers') && (
             <>
               <div className={`nav-group-header ${isGroupActive(['/suppliers-customers']) ? 'active' : ''}`} onClick={() => toggleGroup('suppliersCustomers')}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
@@ -678,8 +680,9 @@ const Layout = () => {
 
           {/* Approvals — admin-only top-level entry. Red badge shows the
               count of pending discount requests. Polled every 10s in the
-              useEffect above. */}
-          {!collapsed && user?.role === 'Administrator' && (
+              useEffect above. v1.8.9 — hidden at HQ (discount requests
+              originate at branches, never at HQ). */}
+          {!hq && !collapsed && user?.role === 'Administrator' && (
             <div
               className={`nav-item ${isActive('/approvals/discounts') ? 'active' : ''}`}
               onClick={() => navigate('/approvals/discounts')}
