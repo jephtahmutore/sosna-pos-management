@@ -373,11 +373,16 @@ const CashBook = () => {
           </div>
         </div>
 
-        {/* Per-method balances. Card flips to red when balance is negative — easy visual flag. */}
+        {/* v1.8.8 — per-currency balances (USD / FRA / K) for Sosna.
+            Backend still keys data on cash/bank/momo bucket names — we just
+            remap them to currencies: cash→USD, bank→FRA, momo→K. The
+            underlying balance math will be reworked to be truly per-currency
+            once PVs/CRs/APs all consistently write to the new usd/fra/k
+            columns added in v1.8.5. */}
         {[
-          { key: 'cash', label: t('cashOnHand'), defaultClass: 'green' },
-          { key: 'momo', label: t('mobileMoney'), defaultClass: 'orange' },
-          { key: 'bank', label: t('cashAtBank'), defaultClass: 'blue' },
+          { key: 'cash', label: 'USD ($)', defaultClass: 'green' },
+          { key: 'bank', label: 'FRA',     defaultClass: 'purple' },
+          { key: 'momo', label: 'K',       defaultClass: 'orange' },
         ].map(m => {
           const bal  = stats.currentByMethod?.[m.key] || 0;
           const open = stats.openingByMethod?.[m.key] || 0;
@@ -416,7 +421,7 @@ const CashBook = () => {
               </div>
               {canEditOpening && (
                 <button onClick={openEditOB}
-                  title="Edit opening balances (Cash / Mobile Money / Bank)"
+                  title="Edit opening balances (USD / FRA / K)"
                   style={{ position: 'absolute', top: 8, right: 8, background: '#fff', border: `1px solid ${c.border}`, borderRadius: 6, padding: '4px 6px', cursor: 'pointer', color: c.color }}>
                   <FiEdit2 size={12} />
                 </button>
@@ -433,13 +438,13 @@ const CashBook = () => {
           <div style={{ background: '#fff', borderRadius: 14, width: '100%', maxWidth: 460, boxShadow: '0 24px 64px rgba(0,0,0,0.35)' }}>
             <div style={{ padding: '18px 22px', borderBottom: '1px solid #e5e7eb' }}>
               <h3 style={{ margin: 0 }}>Opening Balances</h3>
-              <div style={{ fontSize: 12, color: '#6b7280', marginTop: 4 }}>Starting balance for each method — used as the base for the Cash Book.</div>
+              <div style={{ fontSize: 12, color: '#6b7280', marginTop: 4 }}>Starting balance per currency (USD / FRA / K) — used as the base for the Cash Book.</div>
             </div>
             <div style={{ padding: 22, display: 'grid', gap: 12 }}>
               {[
-                { key: 'cash', label: 'Cash', color: '#16a34a' },
-                { key: 'bank', label: 'Bank', color: '#2563eb' },
-                { key: 'momo', label: 'Mobile Money', color: '#f59e0b' },
+                { key: 'cash', label: 'USD ($)', color: '#16a34a' },
+                { key: 'bank', label: 'FRA',     color: '#7c3aed' },
+                { key: 'momo', label: 'K',       color: '#ea580c' },
               ].map(f => (
                 <div key={f.key}>
                   <label style={{ fontSize: 12, color: f.color, fontWeight: 700, textTransform: 'uppercase', marginBottom: 4, display: 'block' }}>{f.label}</label>

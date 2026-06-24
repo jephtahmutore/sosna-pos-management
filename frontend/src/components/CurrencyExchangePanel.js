@@ -27,6 +27,9 @@ export default function CurrencyExchangePanel({
   user,              // current user from useAuth — used to check role
   onChanged,         // optional callback after a new exchange is saved
   title,             // display title (default 'Currency Exchanges')
+  drawerBalance,     // v1.8.8: optional { USD, FRA, K } — when supplied,
+                     //   modal shows live drawer balance + soft warns
+                     //   if FROM amount exceeds available. Save still allowed.
 }) {
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -119,6 +122,7 @@ export default function CurrencyExchangePanel({
           scope={scope}
           defaultDate={date || new Date().toISOString().slice(0, 10)}
           cashierId={cashierId}
+          drawerBalance={drawerBalance}
           onClose={() => setShowAdd(false)}
           onSaved={() => { setShowAdd(false); refresh(); if (onChanged) onChanged(); }}
         />
@@ -127,7 +131,7 @@ export default function CurrencyExchangePanel({
   );
 }
 
-function AddExchangeModal({ scope, defaultDate, cashierId, onClose, onSaved }) {
+function AddExchangeModal({ scope, defaultDate, cashierId, drawerBalance, onClose, onSaved }) {
   const [form, setForm] = useState({
     from_currency: 'USD', from_amount: '',
     to_currency:   'FRA', to_amount: '',
@@ -189,6 +193,20 @@ function AddExchangeModal({ scope, defaultDate, cashierId, onClose, onSaved }) {
           </div>
         </div>
 
+        {/* v1.8.8 — live drawer balance badges (drawer scope only). */}
+        {drawerBalance && (
+          <div style={{ background: '#eff6ff', border: '1px solid #bfdbfe', borderRadius: 6, padding: '8px 12px', fontSize: 12, color: '#1e40af', marginBottom: 10, display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 4 }}>
+            <span style={{ fontWeight: 700, textTransform: 'uppercase', fontSize: 10, letterSpacing: 0.5 }}>Drawer balance</span>
+            <span>
+              USD <strong>${fmt(drawerBalance.USD || 0, 2)}</strong>
+              {'  ·  '}
+              FRA <strong>{fmt(drawerBalance.FRA || 0, 0)}</strong>
+              {'  ·  '}
+              K <strong>{fmt(drawerBalance.K || 0, 0)}</strong>
+            </span>
+          </div>
+        )}
+
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 10 }}>
           <div style={{ background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 8, padding: 10 }}>
             <div style={{ fontSize: 11, fontWeight: 700, color: '#b91c1c', marginBottom: 6, textTransform: 'uppercase' }}>From (taken out)</div>
@@ -198,6 +216,11 @@ function AddExchangeModal({ scope, defaultDate, cashierId, onClose, onSaved }) {
             <input type="number" min="0" step="0.01" value={form.from_amount}
               onChange={e => setForm({ ...form, from_amount: e.target.value })}
               placeholder="0" style={{ ...inp, marginTop: 6 }} />
+            {drawerBalance && (
+              <div style={{ fontSize: 11, color: '#7c2d12', marginTop: 4 }}>
+                Available: <strong>{fmt(drawerBalance[form.from_currency] || 0, form.from_currency === 'USD' ? 2 : 0)}</strong> {form.from_currency}
+              </div>
+            )}
           </div>
           <div style={{ background: '#ecfdf5', border: '1px solid #a7f3d0', borderRadius: 8, padding: 10 }}>
             <div style={{ fontSize: 11, fontWeight: 700, color: '#047857', marginBottom: 6, textTransform: 'uppercase' }}>To (received)</div>
@@ -209,6 +232,17 @@ function AddExchangeModal({ scope, defaultDate, cashierId, onClose, onSaved }) {
               placeholder="0" style={{ ...inp, marginTop: 6 }} />
           </div>
         </div>
+
+        {/* v1.8.8 — soft warning when FROM amount exceeds drawer balance.
+            Save stays enabled (Option B). Hidden when no drawerBalance prop. */}
+        {drawerBalance && fromAmt > 0 && fromAmt > (parseFloat(drawerBalance[form.from_currency] || 0) + 0.001) && (
+          <div style={{ background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 6, padding: '8px 12px', fontSize: 12, color: '#92400e', marginBottom: 10 }}>
+            ⚠ {form.from_currency} amount exceeds drawer.
+            {' '}Available: <strong>{fmt(drawerBalance[form.from_currency] || 0, form.from_currency === 'USD' ? 2 : 0)} {form.from_currency}</strong>
+            {' · '}Short by: <strong>{fmt(fromAmt - parseFloat(drawerBalance[form.from_currency] || 0), form.from_currency === 'USD' ? 2 : 0)} {form.from_currency}</strong>.
+            <br />Save anyway if the cashier brought outside cash; otherwise reduce the amount.
+          </div>
+        )}
 
         <div style={{ background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 6, padding: '8px 10px', fontSize: 12, color: '#475569', marginBottom: 10 }}>
           Effective rate: <strong>{rate > 0 ? rate.toLocaleString(undefined, { maximumFractionDigits: 6 }) : '—'}</strong>

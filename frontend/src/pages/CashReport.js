@@ -785,13 +785,24 @@ const CashReport = () => {
       </div>
 
       {/* v1.8.6 — Currency Exchanges for this date+cashier (drawer scope).
-          Append-only ledger; reverse a mistake by recording the opposite. */}
+          Append-only ledger; reverse a mistake by recording the opposite.
+          v1.8.8 — pass live drawer balance per currency so the modal can
+          warn the manager before overdrawing. Balance = what's in the
+          form's per-currency inputs (which already include the net effect
+          of all SAVED exchanges via the auto-fill from /daily). The modal
+          excludes the in-progress exchange itself, so the comparison stays
+          valid. */}
       <CurrencyExchangePanel
         scope="drawer"
         date={date}
         cashierId={selectedCashier ? parseInt(selectedCashier) : 0}
         user={authUser}
         title="Currency Exchanges (Drawer)"
+        drawerBalance={{
+          USD: (parseFloat(form.usd_received || 0) || 0) + (parseFloat(exchangeNet.usd_net || 0) || 0),
+          FRA: (parseFloat(form.fra_received || 0) || 0) + (parseFloat(exchangeNet.fra_net || 0) || 0),
+          K:   (parseFloat(form.k_received   || 0) || 0) + (parseFloat(exchangeNet.k_net   || 0) || 0),
+        }}
         onChanged={() => setExchangeRefreshKey(k => k + 1)}
       />
       {(exchangeNet.usd_net || exchangeNet.fra_net || exchangeNet.k_net) && (
