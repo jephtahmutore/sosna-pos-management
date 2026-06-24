@@ -6,7 +6,7 @@ import { useAuth } from '../context/AuthContext';
 import { useCurrency } from '../context/CurrencyContext';
 import { useLanguage } from '../context/LanguageContext';
 import { formatStock, formatStockForProduct } from '../utils/unitFormat';
-import { pickDisplayUnit, displayPriceInDefaultUnit } from '../utils/productUnits';
+import { pickDisplayUnit, displayPriceInDefaultUnit, displayInDefaultUnit } from '../utils/productUnits';
 import AdminPasswordPrompt from '../components/AdminPasswordPrompt';
 import printHtml, { downloadPdf, shouldShowMobilePdfButton } from '../utils/printHtml';
 const _d = new Date(); const today = `${_d.getFullYear()}-${String(_d.getMonth()+1).padStart(2,'0')}-${String(_d.getDate()).padStart(2,'0')}`;
@@ -19,7 +19,7 @@ const _d = new Date(); const today = `${_d.getFullYear()}-${String(_d.getMonth()
 const PARTIAL_REVERSE_ENABLED = false;
 
 const SalesReport = () => {
-  const { hasPermission } = useAuth();
+  const { hasPermission, user: authUser } = useAuth();
   const { symbol: curSym } = useCurrency();
   const { t } = useLanguage();
   const [orders, setOrders] = useState([]);
@@ -448,6 +448,105 @@ const SalesReport = () => {
     printDirect(html);
   };
 
+  // ── Export the By-Item view as an A4 PDF (mirrors GRN/SIV design) ────────
+  // Opens a print preview in a new tab — user clicks "Save as PDF" in the
+  // browser dialog. Same look-and-feel as the GRN/SIV print pages so reports
+  // across the system stay consistent.
+  const handleExportPDF = async () => {
+    const dateLabel = dateFrom === dateTo
+      ? new Date(dateFrom).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' })
+      : `${new Date(dateFrom).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })} — ${new Date(dateTo).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}`;
+
+    const items = (itemSummary || []).slice().sort((a, b) => parseFloat(b.total_revenue || 0) - parseFloat(a.total_revenue || 0));
+    const fmt = (v) => parseFloat(v || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    const fmtQty = (v) => parseFloat(v || 0).toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 });
+    const printedAt = new Date().toLocaleString('en-US', { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+    const printedBy = [authUser?.first_name, authUser?.last_name].filter(Boolean).join(' ') || '—';
+
+    const rows = items.map((it, idx) => {
+      const qInDisp = displayInDefaultUnit(it.total_qty, it);
+      const avgInDisp = displayPriceInDefaultUnit(it.avg_price, it);
+      return `<tr style="background:${idx % 2 === 1 ? '#f5f5f5' : '#fff'};border-bottom:1px solid #ddd">
+        <td style="padding:7px 10px;color:#000;font-size:10.5px">${idx + 1}</td>
+        <td style="padding:7px 10px;font-weight:600">${it.product_name || '—'}</td>
+        <td style="padding:7px 10px;font-size:10.5px;color:#444">${it.category_name || '—'}</td>
+        <td style="padding:7px 10px;font-size:10.5px">${avgInDisp.unit}</td>
+        <td style="padding:7px 10px;text-align:right;font-family:monospace">${fmtQty(qInDisp.qty)} ${avgInDisp.unit}</td>
+        <td style="padding:7px 10px;text-align:right;font-family:monospace">${curSym}${fmt(avgInDisp.price)} <span style="font-size:9px;color:#666">/ ${avgInDisp.unit}</span></td>
+        <td style="padding:7px 10px;text-align:right;font-weight:700;font-family:monospace">${curSym}${fmt(it.total_revenue)}</td>
+      </tr>`;
+    }).join('');
+
+    const grandRevenue = items.reduce((s, it) => s + parseFloat(it.total_revenue || 0), 0);
+
+    const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Sales by Item — ${dateLabel}</title><style>
+      @page{size:A4 portrait;margin:14mm}*{box-sizing:border-box;margin:0;padding:0}
+      body{font-family:"Segoe UI",Arial,sans-serif;font-size:12px;color:#000}
+      table{width:100%;border-collapse:collapse}
+      th{padding:8px 10px;font-weight:700;color:#000;border-bottom:1.5px solid #000;font-size:10.5px;background:#f0f0f0;text-align:left}
+      td{font-size:11px}
+      tfoot td{padding:10px 10px;font-weight:700;background:#f0f0f0;border-top:2px solid #000}
+    </style></head><body>
+      <div style="border-bottom:3px solid #000;padding-bottom:12px;margin-bottom:14px;display:flex;justify-content:space-between;align-items:flex-start">
+        <div>
+          <div style="font-size:21px;font-weight:800;letter-spacing:0.3px;margin-bottom:4px">${businessName}</div>
+          <div style="font-size:10px;color:#000;line-height:1.7">${businessPhone || ''}</div>
+        </div>
+        <div style="text-align:right">
+          <div style="font-size:9px;letter-spacing:2px;text-transform:uppercase;color:#000;margin-bottom:4px">Sales by Item</div>
+          <div style="font-size:15px;font-weight:700">${dateLabel}</div>
+          <div style="font-size:9px;color:#000;margin-top:3px">Printed: ${printedAt}</div>
+        </div>
+      </div>
+      <div style="display:flex;gap:10px;margin-bottom:16px">
+        ${[
+          ['Total Revenue', `${curSym}${fmt(totalRevenue)}`],
+          ['Cash Sales', `${curSym}${fmt(totalCashSales)}`],
+          ['Credit Sales', `${curSym}${fmt(totalCreditSales)}`],
+          ['Discounts', `${curSym}${fmt(totalDiscount)}`],
+        ].map(([lbl, val]) => `
+          <div style="flex:1;padding:10px 12px;border:1.5px solid #000;text-align:center">
+            <div style="font-size:9px;letter-spacing:0.8px;text-transform:uppercase;font-weight:600;margin-bottom:4px">${lbl}</div>
+            <div style="font-size:14px;font-weight:800">${val}</div>
+          </div>`).join('')}
+      </div>
+      <div style="border:1.5px solid #000;margin-bottom:16px">
+        <table>
+          <thead><tr>
+            <th style="width:28px">#</th>
+            <th>Product</th>
+            <th>Category</th>
+            <th>Unit</th>
+            <th style="text-align:right">Total Qty Sold</th>
+            <th style="text-align:right">Avg Unit Price</th>
+            <th style="text-align:right">Total Revenue</th>
+          </tr></thead>
+          <tbody>${rows || '<tr><td colspan="7" style="padding:20px;text-align:center;color:#666">No sales in this period</td></tr>'}</tbody>
+          <tfoot><tr>
+            <td colspan="6">GRAND TOTAL — ${items.length} product${items.length !== 1 ? 's' : ''}</td>
+            <td style="text-align:right;font-size:13px;font-family:monospace">${curSym}${fmt(grandRevenue)}</td>
+          </tr></tfoot>
+        </table>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:24px;margin-top:32px;margin-bottom:16px">
+        ${[['Prepared By', ''], ['Checked By', ''], ['Printed By', printedBy]].map(([label, name]) => `
+          <div>
+            <div style="font-size:9px;letter-spacing:0.8px;text-transform:uppercase;font-weight:700;margin-bottom:6px">${label}</div>
+            <div style="font-size:11px;font-weight:600;min-height:18px;margin-bottom:6px">${name}</div>
+            <div style="height:32px;border-bottom:1.5px solid #000;margin-bottom:4px"></div>
+            <div style="font-size:9px;text-align:center">Name / Signature / Date</div>
+          </div>`).join('')}
+      </div>
+      <div style="border-top:1px solid #bbb;padding-top:8px;display:flex;justify-content:space-between">
+        <span style="font-size:9px;color:#000">${businessName} — Confidential</span>
+        <span style="font-size:9px;color:#000">Printed: ${printedAt}</span>
+      </div>
+    </body></html>`;
+
+    const w = window.open('', '_blank');
+    if (w) { w.document.write(html); w.document.close(); w.focus(); setTimeout(() => { w.print(); }, 300); }
+  };
+
   return (
     <div className="page-content">
       <div className="page-header">
@@ -455,12 +554,20 @@ const SalesReport = () => {
           <h1>{t('salesReport')}</h1>
           <p>{t('salesReportSubtitle')}</p>
         </div>
-        <button
-          onClick={handlePrintReport}
-          style={{ display: 'inline-flex', alignItems: 'center', gap: 7, padding: '10px 20px', borderRadius: 10, border: 'none', backgroundColor: '#16a34a', color: '#fff', cursor: 'pointer', fontSize: 13, fontWeight: 700 }}
-        >
-          <FiPrinter size={15} /> {t('printReport')}
-        </button>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <button
+            onClick={handleExportPDF}
+            style={{ display: 'inline-flex', alignItems: 'center', gap: 7, padding: '10px 20px', borderRadius: 10, border: 'none', backgroundColor: '#2563eb', color: '#fff', cursor: 'pointer', fontSize: 13, fontWeight: 700 }}
+          >
+            <FiFileText size={15} /> Export PDF
+          </button>
+          <button
+            onClick={handlePrintReport}
+            style={{ display: 'inline-flex', alignItems: 'center', gap: 7, padding: '10px 20px', borderRadius: 10, border: 'none', backgroundColor: '#16a34a', color: '#fff', cursor: 'pointer', fontSize: 13, fontWeight: 700 }}
+          >
+            <FiPrinter size={15} /> {t('printReport')}
+          </button>
+        </div>
       </div>
 
       {/* Filters */}
