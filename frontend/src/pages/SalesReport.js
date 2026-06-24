@@ -457,7 +457,19 @@ const SalesReport = () => {
       ? new Date(dateFrom).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' })
       : `${new Date(dateFrom).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })} — ${new Date(dateTo).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}`;
 
-    const items = (itemSummary || []).slice().sort((a, b) => parseFloat(b.total_revenue || 0) - parseFloat(a.total_revenue || 0));
+    // Fetch the per-item breakdown on demand so the PDF works from any tab,
+    // not just after the user has visited By Item. Fallback to cached state
+    // if the network call fails.
+    let items = [];
+    try {
+      const fromUTC = dateFrom ? toSqliteUTC(new Date(`${dateFrom}T00:00:00`)) : '';
+      const toUTC   = dateTo   ? toSqliteUTC(new Date(`${dateTo}T23:59:59`)) : '';
+      const res = await getOrderProductSummary(fromUTC, toUTC, userFilter);
+      items = res.data || [];
+    } catch (e) {
+      items = itemSummary || [];
+    }
+    items = items.slice().sort((a, b) => parseFloat(b.total_revenue || 0) - parseFloat(a.total_revenue || 0));
     const fmt = (v) => parseFloat(v || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
     const fmtQty = (v) => parseFloat(v || 0).toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 });
     const printedAt = new Date().toLocaleString('en-US', { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
