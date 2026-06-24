@@ -369,7 +369,7 @@ router.get('/product-summary', auth, readOnlyGuard, (req, res) => {
         p.units_json,
         p.default_unit,
         SUM(${baseQtyExpr('p', 'oi')}) AS total_qty,
-        ROUND(SUM(oi.total_price) / NULLIF(SUM(oi.quantity), 0), 2) AS avg_price,
+        ROUND(SUM(oi.total_price) / NULLIF(SUM(${baseQtyExpr('p', 'oi')}), 0), 2) AS avg_price,
         SUM(oi.total_price) AS total_revenue
       FROM order_items oi
       INNER JOIN orders o ON o.sync_id = oi.order_sync_id
