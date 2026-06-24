@@ -18,6 +18,8 @@ const PaymentVoucherFormModal = ({
   defaultPaidFrom,     // optional — overrides 'Main cashier' default for new
   lockPaidFrom,        // boolean — if true, paid_from select is disabled
   defaultDate,         // optional — overrides today's date for new
+  defaultCurrency,     // v1.8.18 — 'USD' | 'FRA' | 'K' — auto-focuses that
+                       //   currency's amount input. Other inputs visible but blurred.
   extraPayload,        // optional object — merged into the API payload (e.g. { cashier_id })
 }) => {
   const { symbol: curSym } = useCurrency();
@@ -168,19 +170,25 @@ const PaymentVoucherFormModal = ({
               </label>
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10 }}>
                 {[
-                  { key: 'usd_amount', label: 'USD ($)', color: '#16a34a', step: '0.01', placeholder: '0.00' },
-                  { key: 'fra_amount', label: 'FRA',     color: '#7c3aed', step: '1',    placeholder: '0' },
-                  { key: 'k_amount',   label: 'K',       color: '#ea580c', step: '1',    placeholder: '0' },
-                ].map((f) => (
-                  <div key={f.key}>
-                    <label style={{ fontSize: 11, color: f.color, fontWeight: 700, textTransform: 'uppercase', marginBottom: 3, display: 'block' }}>{f.label}</label>
-                    <input type="number" min="0" step={f.step}
-                      value={form[f.key]}
-                      onChange={e => setForm(prev => ({ ...prev, [f.key]: e.target.value }))}
-                      placeholder={f.placeholder}
-                      style={{ width: '100%', padding: '8px 10px', border: `2px solid ${parseFloat(form[f.key] || 0) > 0 ? f.color : '#d1d5db'}`, borderRadius: 6, fontSize: 14, fontWeight: 600, color: parseFloat(form[f.key] || 0) > 0 ? f.color : '#374151', boxSizing: 'border-box' }} />
-                  </div>
-                ))}
+                  { key: 'usd_amount', ccy: 'USD', label: 'USD ($)', color: '#16a34a', step: '0.01', placeholder: '0.00' },
+                  { key: 'fra_amount', ccy: 'FRA', label: 'FRA',     color: '#7c3aed', step: '1',    placeholder: '0' },
+                  { key: 'k_amount',   ccy: 'K',   label: 'K',       color: '#ea580c', step: '1',    placeholder: '0' },
+                ].map((f) => {
+                  // v1.8.18 — auto-focus the input whose currency was hinted
+                  // by the caller (e.g. user clicked + on the FRA card).
+                  const isDefault = defaultCurrency && f.ccy === defaultCurrency;
+                  return (
+                    <div key={f.key}>
+                      <label style={{ fontSize: 11, color: f.color, fontWeight: 700, textTransform: 'uppercase', marginBottom: 3, display: 'block' }}>{f.label}</label>
+                      <input type="number" min="0" step={f.step}
+                        autoFocus={isDefault}
+                        value={form[f.key]}
+                        onChange={e => setForm(prev => ({ ...prev, [f.key]: e.target.value }))}
+                        placeholder={f.placeholder}
+                        style={{ width: '100%', padding: '8px 10px', border: `2px solid ${parseFloat(form[f.key] || 0) > 0 || isDefault ? f.color : '#d1d5db'}`, borderRadius: 6, fontSize: 14, fontWeight: 600, color: parseFloat(form[f.key] || 0) > 0 ? f.color : '#374151', boxSizing: 'border-box', boxShadow: isDefault ? `0 0 0 3px ${f.color}25` : 'none' }} />
+                    </div>
+                  );
+                })}
               </div>
               <div style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 10px', background: '#f9fafb', borderRadius: 6, fontSize: 13, marginTop: 8 }}>
                 <span style={{ color: '#6b7280' }}>Header total (USD only)</span>

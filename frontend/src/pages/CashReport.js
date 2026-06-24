@@ -84,6 +84,9 @@ const CashReport = () => {
 
   // Voucher modal state — form lives inside the shared PaymentVoucherFormModal.
   const [showVoucher, setShowVoucher] = useState(false);
+  // v1.8.18 — currency hint for the PV modal so the right amount input
+  // gets focused when the user clicks + on a specific currency card.
+  const [voucherDefaultCcy, setVoucherDefaultCcy] = useState(null);
 
   // CR auto-creation confirmation
   const [showCRConfirm, setShowCRConfirm] = useState(false);
@@ -250,7 +253,13 @@ const CashReport = () => {
       .then(r => setExchangeNet(r.data || { usd_net: 0, fra_net: 0, k_net: 0 }))
       .catch(() => setExchangeNet({ usd_net: 0, fra_net: 0, k_net: 0 }));
   }, [date, selectedCashier, exchangeRefreshKey]);
-  useEffect(() => { if (reports.length >= 0) loadDate(date); }, [reports]); // eslint-disable-line
+  // v1.8.18 — re-run loadDate whenever the auto-selected cashier resolves.
+  // fetchSalesCashiers(today) is async; on first mount it eventually fires
+  // setSelectedCashier(firstId). Before that, loadDate would run with cid=''
+  // which the backend treats as 'all cashiers' — so the form initially
+  // showed everyone's totals while the dropdown read 'Nahom'. Adding
+  // selectedCashier to deps + passing it explicitly fixes the race.
+  useEffect(() => { if (reports.length >= 0) loadDate(date, selectedCashier); }, [reports, selectedCashier]); // eslint-disable-line
   useEffect(() => {
     fetchDaily(date, '0').then(all => {
       const totalExpected = parseFloat(all?.total_revenue || 0);
@@ -404,7 +413,12 @@ const CashReport = () => {
   };
 
   // ── Expenses list helper ───────────────────────────────────────────
-  const openExpensesList = async () => {
+  // v1.8.18 — optional currencyFilter ('USD'|'FRA'|'K') filters the
+  // modal client-side to PVs that paid out of that currency's drawer.
+  // No backend filter param; we just slice the response.
+  const [expensesFilterCcy, setExpensesFilterCcy] = useState(null);
+  const openExpensesList = async (currencyFilter = null) => {
+    setExpensesFilterCcy(currencyFilter || null);
     try {
       const res = await getPaymentVouchers({ date, paid_from: 'Cash Drawer', cashier_id: parseInt(selectedCashier) || 0 });
       setExpensesList(res.data || []);
@@ -553,7 +567,7 @@ const CashReport = () => {
   };
 
   // ── Voucher modal helpers ──────────────────────────────────────────
-  const openVoucherForm = () => setShowVoucher(true);
+  const openVoucherForm = (currency = null) => { setVoucherDefaultCcy(currency); setShowVoucher(true); };
 
   // Called by PaymentVoucherFormModal after a successful save.
   // Refresh the daily report so the new expense total flows into the form.
@@ -723,98 +737,92 @@ const CashReport = () => {
           </div>
         )}
 
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 16 }}>
-          {/* v1.8.11+v1.8.14 — per-currency cards. Each stays in its own
-              currency end-to-end: counted (cashier input), expected (POS
-              received minus expenses paid out of drawer), difference,
-              status. No USD-equivalent conversion. */}
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: 16, marginBottom: 16 }}>
+          {/* v1.8.18 — per-currency reconciliation cards with view/+ icons
+              for that currency's expenses inside the card. No more shared
+              'Expenses Paid From Drawer' row below — each card owns its
+              own currency's PV view + add. */}
           {[
-            { key: 'usd_received', label: 'USD Cash ($)',  ccy: 'USD', symbol: '$',  dec: 2, posExp: expectedByCcy.usd, exp: expensesByCcy.usd, step: '0.01', color: '#16a34a' },
-            { key: 'fra_received', label: 'FRA Cash',      ccy: 'FRA', symbol: '',   dec: 0, posExp: expectedByCcy.fra, exp: expensesByCcy.fra, step: '1',    color: '#7c3aed' },
-            { key: 'k_received',   label: 'K Cash',        ccy: 'K',   symbol: '',   dec: 0, posExp: expectedByCcy.k,   exp: expensesByCcy.k,   step: '1',    color: '#ea580c' },
+            { key: 'usd_received', label: 'USD Cash ($)',  ccy: 'USD', symbol: '$',  dec: 2, posExp: expectedByCcy.usd, exp: expensesByCcy.usd, step: '0.01', color: '#16a34a', bg: '#f0fdf4' },
+            { key: 'fra_received', label: 'FRA Cash',      ccy: 'FRA', symbol: '',   dec: 0, posExp: expectedByCcy.fra, exp: expensesByCcy.fra, step: '1',    color: '#7c3aed', bg: '#faf5ff' },
+            { key: 'k_received',   label: 'K Cash',        ccy: 'K',   symbol: '',   dec: 0, posExp: expectedByCcy.k,   exp: expensesByCcy.k,   step: '1',    color: '#ea580c', bg: '#fff7ed' },
           ].map(c => {
-            const counted    = parseFloat(form[c.key] || 0) || 0;
-            // Expected drawer at end of shift = POS received − expenses
-            // paid out of this currency's drawer today.
+            const counted     = parseFloat(form[c.key] || 0) || 0;
             const netExpected = c.posExp - c.exp;
-            const diff       = counted - netExpected;
-            const eps        = c.dec === 2 ? 0.01 : 1;
-            const status     = Math.abs(diff) < eps ? 'OK'
-                             : diff > 0 ? (diff < 10 ? 'Slight Surplus' : 'Surplus')
-                             : (diff > -10 ? 'Slight Short' : 'Short');
-            const isOk       = status === 'OK';
-            const fmt        = (n) => `${c.symbol}${parseFloat(n || 0).toLocaleString(undefined, { minimumFractionDigits: c.dec, maximumFractionDigits: c.dec })}`;
+            const diff        = counted - netExpected;
+            const eps         = c.dec === 2 ? 0.01 : 1;
+            const status      = Math.abs(diff) < eps ? 'OK'
+                              : diff > 0 ? (diff < 10 ? 'Slight Surplus' : 'Surplus')
+                              : (diff > -10 ? 'Slight Short' : 'Short');
+            const isOk        = status === 'OK';
+            const fmt         = (n) => `${c.symbol}${parseFloat(n || 0).toLocaleString(undefined, { minimumFractionDigits: c.dec, maximumFractionDigits: c.dec })}`;
             return (
-              <div key={c.key} className="form-group" style={{ borderLeft: `4px solid ${c.color}`, paddingLeft: 10 }}>
-                <label style={{ color: c.color, fontWeight: 700 }}>{c.label}</label>
-                <input type="number" value={form[c.key]}
-                  onChange={e => setForm({ ...form, [c.key]: e.target.value })}
-                  disabled={!editMode} placeholder={c.dec === 2 ? '0.00' : '0'} step={c.step}
-                  style={inputStyle(editMode)} />
-                <div style={{ fontSize: 11, color: '#6b7280', marginTop: 4, lineHeight: 1.5 }}>
-                  POS net: <strong>{fmt(c.posExp)}</strong>
-                  {c.exp > 0 && <> · Expenses: <strong style={{ color: '#dc2626' }}>−{fmt(c.exp)}</strong></>}
-                  {' '}→ Expected: <strong>{fmt(netExpected)}</strong>
+              <div key={c.key} style={{
+                background: c.bg,
+                border: `1.5px solid ${c.color}40`,
+                borderLeft: `5px solid ${c.color}`,
+                borderRadius: 10,
+                padding: 14,
+                display: 'flex',
+                flexDirection: 'column',
+                gap: 10,
+              }}>
+                {/* Header: currency label + action buttons */}
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <span style={{ color: c.color, fontWeight: 800, fontSize: 14, textTransform: 'uppercase', letterSpacing: 0.4 }}>{c.label}</span>
+                  <div className="no-print" style={{ display: 'flex', gap: 4 }}>
+                    <button
+                      onClick={() => openExpensesList(c.ccy)}
+                      title={`View ${c.ccy} expenses`}
+                      style={{ width: 28, height: 28, borderRadius: 6, border: `1px solid ${c.color}40`, background: '#fff', color: c.color, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                      <FiEye size={13} />
+                    </button>
+                    <button
+                      onClick={() => openVoucherForm(c.ccy)}
+                      disabled={!selectedCashier}
+                      title={!selectedCashier ? 'Select a cashier first' : `Add ${c.ccy} expense voucher`}
+                      style={{ width: 28, height: 28, borderRadius: 6, border: 'none', background: selectedCashier ? c.color : '#d1d5db', color: '#fff', cursor: selectedCashier ? 'pointer' : 'not-allowed', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                      <FiPlus size={14} />
+                    </button>
+                  </div>
                 </div>
-                <div style={{ marginTop: 2, fontSize: 11 }}>
-                  <span style={{ color: isOk ? '#16a34a' : diff > 0 ? '#d97706' : '#dc2626', fontWeight: 700 }}>
-                    Diff: {diff > 0 ? '+' : ''}{fmt(diff)} · {status}
+
+                {/* Counted input */}
+                <div>
+                  <label style={{ fontSize: 10, color: '#6b7280', fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.4 }}>Counted</label>
+                  <input type="number" value={form[c.key]}
+                    onChange={e => setForm({ ...form, [c.key]: e.target.value })}
+                    disabled={!editMode} placeholder={c.dec === 2 ? '0.00' : '0'} step={c.step}
+                    style={{ ...inputStyle(editMode), marginTop: 4, fontSize: 16, fontWeight: 600 }} />
+                </div>
+
+                {/* Reconciliation lines */}
+                <div style={{ fontSize: 12, color: '#475569', display: 'flex', flexDirection: 'column', gap: 2, padding: '8px 10px', background: '#fff', borderRadius: 6, border: '1px solid #e5e7eb' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                    <span>POS net</span><strong>{fmt(c.posExp)}</strong>
+                  </div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', color: c.exp > 0 ? '#dc2626' : '#9ca3af' }}>
+                    <span>− Expenses</span><strong>{c.exp > 0 ? fmt(c.exp) : fmt(0)}</strong>
+                  </div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', borderTop: '1px dashed #e5e7eb', paddingTop: 3, marginTop: 2 }}>
+                    <span style={{ fontWeight: 700 }}>= Expected</span><strong style={{ color: c.color }}>{fmt(netExpected)}</strong>
+                  </div>
+                </div>
+
+                {/* Diff + status */}
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '6px 10px', background: isOk ? '#dcfce7' : diff > 0 ? '#fef3c7' : '#fee2e2', border: `1px solid ${isOk ? '#86efac' : diff > 0 ? '#fde68a' : '#fecaca'}`, borderRadius: 6 }}>
+                  <span style={{ fontSize: 11, color: '#475569', fontWeight: 600 }}>Diff</span>
+                  <span style={{ color: isOk ? '#16a34a' : diff > 0 ? '#d97706' : '#dc2626', fontWeight: 800, fontSize: 13 }}>
+                    {diff > 0 ? '+' : ''}{fmt(diff)} · {status}
                   </span>
                 </div>
               </div>
             );
           })}
 
-          {/* v1.8.16 — per-currency Expenses paid from drawer. Read-only
-              (driven by PVs). One field per currency; +/eye buttons stay
-              shared on the right. */}
-          <div className="form-group" style={{ gridColumn: '1 / -1' }}>
-            <label>Expenses Paid From Drawer</label>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr auto auto', gap: 8, alignItems: 'end' }}>
-              <div>
-                <small style={{ fontSize: 11, color: '#16a34a', fontWeight: 700, display: 'block', marginBottom: 3 }}>USD ($)</small>
-                <input type="number" disabled value={expensesByCcy.usd || 0}
-                  style={{ background: '#f3f4f6', fontWeight: 600, width: '100%', boxSizing: 'border-box' }} />
-              </div>
-              <div>
-                <small style={{ fontSize: 11, color: '#7c3aed', fontWeight: 700, display: 'block', marginBottom: 3 }}>FRA</small>
-                <input type="number" disabled value={expensesByCcy.fra || 0}
-                  style={{ background: '#f3f4f6', fontWeight: 600, width: '100%', boxSizing: 'border-box' }} />
-              </div>
-              <div>
-                <small style={{ fontSize: 11, color: '#ea580c', fontWeight: 700, display: 'block', marginBottom: 3 }}>K</small>
-                <input type="number" disabled value={expensesByCcy.k || 0}
-                  style={{ background: '#f3f4f6', fontWeight: 600, width: '100%', boxSizing: 'border-box' }} />
-              </div>
-              <button
-                onClick={openExpensesList}
-                title="View expenses"
-                className="no-print"
-                style={{
-                  width: 34, height: 34, borderRadius: 8, border: '1.5px solid #e5e7eb', flexShrink: 0,
-                  background: '#fff', color: '#6b7280', cursor: 'pointer',
-                  display: 'flex', alignItems: 'center', justifyContent: 'center',
-                }}>
-                <FiEye size={15} />
-              </button>
-              <button
-                onClick={openVoucherForm}
-                disabled={!selectedCashier}
-                title={!selectedCashier ? 'Select a cashier first' : 'Add expense voucher'}
-                className="no-print"
-                style={{
-                  width: 34, height: 34, borderRadius: 8, border: 'none', flexShrink: 0,
-                  background: selectedCashier ? '#2563eb' : '#d1d5db', color: '#fff',
-                  cursor: selectedCashier ? 'pointer' : 'not-allowed',
-                  display: 'flex', alignItems: 'center', justifyContent: 'center',
-                }}>
-                <FiPlus size={16} />
-              </button>
-            </div>
-            <small style={{ color: '#6b7280', fontSize: 11, marginTop: 4, display: 'block' }}>
-              Subtracted from the matching currency's Expected above. A USD PV reduces USD drawer; a FRA PV reduces FRA drawer.
-            </small>
-          </div>
+          {/* v1.8.18 — standalone Expenses row removed. Each currency's view/+
+              now lives INSIDE the per-currency card above for clearer linkage
+              (USD card → USD expenses, FRA card → FRA expenses, etc.). */}
 
           <div className="form-group">
             <label>Credit Sales / On Account ({curSym})</label>
@@ -1056,27 +1064,53 @@ const CashReport = () => {
            the voucher is correctly tagged to this shift. */}
       <PaymentVoucherFormModal
         open={showVoucher}
-        onClose={() => setShowVoucher(false)}
+        onClose={() => { setShowVoucher(false); setVoucherDefaultCcy(null); }}
         onSaved={handleVoucherSaved}
         defaultPaidFrom="Cash Drawer"
         lockPaidFrom
         defaultDate={date}
+        defaultCurrency={voucherDefaultCcy}
         extraPayload={{ cashier_id: parseInt(selectedCashier) || 0 }}
       />
 
 
       {/* ── Expenses List Modal ──────────────────────────────────── */}
-      {showExpenses && (
+      {showExpenses && (() => {
+        // v1.8.18 — currency filter. When opened from a USD card, show only
+        // PVs that hit the USD drawer (usd_amount > 0 OR legacy cash_amount).
+        // Pick the column matching the active currency; row total displayed
+        // is THAT currency's amount (not the legacy USD-converted `amount`).
+        const colFor = (ccy) => ccy === 'USD' ? ['usd_amount', 'cash_amount']
+                              : ccy === 'FRA' ? ['fra_amount', 'bank_amount']
+                              : ccy === 'K'   ? ['k_amount',   'momo_amount']
+                              : null;
+        const valFor = (v, ccy) => {
+          const cols = colFor(ccy);
+          if (!cols) return parseFloat(v.amount || 0);
+          const newV = parseFloat(v[cols[0]] || 0);
+          return newV > 0 ? newV : parseFloat(v[cols[1]] || 0);
+        };
+        const filtered = expensesFilterCcy
+          ? expensesList.filter(v => valFor(v, expensesFilterCcy) > 0)
+          : expensesList;
+        const ccyLabel = expensesFilterCcy === 'USD' ? 'USD ($)' : expensesFilterCcy === 'FRA' ? 'FRA' : expensesFilterCcy === 'K' ? 'K' : 'All';
+        const ccySym   = expensesFilterCcy === 'USD' ? '$' : '';
+        const ccyDec   = expensesFilterCcy === 'USD' ? 2 : 0;
+        const fmtA     = (n) => `${ccySym}${parseFloat(n || 0).toLocaleString(undefined, { minimumFractionDigits: ccyDec, maximumFractionDigits: ccyDec })}`;
+        const totalFiltered = filtered.reduce((s, v) => s + (expensesFilterCcy ? valFor(v, expensesFilterCcy) : parseFloat(v.amount || 0)), 0);
+        return (
         <Portal>
         <div className="modal-overlay" onClick={() => setShowExpenses(false)}>
           <div className="modal" style={{ maxWidth: 620 }} onClick={e => e.stopPropagation()}>
             <div className="modal-header">
-              <h3>Cash Drawer Expenses — {formatDate(date)}</h3>
+              <h3>Cash Drawer Expenses — {ccyLabel} — {formatDate(date)}</h3>
               <button className="modal-close" onClick={() => setShowExpenses(false)}>×</button>
             </div>
             <div className="modal-body" style={{ padding: 0 }}>
-              {expensesList.length === 0 ? (
-                <p style={{ textAlign: 'center', color: '#9ca3af', padding: '32px 0' }}>No expenses recorded for this date.</p>
+              {filtered.length === 0 ? (
+                <p style={{ textAlign: 'center', color: '#9ca3af', padding: '32px 0' }}>
+                  No {expensesFilterCcy ? expensesFilterCcy + ' ' : ''}expenses recorded for this date.
+                </p>
               ) : (
                 <table className="data-table" style={{ fontSize: 13 }}>
                   <thead>
@@ -1085,13 +1119,15 @@ const CashReport = () => {
                     </tr>
                   </thead>
                   <tbody>
-                    {expensesList.map(v => (
+                    {filtered.map(v => (
                       <tr key={v.id}>
                         <td style={{ fontWeight: 500 }}>{v.voucher_number}</td>
                         <td><span className="badge badge-gray">{v.category}</span></td>
                         <td>{v.paid_to}</td>
                         <td style={{ color: '#6b7280' }}>{v.description || '—'}</td>
-                        <td style={{ textAlign: 'right', color: '#dc2626', fontWeight: 600 }}>{curSym}{parseFloat(v.amount).toLocaleString()}</td>
+                        <td style={{ textAlign: 'right', color: '#dc2626', fontWeight: 600 }}>
+                          {expensesFilterCcy ? fmtA(valFor(v, expensesFilterCcy)) : `$${parseFloat(v.amount).toLocaleString()}`}
+                        </td>
                       </tr>
                     ))}
                   </tbody>
@@ -1099,7 +1135,7 @@ const CashReport = () => {
                     <tr style={{ fontWeight: 700, borderTop: '2px solid #e5e7eb', background: '#f9fafb' }}>
                       <td colSpan={4} style={{ textAlign: 'right' }}>Total</td>
                       <td style={{ textAlign: 'right', color: '#dc2626' }}>
-                        ${expensesList.reduce((s, v) => s + parseFloat(v.amount || 0), 0).toLocaleString()}
+                        {expensesFilterCcy ? fmtA(totalFiltered) : `$${totalFiltered.toLocaleString()}`}
                       </td>
                     </tr>
                   </tfoot>
@@ -1112,7 +1148,8 @@ const CashReport = () => {
           </div>
         </div>
         </Portal>
-      )}
+        );
+      })()}
 
       {/* ── Print Preview ─────────────────────────────────────────── */}
       {false && showPrintPreview && (
