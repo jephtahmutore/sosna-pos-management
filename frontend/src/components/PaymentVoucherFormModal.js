@@ -20,6 +20,8 @@ const PaymentVoucherFormModal = ({
   defaultDate,         // optional — overrides today's date for new
   defaultCurrency,     // v1.8.18 — 'USD' | 'FRA' | 'K' — auto-focuses that
                        //   currency's amount input. Other inputs visible but blurred.
+  defaultPaidTo,       // v1.8.24 — pre-fills the Paid To field on new vouchers
+                       //   (e.g. the cashier's name when opened from Cash Report).
   extraPayload,        // optional object — merged into the API payload (e.g. { cashier_id })
 }) => {
   const { symbol: curSym } = useCurrency();
@@ -65,7 +67,8 @@ const PaymentVoucherFormModal = ({
       });
     } else {
       setForm({
-        paid_to: '', description: '', category: 'Other',
+        paid_to: defaultPaidTo || '', // v1.8.24 — pre-fill with cashier name when provided
+        description: '', category: 'Other',
         usd_amount: '', fra_amount: '', k_amount: '',
         date: defaultDate || todayStr(),
         paid_from: defaultPaidFrom || 'Main cashier',
@@ -73,7 +76,7 @@ const PaymentVoucherFormModal = ({
       });
     }
     setError('');
-  }, [open, editVoucher, defaultPaidFrom, defaultDate]);
+  }, [open, editVoucher, defaultPaidFrom, defaultDate, defaultPaidTo]);
 
   if (!open) return null;
 
@@ -126,7 +129,10 @@ const PaymentVoucherFormModal = ({
 
   return (
     <Portal>
-      <div className="modal-overlay" onClick={onClose}>
+      {/* v1.8.24 — click-outside does NOT close. Backdrop is decorative.
+          User must click Cancel or X to dismiss. Prevents losing typed
+          amounts when accidentally clicking outside the modal. */}
+      <div className="modal-overlay">
         <div className="modal" onClick={e => e.stopPropagation()}>
           <div className="modal-header">
             <h3>{editVoucher ? 'Edit Payment Voucher' : 'New Payment Voucher'}</h3>
@@ -174,18 +180,33 @@ const PaymentVoucherFormModal = ({
                   { key: 'fra_amount', ccy: 'FRA', label: 'FRA',     color: '#7c3aed', step: '1',    placeholder: '0' },
                   { key: 'k_amount',   ccy: 'K',   label: 'K',       color: '#ea580c', step: '1',    placeholder: '0' },
                 ].map((f) => {
-                  // v1.8.18 — auto-focus the input whose currency was hinted
-                  // by the caller (e.g. user clicked + on the FRA card).
                   const isDefault = defaultCurrency && f.ccy === defaultCurrency;
+                  // v1.8.24 — one PV = one currency. Disable an input when
+                  // ANY OTHER currency already has a value > 0. Clear the
+                  // active one to switch.
+                  const otherKeys = ['usd_amount', 'fra_amount', 'k_amount'].filter(k => k !== f.key);
+                  const someoneElseHasValue = otherKeys.some(k => parseFloat(form[k] || 0) > 0);
+                  const locked = someoneElseHasValue;
                   return (
                     <div key={f.key}>
-                      <label style={{ fontSize: 11, color: f.color, fontWeight: 700, textTransform: 'uppercase', marginBottom: 3, display: 'block' }}>{f.label}</label>
+                      <label style={{ fontSize: 11, color: locked ? '#cbd5e1' : f.color, fontWeight: 700, textTransform: 'uppercase', marginBottom: 3, display: 'block' }}>{f.label}{locked && ' (locked)'}</label>
                       <input type="number" min="0" step={f.step}
                         autoFocus={isDefault}
+                        disabled={locked}
                         value={form[f.key]}
                         onChange={e => setForm(prev => ({ ...prev, [f.key]: e.target.value }))}
                         placeholder={f.placeholder}
-                        style={{ width: '100%', padding: '8px 10px', border: `2px solid ${parseFloat(form[f.key] || 0) > 0 || isDefault ? f.color : '#d1d5db'}`, borderRadius: 6, fontSize: 14, fontWeight: 600, color: parseFloat(form[f.key] || 0) > 0 ? f.color : '#374151', boxSizing: 'border-box', boxShadow: isDefault ? `0 0 0 3px ${f.color}25` : 'none' }} />
+                        title={locked ? 'Clear the other currency to switch — one PV = one currency.' : ''}
+                        style={{
+                          width: '100%', padding: '8px 10px',
+                          border: `2px solid ${locked ? '#e5e7eb' : (parseFloat(form[f.key] || 0) > 0 || isDefault ? f.color : '#d1d5db')}`,
+                          borderRadius: 6, fontSize: 14, fontWeight: 600,
+                          color: locked ? '#cbd5e1' : (parseFloat(form[f.key] || 0) > 0 ? f.color : '#374151'),
+                          background: locked ? '#f9fafb' : '#fff',
+                          cursor: locked ? 'not-allowed' : 'text',
+                          boxSizing: 'border-box',
+                          boxShadow: isDefault && !locked ? `0 0 0 3px ${f.color}25` : 'none',
+                        }} />
                     </div>
                   );
                 })}

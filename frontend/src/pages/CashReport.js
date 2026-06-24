@@ -1242,6 +1242,9 @@ const CashReport = () => {
            Paid From is locked to "Cash Drawer" since this modal is the
            cashier's end-of-day expense entry. Cashier ID is attached so
            the voucher is correctly tagged to this shift. */}
+      {/* v1.8.24 — defaultPaidTo pre-fills with the currently selected
+          cashier's name. Cashier is editable in the modal if the actual
+          payee is someone else. */}
       <PaymentVoucherFormModal
         open={showVoucher}
         onClose={() => { setShowVoucher(false); setVoucherDefaultCcy(null); }}
@@ -1250,6 +1253,10 @@ const CashReport = () => {
         lockPaidFrom
         defaultDate={date}
         defaultCurrency={voucherDefaultCcy}
+        defaultPaidTo={(() => {
+          const c = salesCashiers.find(u => String(u.id) === String(selectedCashier));
+          return c ? `${c.first_name || ''} ${c.last_name || ''}`.trim() : '';
+        })()}
         extraPayload={{ cashier_id: parseInt(selectedCashier) || 0 }}
       />
 
