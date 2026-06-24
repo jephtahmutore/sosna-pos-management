@@ -177,6 +177,7 @@ router.post('/', auth, (req, res) => {
             after_change, expected, difference, status, comment, cashier_id,
             usd_received, fra_received, k_received,
             usd_expected, fra_expected, k_expected,
+            usd_expenses, fra_expenses, k_expenses,
             mobile_money, cash, bank } = req.body;
     const usdAmt = parseFloat(usd_received ?? cash ?? 0);
     const fraAmt = parseFloat(fra_received ?? mobile_money ?? 0);
@@ -184,6 +185,10 @@ router.post('/', auth, (req, res) => {
     const usdExp = parseFloat(usd_expected ?? 0) || 0;
     const fraExp = parseFloat(fra_expected ?? 0) || 0;
     const kExp   = parseFloat(k_expected   ?? 0) || 0;
+    // v1.8.26 — snapshot per-currency expenses paid out of each drawer.
+    const usdExpense = parseFloat(usd_expenses ?? 0) || 0;
+    const fraExpense = parseFloat(fra_expenses ?? 0) || 0;
+    const kExpense   = parseFloat(k_expenses   ?? 0) || 0;
 
     const cashierId = cashier_id !== undefined ? parseInt(cashier_id) : 0; // 0 = All
     const tenantId = syncConfig.getTenantId(req);
@@ -199,6 +204,7 @@ router.post('/', auth, (req, res) => {
         `UPDATE cash_reports SET
           initial_change=?, usd_received=?, fra_received=?, k_received=?,
           usd_expected=?, fra_expected=?, k_expected=?,
+          usd_expenses=?, fra_expenses=?, k_expenses=?,
           mobile_money=0, cash=0, bank=0,
           expenses=?, pending=?, total=?,
           after_change=?, expected=?, difference=?, status=?, comment=?,
@@ -206,6 +212,7 @@ router.post('/', auth, (req, res) => {
          WHERE date=? AND cashier_id=? AND deleted_at IS NULL`
       ).run(initial_change, usdAmt, fraAmt, kAmt,
              usdExp, fraExp, kExp,
+             usdExpense, fraExpense, kExpense,
              expenses, pending, total,
              after_change, expected, difference, status, comment,
              cashierId, date, cashierId);
@@ -215,14 +222,16 @@ router.post('/', auth, (req, res) => {
         `INSERT INTO cash_reports (date, initial_change,
           usd_received, fra_received, k_received,
           usd_expected, fra_expected, k_expected,
+          usd_expenses, fra_expenses, k_expenses,
           mobile_money, cash, bank,
           expenses, pending, total,
           after_change, expected, difference, status, comment, cashier_id, created_by,
           sync_id, tenant_id, branch_id, device_id, synced, created_at, updated_at)
-         VALUES (?,?, ?,?,?, ?,?,?, 0,0,0, ?,?,?,?,?,?,?,?,?,?, ?,?,?,?, 0,datetime('now'),datetime('now'))`
+         VALUES (?,?, ?,?,?, ?,?,?, ?,?,?, 0,0,0, ?,?,?,?,?,?,?,?,?,?, ?,?,?,?, 0,datetime('now'),datetime('now'))`
       ).run(date, initial_change,
              usdAmt, fraAmt, kAmt,
              usdExp, fraExp, kExp,
+             usdExpense, fraExpense, kExpense,
              expenses, pending, total,
              after_change, expected, difference, status, comment,
              cashierId, req.user.id,

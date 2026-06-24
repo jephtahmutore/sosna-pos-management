@@ -380,6 +380,10 @@ const CashReport = () => {
           usd_expected: parseFloat(expectedByCcy.usd) || 0,
           fra_expected: parseFloat(expectedByCcy.fra) || 0,
           k_expected:   parseFloat(expectedByCcy.k)   || 0,
+          // v1.8.26 — snapshot per-currency expenses paid out of drawer.
+          usd_expenses: parseFloat(expensesByCcy.usd) || 0,
+          fra_expenses: parseFloat(expensesByCcy.fra) || 0,
+          k_expenses:   parseFloat(expensesByCcy.k)   || 0,
           expenses: exp,
           pending: pend,
           total,
@@ -1195,18 +1199,21 @@ const CashReport = () => {
           <thead>
             <tr>
               <th>Date</th><th>Cashier</th>
-              <th>USD ($)</th><th>Diff $</th>
-              <th>FRA</th><th>Diff FRA</th>
-              <th>K</th><th>Diff K</th>
-              <th>Expenses</th><th>Credit Sales</th>
+              <th style={{ color: '#16a34a' }}>USD ($)</th><th>Diff $</th>
+              <th style={{ color: '#7c3aed' }}>FRA</th><th>Diff FRA</th>
+              <th style={{ color: '#ea580c' }}>K</th><th>Diff K</th>
+              {/* v1.8.26 — expenses split into 3 sub-columns. */}
+              <th style={{ color: '#16a34a' }}>Exp $</th>
+              <th style={{ color: '#7c3aed' }}>Exp FRA</th>
+              <th style={{ color: '#ea580c' }}>Exp K</th>
+              <th>Credit Sales</th>
               <th>Comment</th>
             </tr>
           </thead>
           <tbody>
             {filteredReports.length === 0 ? (
-              <tr><td colSpan="11" style={{ textAlign: 'center', color: '#9ca3af', padding: 40 }}>No reports found for the selected period.</td></tr>
+              <tr><td colSpan="13" style={{ textAlign: 'center', color: '#9ca3af', padding: 40 }}>No reports found for the selected period.</td></tr>
             ) : filteredReports.map(r => {
-              // v1.8.13 — per-currency Diff = Received − Expected.
               const usdR = parseFloat(r.usd_received || r.cash || 0);
               const fraR = parseFloat(r.fra_received || r.mobile_money || 0);
               const kR   = parseFloat(r.k_received   || r.bank || 0);
@@ -1216,8 +1223,14 @@ const CashReport = () => {
               const usdD = usdR - usdE;
               const fraD = fraR - fraE;
               const kD   = kR   - kE;
+              // v1.8.26 — per-currency expense from new columns; fall back to
+              // legacy single `expenses` for the USD bucket on old rows.
+              const usdEx = parseFloat(r.usd_expenses || r.expenses || 0) || 0;
+              const fraEx = parseFloat(r.fra_expenses || 0) || 0;
+              const kEx   = parseFloat(r.k_expenses   || 0) || 0;
               const diffColor = (d, eps) => Math.abs(d) < eps ? '#16a34a' : d > 0 ? '#d97706' : '#dc2626';
               const sign = (d) => d > 0 ? '+' : '';
+              const dash = <span style={{ color: '#cbd5e1' }}>—</span>;
               return (
                 <tr key={r.id} style={{ cursor: 'pointer' }} onClick={() => { const cid = r.cashier_id ? String(r.cashier_id) : ''; setSelectedCashier(cid); loadDate(r.date.split('T')[0], cid); }}>
                   <td style={{ fontWeight: 500 }}>{formatDate(r.date)}</td>
@@ -1228,7 +1241,9 @@ const CashReport = () => {
                   <td style={{ fontWeight: 600, color: diffColor(fraD, 1) }}>{sign(fraD)}{fraD.toLocaleString(undefined, { maximumFractionDigits: 0 })}</td>
                   <td>{kR.toLocaleString(undefined, { maximumFractionDigits: 0 })}</td>
                   <td style={{ fontWeight: 600, color: diffColor(kD, 1) }}>{sign(kD)}{kD.toLocaleString(undefined, { maximumFractionDigits: 0 })}</td>
-                  <td style={{ color: '#dc2626' }}>${parseFloat(r.expenses || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+                  <td style={{ color: usdEx > 0 ? '#dc2626' : '' }}>{usdEx > 0 ? `$${usdEx.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : dash}</td>
+                  <td style={{ color: fraEx > 0 ? '#dc2626' : '' }}>{fraEx > 0 ? fraEx.toLocaleString(undefined, { maximumFractionDigits: 0 }) : dash}</td>
+                  <td style={{ color: kEx > 0 ? '#dc2626' : '' }}>{kEx > 0 ? kEx.toLocaleString(undefined, { maximumFractionDigits: 0 }) : dash}</td>
                   <td>${parseFloat(r.pending || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
                   <td style={{ color: '#6b7280', fontSize: 12, maxWidth: 150, overflow: 'hidden', textOverflow: 'ellipsis' }}>{r.comment || '—'}</td>
                 </tr>

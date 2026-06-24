@@ -1148,6 +1148,12 @@ function initTenantDb(db) {
   addCol('cash_reports',   'usd_expected',          'REAL NOT NULL DEFAULT 0');
   addCol('cash_reports',   'fra_expected',          'REAL NOT NULL DEFAULT 0');
   addCol('cash_reports',   'k_expected',            'REAL NOT NULL DEFAULT 0');
+  // v1.8.26 — per-currency expenses snapshot at save time so the history
+  // table can show what was paid out of each currency's drawer for that
+  // shift without re-querying payment_vouchers per row.
+  addCol('cash_reports',   'usd_expenses',          'REAL NOT NULL DEFAULT 0');
+  addCol('cash_reports',   'fra_expenses',          'REAL NOT NULL DEFAULT 0');
+  addCol('cash_reports',   'k_expenses',            'REAL NOT NULL DEFAULT 0');
   addCol('payment_vouchers','cashier_id',           'INTEGER DEFAULT 0');
   addCol('siv',            'production_id',         'INTEGER');
   addCol('siv',            'production_sync_id',    'TEXT');
