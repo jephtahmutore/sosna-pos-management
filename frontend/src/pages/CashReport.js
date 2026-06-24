@@ -56,6 +56,14 @@ const CashReport = () => {
 
   const [dailyRevenue, setDailyRevenue] = useState(0);
   const [daySummary, setDaySummary] = useState({ totalExpected: 0, totalCash: 0 });
+  // v1.8.22 — per-currency totals across ALL cashiers for the selected date.
+  // Drives the top KPI bar above the form (Liquor-style summary but split
+  // into USD/FRA/K instead of a single $ figure).
+  const [daySummaryByCcy, setDaySummaryByCcy] = useState({
+    usd: { expected: 0, received: 0 },
+    fra: { expected: 0, received: 0 },
+    k:   { expected: 0, received: 0 },
+  });
   // v1.8.6 — net per-currency impact of drawer exchanges for this date+cashier.
   // Bump exchangeRefreshKey to force the CurrencyExchangePanel to re-load
   // (after every save) without remounting the whole report.
@@ -290,6 +298,17 @@ const CashReport = () => {
         .filter(r => r.date && r.date.split('T')[0] === date)
         .reduce((s, r) => s + parseFloat(r.total || 0), 0);
       setDaySummary({ totalExpected, totalCash });
+      // v1.8.22 — per-currency aggregate across ALL cashiers for the day.
+      // Expected = POS net per currency for the whole team (from /daily
+      // with cashier_id=0). Received = sum of saved cash reports'
+      // per-currency counted values for this date.
+      const reportsForDay = reports.filter(r => r.date && r.date.split('T')[0] === date);
+      const sumCol = (col) => reportsForDay.reduce((s, r) => s + (parseFloat(r[col] || 0) || 0), 0);
+      setDaySummaryByCcy({
+        usd: { expected: parseFloat(all?.usd_received || 0) || 0, received: sumCol('usd_received') },
+        fra: { expected: parseFloat(all?.fra_received || 0) || 0, received: sumCol('fra_received') },
+        k:   { expected: parseFloat(all?.k_received   || 0) || 0, received: sumCol('k_received') },
+      });
     }).catch(() => {});
   }, [date, reports]); // eslint-disable-line
 
@@ -712,8 +731,6 @@ const CashReport = () => {
             style={{ padding: '8px 12px', border: '1px solid #e5e7eb', borderRadius: 8, fontSize: 14, background: '#fff', color: '#374151' }}
           >
             {salesCashiers.length === 0 && <option value="">{t('noSalesToday')}</option>}
-            {/* v1.8.20 — All Cashiers aggregate (cashier_id=0 on the backend). */}
-            {salesCashiers.length > 0 && <option value="0">All Cashiers</option>}
             {salesCashiers.map(u => (
               <option key={u.id} value={u.id}>{u.first_name} {u.last_name}</option>
             ))}
@@ -734,10 +751,50 @@ const CashReport = () => {
         </div>
       </div>
 
-      {/* v1.8.11 — Top USD-aggregated bar removed (Total Expected / Total
-          Cash Received / Difference). Per-currency reconciliation lives in
-          each currency card below. Kept the IIFE wrapping the (now empty)
-          conditional in case anyone adds a per-currency summary later. */}
+      {/* v1.8.22 — Top KPI bar: 3 cards (USD / FRA / K) showing today's
+          totals across ALL cashiers. Liquor-style summary but per-currency
+          instead of a single $ figure. Drives off daySummaryByCcy which
+          aggregates POS net (expected) + sum of saved cash report counted
+          per currency. */}
+      <div className="no-print" style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12, marginBottom: 16 }}>
+        {[
+          { ccy: 'USD', symbol: '$', dec: 2, label: 'USD', color: '#16a34a', bg: 'linear-gradient(135deg,#16a34a,#15803d)' },
+          { ccy: 'FRA', symbol: '',  dec: 0, label: 'FRA', color: '#7c3aed', bg: 'linear-gradient(135deg,#7c3aed,#6d28d9)' },
+          { ccy: 'K',   symbol: '',  dec: 0, label: 'K',   color: '#ea580c', bg: 'linear-gradient(135deg,#ea580c,#c2410c)' },
+        ].map(c => {
+          const key = c.ccy.toLowerCase();
+          const exp = parseFloat(daySummaryByCcy[key]?.expected || 0) || 0;
+          const got = parseFloat(daySummaryByCcy[key]?.received || 0) || 0;
+          const diff = got - exp;
+          const eps = c.dec === 2 ? 0.01 : 1;
+          const isOk = Math.abs(diff) < eps;
+          const fmt = (n) => `${c.symbol}${parseFloat(n || 0).toLocaleString(undefined, { minimumFractionDigits: c.dec, maximumFractionDigits: c.dec })}`;
+          return (
+            <div key={c.ccy} style={{ borderRadius: 12, padding: '14px 18px', background: c.bg, color: '#fff', boxShadow: `0 4px 16px ${c.color}40`, position: 'relative', overflow: 'hidden' }}>
+              <div style={{ position: 'absolute', right: -10, top: -10, width: 60, height: 60, borderRadius: '50%', background: 'rgba(255,255,255,0.1)' }} />
+              <div style={{ fontSize: 11, fontWeight: 700, opacity: 0.85, textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 6 }}>
+                {c.label} — All Cashiers
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 3, fontSize: 12 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                  <span style={{ opacity: 0.85 }}>Expected</span><strong>{fmt(exp)}</strong>
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                  <span style={{ opacity: 0.85 }}>Received</span><strong>{fmt(got)}</strong>
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', borderTop: '1px solid rgba(255,255,255,0.25)', paddingTop: 4, marginTop: 2 }}>
+                  <span style={{ fontWeight: 700 }}>Diff</span>
+                  <strong style={{ background: 'rgba(255,255,255,0.18)', padding: '2px 8px', borderRadius: 5 }}>
+                    {diff > 0 ? '+' : ''}{fmt(diff)} {isOk ? '· OK' : ''}
+                  </strong>
+                </div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* v1.8.11 — old single-currency Top bar disabled. */}
       {false && (() => {
         const diff = daySummary.totalCash - daySummary.totalExpected;
         const diffColor = diff === 0 ? '#6b7280' : diff > 0 ? '#16a34a' : '#dc2626';

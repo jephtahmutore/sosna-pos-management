@@ -105,7 +105,31 @@ export default function CurrencyExchangePanel({
                     +{symFor(r.to_currency)}{fmt(r.to_amount, decFor(r.to_currency))} {r.to_currency}
                   </td>
                   <td style={{ ...td, textAlign: 'right', color: '#64748b', fontFamily: 'monospace' }}>
-                    {r.rate ? parseFloat(r.rate).toLocaleString(undefined, { maximumFractionDigits: 6 }) : '—'}
+                    {/* v1.8.22 — canonical street-rate display: always show
+                        'X foreign per 1 USD' (the format cashiers can verify
+                        against today's posted rate). DB stores rate as
+                        to_amount/from_amount; invert when foreign->USD so
+                        we get foreign/USD. FRA<->K (no USD) stays as stored. */}
+                    {(() => {
+                      const raw = parseFloat(r.rate);
+                      if (!(raw > 0)) return '—';
+                      const fromUsd = r.from_currency === 'USD';
+                      const toUsd   = r.to_currency   === 'USD';
+                      let val, label;
+                      if (fromUsd && !toUsd) {
+                        // USD -> foreign: raw is already foreign/USD ✓
+                        val = raw; label = `${r.to_currency}/USD`;
+                      } else if (!fromUsd && toUsd) {
+                        // foreign -> USD: invert to canonical foreign/USD
+                        val = 1 / raw; label = `${r.from_currency}/USD`;
+                      } else {
+                        val = raw; label = `${r.to_currency}/${r.from_currency}`;
+                      }
+                      return (<>
+                        {val.toLocaleString(undefined, { maximumFractionDigits: val < 1 ? 6 : 2 })}
+                        <div style={{ fontSize: 10, color: '#94a3b8', fontFamily: 'inherit' }}>{label}</div>
+                      </>);
+                    })()}
                   </td>
                   {scope === 'drawer' && <td style={{ ...td, color: '#475569' }}>{r.cashier_name || '—'}</td>}
                   <td style={{ ...td, color: '#475569' }}>{r.notes || '—'}</td>
