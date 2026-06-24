@@ -132,9 +132,12 @@ export default function CurrencyExchangePanel({
 }
 
 function AddExchangeModal({ scope, defaultDate, cashierId, drawerBalance, onClose, onSaved }) {
+  // v1.8.19 — default direction is FRA -> USD (customer brings FRA, takes
+  // USD back is the common street case). Any other direction prompts
+  // "are you sure?" so accidental wrong-direction entries get caught.
   const [form, setForm] = useState({
-    from_currency: 'USD', from_amount: '',
-    to_currency:   'FRA', to_amount: '',
+    from_currency: 'FRA', from_amount: '',
+    to_currency:   'USD', to_amount: '',
     notes: '',
     date: defaultDate,
     time: new Date().toTimeString().slice(0, 5),
@@ -142,9 +145,55 @@ function AddExchangeModal({ scope, defaultDate, cashierId, drawerBalance, onClos
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
 
+  // v1.8.19 — store raw digits only (no commas) in form state. Display with
+  // thousand-separator commas via formatThousands(); strip on input via
+  // stripCommas() before storing. type='text' inputMode='decimal' so we
+  // can render commas (type='number' rejects them).
+  const stripCommas = (s) => String(s ?? '').replace(/,/g, '');
+  const formatThousands = (raw) => {
+    const s = stripCommas(raw);
+    if (s === '' || s === '-') return s;
+    const [intPart, decPart] = s.split('.');
+    const cleanedInt = intPart.replace(/[^0-9]/g, '');
+    const grouped = cleanedInt ? parseInt(cleanedInt, 10).toLocaleString('en-US') : '';
+    return decPart !== undefined ? `${grouped}.${decPart.replace(/[^0-9]/g, '')}` : grouped;
+  };
+  const onAmountChange = (key) => (e) => {
+    setForm({ ...form, [key]: stripCommas(e.target.value) });
+  };
+
+  // v1.8.19 — confirm prompt when direction isn't the canonical FRA -> USD.
+  const isCanonical = (from, to) => from === 'FRA' && to === 'USD';
+  const changeCurrency = (side, value) => {
+    const next = { ...form, [side]: value };
+    if (!isCanonical(next.from_currency, next.to_currency)
+        && (next.from_currency !== next.to_currency)
+        && !window.confirm(`Are you sure? The usual direction is FRA → USD.\nYou're picking ${next.from_currency} → ${next.to_currency}.`)) {
+      return; // user cancelled — keep previous selection
+    }
+    setForm(next);
+  };
+
   const fromAmt = parseFloat(form.from_amount || 0) || 0;
   const toAmt   = parseFloat(form.to_amount   || 0) || 0;
   const rate    = fromAmt > 0 ? toAmt / fromAmt : 0;
+
+  // v1.8.19 — canonical street-rate display: always 'X foreign per 1 USD'
+  // (e.g. "2,900 FRA per 1 USD") regardless of FROM/TO direction so the
+  // cashier can verify against today's posted street rate. For FRA <-> K
+  // (no USD involved) we keep the natural direction.
+  const rateDisplay = (() => {
+    if (fromAmt <= 0 || toAmt <= 0) return { value: 0, label: `${form.to_currency} per 1 ${form.from_currency}` };
+    const fromIsUsd = form.from_currency === 'USD';
+    const toIsUsd   = form.to_currency   === 'USD';
+    if (fromIsUsd && !toIsUsd) {
+      return { value: toAmt / fromAmt, label: `${form.to_currency} per 1 USD` };
+    }
+    if (!fromIsUsd && toIsUsd) {
+      return { value: fromAmt / toAmt, label: `${form.from_currency} per 1 USD` };
+    }
+    return { value: toAmt / fromAmt, label: `${form.to_currency} per 1 ${form.from_currency}` };
+  })();
 
   const submit = async () => {
     setError('');
@@ -210,12 +259,13 @@ function AddExchangeModal({ scope, defaultDate, cashierId, drawerBalance, onClos
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 10 }}>
           <div style={{ background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 8, padding: 10 }}>
             <div style={{ fontSize: 11, fontWeight: 700, color: '#b91c1c', marginBottom: 6, textTransform: 'uppercase' }}>From (taken out)</div>
-            <select value={form.from_currency} onChange={e => setForm({ ...form, from_currency: e.target.value })} style={inp}>
+            <select value={form.from_currency} onChange={e => changeCurrency('from_currency', e.target.value)} style={inp}>
               {CURRENCIES.map(c => <option key={c} value={c}>{c}</option>)}
             </select>
-            <input type="number" min="0" step="0.01" value={form.from_amount}
-              onChange={e => setForm({ ...form, from_amount: e.target.value })}
-              placeholder="0" style={{ ...inp, marginTop: 6 }} />
+            <input type="text" inputMode="decimal"
+              value={formatThousands(form.from_amount)}
+              onChange={onAmountChange('from_amount')}
+              placeholder="0" style={{ ...inp, marginTop: 6, fontFamily: 'monospace', fontSize: 15 }} />
             {drawerBalance && (
               <div style={{ fontSize: 11, color: '#7c2d12', marginTop: 4 }}>
                 Available: <strong>{fmt(drawerBalance[form.from_currency] || 0, form.from_currency === 'USD' ? 2 : 0)}</strong> {form.from_currency}
@@ -224,12 +274,13 @@ function AddExchangeModal({ scope, defaultDate, cashierId, drawerBalance, onClos
           </div>
           <div style={{ background: '#ecfdf5', border: '1px solid #a7f3d0', borderRadius: 8, padding: 10 }}>
             <div style={{ fontSize: 11, fontWeight: 700, color: '#047857', marginBottom: 6, textTransform: 'uppercase' }}>To (received)</div>
-            <select value={form.to_currency} onChange={e => setForm({ ...form, to_currency: e.target.value })} style={inp}>
+            <select value={form.to_currency} onChange={e => changeCurrency('to_currency', e.target.value)} style={inp}>
               {CURRENCIES.map(c => <option key={c} value={c}>{c}</option>)}
             </select>
-            <input type="number" min="0" step="0.01" value={form.to_amount}
-              onChange={e => setForm({ ...form, to_amount: e.target.value })}
-              placeholder="0" style={{ ...inp, marginTop: 6 }} />
+            <input type="text" inputMode="decimal"
+              value={formatThousands(form.to_amount)}
+              onChange={onAmountChange('to_amount')}
+              placeholder="0" style={{ ...inp, marginTop: 6, fontFamily: 'monospace', fontSize: 15 }} />
           </div>
         </div>
 
@@ -245,8 +296,9 @@ function AddExchangeModal({ scope, defaultDate, cashierId, drawerBalance, onClos
         )}
 
         <div style={{ background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 6, padding: '8px 10px', fontSize: 12, color: '#475569', marginBottom: 10 }}>
-          Effective rate: <strong>{rate > 0 ? rate.toLocaleString(undefined, { maximumFractionDigits: 6 }) : '—'}</strong>
-          {' '}({form.to_currency} per 1 {form.from_currency})
+          Effective rate: <strong>{rateDisplay.value > 0
+            ? rateDisplay.value.toLocaleString(undefined, { maximumFractionDigits: rateDisplay.value < 1 ? 6 : 2 })
+            : '—'}</strong>{' '}({rateDisplay.label})
         </div>
 
         <div style={{ marginBottom: 10 }}>
