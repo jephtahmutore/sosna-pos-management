@@ -219,11 +219,24 @@ const CashReport = () => {
     } else {
       if (daily) {
         const issuedToday = parseFloat(daily.credit_sales || 0) + parseFloat(daily.pending || 0);
+        // v1.8.21 — Counted auto-fill = POS net − expenses + exchange net
+        // (the actual drawer balance per currency). Fetch exchanges inline so
+        // the initial fill reflects them right away (no race with the
+        // exchangeRefreshKey useEffect).
+        const cidNum = parseInt(cid) || 0;
+        let exNet = { usd_net: 0, fra_net: 0, k_net: 0 };
+        try {
+          const r = await getCurrencyExchangesNet({ scope: 'drawer', date: d, cashier_id: cidNum });
+          exNet = r.data || exNet;
+        } catch { /* keep zeros */ }
+        const usdDrawer = (parseFloat(daily.usd_received || 0) || 0) - (parseFloat(daily.usd_expenses || 0) || 0) + (parseFloat(exNet.usd_net || 0) || 0);
+        const fraDrawer = (parseFloat(daily.fra_received || 0) || 0) - (parseFloat(daily.fra_expenses || 0) || 0) + (parseFloat(exNet.fra_net || 0) || 0);
+        const kDrawer   = (parseFloat(daily.k_received   || 0) || 0) - (parseFloat(daily.k_expenses   || 0) || 0) + (parseFloat(exNet.k_net   || 0) || 0);
         setForm(prev => ({
           ...prev,
-          usd_received: daily.usd_received ? parseFloat(daily.usd_received).toFixed(2) : '',
-          fra_received: daily.fra_received ? parseFloat(daily.fra_received).toFixed(2) : '',
-          k_received:   daily.k_received   ? parseFloat(daily.k_received).toFixed(2)   : '',
+          usd_received: usdDrawer ? usdDrawer.toFixed(2) : '',
+          fra_received: fraDrawer ? fraDrawer.toFixed(0) : '',
+          k_received:   kDrawer   ? kDrawer.toFixed(0)   : '',
           expenses:     daily.expenses     ? parseFloat(daily.expenses).toFixed(2)     : '',
           pending:      issuedToday ? issuedToday.toFixed(2) : '',
           initial_change: '0',
@@ -578,10 +591,27 @@ const CashReport = () => {
   // Called by PaymentVoucherFormModal after a successful save.
   // v1.8.20 — refresh ALL daily-derived state so the new expense flows into
   // every per-currency card immediately (not just the legacy single field).
+  // v1.8.21 — also refresh the Counted auto-fill since adding an expense
+  // changes the expected drawer balance.
   const handleVoucherSaved = async () => {
     const daily = await fetchDaily(date);
     if (daily) {
-      setForm(prev => ({ ...prev, expenses: daily.expenses || '' }));
+      const cidNum = parseInt(selectedCashier) || 0;
+      let exNet = { usd_net: 0, fra_net: 0, k_net: 0 };
+      try {
+        const r = await getCurrencyExchangesNet({ scope: 'drawer', date, cashier_id: cidNum });
+        exNet = r.data || exNet;
+      } catch {}
+      const usdDrawer = (parseFloat(daily.usd_received || 0) || 0) - (parseFloat(daily.usd_expenses || 0) || 0) + (parseFloat(exNet.usd_net || 0) || 0);
+      const fraDrawer = (parseFloat(daily.fra_received || 0) || 0) - (parseFloat(daily.fra_expenses || 0) || 0) + (parseFloat(exNet.fra_net || 0) || 0);
+      const kDrawer   = (parseFloat(daily.k_received   || 0) || 0) - (parseFloat(daily.k_expenses   || 0) || 0) + (parseFloat(exNet.k_net   || 0) || 0);
+      setForm(prev => ({
+        ...prev,
+        expenses: daily.expenses || '',
+        usd_received: usdDrawer ? usdDrawer.toFixed(2) : '',
+        fra_received: fraDrawer ? fraDrawer.toFixed(0) : '',
+        k_received:   kDrawer   ? kDrawer.toFixed(0)   : '',
+      }));
       setExpensesByCcy({
         usd: parseFloat(daily.usd_expenses || 0) || 0,
         fra: parseFloat(daily.fra_expenses || 0) || 0,
@@ -592,6 +622,7 @@ const CashReport = () => {
         fra: parseFloat(daily.fra_received || 0) || 0,
         k:   parseFloat(daily.k_received   || 0) || 0,
       });
+      setExchangeNet(exNet);
       setCreditExpected(parseFloat(daily.credit_sales || 0) + parseFloat(daily.pending || 0));
     }
     setEditMode(true);
@@ -765,12 +796,15 @@ const CashReport = () => {
               'Expenses Paid From Drawer' row below — each card owns its
               own currency's PV view + add. */}
           {[
-            { key: 'usd_received', label: 'USD Cash ($)',  ccy: 'USD', symbol: '$',  dec: 2, posExp: expectedByCcy.usd, exp: expensesByCcy.usd, step: '0.01', color: '#16a34a', bg: '#f0fdf4' },
-            { key: 'fra_received', label: 'FRA Cash',      ccy: 'FRA', symbol: '',   dec: 0, posExp: expectedByCcy.fra, exp: expensesByCcy.fra, step: '1',    color: '#7c3aed', bg: '#faf5ff' },
-            { key: 'k_received',   label: 'K Cash',        ccy: 'K',   symbol: '',   dec: 0, posExp: expectedByCcy.k,   exp: expensesByCcy.k,   step: '1',    color: '#ea580c', bg: '#fff7ed' },
+            { key: 'usd_received', label: 'USD Cash ($)',  ccy: 'USD', symbol: '$',  dec: 2, posExp: expectedByCcy.usd, exp: expensesByCcy.usd, exch: exchangeNet.usd_net, step: '0.01', color: '#16a34a', bg: '#f0fdf4' },
+            { key: 'fra_received', label: 'FRA Cash',      ccy: 'FRA', symbol: '',   dec: 0, posExp: expectedByCcy.fra, exp: expensesByCcy.fra, exch: exchangeNet.fra_net, step: '1',    color: '#7c3aed', bg: '#faf5ff' },
+            { key: 'k_received',   label: 'K Cash',        ccy: 'K',   symbol: '',   dec: 0, posExp: expectedByCcy.k,   exp: expensesByCcy.k,   exch: exchangeNet.k_net,   step: '1',    color: '#ea580c', bg: '#fff7ed' },
           ].map(c => {
             const counted     = parseFloat(form[c.key] || 0) || 0;
-            const netExpected = c.posExp - c.exp;
+            const exch        = parseFloat(c.exch || 0) || 0;
+            // v1.8.21 — Expected = POS net − expenses + exchange net.
+            // Exchange in (+) ADDS to drawer, exchange out (−) SUBTRACTS.
+            const netExpected = c.posExp - c.exp + exch;
             const diff        = counted - netExpected;
             const eps         = c.dec === 2 ? 0.01 : 1;
             const status      = Math.abs(diff) < eps ? 'OK'
@@ -825,6 +859,11 @@ const CashReport = () => {
                   </div>
                   <div style={{ display: 'flex', justifyContent: 'space-between', color: c.exp > 0 ? '#dc2626' : '#9ca3af' }}>
                     <span>− Expenses</span><strong>{c.exp > 0 ? fmt(c.exp) : fmt(0)}</strong>
+                  </div>
+                  {/* v1.8.21 — Exchange impact (in/out via currency exchanges). */}
+                  <div style={{ display: 'flex', justifyContent: 'space-between', color: exch !== 0 ? '#7c3aed' : '#9ca3af' }}>
+                    <span>± Exchanges</span>
+                    <strong>{exch > 0 ? '+' : ''}{fmt(exch)}</strong>
                   </div>
                   <div style={{ display: 'flex', justifyContent: 'space-between', borderTop: '1px dashed #e5e7eb', paddingTop: 3, marginTop: 2 }}>
                     <span style={{ fontWeight: 700 }}>= Expected</span><strong style={{ color: c.color }}>{fmt(netExpected)}</strong>
@@ -935,7 +974,7 @@ const CashReport = () => {
           FRA: (parseFloat(form.fra_received || 0) || 0) + (parseFloat(exchangeNet.fra_net || 0) || 0),
           K:   (parseFloat(form.k_received   || 0) || 0) + (parseFloat(exchangeNet.k_net   || 0) || 0),
         }}
-        onChanged={() => setExchangeRefreshKey(k => k + 1)}
+        onChanged={() => { setExchangeRefreshKey(k => k + 1); handleVoucherSaved(); }}
       />
       {(exchangeNet.usd_net || exchangeNet.fra_net || exchangeNet.k_net) && (
         <div style={{ marginTop: 10, padding: '10px 14px', background: '#f5f3ff', border: '1px solid #ddd6fe', borderRadius: 10, fontSize: 12, color: '#5b21b6' }}>
@@ -952,7 +991,7 @@ const CashReport = () => {
             {exchangeNet.k_net >= 0 ? '+' : ''}{parseFloat(exchangeNet.k_net).toLocaleString(undefined, { maximumFractionDigits: 0 })}
           </span>
           <span style={{ color: '#7c3aed', marginLeft: 8 }}>
-            (already factored into the auto-filled cash inputs above when applicable)
+            (v1.8.21 — now correctly factored into each currency card's Expected line)
           </span>
         </div>
       )}
