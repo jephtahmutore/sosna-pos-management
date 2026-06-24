@@ -89,22 +89,20 @@ router.get('/daily', auth, readOnlyGuard, (req, res) => {
     const userFilter = cashierId > 0 ? ' AND created_by = ?' : '';
     const baseParams = cashierId > 0 ? [...orderDateParams, tenantId, cashierId] : [...orderDateParams, tenantId];
 
-    // Three split buckets per day — POS sales only.
-    // AR payments are their own cash event with their own CR voucher; they do NOT
-    // feed into the Cash Report. This matches standard accrual-to-cash bookkeeping.
+    // v1.8.1 — Sosna is cash-only across 3 currencies (USD / FRA / K).
+    // Each bucket is NET of change given out in that same currency.
+    //   USD = cash_received - change_amount (USD change)
+    //   FRA = fra_received  - fra_change_given
+    //   K   = k_received    - k_change_given
+    // No more cash/momo/bank split — those columns are legacy and kept at 0.
     const sumOrders = (col) => db.prepare(
       `SELECT COALESCE(SUM(${col}), 0) AS total
        FROM orders WHERE ${orderDateClause} AND deleted_at IS NULL AND tenant_id = ?
        AND (status IS NULL OR status != 'Reversed')${userFilter}`
     ).get(...baseParams).total;
-    // Cash bucket: NET of change handed back. When a customer pays a bigger
-    // amount via Cash/MoMo/Bank than the sale total, the change comes out of
-    // the cash drawer. Without subtracting `change_amount`, that change
-    // floats the Cash bucket up and the Cash Report shows a fake "Surplus"
-    // equal to the change given out.
-    const cashSales   = { total: parseFloat(sumOrders('cash_received')) - parseFloat(sumOrders('change_amount')) };
-    const mobileSales = { total: parseFloat(sumOrders('momo_received')) };
-    const bankSales   = { total: parseFloat(sumOrders('bank_received')) };
+    const usdNet = parseFloat(sumOrders('cash_received')) - parseFloat(sumOrders('change_amount'));
+    const fraNet = parseFloat(sumOrders('fra_received'))  - parseFloat(sumOrders('fra_change_given'));
+    const kNet   = parseFloat(sumOrders('k_received'))    - parseFloat(sumOrders('k_change_given'));
 
     // CREDIT SALES ISSUED bucket = today's new receivables (unpaid portion of today's sales).
     // This is informational — represents money owed, NOT cash received.
@@ -137,9 +135,11 @@ router.get('/daily', auth, readOnlyGuard, (req, res) => {
 
     res.json({
       date,
-      cash: parseFloat(cashSales.total),
-      mobile_money: parseFloat(mobileSales.total),
-      bank: parseFloat(bankSales.total),
+      // v1.8.1 — triple-currency. Each is NET (received minus change) in
+      // that currency's own units. UI shows them as three separate rows.
+      usd_received: usdNet,
+      fra_received: fraNet,
+      k_received:   kNet,
       pending: parseFloat(pendingSales.total),
       credit_sales: parseFloat(creditSales.total),
       expenses: parseFloat(expenses.total),
@@ -153,9 +153,15 @@ router.get('/daily', auth, readOnlyGuard, (req, res) => {
 // Create / save cash report
 router.post('/', auth, (req, res) => {
   try {
-    const { date, initial_change, mobile_money, cash, bank, expenses, pending, total,
-            after_change, expected, difference, status, comment, cashier_id } = req.body;
-    const bankAmt = parseFloat(bank || 0);
+    // v1.8.1 — accept triple-currency fields. Legacy cash/mobile_money/bank
+    // still accepted for backwards compatibility (ignored if usd/fra/k sent).
+    const { date, initial_change, expenses, pending, total,
+            after_change, expected, difference, status, comment, cashier_id,
+            usd_received, fra_received, k_received,
+            mobile_money, cash, bank } = req.body;
+    const usdAmt = parseFloat(usd_received ?? cash ?? 0);
+    const fraAmt = parseFloat(fra_received ?? mobile_money ?? 0);
+    const kAmt   = parseFloat(k_received   ?? bank ?? 0);
 
     const cashierId = cashier_id !== undefined ? parseInt(cashier_id) : 0; // 0 = All
     const tenantId = syncConfig.getTenantId(req);
@@ -169,21 +175,29 @@ router.post('/', auth, (req, res) => {
     if (existing) {
       db.prepare(
         `UPDATE cash_reports SET
-          initial_change=?, mobile_money=?, cash=?, bank=?, expenses=?, pending=?, total=?,
+          initial_change=?, usd_received=?, fra_received=?, k_received=?,
+          mobile_money=0, cash=0, bank=0,
+          expenses=?, pending=?, total=?,
           after_change=?, expected=?, difference=?, status=?, comment=?,
           cashier_id=?, updated_at=datetime('now'), synced=0
          WHERE date=? AND cashier_id=? AND deleted_at IS NULL`
-      ).run(initial_change, mobile_money, cash, bankAmt, expenses, pending, total,
+      ).run(initial_change, usdAmt, fraAmt, kAmt,
+             expenses, pending, total,
              after_change, expected, difference, status, comment,
              cashierId, date, cashierId);
       row = db.prepare('SELECT * FROM cash_reports WHERE date = ? AND cashier_id = ?').get(date, cashierId);
     } else {
       const info = db.prepare(
-        `INSERT INTO cash_reports (date, initial_change, mobile_money, cash, bank, expenses, pending, total,
+        `INSERT INTO cash_reports (date, initial_change,
+          usd_received, fra_received, k_received,
+          mobile_money, cash, bank,
+          expenses, pending, total,
           after_change, expected, difference, status, comment, cashier_id, created_by,
           sync_id, tenant_id, branch_id, device_id, synced, created_at, updated_at)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,datetime('now'),datetime('now'))`
-      ).run(date, initial_change, mobile_money, cash, bankAmt, expenses, pending, total,
+         VALUES (?,?, ?,?,?, 0,0,0, ?,?,?,?,?,?,?,?,?,?, ?,?,?,?, 0,datetime('now'),datetime('now'))`
+      ).run(date, initial_change,
+             usdAmt, fraAmt, kAmt,
+             expenses, pending, total,
              after_change, expected, difference, status, comment,
              cashierId, req.user.id,
              randomUUID(), tenantId, branchId, deviceId);

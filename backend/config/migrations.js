@@ -1101,6 +1101,11 @@ function initTenantDb(db) {
   addCol('products',       'product_type',          "TEXT NOT NULL DEFAULT 'finished'");
   addCol('cash_reports',   'cashier_id',            'INTEGER DEFAULT 0');
   addCol('cash_reports',   'bank',                  'REAL NOT NULL DEFAULT 0');
+  // v1.8.1 — triple-currency cash report. Each holds the NET cash in that
+  // currency (received minus change given), in that currency's own units.
+  addCol('cash_reports',   'usd_received',          'REAL NOT NULL DEFAULT 0');
+  addCol('cash_reports',   'fra_received',          'REAL NOT NULL DEFAULT 0');
+  addCol('cash_reports',   'k_received',            'REAL NOT NULL DEFAULT 0');
   addCol('payment_vouchers','cashier_id',           'INTEGER DEFAULT 0');
   addCol('siv',            'production_id',         'INTEGER');
   addCol('siv',            'production_sync_id',    'TEXT');

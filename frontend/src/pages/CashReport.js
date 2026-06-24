@@ -41,8 +41,14 @@ const CashReport = () => {
   const [filterUser, setFilterUser] = useState('all');
   const [availableUsers, setAvailableUsers] = useState([]); // [{ cashier_id, full_name }]
 
+  // v1.8.1 — triple-currency Cash Report. usd_received / fra_received /
+  // k_received each hold NET cash in that currency (received minus change
+  // given), in that currency's own units. Legacy keys cash/mobile_money/bank
+  // are still echoed in saves for backwards compat (zeroed on the server).
   const [form, setForm] = useState({
-    initial_change: '0', mobile_money: '', cash: '', bank: '', expenses: '',
+    initial_change: '0',
+    usd_received: '', fra_received: '', k_received: '',
+    expenses: '',
     pending: '', total: '', after_change: '', expected: '',
     difference: '', status: 'OK', comment: ''
   });
@@ -149,17 +155,15 @@ const CashReport = () => {
     if (saved) {
       setForm({
         initial_change: saved.initial_change || '0',
-        mobile_money: saved.mobile_money || '',
-        cash: saved.cash || '',
-        bank: saved.bank || '',
+        // v1.8.1: prefer new triple-currency fields, fall back to legacy
+        // cash/mobile_money/bank columns (where the same values were stored
+        // before the rename).
+        usd_received: saved.usd_received || saved.cash || '',
+        fra_received: saved.fra_received || saved.mobile_money || '',
+        k_received:   saved.k_received   || saved.bank || '',
         expenses: saved.expenses || '',
         pending: saved.pending || '',
         total: saved.total || '',
-        // Don't restore saved after_change — let the live compute own it from
-        // (mobile_money + cash + bank + pending + expenses − initial_change).
-        // Otherwise a stale saved value (e.g. 0 from a half-finished save)
-        // paints over the correctly-computed amount until the cashier touches
-        // any field, which made the form show $0 on first load.
         after_change: '',
         expected: saved.expected || '',
         difference: saved.difference || '',
@@ -169,15 +173,13 @@ const CashReport = () => {
       setEditMode(false);
     } else {
       if (daily) {
-        // Auto-fetch all three method totals from today's orders + AR collections.
-        // Cashier can edit if their physical count differs.
         const issuedToday = parseFloat(daily.credit_sales || 0) + parseFloat(daily.pending || 0);
         setForm(prev => ({
           ...prev,
-          cash:         daily.cash         ? parseFloat(daily.cash).toFixed(2) : '',
-          mobile_money: daily.mobile_money ? parseFloat(daily.mobile_money).toFixed(2) : '',
-          bank:         daily.bank         ? parseFloat(daily.bank).toFixed(2) : '',
-          expenses:     daily.expenses     ? parseFloat(daily.expenses).toFixed(2) : '',
+          usd_received: daily.usd_received ? parseFloat(daily.usd_received).toFixed(2) : '',
+          fra_received: daily.fra_received ? parseFloat(daily.fra_received).toFixed(2) : '',
+          k_received:   daily.k_received   ? parseFloat(daily.k_received).toFixed(2)   : '',
+          expenses:     daily.expenses     ? parseFloat(daily.expenses).toFixed(2)     : '',
           pending:      issuedToday ? issuedToday.toFixed(2) : '',
           initial_change: '0',
           after_change: '',
@@ -211,37 +213,37 @@ const CashReport = () => {
     }).catch(() => {});
   }, [date, reports]); // eslint-disable-line
 
-  // Auto-calculate
+  // Auto-calculate. v1.8.1: total = sum of all three currencies (kept as USD
+  // for compatibility with the reconciliation math — each cashier counts in
+  // their own currency; expected vs total is informational only here).
+  // Per-currency totals are shown separately in the form below.
   useEffect(() => {
     const ic = parseFloat(form.initial_change) || 0;
-    const mm = parseFloat(form.mobile_money) || 0;
-    const c = parseFloat(form.cash) || 0;
-    const bk = parseFloat(form.bank) || 0;
+    const usd = parseFloat(form.usd_received) || 0;
+    const fra = parseFloat(form.fra_received) || 0;
+    const k   = parseFloat(form.k_received)   || 0;
     const exp = parseFloat(form.expenses) || 0;
     const pend = parseFloat(form.pending) || 0;
-    const total = mm + c + bk + pend + exp;
+    const total = usd + fra + k + pend + exp;
     const after_change = total - ic;
     const expected = dailyRevenue;
     const diff = after_change - expected;
     const status = getStatus(diff);
     setForm(prev => ({ ...prev, total: total.toFixed(2), after_change: after_change.toFixed(2), expected: expected.toFixed(2), difference: diff.toFixed(2), status }));
-  }, [form.initial_change, form.mobile_money, form.cash, form.bank, form.expenses, form.pending, dailyRevenue]); // eslint-disable-line
+  }, [form.initial_change, form.usd_received, form.fra_received, form.k_received, form.expenses, form.pending, dailyRevenue]); // eslint-disable-line
 
   const handleSave = async () => {
     if (!selectedCashier) { setMessage('Please select a cashier before saving.'); return; }
     setSaving(true);
     setMessage('');
     try {
-      // Recompute derived values fresh from current inputs — don't trust the form
-      // cache (the auto-calc useEffect runs on the *next* render, so the cached
-      // total/after_change/difference can be stale right after auto-fill or rapid edits).
       const ic   = parseFloat(form.initial_change) || 0;
-      const mm   = parseFloat(form.mobile_money)   || 0;
-      const c    = parseFloat(form.cash)           || 0;
-      const bk   = parseFloat(form.bank)           || 0;
+      const usd  = parseFloat(form.usd_received)   || 0;
+      const fra  = parseFloat(form.fra_received)   || 0;
+      const kAmt = parseFloat(form.k_received)     || 0;
       const exp  = parseFloat(form.expenses)       || 0;
       const pend = parseFloat(form.pending)        || 0;
-      const total       = mm + c + bk + pend + exp;
+      const total       = usd + fra + kAmt + pend + exp;
       const afterChange = total - ic;
       const expected    = dailyRevenue;
       const difference  = afterChange - expected;
@@ -253,9 +255,9 @@ const CashReport = () => {
           date,
           cashier_id: parseInt(selectedCashier) || 0,
           initial_change: ic,
-          mobile_money: mm,
-          cash: c,
-          bank: bk,
+          usd_received: usd,
+          fra_received: fra,
+          k_received:   kAmt,
           expenses: exp,
           pending: pend,
           total,
@@ -271,23 +273,15 @@ const CashReport = () => {
         setEditMode(false);
         await fetchReports();
 
-        // Build CR payload from the saved report. Send the three method
-        // amounts directly so Cash Book's per-method cards receive the
-        // correct slice of the day's receipts (was previously dumping the
-        // whole afterChange into the Cash bucket, leaving Bank and MoMo
-        // at zero even when the cashier reported them on the form).
-        // amount = sum of (cash + bank + momo) — credit sales (pending)
-        // become AR, and expenses become PVs, so they're excluded here.
-        const cashAmt = parseFloat(form.cash)         || 0;
-        const bankAmt = parseFloat(form.bank)         || 0;
-        const momoAmt = parseFloat(form.mobile_money) || 0;
-        const totalReceipts = cashAmt + bankAmt + momoAmt;
-        const nonZero = [cashAmt > 0, bankAmt > 0, momoAmt > 0].filter(Boolean).length;
-        const paymentMethod = nonZero > 1 ? 'Mixed'
-          : cashAmt > 0 ? 'Cash'
-          : bankAmt > 0 ? 'Bank Transfer'
-          : momoAmt > 0 ? 'Mobile Money'
-          : 'Cash';
+        // v1.8.1 — Sosna is cash-only across 3 currencies. The CR records the
+        // USD-equivalent total (cash drawer combined). FRA and K amounts are
+        // tracked in the Cash Report itself; CR books the consolidated USD
+        // figure so downstream ledgers (Cash Book) stay in one currency.
+        const usdAmt = parseFloat(form.usd_received) || 0;
+        const fraAmt = parseFloat(form.fra_received) || 0;
+        const kAmt2  = parseFloat(form.k_received)   || 0;
+        const totalReceipts = usdAmt + fraAmt + kAmt2;
+        const paymentMethod = 'Cash';
         const status = form.status || computedStatus;
         const cashier = selectedCashier !== '0' ? allUsers.find(u => String(u.id) === String(selectedCashier)) : null;
         const receivedFrom = cashier ? `Sales / ${cashier.first_name}` : 'Sales';
@@ -296,9 +290,9 @@ const CashReport = () => {
           payment_method: paymentMethod,
           received_from: receivedFrom,
           amount:       totalReceipts,
-          cash_amount:  cashAmt,
-          bank_amount:  bankAmt,
-          momo_amount:  momoAmt,
+          cash_amount:  usdAmt,
+          bank_amount:  0,
+          momo_amount:  0,
           description:  form.comment ? `${status} — ${form.comment}` : status,
         };
 
@@ -438,8 +432,9 @@ const CashReport = () => {
           <table>
             <tbody>
               ${[['Initial Change (Float)',form.initial_change,false],
-                 ['Mobile Money',form.mobile_money,false],
-                 ['Cash',form.cash,false],
+                 ['USD Cash ($)',form.usd_received,false],
+                 ['FRA Cash',form.fra_received,false],
+                 ['K Cash',form.k_received,false],
                  ['Credit Sales',form.pending,false],
                  ['Expenses (Cash Drawer)',form.expenses,true]
               ].map(([label,val,italic],i,arr)=>`<tr style="border-bottom:${i<arr.length-1?'1px solid #ddd':'2px solid #000'}">
@@ -665,27 +660,32 @@ const CashReport = () => {
         )}
 
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 16 }}>
+          {/* v1.8.1 — triple-currency cash (USD / FRA / K). Each in its own
+              currency. Net of change given in the same currency. Auto-filled
+              from POS orders, cashier can edit if physical count differs. */}
           <div className="form-group">
-            <label>Bank ({curSym})</label>
-            <input type="number" value={form.bank}
-              onChange={e => setForm({ ...form, bank: e.target.value })}
+            <label>USD Cash ($)</label>
+            <input type="number" value={form.usd_received}
+              onChange={e => setForm({ ...form, usd_received: e.target.value })}
               disabled={!editMode} placeholder="0.00" step="0.01"
               style={inputStyle(editMode)} />
-            <small style={{ color: '#6b7280', fontSize: 11 }}>Auto-fetched from POS bank receipts (AR payments mint their own Cash Receipts).</small>
+            <small style={{ color: '#6b7280', fontSize: 11 }}>Net USD received (received − change given in USD).</small>
           </div>
           <div className="form-group">
-            <label>Mobile Money ({curSym})</label>
-            <input type="number" value={form.mobile_money}
-              onChange={e => setForm({ ...form, mobile_money: e.target.value })}
-              disabled={!editMode} placeholder="0.00" step="0.01"
+            <label>FRA Cash</label>
+            <input type="number" value={form.fra_received}
+              onChange={e => setForm({ ...form, fra_received: e.target.value })}
+              disabled={!editMode} placeholder="0" step="1"
               style={inputStyle(editMode)} />
+            <small style={{ color: '#6b7280', fontSize: 11 }}>Net FRA received (received − change given in FRA).</small>
           </div>
           <div className="form-group">
-            <label>Cash ({curSym})</label>
-            <input type="number" value={form.cash}
-              onChange={e => setForm({ ...form, cash: e.target.value })}
-              disabled={!editMode} placeholder="0.00" step="0.01"
+            <label>K Cash</label>
+            <input type="number" value={form.k_received}
+              onChange={e => setForm({ ...form, k_received: e.target.value })}
+              disabled={!editMode} placeholder="0" step="1"
               style={inputStyle(editMode)} />
+            <small style={{ color: '#6b7280', fontSize: 11 }}>Net K (Kwacha) received (received − change given in K).</small>
           </div>
 
           {/* Expenses — read-only with + button */}
@@ -897,7 +897,7 @@ const CashReport = () => {
           <thead>
             <tr>
               <th>Date</th><th>Cashier</th>
-              <th>Bank</th><th>Mobile Money</th><th>Cash</th>
+              <th>USD ($)</th><th>FRA</th><th>K</th>
               <th>Expenses</th><th>Credit Sales</th><th>Total</th>
               <th>Expected</th><th>Difference</th>
               <th>Status</th><th>Comment</th>
@@ -910,9 +910,9 @@ const CashReport = () => {
               <tr key={r.id} style={{ cursor: 'pointer' }} onClick={() => { const cid = r.cashier_id ? String(r.cashier_id) : ''; setSelectedCashier(cid); loadDate(r.date.split('T')[0], cid); }}>
                 <td style={{ fontWeight: 500 }}>{formatDate(r.date)}</td>
                 <td style={{ fontSize: 12, color: '#6b7280' }}>{r.cashier_name || '—'}</td>
-                <td>{curSym}{parseFloat(r.bank || 0).toLocaleString()}</td>
-                <td>{curSym}{parseFloat(r.mobile_money || 0).toLocaleString()}</td>
-                <td>{curSym}{parseFloat(r.cash || 0).toLocaleString()}</td>
+                <td>${parseFloat(r.usd_received || r.cash || 0).toLocaleString()}</td>
+                <td>{parseFloat(r.fra_received || r.mobile_money || 0).toLocaleString()} FRA</td>
+                <td>{parseFloat(r.k_received   || r.bank || 0).toLocaleString()} K</td>
                 <td style={{ color: '#dc2626' }}>{curSym}{parseFloat(r.expenses || 0).toLocaleString()}</td>
                 <td>{curSym}{parseFloat(r.pending || 0).toLocaleString()}</td>
                 <td style={{ fontWeight: 600 }}>{curSym}{parseFloat(r.total || 0).toLocaleString()}</td>
@@ -1118,8 +1118,9 @@ const CashReport = () => {
                     <tbody>
                       {[
                         { label: 'Initial Change (Float)', value: form.initial_change, color: '#374151' },
-                        { label: 'Mobile Money', value: form.mobile_money, color: '#374151' },
-                        { label: 'Cash', value: form.cash, color: '#374151' },
+                        { label: 'USD Cash ($)', value: form.usd_received, color: '#374151' },
+                        { label: 'FRA Cash', value: form.fra_received, color: '#374151' },
+                        { label: 'K Cash', value: form.k_received, color: '#374151' },
                         { label: 'Credit Sales (On Account)', value: form.pending, color: '#374151' },
                         { label: 'Expenses (Cash Drawer)', value: form.expenses, color: '#dc2626', italic: true },
                       ].map((row, i, arr) => (

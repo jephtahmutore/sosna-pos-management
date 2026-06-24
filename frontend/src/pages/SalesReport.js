@@ -134,6 +134,17 @@ const SalesReport = () => {
   const totalCashSales   = activeOrders.reduce((sum, o) => sum + Math.min(parseFloat(o.amount_received || 0), parseFloat(o.total_amount || 0)), 0);
   const totalCreditSales = activeOrders.reduce((sum, o) => sum + Math.max(0, parseFloat(o.total_amount || 0) - parseFloat(o.amount_received || 0)), 0);
 
+  // v1.8.1 — triple-currency breakdown for Cash Sales card + By Payment tab.
+  // Each in its own currency: USD net of USD change, FRA net of FRA change,
+  // K net of K change. Sosna is cash-only across 3 currencies (no card / MoMo
+  // / bank); these three buckets sum to the cash drawer in each currency.
+  const totalUsdReceived = activeOrders.reduce((s, o) =>
+    s + parseFloat(o.cash_received || 0) - parseFloat(o.change_amount || 0), 0);
+  const totalFraReceived = activeOrders.reduce((s, o) =>
+    s + parseFloat(o.fra_received || 0) - parseFloat(o.fra_change_given || 0), 0);
+  const totalKReceived = activeOrders.reduce((s, o) =>
+    s + parseFloat(o.k_received || 0) - parseFloat(o.k_change_given || 0), 0);
+
   const handleView = async (orderId) => {
     setViewLoading(true);
     try {
@@ -223,12 +234,12 @@ const SalesReport = () => {
     // Falls back to the browser dialog below if the backend has no printer
     // configured or returns an error (e.g. web tenants).
     try {
-      const cashRcv = parseFloat(order.cash_received || 0);
-      const momoRcv = parseFloat(order.momo_received || 0);
-      const bankRcv = parseFloat(order.bank_received || 0);
-      const splitSum = cashRcv + momoRcv + bankRcv;
+      const usdRcv = parseFloat(order.cash_received || 0);
+      const fraRcv = parseFloat(order.fra_received || 0);
+      const kRcv   = parseFloat(order.k_received || 0);
+      const splitSum = usdRcv + fraRcv + kRcv;
       const paymentLabel = splitSum > 0
-        ? [cashRcv > 0 && 'Cash', momoRcv > 0 && 'MoMo', bankRcv > 0 && 'Bank'].filter(Boolean).join(' + ')
+        ? [usdRcv > 0 && 'USD', fraRcv > 0 && 'FRA', kRcv > 0 && 'K'].filter(Boolean).join(' + ')
         : (order.payment_method || '');
       const dt = new Date(order.created_at + 'Z');
       await printReceipt({
@@ -250,10 +261,17 @@ const SalesReport = () => {
         discount: order.discount,
         total: order.total_amount,
         amountReceived: order.amount_received,
+        // v1.8.1 — pass triple-currency receipts as the new fields.
+        // Legacy momo/bank fields zeroed at source so the ESC/POS printer
+        // helper omits those lines. cashReceived stays for back-compat.
         cashReceived: order.cash_received,
-        momoReceived: order.momo_received,
-        bankReceived: order.bank_received,
+        fraReceived: order.fra_received,
+        kReceived: order.k_received,
+        momoReceived: 0,
+        bankReceived: 0,
         change: order.change_amount,
+        fraChangeGiven: order.fra_change_given,
+        kChangeGiven: order.k_change_given,
       });
       return; // silent print succeeded
     } catch (_) { /* fall through to browser-print fallback */ }
@@ -327,8 +345,10 @@ const SalesReport = () => {
       <tr><td>Time:</td><td></td><td style="text-align:right" colspan="2">${new Date(order.created_at + 'Z').toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit',hour12:true})}</td></tr>
       <tr><td>Customer:</td><td></td><td style="text-align:right" colspan="2">${order.customer_name || 'Walk-in'}</td></tr>
       <tr><td>Payment:</td><td></td><td style="text-align:right" colspan="2">${(() => {
-        const c = parseFloat(order.cash_received || 0), m = parseFloat(order.momo_received || 0), b = parseFloat(order.bank_received || 0);
-        const list = [c > 0 && 'Cash', m > 0 && 'MoMo', b > 0 && 'Bank'].filter(Boolean);
+        const u = parseFloat(order.cash_received || 0);
+        const f = parseFloat(order.fra_received || 0);
+        const k = parseFloat(order.k_received || 0);
+        const list = [u > 0 && 'USD', f > 0 && 'FRA', k > 0 && 'K'].filter(Boolean);
         return list.length > 0 ? list.join(' + ') : (order.payment_method || '');
       })()}</td></tr>
     </table>
@@ -349,13 +369,15 @@ const SalesReport = () => {
     <div class="div">${div}</div>
     <table>
       ${(() => {
-        const c = parseFloat(order.cash_received || 0), m = parseFloat(order.momo_received || 0), b = parseFloat(order.bank_received || 0);
-        const hasSplit = c + m + b > 0.001;
+        const u = parseFloat(order.cash_received || 0);
+        const f = parseFloat(order.fra_received || 0);
+        const k = parseFloat(order.k_received || 0);
+        const hasSplit = u + f + k > 0.001;
         if (!hasSplit) return `<tr class="amt"><td>Amt Received:</td><td></td><td></td><td style="text-align:right">${(parseFloat(parseFloat(order.amount_received || 0))||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</td></tr>`;
-        return `${c > 0 ? `<tr><td>Cash:</td><td></td><td></td><td style="text-align:right">${(parseFloat(c)||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</td></tr>` : ''}
-                ${m > 0 ? `<tr><td>MoMo:</td><td></td><td></td><td style="text-align:right">${(parseFloat(m)||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</td></tr>` : ''}
-                ${b > 0 ? `<tr><td>Bank:</td><td></td><td></td><td style="text-align:right">${(parseFloat(b)||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</td></tr>` : ''}
-                <tr class="amt"><td>Total Received:</td><td></td><td></td><td style="text-align:right">${(parseFloat(parseFloat(order.amount_received || 0))||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</td></tr>`;
+        return `${u > 0 ? `<tr><td>USD ($):</td><td></td><td></td><td style="text-align:right">${(parseFloat(u)||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</td></tr>` : ''}
+                ${f > 0 ? `<tr><td>FRA:</td><td></td><td></td><td style="text-align:right">${(parseFloat(f)||0).toLocaleString(undefined,{maximumFractionDigits:0})}</td></tr>` : ''}
+                ${k > 0 ? `<tr><td>K:</td><td></td><td></td><td style="text-align:right">${(parseFloat(k)||0).toLocaleString(undefined,{maximumFractionDigits:0})}</td></tr>` : ''}
+                <tr class="amt"><td>Total Received ($):</td><td></td><td></td><td style="text-align:right">${(parseFloat(parseFloat(order.amount_received || 0))||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</td></tr>`;
       })()}
       <tr class="amt"><td>${parseFloat(order.change_amount || 0) >= 0 ? '*** CHANGE ***' : '*** BAL DUE ***'}</td><td></td><td></td><td style="text-align:right">${(parseFloat(Math.abs(parseFloat(order.change_amount || 0)))||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</td></tr>
     </table>
@@ -720,21 +742,33 @@ const SalesReport = () => {
           </div>
         </div>
 
-        {/* Cash Sales (amount actually received at time of sale) */}
+        {/* Cash Sales — v1.8.1 triple currency. Each row is net cash received
+            in that currency (paid − change given), in the currency's own
+            units. Sosna is cash-only; no card / MoMo / bank to break out. */}
         <div style={{
-          borderRadius: 14, padding: '20px 22px',
+          borderRadius: 14, padding: '16px 18px',
           background: 'linear-gradient(135deg, #16a34a 0%, #15803d 100%)',
           color: '#fff', boxShadow: '0 4px 16px rgba(22,163,74,0.3)',
-          display: 'flex', alignItems: 'center', gap: 16, position: 'relative', overflow: 'hidden'
+          position: 'relative', overflow: 'hidden'
         }}>
           <div style={{ position: 'absolute', right: -12, top: -12, width: 80, height: 80, borderRadius: '50%', background: 'rgba(255,255,255,0.1)' }} />
-          <div style={{ width: 48, height: 48, borderRadius: 12, background: 'rgba(255,255,255,0.2)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-            <FiDollarSign size={22} />
+          <div style={{ fontSize: 11, fontWeight: 700, opacity: 0.85, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 8 }}>{t('cashSales')}</div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
+              <span style={{ fontSize: 11, opacity: 0.8 }}>USD</span>
+              <span style={{ fontSize: 17, fontWeight: 800 }}>${(parseFloat(totalUsdReceived)||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</span>
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
+              <span style={{ fontSize: 11, opacity: 0.8 }}>FRA</span>
+              <span style={{ fontSize: 17, fontWeight: 800 }}>{(parseFloat(totalFraReceived)||0).toLocaleString(undefined,{maximumFractionDigits:0})}</span>
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
+              <span style={{ fontSize: 11, opacity: 0.8 }}>K</span>
+              <span style={{ fontSize: 17, fontWeight: 800 }}>{(parseFloat(totalKReceived)||0).toLocaleString(undefined,{maximumFractionDigits:0})}</span>
+            </div>
           </div>
-          <div>
-            <div style={{ fontSize: 12, fontWeight: 600, opacity: 0.85, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 4 }}>{t('cashSales')}</div>
-            <div style={{ fontSize: 24, fontWeight: 800, lineHeight: 1 }}>{curSym}{(parseFloat(totalCashSales)||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</div>
-            <div style={{ fontSize: 11, opacity: 0.7, marginTop: 3 }}>{t('collectedAtSale')}</div>
+          <div style={{ fontSize: 10, opacity: 0.7, marginTop: 6, borderTop: '1px solid rgba(255,255,255,0.2)', paddingTop: 4 }}>
+            ≈ {curSym}{(parseFloat(totalCashSales)||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})} total
           </div>
         </div>
 
@@ -977,52 +1011,41 @@ const SalesReport = () => {
         );
       })()}
 
-      {/* By Payment Method Tab */}
+      {/* By Payment / Currency Tab — v1.8.1 */}
       {activeTab === 'byPayment' && (() => {
-        // Cap each order's per-method amount so over-tendered cash (returned as change)
-        // doesn't inflate revenue. When a customer pays K500 in cash for a K20 sale, only
-        // K20 is revenue; the K480 went back as change. We scale the breakdown proportionally
-        // so the per-method totals still equal the actual revenue per order.
-        const adjustedRow = (o) => {
-          const cash = parseFloat(o.cash_received || 0);
-          const momo = parseFloat(o.momo_received || 0);
-          const bank = parseFloat(o.bank_received || 0);
-          const tendered = cash + momo + bank;
-          const total = parseFloat(o.total_amount || 0);
-          const revenue = Math.min(tendered, total);
-          const factor = tendered > 0 ? revenue / tendered : 0;
-          return {
-            cash:   cash * factor,
-            momo:   momo * factor,
-            bank:   bank * factor,
-            credit: Math.max(0, total - tendered),
-          };
-        };
+        // Sosna is cash-only across 3 currencies. Per-order breakdown shows
+        // what the customer paid IN each currency (net of change in that same
+        // currency) plus any unpaid balance (Credit, always in USD).
+        const adjusted = (o) => ({
+          usd: parseFloat(o.cash_received || 0) - parseFloat(o.change_amount    || 0),
+          fra: parseFloat(o.fra_received  || 0) - parseFloat(o.fra_change_given || 0),
+          k:   parseFloat(o.k_received    || 0) - parseFloat(o.k_change_given   || 0),
+          credit: Math.max(0, parseFloat(o.total_amount || 0) - parseFloat(o.amount_received || 0)),
+        });
         const totals = activeOrders.reduce((acc, o) => {
-          const r = adjustedRow(o);
-          return { cash: acc.cash + r.cash, momo: acc.momo + r.momo, bank: acc.bank + r.bank, credit: acc.credit + r.credit };
-        }, { cash: 0, momo: 0, bank: 0, credit: 0 });
-        const grand = totals.cash + totals.momo + totals.bank + totals.credit;
-        const pct = (n) => grand > 0 ? ((n / grand) * 100).toFixed(1) : '0.0';
+          const r = adjusted(o);
+          return { usd: acc.usd + r.usd, fra: acc.fra + r.fra, k: acc.k + r.k, credit: acc.credit + r.credit };
+        }, { usd: 0, fra: 0, k: 0, credit: 0 });
 
         return (
           <div className="card">
             <div className="card-header">
-              <h3>Sales by Payment Method</h3>
-              <span style={{ fontSize: 13, color: '#6b7280' }}>{activeOrders.length} order(s) · ${(parseFloat(grand)||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</span>
+              <h3>Sales by Currency</h3>
+              <span style={{ fontSize: 13, color: '#6b7280' }}>{activeOrders.length} order(s)</span>
             </div>
 
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 14, padding: '16px 20px' }}>
               {[
-                { label: 'Cash',         value: totals.cash,   color: '#16a34a' },
-                { label: 'Mobile Money', value: totals.momo,   color: '#f59e0b' },
-                { label: 'Bank',         value: totals.bank,   color: '#2563eb' },
-                { label: 'Credit',       value: totals.credit, color: '#dc2626' },
+                { label: 'USD ($)', value: totals.usd,    color: '#16a34a', prefix: '$', dec: 2 },
+                { label: 'FRA',     value: totals.fra,    color: '#7c3aed', prefix: '',  dec: 0, suffix: ' FRA' },
+                { label: 'K',       value: totals.k,      color: '#ea580c', prefix: '',  dec: 0, suffix: ' K' },
+                { label: 'Credit',  value: totals.credit, color: '#dc2626', prefix: '$', dec: 2 },
               ].map(b => (
                 <div key={b.label} style={{ padding: '14px 16px', borderRadius: 12, background: b.color + '15', border: `1.5px solid ${b.color}40` }}>
                   <div style={{ fontSize: 11, fontWeight: 700, color: b.color, textTransform: 'uppercase', letterSpacing: 0.5 }}>{b.label}</div>
-                  <div style={{ fontSize: 24, fontWeight: 800, color: b.color, marginTop: 4 }}>{curSym}{(parseFloat(b.value)||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</div>
-                  <div style={{ fontSize: 11, color: '#6b7280', marginTop: 2 }}>{pct(b.value)}% of revenue</div>
+                  <div style={{ fontSize: 22, fontWeight: 800, color: b.color, marginTop: 4 }}>
+                    {b.prefix}{(parseFloat(b.value)||0).toLocaleString(undefined,{minimumFractionDigits:b.dec,maximumFractionDigits:b.dec})}{b.suffix || ''}
+                  </div>
                 </div>
               ))}
             </div>
@@ -1030,7 +1053,7 @@ const SalesReport = () => {
             <table className="data-table" style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13, margin: '0 0 16px' }}>
               <thead>
                 <tr style={{ background: '#f9fafb' }}>
-                  {['Date', 'Receipt #', 'Customer', 'Total', 'Cash', 'MoMo', 'Bank', 'Credit'].map((h, i) => (
+                  {['Date', 'Receipt #', 'Customer', 'Total ($)', 'USD ($)', 'FRA', 'K', 'Credit ($)'].map((h, i) => (
                     <th key={i} style={{ padding: '10px 12px', textAlign: i < 3 ? 'left' : 'right', fontSize: 11, fontWeight: 700, color: '#6b7280', textTransform: 'uppercase', borderBottom: '1px solid #e5e7eb' }}>{h}</th>
                   ))}
                 </tr>
@@ -1039,17 +1062,17 @@ const SalesReport = () => {
                 {activeOrders.length === 0 ? (
                   <tr><td colSpan={8} style={{ padding: 40, textAlign: 'center', color: '#9ca3af' }}>No sales for the selected period.</td></tr>
                 ) : activeOrders.map(o => {
-                  const r = adjustedRow(o);
+                  const r = adjusted(o);
                   return (
                     <tr key={o.id} style={{ borderBottom: '1px solid #f3f4f6' }}>
                       <td style={{ padding: '8px 12px' }}>{new Date(o.created_at + 'Z').toLocaleDateString('en-GB')}</td>
                       <td style={{ padding: '8px 12px', color: '#6b7280', fontSize: 12 }}>{o.order_number}</td>
                       <td style={{ padding: '8px 12px' }}>{o.customer_name || 'Walk-in'}</td>
-                      <td style={{ padding: '8px 12px', textAlign: 'right', fontWeight: 700 }}>{curSym}{(parseFloat(parseFloat(o.total_amount))||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</td>
-                      <td style={{ padding: '8px 12px', textAlign: 'right', color: r.cash > 0 ? '#16a34a' : '#9ca3af' }}>{r.cash > 0 ? `${curSym}${(parseFloat(r.cash)||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}` : '—'}</td>
-                      <td style={{ padding: '8px 12px', textAlign: 'right', color: r.momo > 0 ? '#f59e0b' : '#9ca3af' }}>{r.momo > 0 ? `${curSym}${(parseFloat(r.momo)||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}` : '—'}</td>
-                      <td style={{ padding: '8px 12px', textAlign: 'right', color: r.bank > 0 ? '#2563eb' : '#9ca3af' }}>{r.bank > 0 ? `${curSym}${(parseFloat(r.bank)||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}` : '—'}</td>
-                      <td style={{ padding: '8px 12px', textAlign: 'right', color: r.credit > 0 ? '#dc2626' : '#9ca3af', fontWeight: r.credit > 0 ? 700 : 400 }}>{r.credit > 0 ? `${curSym}${(parseFloat(r.credit)||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}` : '—'}</td>
+                      <td style={{ padding: '8px 12px', textAlign: 'right', fontWeight: 700 }}>${(parseFloat(o.total_amount)||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</td>
+                      <td style={{ padding: '8px 12px', textAlign: 'right', color: r.usd > 0 ? '#16a34a' : '#9ca3af' }}>{r.usd > 0 ? `$${(parseFloat(r.usd)||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}` : '—'}</td>
+                      <td style={{ padding: '8px 12px', textAlign: 'right', color: r.fra > 0 ? '#7c3aed' : '#9ca3af' }}>{r.fra > 0 ? `${(parseFloat(r.fra)||0).toLocaleString(undefined,{maximumFractionDigits:0})}` : '—'}</td>
+                      <td style={{ padding: '8px 12px', textAlign: 'right', color: r.k > 0 ? '#ea580c' : '#9ca3af' }}>{r.k > 0 ? `${(parseFloat(r.k)||0).toLocaleString(undefined,{maximumFractionDigits:0})}` : '—'}</td>
+                      <td style={{ padding: '8px 12px', textAlign: 'right', color: r.credit > 0 ? '#dc2626' : '#9ca3af', fontWeight: r.credit > 0 ? 700 : 400 }}>{r.credit > 0 ? `$${(parseFloat(r.credit)||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}` : '—'}</td>
                     </tr>
                   );
                 })}
@@ -1058,11 +1081,11 @@ const SalesReport = () => {
                 <tfoot>
                   <tr style={{ background: '#f9fafb', fontWeight: 700 }}>
                     <td colSpan={3} style={{ padding: '11px 12px' }}>TOTAL</td>
-                    <td style={{ padding: '11px 12px', textAlign: 'right' }}>{curSym}{(parseFloat(grand)||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</td>
-                    <td style={{ padding: '11px 12px', textAlign: 'right', color: '#16a34a' }}>{curSym}{(parseFloat(totals.cash)||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</td>
-                    <td style={{ padding: '11px 12px', textAlign: 'right', color: '#f59e0b' }}>{curSym}{(parseFloat(totals.momo)||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</td>
-                    <td style={{ padding: '11px 12px', textAlign: 'right', color: '#2563eb' }}>{curSym}{(parseFloat(totals.bank)||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</td>
-                    <td style={{ padding: '11px 12px', textAlign: 'right', color: '#dc2626' }}>{curSym}{(parseFloat(totals.credit)||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</td>
+                    <td style={{ padding: '11px 12px', textAlign: 'right' }}>${(parseFloat(totalRevenue)||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</td>
+                    <td style={{ padding: '11px 12px', textAlign: 'right', color: '#16a34a' }}>${(parseFloat(totals.usd)||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</td>
+                    <td style={{ padding: '11px 12px', textAlign: 'right', color: '#7c3aed' }}>{(parseFloat(totals.fra)||0).toLocaleString(undefined,{maximumFractionDigits:0})}</td>
+                    <td style={{ padding: '11px 12px', textAlign: 'right', color: '#ea580c' }}>{(parseFloat(totals.k)||0).toLocaleString(undefined,{maximumFractionDigits:0})}</td>
+                    <td style={{ padding: '11px 12px', textAlign: 'right', color: '#dc2626' }}>${(parseFloat(totals.credit)||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</td>
                   </tr>
                 </tfoot>
               )}
