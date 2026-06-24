@@ -24,6 +24,40 @@ function isHqRequest(req) {
   return HQ_SLUGS.has(slug);
 }
 
+// v1.7.8: merge HQ's units_json (structure: name, conv, is_base, barcode,
+// extra_barcodes) with the branch's units_json (price field). Branch owns
+// the per-packaging selling price the same way it owns the top-level
+// selling_price column. HQ re-pushes never wipe local prices.
+//
+// Returns a JSON string (matches the column shape). When the branch has no
+// existing row for a given unit name, falls back to HQ's price (initial
+// state on first push — usually 0, branch sets the real number locally).
+function mergeUnitsJsonPreservingBranchPrices(hqJson, branchJson) {
+  let hqUnits = [];
+  let branchUnits = [];
+  try { hqUnits = JSON.parse(hqJson || '[]'); } catch { hqUnits = []; }
+  try { branchUnits = JSON.parse(branchJson || '[]'); } catch { branchUnits = []; }
+  if (!Array.isArray(hqUnits) || hqUnits.length === 0) return hqJson || null;
+  const branchByName = new Map(
+    (Array.isArray(branchUnits) ? branchUnits : [])
+      .map(u => [String(u?.name || '').trim().toLowerCase(), u])
+  );
+  const merged = hqUnits.map(hu => {
+    const key = String(hu?.name || '').trim().toLowerCase();
+    const bu = branchByName.get(key);
+    const branchPrice = bu && bu.price !== undefined && bu.price !== null && bu.price !== ''
+      ? parseFloat(bu.price)
+      : null;
+    return {
+      ...hu,
+      price: (branchPrice !== null && !isNaN(branchPrice))
+        ? branchPrice
+        : (parseFloat(hu?.price) || 0),
+    };
+  });
+  return JSON.stringify(merged);
+}
+
 // SKIP_SLUGS only routes — true HQ, not a per-branch tenant. We push on
 // these because middleware/tenant.js routes them to the default DB.
 function isHqOrSkip(req) {
@@ -232,8 +266,13 @@ function pushProductToBranches(prodRow, { listTenants, getTenantDb }) {
       // the branch's per-packaging selling price. So we push the structural
       // alt_unit + conversion_factor but leave alt_price alone (only set
       // it on the initial INSERT when the row doesn't exist yet).
-      const existing = db.prepare('SELECT id FROM products WHERE sync_id = ? AND deleted_at IS NULL').get(prodRow.sync_id);
+      const existing = db.prepare('SELECT id, units_json FROM products WHERE sync_id = ? AND deleted_at IS NULL').get(prodRow.sync_id);
       if (existing) {
+        // v1.7.8: per-packaging selling `price` inside units_json is BRANCH-
+        // owned (same rule as legacy alt_price + the top-level selling_price
+        // column). HQ owns structure (name, conv, is_base, barcode); branch
+        // owns price. Merge so re-pushes from HQ don't wipe local prices.
+        const mergedUnitsJson = mergeUnitsJsonPreservingBranchPrices(prodRow.units_json, existing.units_json);
         db.prepare(`
           UPDATE products
              SET code = ?, name = ?, category_id = ?, category_sync_id = ?,
@@ -249,7 +288,7 @@ function pushProductToBranches(prodRow, { listTenants, getTenantDb }) {
         `).run(
           prodRow.code || null, prodRow.name,
           branchCategoryId, prodRow.category_sync_id || null,
-          prodRow.unit || 'pcs', prodRow.units_json || null,
+          prodRow.unit || 'pcs', mergedUnitsJson,
           prodRow.default_unit || null, prodRow.image_url || null,
           prodRow.container_product_sync_id || null,
           prodRow.units_per_container || null,
@@ -298,4 +337,5 @@ module.exports = {
   isHqRequest, isHqOrSkip, getHostSlug,
   pushCategoryToBranches, pushMainCategoryToBranches, pushUnitToBranches,
   pushProductToBranches,
+  mergeUnitsJsonPreservingBranchPrices,
 };

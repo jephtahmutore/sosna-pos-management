@@ -1,7 +1,7 @@
 const router = require('express').Router();
 const db = require('../config/database');
 const { auth, readOnlyGuard, withTenantDb } = require('../middleware/auth');
-const { isHqRequest, pushProductToBranches, pushCategoryToBranches, pushMainCategoryToBranches } = require('../middleware/hqPush');
+const { isHqRequest, pushProductToBranches, pushCategoryToBranches, pushMainCategoryToBranches, mergeUnitsJsonPreservingBranchPrices } = require('../middleware/hqPush');
 const { listTenants } = require('../config/masterDb');
 const { getTenantDb } = require('../config/tenantDb');
 const multer = require('multer');
@@ -316,7 +316,15 @@ router.put('/:id', auth, (req, res) => {
       const finalCategoryId       = useHqFields ? existingProduct.category_id      : category_id;
       const finalCategorySyncId   = useHqFields ? existingProduct.category_sync_id : categorySyncId;
       const finalUnit             = useHqFields ? existingProduct.unit             : legacy.unit;
-      const finalUnitsJson        = useHqFields ? existingProduct.units_json       : JSON.stringify(units);
+      // v1.7.8: per-packaging selling `price` inside units_json is branch-owned
+      // (same as legacy alt_price + top-level selling_price). When a branch
+      // edits an HQ-owned product, keep HQ's structure (name/conv/is_base/
+      // barcode) but accept the branch's typed prices. mergeUnitsJsonPreserving
+      // BranchPrices treats the request's `units` as the branch's price source
+      // and existingProduct.units_json as HQ's structure.
+      const finalUnitsJson        = useHqFields
+        ? mergeUnitsJsonPreservingBranchPrices(existingProduct.units_json, JSON.stringify(units))
+        : JSON.stringify(units);
       const finalDefaultUnit      = useHqFields ? existingProduct.default_unit
                                                 : (default_unit !== undefined ? (default_unit || null) : undefined);
       const finalContainerSync    = useHqFields ? existingProduct.container_product_sync_id
