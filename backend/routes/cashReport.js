@@ -126,6 +126,19 @@ router.get('/daily', auth, readOnlyGuard, (req, res) => {
       `SELECT COALESCE(SUM(amount), 0) AS total FROM payment_vouchers
        WHERE deleted_at IS NULL AND tenant_id = ? AND date = ? AND paid_from = 'Cash Drawer' AND cashier_id = ?`
     ).get(...expensesParams);
+    // v1.8.14 — per-currency expenses. A PV recorded in FRA reduces FRA
+    // drawer (not USD). usd_amount / fra_amount / k_amount come from
+    // payment_vouchers (v1.8.5 schema); legacy cash_amount fall back into
+    // the USD bucket for older rows. The single `expenses` total above
+    // is kept for back-compat with anything that still reads it.
+    const expensesByCcy = db.prepare(
+      `SELECT
+         COALESCE(SUM(usd_amount), 0) + COALESCE(SUM(cash_amount), 0) AS usd,
+         COALESCE(SUM(fra_amount), 0) AS fra,
+         COALESCE(SUM(k_amount),   0) AS k
+       FROM payment_vouchers
+       WHERE deleted_at IS NULL AND tenant_id = ? AND date = ? AND paid_from = 'Cash Drawer' AND cashier_id = ?`
+    ).get(...expensesParams);
 
     const totalRevenue = db.prepare(
       `SELECT COALESCE(SUM(total_amount), 0) AS total FROM orders
@@ -140,6 +153,10 @@ router.get('/daily', auth, readOnlyGuard, (req, res) => {
       usd_received: usdNet,
       fra_received: fraNet,
       k_received:   kNet,
+      // v1.8.14 — per-currency expenses paid from cash drawer.
+      usd_expenses: parseFloat(expensesByCcy.usd) || 0,
+      fra_expenses: parseFloat(expensesByCcy.fra) || 0,
+      k_expenses:   parseFloat(expensesByCcy.k)   || 0,
       pending: parseFloat(pendingSales.total),
       credit_sales: parseFloat(creditSales.total),
       expenses: parseFloat(expenses.total),

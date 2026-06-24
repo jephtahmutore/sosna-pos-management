@@ -68,6 +68,10 @@ const CashReport = () => {
   // received per currency (net of change), independent of what the cashier
   // typed into the form. Difference per currency = counted − expected.
   const [expectedByCcy, setExpectedByCcy] = useState({ usd: 0, fra: 0, k: 0 });
+  // v1.8.14 — per-currency expenses paid out of the cash drawer today.
+  // Subtracted from each currency's Expected so the diff stays accurate
+  // (USD expenses don't deplete FRA drawer, etc.).
+  const [expensesByCcy, setExpensesByCcy] = useState({ usd: 0, fra: 0, k: 0 });
 
   // Expenses list modal
   const [showExpenses, setShowExpenses] = useState(false);
@@ -167,6 +171,12 @@ const CashReport = () => {
         usd: parseFloat(daily.usd_received || 0) || 0,
         fra: parseFloat(daily.fra_received || 0) || 0,
         k:   parseFloat(daily.k_received   || 0) || 0,
+      });
+      // v1.8.14 — per-currency expenses for that date+cashier.
+      setExpensesByCcy({
+        usd: parseFloat(daily.usd_expenses || 0) || 0,
+        fra: parseFloat(daily.fra_expenses || 0) || 0,
+        k:   parseFloat(daily.k_expenses   || 0) || 0,
       });
     }
 
@@ -714,22 +724,26 @@ const CashReport = () => {
         )}
 
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 16 }}>
-          {/* v1.8.11 — per-currency cards. Each stays in its own currency
-              end-to-end: counted (cashier input), expected (from POS),
-              difference, status. No USD-equivalent conversion. */}
+          {/* v1.8.11+v1.8.14 — per-currency cards. Each stays in its own
+              currency end-to-end: counted (cashier input), expected (POS
+              received minus expenses paid out of drawer), difference,
+              status. No USD-equivalent conversion. */}
           {[
-            { key: 'usd_received', label: 'USD Cash ($)',  ccy: 'USD', symbol: '$',  dec: 2, exp: expectedByCcy.usd, step: '0.01', color: '#16a34a' },
-            { key: 'fra_received', label: 'FRA Cash',      ccy: 'FRA', symbol: '',   dec: 0, exp: expectedByCcy.fra, step: '1',    color: '#7c3aed' },
-            { key: 'k_received',   label: 'K Cash',        ccy: 'K',   symbol: '',   dec: 0, exp: expectedByCcy.k,   step: '1',    color: '#ea580c' },
+            { key: 'usd_received', label: 'USD Cash ($)',  ccy: 'USD', symbol: '$',  dec: 2, posExp: expectedByCcy.usd, exp: expensesByCcy.usd, step: '0.01', color: '#16a34a' },
+            { key: 'fra_received', label: 'FRA Cash',      ccy: 'FRA', symbol: '',   dec: 0, posExp: expectedByCcy.fra, exp: expensesByCcy.fra, step: '1',    color: '#7c3aed' },
+            { key: 'k_received',   label: 'K Cash',        ccy: 'K',   symbol: '',   dec: 0, posExp: expectedByCcy.k,   exp: expensesByCcy.k,   step: '1',    color: '#ea580c' },
           ].map(c => {
-            const counted = parseFloat(form[c.key] || 0) || 0;
-            const diff    = counted - c.exp;
-            const eps     = c.dec === 2 ? 0.01 : 1;
-            const status  = Math.abs(diff) < eps ? 'OK'
-                          : diff > 0 ? (diff < 10 ? 'Slight Surplus' : 'Surplus')
-                          : (diff > -10 ? 'Slight Short' : 'Short');
-            const isOk    = status === 'OK';
-            const fmt     = (n) => `${c.symbol}${parseFloat(n || 0).toLocaleString(undefined, { minimumFractionDigits: c.dec, maximumFractionDigits: c.dec })}`;
+            const counted    = parseFloat(form[c.key] || 0) || 0;
+            // Expected drawer at end of shift = POS received − expenses
+            // paid out of this currency's drawer today.
+            const netExpected = c.posExp - c.exp;
+            const diff       = counted - netExpected;
+            const eps        = c.dec === 2 ? 0.01 : 1;
+            const status     = Math.abs(diff) < eps ? 'OK'
+                             : diff > 0 ? (diff < 10 ? 'Slight Surplus' : 'Surplus')
+                             : (diff > -10 ? 'Slight Short' : 'Short');
+            const isOk       = status === 'OK';
+            const fmt        = (n) => `${c.symbol}${parseFloat(n || 0).toLocaleString(undefined, { minimumFractionDigits: c.dec, maximumFractionDigits: c.dec })}`;
             return (
               <div key={c.key} className="form-group" style={{ borderLeft: `4px solid ${c.color}`, paddingLeft: 10 }}>
                 <label style={{ color: c.color, fontWeight: 700 }}>{c.label}</label>
@@ -737,10 +751,14 @@ const CashReport = () => {
                   onChange={e => setForm({ ...form, [c.key]: e.target.value })}
                   disabled={!editMode} placeholder={c.dec === 2 ? '0.00' : '0'} step={c.step}
                   style={inputStyle(editMode)} />
-                <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 4, fontSize: 11, gap: 6, flexWrap: 'wrap' }}>
-                  <span style={{ color: '#6b7280' }}>Expected: <strong>{fmt(c.exp)}</strong></span>
+                <div style={{ fontSize: 11, color: '#6b7280', marginTop: 4, lineHeight: 1.5 }}>
+                  POS net: <strong>{fmt(c.posExp)}</strong>
+                  {c.exp > 0 && <> · Expenses: <strong style={{ color: '#dc2626' }}>−{fmt(c.exp)}</strong></>}
+                  {' '}→ Expected: <strong>{fmt(netExpected)}</strong>
+                </div>
+                <div style={{ marginTop: 2, fontSize: 11 }}>
                   <span style={{ color: isOk ? '#16a34a' : diff > 0 ? '#d97706' : '#dc2626', fontWeight: 700 }}>
-                    {diff > 0 ? '+' : ''}{fmt(diff)} {status}
+                    Diff: {diff > 0 ? '+' : ''}{fmt(diff)} · {status}
                   </span>
                 </div>
               </div>
