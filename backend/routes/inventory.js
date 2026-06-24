@@ -214,8 +214,13 @@ router.get('/sales', auth, readOnlyGuard, (req, res) => {
       ) input_agg ON input_agg.product_sync_id = p.sync_id
 
       LEFT JOIN (
+        -- v1.8.15: include 'sale_reverse' (partial-reverse movement type
+        -- introduced in v1.8.12). Without this, reversing 1 of 12 PUSHKIN
+        -- sales still shows Total Sales=12 because the +1 sale_reverse
+        -- movement was ignored. ABS(SUM(...)) gives NET sales after
+        -- reverses (sale=-qty, sale_reverse=+qty).
         SELECT product_sync_id, ABS(SUM(quantity)) AS total_sales
-        FROM stock_movements WHERE location = 'sales' AND movement_type IN ('sale', 'reverse')
+        FROM stock_movements WHERE location = 'sales' AND movement_type IN ('sale', 'reverse', 'sale_reverse')
           AND created_at >= @date AND created_at < date(@date, '+1 day') AND product_sync_id IS NOT NULL
         GROUP BY product_sync_id
       ) sales_day_agg ON sales_day_agg.product_sync_id = p.sync_id
@@ -303,7 +308,7 @@ router.get('/sales/profit-summary', auth, readOnlyGuard, (req, res) => {
       LEFT JOIN daily_cost_snapshot dcs ON dcs.product_sync_id = sm.product_sync_id AND dcs.date = ? AND dcs.deleted_at IS NULL
       LEFT JOIN (SELECT product_sync_id, SUM(quantity) AS total_qty, SUM(total_price) AS total_cost FROM grn_items WHERE deleted_at IS NULL AND product_sync_id IS NOT NULL GROUP BY product_sync_id) grn_agg ON grn_agg.product_sync_id = sm.product_sync_id
       LEFT JOIN (SELECT product_sync_id, SUM(quantity) AS total_qty, SUM(total_allocated_cost) AS total_cost FROM production_outputs WHERE deleted_at IS NULL AND product_sync_id IS NOT NULL GROUP BY product_sync_id) prod_agg ON prod_agg.product_sync_id = sm.product_sync_id
-      WHERE sm.location = 'sales' AND sm.movement_type IN ('sale', 'reverse')
+      WHERE sm.location = 'sales' AND sm.movement_type IN ('sale', 'reverse', 'sale_reverse')
         AND DATE(sm.created_at) = ? AND sm.deleted_at IS NULL AND sm.product_sync_id IS NOT NULL
         AND p.tenant_id = ?
     `).get(selectedDate, selectedDate, tenantId);
