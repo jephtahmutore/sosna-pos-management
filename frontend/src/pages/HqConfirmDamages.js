@@ -116,13 +116,19 @@ export default function HqConfirmDamages() {
                   </thead>
                   <tbody>
                     {(r.items || []).map(it => {
-                      const v = (parseFloat(it.quantity) || 0) * (parseFloat(it.cost_price) || 0);
+                      // v1.8.35 — backend now sends line_cost (cost per
+                      // declared unit) and line_value (qty × line_cost),
+                      // so 1 Box reads $23.55/Box instead of the
+                      // per-Bottle $0.98. Fall back to old calc on
+                      // pre-v1.8.35 rows where the enrichment is absent.
+                      const lineCost  = it.line_cost  != null ? parseFloat(it.line_cost)  : (parseFloat(it.cost_price) || 0);
+                      const lineValue = it.line_value != null ? parseFloat(it.line_value) : (parseFloat(it.quantity) || 0) * lineCost;
                       return (
                         <tr key={it.id} style={{ borderTop: '1px solid #f1f5f9' }}>
                           <td style={td}>{it.product_name || it.product_sync_id}</td>
                           <td style={{ ...td, textAlign: 'right' }}>{fmtQty(it.quantity)} {it.unit || it.product_unit || ''}</td>
-                          <td style={{ ...td, textAlign: 'right' }}>{fmtMoney(it.cost_price)}</td>
-                          <td style={{ ...td, textAlign: 'right', fontWeight: 700 }}>{fmtMoney(v)}</td>
+                          <td style={{ ...td, textAlign: 'right' }}>{fmtMoney(lineCost)}</td>
+                          <td style={{ ...td, textAlign: 'right', fontWeight: 700 }}>{fmtMoney(lineValue)}</td>
                         </tr>
                       );
                     })}

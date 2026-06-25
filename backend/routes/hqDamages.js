@@ -64,12 +64,24 @@ router.get('/awaiting', hqAuth, (req, res) => {
               LEFT JOIN products p ON p.sync_id = sri.product_sync_id
               WHERE sri.return_sync_id = ? AND sri.deleted_at IS NULL
           `).all(h.sync_id));
-          const estValue = items.reduce((sum, it) => sum + (parseFloat(it.quantity) || 0) * (parseFloat(it.cost_price) || 0), 0);
+          // v1.8.35 — enrich each item with line_cost (cost in the declared
+          // unit, e.g. $/Box) and line_value (qty × line_cost). The old
+          // calculation multiplied qty × cost_price directly, but cost_price
+          // is per BASE unit (e.g. $0.98/Bottle), so a 1 Box damage showed
+          // $0.98 instead of the correct ~$23.55.
+          const enriched = items.map(it => {
+            const prod = { unit: it.product_unit, alt_unit: it.alt_unit, conversion_factor: it.conversion_factor, units_json: it.units_json };
+            const convToBase = conversionToBase(prod, it.unit); // base units per declared unit
+            const lineCost = (parseFloat(it.cost_price) || 0) * convToBase;
+            const lineValue = (parseFloat(it.quantity) || 0) * lineCost;
+            return { ...it, line_cost: lineCost, line_value: lineValue };
+          });
+          const estValue = enriched.reduce((sum, it) => sum + (it.line_value || 0), 0);
           rows.push({
             ...h,
             branch_slug: t.slug,
             branch_name: branchName,
-            items,
+            items: enriched,
             est_value: estValue,
           });
         }

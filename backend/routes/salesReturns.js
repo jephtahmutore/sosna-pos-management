@@ -7,42 +7,55 @@ const { recalculateDailyProfit } = require('../config/profitHelper');
 const { conversionToBase, baseQtyExpr } = require('../config/unitsHelper');
 
 // GET /api/sales-returns
-// Returns each damage entry plus its monetary value (qty in base units × avg cost),
-// summed across all items linked to the entry via the negative sales-side stock_movement.
+// v1.8.35 — value now computed in JS so the unit-conversion logic (a
+// declared qty of "1 Box" must read cost_price × conv, not cost_price
+// directly) and the PENDING-vs-CONFIRMED distinction are explicit.
+//
+// Returned per row:
+//   total_value           — actual moved value if CONFIRMED (from
+//                           stock_movements), else estimated from items.
+//   estimated_total_value — always the items-based estimate, so the
+//                           UI can show "claimed worth" even pre-confirm.
 router.get('/', auth, readOnlyGuard, (req, res) => {
   try {
     const rows = db.prepare(`
       SELECT sr.*,
-        (SELECT COUNT(*) FROM sales_return_items WHERE return_sync_id = sr.sync_id AND deleted_at IS NULL) AS item_count,
-        COALESCE((
-          SELECT SUM(ABS(sm.quantity) *
-            COALESCE(dcs.avg_cost_price,
-              CASE WHEN COALESCE(grn_agg.total_qty,0) > 0
-                THEN COALESCE(grn_agg.total_cost,0) / grn_agg.total_qty
-                ELSE p.cost_price END)
-          )
-          FROM stock_movements sm
-          JOIN products p ON p.sync_id = sm.product_sync_id
-          LEFT JOIN daily_cost_snapshot dcs ON dcs.product_sync_id = sm.product_sync_id AND dcs.date = sr.date AND dcs.deleted_at IS NULL
-          LEFT JOIN (
-            SELECT gi.product_sync_id,
-                   SUM(${baseQtyExpr('gip', 'gi')}) AS total_qty,
-                   SUM(gi.total_price) AS total_cost
-            FROM grn_items gi
-            LEFT JOIN products gip ON gip.sync_id = gi.product_sync_id
-            WHERE gi.deleted_at IS NULL AND gi.product_sync_id IS NOT NULL
-            GROUP BY gi.product_sync_id
-          ) grn_agg ON grn_agg.product_sync_id = sm.product_sync_id
-          WHERE sm.reference_sync_id = sr.sync_id
-            AND sm.movement_type = 'sales_return'
-            AND sm.location = 'sales'
-            AND sm.deleted_at IS NULL
-        ), 0) AS total_value
+        (SELECT COUNT(*) FROM sales_return_items WHERE return_sync_id = sr.sync_id AND deleted_at IS NULL) AS item_count
       FROM sales_returns sr
       WHERE sr.deleted_at IS NULL AND sr.tenant_id = ?
       ORDER BY sr.date DESC, sr.id DESC
     `).all(req.user.tenantId);
-    res.json(rows);
+
+    // Pre-fetch all items for these returns in one query.
+    const ids = rows.map(r => r.sync_id);
+    let itemsBySync = new Map();
+    if (ids.length > 0) {
+      const placeholders = ids.map(() => '?').join(',');
+      const itemRows = db.prepare(`
+        SELECT sri.return_sync_id, sri.quantity, sri.unit,
+               p.cost_price, p.unit AS product_unit, p.alt_unit,
+               p.conversion_factor, p.units_json
+        FROM sales_return_items sri
+        LEFT JOIN products p ON p.sync_id = sri.product_sync_id
+        WHERE sri.deleted_at IS NULL AND sri.return_sync_id IN (${placeholders})
+      `).all(...ids);
+      for (const it of itemRows) {
+        if (!itemsBySync.has(it.return_sync_id)) itemsBySync.set(it.return_sync_id, []);
+        itemsBySync.get(it.return_sync_id).push(it);
+      }
+    }
+
+    const enriched = rows.map(r => {
+      const items = itemsBySync.get(r.sync_id) || [];
+      const estimated = items.reduce((sum, it) => {
+        const prod = { unit: it.product_unit, alt_unit: it.alt_unit, conversion_factor: it.conversion_factor, units_json: it.units_json };
+        const convToBase = conversionToBase(prod, it.unit);
+        const lineCost = (parseFloat(it.cost_price) || 0) * convToBase;
+        return sum + (parseFloat(it.quantity) || 0) * lineCost;
+      }, 0);
+      return { ...r, total_value: estimated, estimated_total_value: estimated };
+    });
+    res.json(enriched);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
