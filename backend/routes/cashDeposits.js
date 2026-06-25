@@ -67,15 +67,17 @@ function nextDepositNumber() {
 // ─── POST /cash-deposits — branch records a new deposit being sent ──────────
 router.post('/', hqAuth, (req, res) => {
   try {
-    const { from_slug, currency, amount, amount_usd, sell_rate, notes } = req.body;
+    const { from_slug, currency, amount, notes } = req.body;
     if (!from_slug || !isRegistered(from_slug)) return res.status(400).json({ error: 'Unknown source branch' });
     const ccy = String(currency || '').toUpperCase();
     if (!['USD', 'FRA', 'K'].includes(ccy)) return res.status(400).json({ error: 'currency must be USD, FRA, or K' });
     const amt = parseFloat(amount || 0) || 0;
     if (!(amt > 0)) return res.status(400).json({ error: 'amount must be > 0' });
-    const amtUsd = parseFloat(amount_usd || 0) || (ccy === 'USD' ? amt : 0);
-    const rate   = parseFloat(sell_rate || 0) || null;
 
+    // v1.8.59 — no FX rate stored. Physical deposit is just raw currency;
+    // any conversion at HQ is a separate Currency Exchange concern.
+    // amount_usd / sell_rate columns kept on schema for backwards compat
+    // but no longer populated.
     const syncId = randomUUID();
     const depositNumber = nextDepositNumber();
     const fromName = branchName(from_slug);
@@ -87,7 +89,7 @@ router.post('/', hqAuth, (req, res) => {
       VALUES (?,?,?,?,?,?,?,?,?, 'PENDING', ?, ?)
     `).run(
       depositNumber, syncId, from_slug, fromName,
-      ccy, amt, amtUsd, rate, notes || null,
+      ccy, amt, 0, null, notes || null,
       req.user.id, [req.user.first_name, req.user.last_name].filter(Boolean).join(' ') || null
     );
     const row = masterDb.prepare('SELECT * FROM cash_deposits WHERE sync_id = ?').get(syncId);
@@ -117,73 +119,29 @@ router.get('/', hqAuth, (req, res) => {
 });
 
 // ─── PUT /cash-deposits/:id/confirm — HQ confirms the cash arrived ──────────
-// Atomically writes:
-//   - branch tenant DB: payment_vouchers row (cash OUT, category='HQ Deposit')
-//   - HQ tenant DB:     cash_receipts row    (cash IN,  payment_method='Deposit')
+//
+// v1.8.59 — REWRITE. A deposit is cash MOVEMENT between drawers, not P&L.
+// We no longer write a payment_voucher (= expense, hits profit) on the
+// branch or a cash_receipt (= income, hits profit) on HQ — those caused
+// phantom profit deltas on both sides.
+//
+// Instead we just flip the master.db row to CONFIRMED. The Cash Report
+// daily aggregation already subtracts confirmed-today outgoing deposits
+// from the branch's per-currency Expected, and adds incoming deposits to
+// the HQ's per-currency Expected, so drawer reconciliation still works
+// — without inventing income/expense events.
 router.put('/:id/confirm', hqAuth, (req, res) => {
   try {
     const row = masterDb.prepare('SELECT * FROM cash_deposits WHERE id = ?').get(req.params.id);
     if (!row) return res.status(404).json({ error: 'Deposit not found' });
     if (row.status !== 'PENDING') return res.status(400).json({ error: `Deposit is already ${row.status}` });
-
-    const hqSlug = getHqSlug();
-    if (!isRegistered(hqSlug)) {
-      return res.status(500).json({ error: 'HQ tenant DB not registered — cannot post the cash receipt' });
-    }
-
-    const branchDb = getTenantDb(row.from_slug);
-    const hqDb     = getTenantDb(hqSlug);
     const confirmedByName = [req.user.first_name, req.user.last_name].filter(Boolean).join(' ') || null;
-    const today = new Date().toISOString().slice(0, 10);
-    const desc  = `Deposit to HQ — ${row.deposit_number}` + (row.notes ? ` — ${row.notes}` : '');
-
-    // Per-currency split for the ledger entries.
-    const usdAmt = row.currency === 'USD' ? row.amount : 0;
-    const fraAmt = row.currency === 'FRA' ? row.amount : 0;
-    const kAmt   = row.currency === 'K'   ? row.amount : 0;
-
-    masterDb.transaction(() => {
-      // ── Branch side: write a PV (cash out) ────────────────────────────
-      const pvNumber = `PV-${row.deposit_number}`;
-      branchDb.prepare(`
-        INSERT INTO payment_vouchers (voucher_number, paid_to, description, category, amount,
-                                       cash_amount, bank_amount, momo_amount,
-                                       usd_amount, fra_amount, k_amount,
-                                       date, paid_from, created_by,
-                                       sync_id, tenant_id, branch_id, device_id, synced, created_at, updated_at)
-         VALUES (?,?,?,?,?, 0,0,0, ?,?,?, ?,?,?, ?,?,?,?, 0,datetime('now'),datetime('now'))
-      `).run(
-        pvNumber, 'HQ', desc, 'HQ Deposit', row.amount_usd,
-        usdAmt, fraAmt, kAmt,
-        today, 'Cash', req.user.id,
-        randomUUID(), null, null, null
-      );
-
-      // ── HQ side: write a CR (cash in) ─────────────────────────────────
-      const crNumber = `CR-${row.deposit_number}`;
-      hqDb.prepare(`
-        INSERT INTO cash_receipts (receipt_number, received_from, description, payment_method, amount,
-                                    cash_amount, bank_amount, momo_amount,
-                                    usd_amount, fra_amount, k_amount,
-                                    date, created_by,
-                                    sync_id, tenant_id, branch_id, device_id, synced, created_at, updated_at)
-         VALUES (?,?,?,?,?, 0,0,0, ?,?,?, ?,?, ?,?,?,?, 0,datetime('now'),datetime('now'))
-      `).run(
-        crNumber, row.from_name || row.from_slug, desc, 'Deposit', row.amount_usd,
-        usdAmt, fraAmt, kAmt,
-        today, req.user.id,
-        randomUUID(), null, null, null
-      );
-
-      // ── Master row: mark CONFIRMED ────────────────────────────────────
-      masterDb.prepare(`
-        UPDATE cash_deposits
-           SET status = 'CONFIRMED',
-               confirmed_by = ?, confirmed_by_name = ?, confirmed_at = datetime('now')
-         WHERE id = ?
-      `).run(req.user.id, confirmedByName, req.params.id);
-    })();
-
+    masterDb.prepare(`
+      UPDATE cash_deposits
+         SET status = 'CONFIRMED',
+             confirmed_by = ?, confirmed_by_name = ?, confirmed_at = datetime('now')
+       WHERE id = ?
+    `).run(req.user.id, confirmedByName, req.params.id);
     const updated = masterDb.prepare('SELECT * FROM cash_deposits WHERE id = ?').get(req.params.id);
     res.json(updated);
   } catch (e) {

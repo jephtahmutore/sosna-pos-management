@@ -1,10 +1,10 @@
 import React, { useState, useEffect } from 'react';
-import { getCashBook, getCashBookStats, setOpeningBalance, getSettings, getSalesRangeSummary, createCashTransfer, getCashDeposits, createCashDeposit, confirmCashDeposit, rejectCashDeposit, isHqHost, getCurrentFxRate } from '../services/api';
+import { getCashBook, getCashBookStats, setOpeningBalance, getSettings, getSalesRangeSummary, createCashTransfer } from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import CurrencyExchangePanel from '../components/CurrencyExchangePanel';
 import { useCurrency } from '../context/CurrencyContext';
 import { useLanguage } from '../context/LanguageContext';
-import { FiTrendingUp, FiTrendingDown, FiDollarSign, FiEdit2, FiSave, FiX, FiPrinter, FiFilter, FiRefreshCw, FiSend, FiCheck, FiInbox } from 'react-icons/fi';
+import { FiTrendingUp, FiTrendingDown, FiDollarSign, FiEdit2, FiSave, FiX, FiPrinter, FiFilter, FiRefreshCw } from 'react-icons/fi';
 import Portal from '../utils/Portal';
 import useModalScrollLock from '../utils/useModalScrollLock';
 const CashBook = () => {
@@ -37,19 +37,13 @@ const CashBook = () => {
   const [savingTransfer, setSavingTransfer] = useState(false);
   const [transferError, setTransferError] = useState('');
 
-  // v1.8.57 — Branch → HQ Cash Deposit
-  const isOnHq = isHqHost();
-  const [showDeposit, setShowDeposit] = useState(false);
-  const [depositForm, setDepositForm] = useState({ currency: 'USD', amount: '', sell_rate: '', notes: '' });
-  const [savingDeposit, setSavingDeposit] = useState(false);
-  const [depositError, setDepositError] = useState('');
-  const [deposits, setDeposits] = useState([]);
-  const [depositFxRate, setDepositFxRate] = useState({ sell: 0, buy: 0, sellK: 0, buyK: 0 });
-  const [rejectingId, setRejectingId] = useState(null);
-  const [rejectReason, setRejectReason] = useState('');
+  // v1.8.59 — HQ Deposit moved to its own page (Accounting → HQ Deposits)
+  // to keep Cash Book focused on ledger view and to avoid conflating
+  // a transfer workflow with the per-method opening balance + range
+  // summary that lives here.
 
   // Mobile scroll-lock while any modal is open.
-  useModalScrollLock(editingOB || showTransfer || showDeposit || !!rejectingId);
+  useModalScrollLock(editingOB || showTransfer);
 
   const fetchData = async (f, t) => {
     try {
@@ -77,100 +71,7 @@ const CashBook = () => {
   useEffect(() => {
     fetchData(todayStr, todayStr);
     getSettings().then(r => setBusinessInfo(r.data?.business || {})).catch(() => {});
-    fetchDeposits();
-    // v1.8.57 — pull current FX rates so the deposit modal can default
-    // the sell rate (and so amount_usd is computed correctly).
-    getCurrentFxRate().then(r => {
-      const d = r.data;
-      if (d && d.sell_rate > 0 && d.buy_rate > 0) {
-        setDepositFxRate({
-          sell:  parseFloat(d.sell_rate)   || 0,
-          buy:   parseFloat(d.buy_rate)    || 0,
-          sellK: parseFloat(d.sell_rate_k || 0) || 0,
-          buyK:  parseFloat(d.buy_rate_k  || 0) || 0,
-        });
-      }
-    }).catch(() => {});
   }, []); // eslint-disable-line
-
-  // v1.8.57 — Cash deposits fetch:
-  //   - on a branch: only that branch's outgoing list (its own deposits)
-  //   - on HQ: ALL deposits (HQ inbox sees every branch's pending)
-  const fetchDeposits = async () => {
-    try {
-      const params = {};
-      if (!isOnHq) {
-        try { params.from_slug = window.location.hostname.split('.')[0]; } catch (_) { /* skip */ }
-      }
-      const r = await getCashDeposits(params);
-      setDeposits(Array.isArray(r.data) ? r.data : []);
-    } catch (_) { /* leave list as-is on transient errors */ }
-  };
-
-  const openDepositModal = () => {
-    setDepositError('');
-    // Default sell_rate to current rate for the chosen currency.
-    const rateForUsd = ''; // USD doesn't need a rate (raw amount = USD)
-    const rateForFra = depositFxRate.sell  > 0 ? String(depositFxRate.sell)  : '';
-    const rateForK   = depositFxRate.sellK > 0 ? String(depositFxRate.sellK) : '';
-    setDepositForm({ currency: 'USD', amount: '', sell_rate: rateForUsd, notes: '' });
-    // Persist the per-currency defaults inside the modal handler:
-    setDepositForm(f => ({ ...f, _ratePresets: { USD: rateForUsd, FRA: rateForFra, K: rateForK } }));
-    setShowDeposit(true);
-  };
-
-  const handleSaveDeposit = async () => {
-    setDepositError('');
-    const amt = parseFloat(depositForm.amount || 0);
-    if (!(amt > 0)) { setDepositError('Amount must be > 0'); return; }
-    const sellRate = parseFloat(depositForm.sell_rate || 0) || 0;
-    let amountUsd = amt;
-    if (depositForm.currency !== 'USD') {
-      if (!(sellRate > 0)) { setDepositError(`Sell rate for ${depositForm.currency} is required`); return; }
-      amountUsd = amt / sellRate;
-    }
-    setSavingDeposit(true);
-    try {
-      const fromSlug = isOnHq ? null : (window.location.hostname.split('.')[0] || null);
-      if (!fromSlug) { setDepositError('Branch not detected — cannot send deposit'); setSavingDeposit(false); return; }
-      await createCashDeposit({
-        from_slug: fromSlug,
-        currency:  depositForm.currency,
-        amount:    amt,
-        amount_usd: amountUsd,
-        sell_rate: depositForm.currency === 'USD' ? null : sellRate,
-        notes:     depositForm.notes || null,
-      });
-      setShowDeposit(false);
-      await fetchDeposits();
-    } catch (err) {
-      setDepositError(err?.response?.data?.error || 'Failed to send deposit');
-    }
-    setSavingDeposit(false);
-  };
-
-  const handleConfirmDeposit = async (id) => {
-    if (!window.confirm('Confirm this deposit? This writes a PV on the branch and a CR on HQ.')) return;
-    try {
-      await confirmCashDeposit(id);
-      await fetchDeposits();
-      await fetchData(from || todayStr, to || todayStr); // refresh ledger
-    } catch (err) {
-      alert(err?.response?.data?.error || 'Failed to confirm deposit');
-    }
-  };
-
-  const handleRejectDeposit = async () => {
-    if (!rejectingId) return;
-    try {
-      await rejectCashDeposit(rejectingId, rejectReason);
-      setRejectingId(null);
-      setRejectReason('');
-      await fetchDeposits();
-    } catch (err) {
-      alert(err?.response?.data?.error || 'Failed to reject deposit');
-    }
-  };
 
   const handleFilter = () => fetchData(from, to);
   const handleClearFilter = () => { setFrom(''); setTo(''); fetchData('', ''); };
@@ -406,16 +307,6 @@ const CashBook = () => {
           >
             <FiRefreshCw size={15} /> {t('transfer')}
           </button>
-          {/* v1.8.57 — Branch: button to send a deposit. HQ doesn't need this
-              (HQ doesn't deposit to itself — it receives). */}
-          {!isOnHq && (
-            <button
-              onClick={openDepositModal}
-              style={{ display: 'inline-flex', alignItems: 'center', gap: 7, padding: '10px 20px', borderRadius: 10, border: 'none', backgroundColor: '#d97706', color: '#fff', cursor: 'pointer', fontSize: 13, fontWeight: 700 }}
-            >
-              <FiSend size={15} /> Deposit to HQ
-            </button>
-          )}
           <button
             onClick={handlePrint}
             style={{ display: 'inline-flex', alignItems: 'center', gap: 7, padding: '10px 20px', borderRadius: 10, border: 'none', backgroundColor: '#16a34a', color: '#fff', cursor: 'pointer', fontSize: 13, fontWeight: 700 }}
@@ -455,82 +346,6 @@ const CashBook = () => {
       )}
 
       {activeTab === 'ledger' && (<>
-
-      {/* v1.8.57 — Cash Deposits panel.
-          On branch: shows own outgoing deposits with status.
-          On HQ: inbox with Confirm / Reject actions on PENDING rows. */}
-      {deposits.length > 0 && (() => {
-        const fmt = (n) => `${curSym}${parseFloat(n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-        const pendingCount = deposits.filter(d => d.status === 'PENDING').length;
-        return (
-          <div style={{ background: '#fff', border: '1px solid #fde68a', borderRadius: 10, padding: 14, marginBottom: 16 }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
-              <FiInbox size={16} color="#92400e" />
-              <strong style={{ fontSize: 13, color: '#92400e' }}>
-                {isOnHq ? `Pending Deposits from Branches${pendingCount > 0 ? ` (${pendingCount})` : ''}` : `Your Deposits to HQ${pendingCount > 0 ? ` — ${pendingCount} pending` : ''}`}
-              </strong>
-            </div>
-            <div style={{ overflowX: 'auto' }}>
-              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
-                <thead style={{ background: '#fffbeb' }}>
-                  <tr>
-                    <th style={{ padding: '6px 10px', textAlign: 'left',  fontWeight: 700, color: '#92400e' }}>Deposit #</th>
-                    {isOnHq && <th style={{ padding: '6px 10px', textAlign: 'left',  fontWeight: 700, color: '#92400e' }}>From</th>}
-                    <th style={{ padding: '6px 10px', textAlign: 'left',  fontWeight: 700, color: '#92400e' }}>Currency</th>
-                    <th style={{ padding: '6px 10px', textAlign: 'right', fontWeight: 700, color: '#92400e' }}>Amount</th>
-                    <th style={{ padding: '6px 10px', textAlign: 'right', fontWeight: 700, color: '#92400e' }}>≈ USD</th>
-                    <th style={{ padding: '6px 10px', textAlign: 'left',  fontWeight: 700, color: '#92400e' }}>Notes</th>
-                    <th style={{ padding: '6px 10px', textAlign: 'left',  fontWeight: 700, color: '#92400e' }}>Status</th>
-                    <th style={{ padding: '6px 10px', textAlign: 'left',  fontWeight: 700, color: '#92400e' }}>Date</th>
-                    <th style={{ padding: '6px 10px', textAlign: 'right', fontWeight: 700, color: '#92400e' }}></th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {deposits.map(d => {
-                    const statusColor = d.status === 'CONFIRMED' ? '#16a34a' : d.status === 'REJECTED' ? '#dc2626' : '#d97706';
-                    const statusBg    = d.status === 'CONFIRMED' ? '#dcfce7' : d.status === 'REJECTED' ? '#fee2e2' : '#fef3c7';
-                    return (
-                      <tr key={d.id} style={{ borderTop: '1px solid #f1f5f9' }}>
-                        <td style={{ padding: '6px 10px', fontFamily: 'monospace', fontSize: 11 }}>{d.deposit_number}</td>
-                        {isOnHq && <td style={{ padding: '6px 10px' }}>{d.from_name || d.from_slug}</td>}
-                        <td style={{ padding: '6px 10px', fontWeight: 700 }}>{d.currency}</td>
-                        <td style={{ padding: '6px 10px', textAlign: 'right', fontWeight: 700 }}>
-                          {d.currency === 'USD' ? fmt(d.amount) : `${Math.round(parseFloat(d.amount || 0)).toLocaleString()} ${d.currency}`}
-                        </td>
-                        <td style={{ padding: '6px 10px', textAlign: 'right', color: '#6b7280' }}>{fmt(d.amount_usd)}</td>
-                        <td style={{ padding: '6px 10px', color: '#6b7280' }}>{d.notes || '—'}</td>
-                        <td style={{ padding: '6px 10px' }}>
-                          <span style={{ padding: '2px 8px', background: statusBg, color: statusColor, borderRadius: 999, fontSize: 10, fontWeight: 700 }}>
-                            {d.status}
-                          </span>
-                        </td>
-                        <td style={{ padding: '6px 10px', color: '#6b7280' }}>{d.created_at ? new Date(d.created_at).toLocaleString() : '—'}</td>
-                        <td style={{ padding: '6px 10px', textAlign: 'right' }}>
-                          {isOnHq && d.status === 'PENDING' && (
-                            <div style={{ display: 'inline-flex', gap: 6 }}>
-                              <button onClick={() => handleConfirmDeposit(d.id)}
-                                style={{ padding: '4px 10px', background: '#16a34a', color: '#fff', border: 'none', borderRadius: 4, cursor: 'pointer', fontSize: 11, fontWeight: 700, display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-                                <FiCheck size={11} /> Confirm
-                              </button>
-                              <button onClick={() => { setRejectingId(d.id); setRejectReason(''); }}
-                                style={{ padding: '4px 10px', background: '#fff', color: '#b91c1c', border: '1px solid #fecaca', borderRadius: 4, cursor: 'pointer', fontSize: 11, fontWeight: 700, display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-                                <FiX size={11} /> Reject
-                              </button>
-                            </div>
-                          )}
-                          {d.status === 'REJECTED' && d.reject_reason && (
-                            <span style={{ fontSize: 11, color: '#b91c1c', fontStyle: 'italic' }}>{d.reject_reason}</span>
-                          )}
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        );
-      })()}
 
       {/* Date Filter */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 16, flexWrap: 'wrap' }}>
@@ -934,116 +749,6 @@ const CashBook = () => {
         </Portal>
       )}
 
-      {/* v1.8.57 — Deposit to HQ modal (branch side) */}
-      {showDeposit && (
-        <Portal>
-        <div className="modal-overlay" onClick={() => setShowDeposit(false)}>
-          <div className="modal" onClick={e => e.stopPropagation()} style={{ maxWidth: 460 }}>
-            <div className="modal-header">
-              <h2 style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
-                <FiSend size={18} /> Deposit to HQ
-              </h2>
-              <button className="modal-close" onClick={() => setShowDeposit(false)}><FiX /></button>
-            </div>
-            <div className="modal-body">
-              <p style={{ fontSize: 13, color: '#6b7280', marginTop: 0, marginBottom: 14 }}>
-                Record cash being sent to HQ. Stays PENDING until HQ confirms receipt — on confirm, a PV is posted here and a CR at HQ.
-              </p>
-              <div className="form-row">
-                <div className="form-group">
-                  <label>Currency</label>
-                  <select value={depositForm.currency}
-                    onChange={e => {
-                      const ccy = e.target.value;
-                      const preset = depositForm._ratePresets || {};
-                      setDepositForm({ ...depositForm, currency: ccy, sell_rate: preset[ccy] || '' });
-                    }}>
-                    <option value="USD">USD ($)</option>
-                    <option value="FRA">FRA</option>
-                    <option value="K">K (Kwacha)</option>
-                  </select>
-                </div>
-                <div className="form-group">
-                  <label>Amount ({depositForm.currency})</label>
-                  <input type="number" min="0" step="0.01" value={depositForm.amount}
-                    onChange={e => setDepositForm({ ...depositForm, amount: e.target.value })}
-                    placeholder="0.00" autoFocus />
-                </div>
-              </div>
-              {depositForm.currency !== 'USD' && (
-                <div className="form-group">
-                  <label>Sell rate ({depositForm.currency} per $1)</label>
-                  <input type="number" min="0" step="0.01" value={depositForm.sell_rate}
-                    onChange={e => setDepositForm({ ...depositForm, sell_rate: e.target.value })}
-                    placeholder="0.00" />
-                  {parseFloat(depositForm.amount || 0) > 0 && parseFloat(depositForm.sell_rate || 0) > 0 && (
-                    <div style={{ marginTop: 6, fontSize: 12, color: '#6b7280' }}>
-                      ≈ {curSym}{(parseFloat(depositForm.amount) / parseFloat(depositForm.sell_rate)).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                    </div>
-                  )}
-                </div>
-              )}
-              <div className="form-group">
-                <label>Notes (optional)</label>
-                <input value={depositForm.notes}
-                  onChange={e => setDepositForm({ ...depositForm, notes: e.target.value })}
-                  placeholder="Courier / driver / reference" />
-              </div>
-              {depositError && (
-                <div style={{ padding: '8px 12px', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 6, color: '#991b1b', fontSize: 12, fontWeight: 600 }}>
-                  {depositError}
-                </div>
-              )}
-              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 14 }}>
-                <button onClick={() => setShowDeposit(false)}
-                  style={{ padding: '10px 24px', border: '1px solid #e5e7eb', borderRadius: 8, background: '#fff', cursor: 'pointer', fontSize: 14 }}>
-                  Cancel
-                </button>
-                <button onClick={handleSaveDeposit} disabled={savingDeposit}
-                  style={{ padding: '10px 28px', background: savingDeposit ? '#9ca3af' : '#d97706', color: '#fff', border: 'none', borderRadius: 8, cursor: savingDeposit ? 'not-allowed' : 'pointer', fontSize: 14, fontWeight: 700, display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-                  <FiSend size={14} />
-                  {savingDeposit ? 'Sending...' : 'Send Deposit'}
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-        </Portal>
-      )}
-
-      {/* v1.8.57 — Reject reason modal (HQ side) */}
-      {rejectingId && (
-        <Portal>
-        <div className="modal-overlay" onClick={() => setRejectingId(null)}>
-          <div className="modal" onClick={e => e.stopPropagation()} style={{ maxWidth: 420 }}>
-            <div className="modal-header">
-              <h2>Reject Deposit</h2>
-              <button className="modal-close" onClick={() => setRejectingId(null)}><FiX /></button>
-            </div>
-            <div className="modal-body">
-              <p style={{ fontSize: 13, color: '#6b7280', marginTop: 0 }}>
-                Tell the branch why you're rejecting (cash short, never arrived, wrong amount, etc.).
-              </p>
-              <div className="form-group">
-                <label>Reason</label>
-                <input value={rejectReason} onChange={e => setRejectReason(e.target.value)}
-                  placeholder="Cash count was short by $50" autoFocus />
-              </div>
-              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 14 }}>
-                <button onClick={() => setRejectingId(null)}
-                  style={{ padding: '10px 24px', border: '1px solid #e5e7eb', borderRadius: 8, background: '#fff', cursor: 'pointer', fontSize: 14 }}>
-                  Cancel
-                </button>
-                <button onClick={handleRejectDeposit}
-                  style={{ padding: '10px 28px', background: '#dc2626', color: '#fff', border: 'none', borderRadius: 8, cursor: 'pointer', fontSize: 14, fontWeight: 700, display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-                  <FiX size={14} /> Reject
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-        </Portal>
-      )}
     </div>
   );
 };

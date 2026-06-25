@@ -11,7 +11,7 @@ import { getDiscountRequestsPendingCount } from '../services/api';
 import { FiGrid, FiShoppingCart, FiPackage, FiFileText, FiDollarSign, FiUsers, FiSettings,
          FiChevronDown, FiLogOut, FiSearch, FiBell, FiMenu, FiDownload, FiUpload, FiList,
          FiBook, FiCreditCard, FiClipboard, FiUser, FiUserPlus, FiSliders, FiGlobe, FiCloud, FiTool,
-         FiCornerDownLeft, FiCornerUpLeft, FiTrendingUp, FiTrendingDown, FiAlertTriangle, FiCheckCircle, FiTag, FiRefreshCw, FiTruck, FiInbox } from 'react-icons/fi';
+         FiCornerDownLeft, FiCornerUpLeft, FiTrendingUp, FiTrendingDown, FiAlertTriangle, FiCheckCircle, FiTag, FiRefreshCw, FiTruck, FiInbox, FiSend } from 'react-icons/fi';
 
 const LANGUAGES = [
   { code: 'en', label: 'English', flag: '🇬🇧' },
@@ -635,6 +635,13 @@ const Layout = () => {
                   {hasPageAccess('CashBook') && (
                     <div className={`nav-item ${isActive('/accounting/cash-book') ? 'active' : ''}`} onClick={() => navigate('/accounting/cash-book')}>
                       <FiClipboard className="nav-icon" /> <span>{t('cashBook')}</span>
+                    </div>
+                  )}
+                  {/* v1.8.59 — Branch → HQ Cash Deposit workflow.
+                      Same page used by branch (Send) and HQ (Confirm/Reject). */}
+                  {hasPageAccess('CashBook') && (
+                    <div className={`nav-item ${isActive('/accounting/hq-deposits') ? 'active' : ''}`} onClick={() => navigate('/accounting/hq-deposits')}>
+                      <FiSend className="nav-icon" /> <span>HQ Deposits</span>
                     </div>
                   )}
                   {isDualCurrency && hasPageAccess('FxRates') && (

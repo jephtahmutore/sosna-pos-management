@@ -4,6 +4,11 @@ const { auth, readOnlyGuard } = require('../middleware/auth');
 const syncConfig = require('../config/syncConfig');
 const { randomUUID } = require('crypto');
 const { recalculateDailyProfit } = require('../config/profitHelper');
+// v1.8.59 — read confirmed HQ Deposits from master.db so per-currency
+// Expected on Cash Report reflects cash that left the branch's drawer
+// (or arrived at HQ's) without writing PV/CR entries that would hit profit.
+let masterDb = null;
+try { masterDb = require('../config/masterDb').masterDb; } catch (_) { /* not present in Electron offline mode */ }
 
 // Get all cash reports
 router.get('/', auth, readOnlyGuard, (req, res) => {
@@ -100,9 +105,56 @@ router.get('/daily', auth, readOnlyGuard, (req, res) => {
        FROM orders WHERE ${orderDateClause} AND deleted_at IS NULL AND tenant_id = ?
        AND (status IS NULL OR status != 'Reversed')${userFilter}`
     ).get(...baseParams).total;
-    const usdNet = parseFloat(sumOrders('cash_received')) - parseFloat(sumOrders('change_amount'));
-    const fraNet = parseFloat(sumOrders('fra_received'))  - parseFloat(sumOrders('fra_change_given'));
-    const kNet   = parseFloat(sumOrders('k_received'))    - parseFloat(sumOrders('k_change_given'));
+    let usdNet = parseFloat(sumOrders('cash_received')) - parseFloat(sumOrders('change_amount'));
+    let fraNet = parseFloat(sumOrders('fra_received'))  - parseFloat(sumOrders('fra_change_given'));
+    let kNet   = parseFloat(sumOrders('k_received'))    - parseFloat(sumOrders('k_change_given'));
+
+    // v1.8.59 — apply confirmed HQ Deposits to the per-currency Expected.
+    //   Branch (outgoing deposit): cash physically left the drawer →
+    //     SUBTRACT from the branch's Expected for that currency.
+    //   HQ (incoming deposit):     cash physically arrived →
+    //     ADD to HQ's Expected for that currency.
+    // Caller passes its slug; for HQ aggregation we look for inbound
+    // deposits where to_slug = 'hq'. cash_deposits lives in master.db
+    // (cross-tenant) so we can't JOIN — separate aggregation.
+    const slug = String(req.query.slug || '').toLowerCase();
+    if (masterDb && slug) {
+      const dateOnly = useRange ? String(toUtc).slice(0, 10) : date;
+      try {
+        // Outgoing — money leaving this branch on `date`.
+        const out = masterDb.prepare(`
+          SELECT currency, COALESCE(SUM(amount), 0) AS total
+            FROM cash_deposits
+           WHERE status = 'CONFIRMED'
+             AND from_slug = ?
+             AND date(COALESCE(confirmed_at, created_at)) = ?
+           GROUP BY currency
+        `).all(slug, dateOnly);
+        for (const r of out) {
+          if (r.currency === 'USD') usdNet -= parseFloat(r.total);
+          if (r.currency === 'FRA') fraNet -= parseFloat(r.total);
+          if (r.currency === 'K')   kNet   -= parseFloat(r.total);
+        }
+        // Incoming — only when this caller IS HQ. Today there's a single
+        // HQ slug 'hq' (see cashDeposits.getHqSlug fallback list); add
+        // more if your master.db registers HQ under a different name.
+        const HQ_INBOX_SLUGS = new Set(['hq', 'sosna', 'sosnazm']);
+        if (HQ_INBOX_SLUGS.has(slug)) {
+          const incoming = masterDb.prepare(`
+            SELECT currency, COALESCE(SUM(amount), 0) AS total
+              FROM cash_deposits
+             WHERE status = 'CONFIRMED'
+               AND date(COALESCE(confirmed_at, created_at)) = ?
+             GROUP BY currency
+          `).all(dateOnly);
+          for (const r of incoming) {
+            if (r.currency === 'USD') usdNet += parseFloat(r.total);
+            if (r.currency === 'FRA') fraNet += parseFloat(r.total);
+            if (r.currency === 'K')   kNet   += parseFloat(r.total);
+          }
+        }
+      } catch (e) { /* non-fatal — Cash Report still renders without deposit adjustment */ }
+    }
 
     // CREDIT SALES ISSUED bucket = today's new receivables (unpaid portion of today's sales).
     // This is informational — represents money owed, NOT cash received.

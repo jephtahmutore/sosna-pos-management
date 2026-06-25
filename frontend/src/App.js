@@ -44,6 +44,7 @@ import Inventory from './pages/Inventory';
 import CashReceipt from './pages/CashReceipt';
 import PaymentVoucher from './pages/PaymentVoucher';
 import CashBook from './pages/CashBook';
+import HQDeposits from './pages/HQDeposits';
 import FxRates from './pages/FxRates';
 import AccountPayables from './pages/AccountPayables';
 import AccountReceivables from './pages/AccountReceivables';
@@ -127,6 +128,7 @@ const CUSTOM_PRIORITY = [
   { page: 'CashReceipt',      path: '/accounting/cash-receipts' },
   { page: 'PaymentVoucher',   path: '/accounting/payment-vouchers' },
   { page: 'CashBook',         path: '/accounting/cash-book' },
+  { page: 'HQDeposits',       path: '/accounting/hq-deposits' },
   { page: 'FxRates',          path: '/accounting/fx-rates' },
   { page: 'AccountPayables',  path: '/accounting/account-payables' },
   { page: 'AccountReceivables', path: '/accounting/account-receivables' },
@@ -308,6 +310,7 @@ function AppRoutes() {
         <Route path="accounting/cash-receipts" element={<PermRoute perms={['Accounting','CashReceipt:View','CashReceipt:Add','CashReceipt:Edit','CashReceipt:Delete']}><CashReceipt /></PermRoute>} />
         <Route path="accounting/payment-vouchers" element={<PermRoute perms={['Accounting','PaymentVoucher:View','PaymentVoucher:Add','PaymentVoucher:Edit','PaymentVoucher:Delete']}><PaymentVoucher /></PermRoute>} />
         <Route path="accounting/cash-book" element={<PermRoute perms={['Accounting','CashBook:View','CashBook:Add','CashBook:Edit','CashBook:Delete']}><CashBook /></PermRoute>} />
+        <Route path="accounting/hq-deposits" element={<PermRoute perms={['Accounting','CashBook:View','CashBook:Add']}><HQDeposits /></PermRoute>} />
         <Route path="accounting/fx-rates" element={<PermRoute perms={['Accounting','FxRates','FxRates:View','FxRates:Add','FxRates:Edit','FxRates:Delete']}><FxRates /></PermRoute>} />
         <Route path="accounting/account-payables" element={<PermRoute perms={['Accounting','AccountPayables:View','AccountPayables:Add','AccountPayables:Edit','AccountPayables:Delete']}><AccountPayables /></PermRoute>} />
         <Route path="accounting/account-receivables" element={<PermRoute perms={['Accounting','AccountReceivables:View','AccountReceivables:Add','AccountReceivables:Edit','AccountReceivables:Delete']}><AccountReceivables /></PermRoute>} />
