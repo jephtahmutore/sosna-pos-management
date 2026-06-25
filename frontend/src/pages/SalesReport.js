@@ -1392,6 +1392,21 @@ const SalesReport = () => {
                           <span>${(parseFloat(originalChange)||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</span>
                         </div>
 
+                        {/* v1.8.51 — Credit / Partial-Credit sales: print the unpaid balance
+                            so the customer's receipt shows what they still owe. */}
+                        {(() => {
+                          const total = parseFloat(viewOrder.total_amount || 0);
+                          const recd  = parseFloat(amountReceived || 0);
+                          const owed  = Math.max(0, total - recd);
+                          if (owed <= 0.10) return null;
+                          return (
+                            <div style={{ display: 'flex', justifyContent: 'space-between', fontWeight: 800, color: '#b45309', borderTop: '1px solid #fde68a', marginTop: 6, paddingTop: 6, background: '#fef3c7', padding: '6px 10px', borderRadius: 4 }}>
+                              <span>BALANCE ON CREDIT</span>
+                              <span>${owed.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</span>
+                            </div>
+                          );
+                        })()}
+
                         {/* Partial Refunds section — only shown if any reversal occurred */}
                         {refundLines.length > 0 && (
                           <>

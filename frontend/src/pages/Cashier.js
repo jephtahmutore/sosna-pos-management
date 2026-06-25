@@ -706,6 +706,14 @@ function renderCashierReceipt({ biz, order, calc, cashierName, when, sellRate: _
     ` : ''}
     <tr class="amt"><td>Total Paid ($)</td><td></td><td></td><td style="text-align:right;">$${fmt(calc.totalAmountPaid)}</td></tr>
   </table>
+  ${calc.unpaidBalance > 0.10 ? `
+    <div class="divider">${da}</div>
+    <table>
+      <tr class="grand" style="color:#000;"><td>BALANCE ON CREDIT</td><td></td><td></td><td style="text-align:right;">$${fmt(calc.unpaidBalance)}</td></tr>
+      ${usedFra ? `<tr><td class="sub">  ≈ at sell rate ${sellRate.toLocaleString()}</td><td></td><td></td><td style="text-align:right;" class="sub">FRA ${fmtFra(calc.unpaidBalanceFRA)}</td></tr>` : ''}
+      ${usedK   ? `<tr><td class="sub">  ≈ at K sell rate ${sellRateK.toLocaleString()}</td><td></td><td></td><td style="text-align:right;" class="sub">K ${fmtFra(calc.unpaidBalanceK)}</td></tr>` : ''}
+    </table>
+  ` : ''}
   <div class="divider">${da}</div>
   ${calc.isOverpaid ? `
     <table>
