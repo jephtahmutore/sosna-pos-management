@@ -127,18 +127,41 @@ router.put('/:id/confirm-dispatch', auth, requirePagePerm('Dispatch'), (req, res
 // order is processed first (FIFO — fair to the customer who arrived earliest).
 router.get('/cashier-inbox', auth, requirePagePerm('Cashier'), readOnlyGuard, (req, res) => {
   try {
+    // customers.outstanding is NOT a column — it's computed as
+    // SUM(orders.unpaid) − SUM(customer_payments.amount). Two
+    // aggregation subqueries handle that here so the Cashier can show
+    // the customer's running balance + available credit before taking
+    // the partial payment.
     const rows = db.prepare(
       `SELECT o.id, o.order_number, o.customer_name, o.customer_id, o.customer_sync_id,
               o.total_amount, o.subtotal, o.discount,
               o.sales_at, o.sales_user_id, o.currency,
               c.credit_limit AS customer_credit_limit,
               c.credit_status AS customer_credit_status,
-              c.outstanding AS customer_outstanding,
+              ( COALESCE(oa.sales_outstanding, 0) - COALESCE(pa.total_paid, 0) ) AS customer_outstanding,
               TRIM(COALESCE(u.first_name, '') || ' ' || COALESCE(u.last_name, '')) AS sales_by_name,
               (SELECT COUNT(*) FROM order_items oi WHERE oi.order_sync_id = o.sync_id AND oi.deleted_at IS NULL) AS item_count
        FROM orders o
        LEFT JOIN users u     ON u.id = o.sales_user_id
        LEFT JOIN customers c ON c.id = o.customer_id AND c.deleted_at IS NULL
+       LEFT JOIN (
+         SELECT customer_sync_id,
+                SUM(total_amount)
+                - SUM(CASE WHEN COALESCE(amount_received, 0) > total_amount
+                           THEN total_amount
+                           ELSE COALESCE(amount_received, 0) END) AS sales_outstanding
+         FROM orders
+         WHERE deleted_at IS NULL
+           AND (status IS NULL OR status != 'Reversed')
+           AND customer_sync_id IS NOT NULL
+         GROUP BY customer_sync_id
+       ) oa ON oa.customer_sync_id = c.sync_id
+       LEFT JOIN (
+         SELECT customer_sync_id, SUM(amount) AS total_paid
+         FROM customer_payments
+         WHERE deleted_at IS NULL AND customer_sync_id IS NOT NULL
+         GROUP BY customer_sync_id
+       ) pa ON pa.customer_sync_id = c.sync_id
        WHERE o.deleted_at IS NULL
          AND o.status = 'PENDING_PAYMENT'
          AND o.tenant_id = ?
@@ -484,17 +507,35 @@ router.put('/:id/collect-payment', auth, requirePagePerm('Cashier'), (req, res) 
       // (with the same 10¢ FRA/K rounding tolerance).
       const hasRegisteredCustomer = !!order.customer_id;
       if (hasRegisteredCustomer && unpaid > 0.10) {
-        // Optional credit-limit guard — mirrors POS rule.
+        // Optional credit-limit guard — mirrors POS rule. customers
+        // has no `outstanding` column — compute it from orders minus
+        // customer_payments (same formula as the AR/customers list).
         const cust = db.prepare(
-          'SELECT id, credit_limit, credit_status, outstanding FROM customers WHERE id = ? AND deleted_at IS NULL AND tenant_id = ?'
+          'SELECT id, sync_id, credit_limit, credit_status FROM customers WHERE id = ? AND deleted_at IS NULL AND tenant_id = ?'
         ).get(order.customer_id, req.user.tenantId);
         if (cust) {
           if (cust.credit_status === 'OnHold') {
             throw Object.assign(new Error('Customer is on hold — payment in full required'), { status: 400 });
           }
           const limit = parseFloat(cust.credit_limit || 0);
-          if (limit > 0) {
-            const projected = parseFloat(cust.outstanding || 0) + unpaid;
+          if (limit > 0 && cust.sync_id) {
+            const owedRow = db.prepare(
+              `SELECT SUM(total_amount)
+                    - SUM(CASE WHEN COALESCE(amount_received, 0) > total_amount
+                               THEN total_amount
+                               ELSE COALESCE(amount_received, 0) END) AS sales_owed
+                 FROM orders
+                WHERE deleted_at IS NULL
+                  AND (status IS NULL OR status != 'Reversed')
+                  AND customer_sync_id = ?`
+            ).get(cust.sync_id);
+            const paidRow = db.prepare(
+              `SELECT COALESCE(SUM(amount), 0) AS total_paid
+                 FROM customer_payments
+                WHERE deleted_at IS NULL AND customer_sync_id = ?`
+            ).get(cust.sync_id);
+            const currentOutstanding = Math.max(0, parseFloat(owedRow?.sales_owed || 0) - parseFloat(paidRow?.total_paid || 0));
+            const projected = currentOutstanding + unpaid;
             if (projected > limit + 0.001) {
               throw Object.assign(new Error(`Would exceed credit limit by ${(projected - limit).toFixed(2)}`), { status: 400 });
             }
