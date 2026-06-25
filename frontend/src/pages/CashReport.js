@@ -1145,10 +1145,10 @@ const CashReport = () => {
       </div>
 
       {/* ── Summary Strip ────────────────────────────────────────── */}
-      {/* v1.8.27 — per-currency aggregates across the filtered reports.
-          Reads the new usd/fra/k_received + usd/fra/k_expected columns;
-          falls back to legacy single fields for old rows. Each card
-          shows USD / FRA / K with diff per currency. */}
+      {/* v1.8.28 — per-currency cards (USD/FRA/K) instead of one card
+          per metric. Mirrors the top 'All Cashiers' bar — color = currency
+          everywhere in the app. Each card shows Expected / On Hand / Diff
+          with a Short/Surplus/OK badge for its currency. */}
       {filteredReports.length > 0 && (() => {
         const sumCol = (col) => filteredReports.reduce((s, r) => s + (parseFloat(r[col] || 0) || 0), 0);
         const expU = sumCol('usd_expected');
@@ -1160,47 +1160,35 @@ const CashReport = () => {
         const diffU = gotU - expU;
         const diffF = gotF - expF;
         const diffK = gotK - expK;
-        const fmtU = (n) => `$${parseFloat(n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-        const fmtN = (n) => Math.round(parseFloat(n || 0)).toLocaleString('en-US');
-        const Line = ({ label, val, color }) => (
-          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, lineHeight: 1.6 }}>
-            <span style={{ opacity: 0.85 }}>{label}</span><strong style={{ color }}>{val}</strong>
+        const fmtU = (n) => `$${Math.abs(parseFloat(n || 0)).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+        const fmtN = (n) => Math.abs(Math.round(parseFloat(n || 0))).toLocaleString('en-US');
+        const diffBadge = (d, eps) => Math.abs(d) < eps ? 'OK' : (d < 0 ? 'Short' : 'Surplus');
+        const signed = (d, fmt) => `${d > 0 ? '+' : d < 0 ? '−' : ''}${fmt(d)}`;
+        const Line = ({ label, val }) => (
+          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, lineHeight: 1.7 }}>
+            <span style={{ opacity: 0.9 }}>{label}</span><strong>{val}</strong>
           </div>
         );
-        const cards = [
-          {
-            label: 'Total Expected Cash', bg: 'linear-gradient(135deg,#3b82f6,#1d4ed8)',
-            usd: fmtU(expU), fra: fmtN(expF), k: fmtN(expK),
-          },
-          {
-            label: 'Total Cash on Hand', bg: 'linear-gradient(135deg,#22c55e,#15803d)',
-            usd: fmtU(gotU), fra: fmtN(gotF), k: fmtN(gotK),
-          },
-          {
-            label: 'Total Difference',
-            bg: diffU < 0 || diffF < 0 || diffK < 0
-              ? 'linear-gradient(135deg,#ef4444,#b91c1c)'
-              : diffU > 0 || diffF > 0 || diffK > 0
-              ? 'linear-gradient(135deg,#f97316,#c2410c)'
-              : 'linear-gradient(135deg,#22c55e,#15803d)',
-            usd: `${diffU > 0 ? '+' : ''}${fmtU(diffU)}`,
-            fra: `${diffF > 0 ? '+' : ''}${fmtN(diffF)}`,
-            k:   `${diffK > 0 ? '+' : ''}${fmtN(diffK)}`,
-          },
-        ];
+        const Card = ({ ccy, bg, expected, received, diff, fmt, eps }) => (
+          <div style={{ borderRadius: 14, padding: '14px 18px', background: bg, color: '#fff', boxShadow: '0 4px 16px rgba(0,0,0,0.1)', position: 'relative', overflow: 'hidden' }}>
+            <div style={{ position: 'absolute', right: -10, top: -10, width: 60, height: 60, borderRadius: '50%', background: 'rgba(255,255,255,0.1)' }} />
+            <div style={{ fontSize: 11, fontWeight: 700, opacity: 0.9, textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 8 }}>{ccy} — PERIOD TOTALS</div>
+            <Line label="Expected" val={fmt(expected)} />
+            <Line label="On Hand"  val={fmt(received)} />
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: 13, lineHeight: 1.7, marginTop: 4, paddingTop: 6, borderTop: '1px solid rgba(255,255,255,0.2)' }}>
+              <span style={{ opacity: 0.9 }}>Diff</span>
+              <span>
+                <strong>{signed(diff, fmt)}</strong>
+                <span style={{ marginLeft: 8, fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 20, background: 'rgba(255,255,255,0.22)' }}>{diffBadge(diff, eps)}</span>
+              </span>
+            </div>
+          </div>
+        );
         return (
-          <div className="no-print" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 14, marginBottom: 20 }}>
-            {cards.map(c => (
-              <div key={c.label} style={{ borderRadius: 14, padding: '14px 18px', background: c.bg, color: '#fff', boxShadow: '0 4px 16px rgba(0,0,0,0.1)', position: 'relative', overflow: 'hidden' }}>
-                <div style={{ position: 'absolute', right: -10, top: -10, width: 60, height: 60, borderRadius: '50%', background: 'rgba(255,255,255,0.1)' }} />
-                <div style={{ fontSize: 11, fontWeight: 700, opacity: 0.9, textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 8 }}>{c.label}</div>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
-                  <Line label="USD" val={c.usd} color="#fff" />
-                  <Line label="FRA" val={c.fra} color="#fff" />
-                  <Line label="K"   val={c.k}   color="#fff" />
-                </div>
-              </div>
-            ))}
+          <div className="no-print" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: 14, marginBottom: 20 }}>
+            <Card ccy="USD" bg="linear-gradient(135deg,#22c55e,#15803d)" expected={expU} received={gotU} diff={diffU} fmt={fmtU} eps={0.01} />
+            <Card ccy="FRA" bg="linear-gradient(135deg,#8b5cf6,#6d28d9)" expected={expF} received={gotF} diff={diffF} fmt={fmtN} eps={1} />
+            <Card ccy="K"   bg="linear-gradient(135deg,#f97316,#c2410c)" expected={expK} received={gotK} diff={diffK} fmt={fmtN} eps={1} />
           </div>
         );
       })()}
