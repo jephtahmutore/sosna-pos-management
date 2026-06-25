@@ -155,6 +155,8 @@ router.post('/', auth, (req, res) => {
       // Phase 4 dual-currency FX bucket (kassumbalesa1). K-only branches send
       // nothing here, so the COALESCEs below preserve historical row shape.
       currency, fra_received, fra_change_given, selling_rate_used, buying_rate_used,
+      // Triple-currency K bucket (Sosna). POS Credit Sale modal now sends these.
+      k_received, k_change_given, selling_rate_k_used, buying_rate_k_used,
       // 3-station workflow (kassumbalesa1): when the Sales station confirms an
       // order, status='PENDING_PAYMENT' is sent. We then skip credit checks,
       // skip stock movements (stock decrements at Dispatch), and skip profit
@@ -171,6 +173,12 @@ router.post('/', auth, (req, res) => {
       ? parseFloat(selling_rate_used) || null : null;
     const buyingRateUsed  = buying_rate_used  !== undefined && buying_rate_used  !== null
       ? parseFloat(buying_rate_used)  || null : null;
+    const kReceived       = parseFloat(k_received       || 0) || 0;
+    const kChangeGiven    = parseFloat(k_change_given   || 0) || 0;
+    const sellingRateKUsed = selling_rate_k_used !== undefined && selling_rate_k_used !== null
+      ? parseFloat(selling_rate_k_used) || null : null;
+    const buyingRateKUsed  = buying_rate_k_used  !== undefined && buying_rate_k_used  !== null
+      ? parseFloat(buying_rate_k_used)  || null : null;
     // Administrator-only back-dating: when the POS Pay modal sends an explicit
     // sale_date (YYYY-MM-DD), an Administrator can override the server clock.
     // For any other role we silently ignore it.
@@ -254,14 +262,16 @@ router.post('/', auth, (req, res) => {
           amount_received, cash_received, momo_received, bank_received,
           change_amount, payment_method, created_by,
           currency, fra_received, fra_change_given, selling_rate_used, buying_rate_used,
+          k_received, k_change_given, selling_rate_k_used, buying_rate_k_used,
           status, sales_user_id, sales_at,
           sync_id, tenant_id, branch_id, device_id, synced, created_at, updated_at)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,${tsExpr},?,?,?,?,0,${tsExpr},${tsExpr})`;
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,${tsExpr},?,?,?,?,0,${tsExpr},${tsExpr})`;
       const ordArgs = [orderNum, customer_name, customer_id || null, customer_sync_id || null,
             subtotal, tax_amount, total_amount, discount || 0,
             finalAmountReceived, cashIn, momoIn, bankIn,
             change_amount || 0, payment_method || 'Cash', req.user.id,
             orderCurrency, fraReceived, fraChangeGiven, sellingRateUsed, buyingRateUsed,
+            kReceived, kChangeGiven, sellingRateKUsed, buyingRateKUsed,
             orderStatus,
             isPendingPayment ? req.user.id : null];
       if (overrideTs) ordArgs.push(overrideTs);                       // sales_at when override

@@ -453,26 +453,14 @@ export default function Cashier() {
                       <div>
                         <label style={lblStyle}>Given ($)</label>
                         <input type="number" min="0" step="0.01" value={changeGivenUSD}
-                          onChange={e => {
-                            const v = parseFloat(e.target.value) || 0;
-                            const otherFRAusd = BUY_RATE   > 0 ? (parseFloat(changeGivenFRA || 0) || 0) / BUY_RATE   : 0;
-                            const otherKusd   = BUY_RATE_K > 0 ? (parseFloat(changeGivenK   || 0) || 0) / BUY_RATE_K : 0;
-                            if (v + otherFRAusd + otherKusd > calc.changeUSD + 0.001) return;
-                            setChangeGivenUSD(e.target.value);
-                          }}
+                          onChange={e => setChangeGivenUSD(e.target.value)}
                           placeholder="0.00" style={inputStyle} />
                       </div>
                       {hasFra && (
                       <div>
                         <label style={lblStyle}>Given (FRA)</label>
                         <input type="number" min="0" step="1" value={changeGivenFRA}
-                          onChange={e => {
-                            const vAsUSD     = BUY_RATE   > 0 ? (parseFloat(e.target.value) || 0) / BUY_RATE   : 0;
-                            const otherUSD   = parseFloat(changeGivenUSD || 0) || 0;
-                            const otherKusd  = BUY_RATE_K > 0 ? (parseFloat(changeGivenK   || 0) || 0) / BUY_RATE_K : 0;
-                            if (otherUSD + vAsUSD + otherKusd > calc.changeUSD + 0.001) return;
-                            setChangeGivenFRA(e.target.value);
-                          }}
+                          onChange={e => setChangeGivenFRA(e.target.value)}
                           placeholder="0" style={inputStyle} />
                       </div>
                       )}
@@ -480,33 +468,34 @@ export default function Cashier() {
                       <div>
                         <label style={lblStyle}>Given (K)</label>
                         <input type="number" min="0" step="1" value={changeGivenK}
-                          onChange={e => {
-                            const vAsUSD     = BUY_RATE_K > 0 ? (parseFloat(e.target.value) || 0) / BUY_RATE_K : 0;
-                            const otherUSD   = parseFloat(changeGivenUSD || 0) || 0;
-                            const otherFRAusd= BUY_RATE   > 0 ? (parseFloat(changeGivenFRA || 0) || 0) / BUY_RATE   : 0;
-                            if (otherUSD + vAsUSD + otherFRAusd > calc.changeUSD + 0.001) return;
-                            setChangeGivenK(e.target.value);
-                          }}
+                          onChange={e => setChangeGivenK(e.target.value)}
                           placeholder="0" style={inputStyle} />
                       </div>
                       )}
                     </div>
-                    {(calc.givenUSD > 0 || calc.givenFRA > 0 || calc.givenK > 0) && (
-                      <div style={{ marginTop: 10, padding: '10px 12px',
-                                    background: Math.abs(calc.netRemaining) < 0.01 ? '#ecfdf5' : '#fef3c7',
-                                    border: `1px solid ${Math.abs(calc.netRemaining) < 0.01 ? '#a7f3d0' : '#fde68a'}`,
-                                    borderRadius: 8 }}>
-                        <div style={{ fontSize: 11, color: Math.abs(calc.netRemaining) < 0.01 ? '#047857' : '#92400e', fontWeight: 600 }}>
-                          {Math.abs(calc.netRemaining) < 0.01 ? 'Exact change given' : 'Still owed to customer'}
+                    {(calc.givenUSD > 0 || calc.givenFRA > 0 || calc.givenK > 0) && (() => {
+                      const exact     = Math.abs(calc.netRemaining) < 0.01;
+                      const overpaid  = calc.netRemaining < -0.01;
+                      const bg        = exact ? '#ecfdf5' : overpaid ? '#fef2f2' : '#fef3c7';
+                      const border    = exact ? '#a7f3d0' : overpaid ? '#fecaca' : '#fde68a';
+                      const labelClr  = exact ? '#047857' : overpaid ? '#b91c1c' : '#92400e';
+                      const amtClr    = overpaid ? '#991b1b' : '#78350f';
+                      const label     = exact ? 'Exact change given' : overpaid ? 'Overpaid to customer' : 'Still owed to customer';
+                      const absAmt    = Math.abs(calc.netRemaining);
+                      const absAmtFra = Math.abs(calc.netRemainingFRA);
+                      const absAmtK   = Math.abs(calc.netRemainingK);
+                      return (
+                        <div style={{ marginTop: 10, padding: '10px 12px', background: bg, border: `1px solid ${border}`, borderRadius: 8 }}>
+                          <div style={{ fontSize: 11, color: labelClr, fontWeight: 600 }}>{label}</div>
+                          {!exact && (
+                            <div style={{ fontSize: 16, fontWeight: 800, color: amtClr }}>
+                              {fmtUSD(absAmt)}{' '}
+                              {hasFra && <span style={{ fontSize: 11, fontWeight: 600 }}>(FRA {fmtFRA(absAmtFra)}{hasK && <> · K {fmtK(absAmtK)}</>})</span>}
+                            </div>
+                          )}
                         </div>
-                        {Math.abs(calc.netRemaining) >= 0.01 && (
-                          <div style={{ fontSize: 16, fontWeight: 800, color: '#78350f' }}>
-                            {fmtUSD(calc.netRemaining)}{' '}
-                            {hasFra && <span style={{ fontSize: 11, fontWeight: 600 }}>(FRA {fmtFRA(calc.netRemainingFRA)}{hasK && <> · K {fmtK(calc.netRemainingK)}</>})</span>}
-                          </div>
-                        )}
-                      </div>
-                    )}
+                      );
+                    })()}
                   </div>
                 )}
 
@@ -550,12 +539,19 @@ export default function Cashier() {
                     {confirm.givenFRA > 0 && <div style={confirmRow}><span>Change Given (FRA)</span><strong>FRA {fmtFRA(confirm.givenFRA)}</strong></div>}
                   </>
                 )}
-                <div style={{ ...confirmRow, marginTop: 8, padding: '10px 12px',
-                              background: Math.abs(confirm.netRemaining) < 0.01 ? '#ecfdf5' : '#fef3c7',
-                              borderRadius: 8 }}>
-                  <span style={{ fontWeight: 700 }}>{Math.abs(confirm.netRemaining) < 0.01 ? 'Exact Change' : 'Still owed'}</span>
-                  <strong>{Math.abs(confirm.netRemaining) < 0.01 ? fmtUSD(0) : fmtUSD(confirm.netRemaining)}</strong>
-                </div>
+                {(() => {
+                  const exact    = Math.abs(confirm.netRemaining) < 0.01;
+                  const overpaid = confirm.netRemaining < -0.01;
+                  const bg       = exact ? '#ecfdf5' : overpaid ? '#fef2f2' : '#fef3c7';
+                  const label    = exact ? 'Exact Change' : overpaid ? 'Overpaid' : 'Still owed';
+                  const colour   = overpaid ? '#991b1b' : undefined;
+                  return (
+                    <div style={{ ...confirmRow, marginTop: 8, padding: '10px 12px', background: bg, borderRadius: 8 }}>
+                      <span style={{ fontWeight: 700, color: colour }}>{label}</span>
+                      <strong style={{ color: colour }}>{exact ? fmtUSD(0) : fmtUSD(Math.abs(confirm.netRemaining))}</strong>
+                    </div>
+                  );
+                })()}
               </>
             ) : (
               <div style={{ ...confirmRow, padding: '10px 12px', background: '#fef2f2', borderRadius: 8 }}>

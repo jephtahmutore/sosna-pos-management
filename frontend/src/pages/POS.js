@@ -100,9 +100,12 @@ const POS = () => {
   // currency branch still functions out-of-the-box.
   //   SELL_RATE = FRA shop RECEIVES from customer (paidFRA / SELL_RATE)
   //   BUY_RATE  = FRA shop GIVES BACK as change   (changeFRA / BUY_RATE)
-  const [fxRate, setFxRate] = useState({ sell: 2900, buy: 2600 });
-  const SELL_RATE = fxRate.sell;
-  const BUY_RATE  = fxRate.buy;
+  const [fxRate, setFxRate] = useState({ sell: 2900, buy: 2600, sellK: 0, buyK: 0 });
+  const SELL_RATE   = fxRate.sell;
+  const BUY_RATE    = fxRate.buy;
+  const SELL_RATE_K = fxRate.sellK;
+  const BUY_RATE_K  = fxRate.buyK;
+  const hasK        = SELL_RATE_K > 0;
   const [businessPhone, setBusinessPhone] = useState('');
   const [businessAddress, setBusinessAddress] = useState('');
   const [showReceipt, setShowReceipt] = useState(false);
@@ -123,7 +126,7 @@ const POS = () => {
   const [quickItems, setQuickItems] = useState([]);
   const [quickSyncIds, setQuickSyncIds] = useState(new Set());
   const [customers, setCustomers] = useState([]);
-  const [creditModal, setCreditModal] = useState(null); // { cash, momo, bank }
+  const [creditModal, setCreditModal] = useState(null); // { usd, fra, k } — triple-currency Sosna
   // Account-summary collapsible inside Credit Sale modal. Auto-expands when
   // the projected outstanding would exceed the customer's credit limit, so the
   // cashier always sees the reason if Confirm is disabled.
@@ -413,7 +416,12 @@ const POS = () => {
       try {
         const res = await getCurrentFxRate();
         if (res.data && res.data.sell_rate > 0 && res.data.buy_rate > 0) {
-          setFxRate({ sell: parseFloat(res.data.sell_rate), buy: parseFloat(res.data.buy_rate) });
+          setFxRate({
+            sell:  parseFloat(res.data.sell_rate),
+            buy:   parseFloat(res.data.buy_rate),
+            sellK: parseFloat(res.data.sell_rate_k || 0) || 0,
+            buyK:  parseFloat(res.data.buy_rate_k  || 0) || 0,
+          });
         }
       } catch (err) { /* keep fallback */ }
     };
@@ -657,9 +665,20 @@ const POS = () => {
     if (!customerChannel.current) return;
     const m = payModal || creditModal;
     if (!m) return;
-    const payNow = Math.max(0, (parseFloat(m.cash || 0) + parseFloat(m.momo || 0) + parseFloat(m.bank || 0)));
+    // Pay modal still uses legacy {cash, momo, bank}; Credit Sale uses {usd, fra, k}.
+    let payNow;
+    if (creditModal) {
+      const usd  = parseFloat(creditModal.usd || 0) || 0;
+      const fra  = parseFloat(creditModal.fra || 0) || 0;
+      const kAmt = parseFloat(creditModal.k   || 0) || 0;
+      const fraUSD = SELL_RATE   > 0 ? fra  / SELL_RATE   : 0;
+      const kUSD   = SELL_RATE_K > 0 ? kAmt / SELL_RATE_K : 0;
+      payNow = Math.max(0, usd + fraUSD + kUSD);
+    } else {
+      payNow = Math.max(0, (parseFloat(m.cash || 0) + parseFloat(m.momo || 0) + parseFloat(m.bank || 0)));
+    }
     customerChannel.current.postMessage({ type: 'payment_received', amount: payNow, total });
-  }, [payModal?.cash, payModal?.momo, payModal?.bank, creditModal?.cash, creditModal?.momo, creditModal?.bank, total]); // eslint-disable-line
+  }, [payModal?.cash, payModal?.momo, payModal?.bank, creditModal?.usd, creditModal?.fra, creditModal?.k, total]); // eslint-disable-line
 
   // ── Credit-limit check ────────────────────────────────────────────────────
   // Match the typed name against the customer list (exact, case-insensitive).
@@ -694,7 +713,7 @@ const POS = () => {
       if (cart.length === 0) return;
       const initialCash = total.toFixed(2);
       if (selectedCustomer) {
-        setCreditModal({ cash: initialCash, momo: '0', bank: '0' });
+        setCreditModal({ usd: initialCash, fra: '0', k: '0' });
       } else {
         // cashFRA, changeUSDgiven, changeFRAgiven default to '0' so the Pay
         // modal's dual-currency section starts clean even on K-only branches
@@ -710,22 +729,28 @@ const POS = () => {
     const confirmOpenModal = () => {
       const m = payModal || creditModal;
       if (!m) return;
-      const cashNow = Math.max(0, parseFloat(m.cash || 0));
-      const momoNow = Math.max(0, parseFloat(m.momo || 0));
-      const bankNow = Math.max(0, parseFloat(m.bank || 0));
-      const payNow  = cashNow + momoNow + bankNow;
       if (payModal) {
+        const cashNow = Math.max(0, parseFloat(m.cash || 0));
+        const momoNow = Math.max(0, parseFloat(m.momo || 0));
+        const bankNow = Math.max(0, parseFloat(m.bank || 0));
+        const payNow  = cashNow + momoNow + bankNow;
         // Walk-in: cash sale requires full payment.
         if (payNow < total - 0.001) return;
         setPayModal(null);
         handleCheckout({ cash: cashNow, momo: momoNow, bank: bankNow });
       } else if (creditModal) {
+        const usdNow = Math.max(0, parseFloat(creditModal.usd || 0));
+        const fraNow = Math.max(0, parseFloat(creditModal.fra || 0));
+        const kNow   = Math.max(0, parseFloat(creditModal.k   || 0));
+        const fraUSD = SELL_RATE   > 0 ? fraNow / SELL_RATE   : 0;
+        const kUSD   = SELL_RATE_K > 0 ? kNow   / SELL_RATE_K : 0;
+        const payNow = usdNow + fraUSD + kUSD;
         const newCredit = Math.max(0, total - payNow);
         const projected = currentOutstanding + newCredit;
         const over     = creditLimit > 0 && projected > creditLimit + 0.001;
         if (over || onHold) return;
         setCreditModal(null);
-        handleCheckout({ cash: cashNow, momo: momoNow, bank: bankNow });
+        handleCheckout({ usd: usdNow, fra: fraNow, k: kNow });
       }
     };
     const onKey = (e) => {
@@ -899,20 +924,26 @@ const POS = () => {
   const handleCheckout = async (override) => {
     if (cart.length === 0) return;
     try {
-      // The credit-sale modal passes { cash, momo, bank } so the breakdown is preserved.
-      // Guard against accidentally receiving the click event (event objects don't have .cash).
+      // The credit-sale modal now passes { usd, fra, k } (triple-currency).
+      // The walk-in Pay modal still passes legacy { cash, momo, bank }.
+      // Guard against accidentally receiving the click event.
       const hasOverride = override && typeof override === 'object' && !override.nativeEvent
-        && ('cash' in override || 'momo' in override || 'bank' in override);
-      const cashAmt = hasOverride ? parseFloat(override.cash || 0) : parseFloat(cashIn || 0);
-      const momoAmt = hasOverride ? parseFloat(override.momo || 0) : parseFloat(momoIn || 0);
-      const bankAmt = hasOverride ? parseFloat(override.bank || 0) : parseFloat(bankIn || 0);
-      // Dual-currency FX inputs come straight off the Pay modal — the credit
-      // modal does not carry them yet. K-only branches always end up with
-      // zeros here, leaving the order unchanged.
-      const fraReceived   = isDual && payModal ? Math.max(0, parseFloat(payModal.cashFRA        || 0)) : 0;
+        && ('cash' in override || 'momo' in override || 'bank' in override || 'usd' in override || 'fra' in override || 'k' in override);
+      const isCreditOverride = hasOverride && ('usd' in override || 'fra' in override || 'k' in override);
+      const cashAmt = isCreditOverride
+        ? parseFloat(override.usd || 0)
+        : (hasOverride ? parseFloat(override.cash || 0) : parseFloat(cashIn || 0));
+      const momoAmt = isCreditOverride ? 0 : (hasOverride ? parseFloat(override.momo || 0) : parseFloat(momoIn || 0));
+      const bankAmt = isCreditOverride ? 0 : (hasOverride ? parseFloat(override.bank || 0) : parseFloat(bankIn || 0));
+      // FRA / K come from the credit override or, for walk-ins, from the Pay modal.
+      const fraReceived = isCreditOverride
+        ? Math.max(0, parseFloat(override.fra || 0))
+        : (isDual && payModal ? Math.max(0, parseFloat(payModal.cashFRA || 0)) : 0);
+      const kReceived   = isCreditOverride ? Math.max(0, parseFloat(override.k || 0)) : 0;
       const fraChangeGiven= isDual && payModal ? Math.max(0, parseFloat(payModal.changeFRAgiven || 0)) : 0;
-      const fraReceivedAsUSD = isDual && SELL_RATE > 0 ? fraReceived / SELL_RATE : 0;
-      const effectiveAmountReceived = cashAmt + momoAmt + bankAmt + fraReceivedAsUSD;
+      const fraReceivedAsUSD = SELL_RATE   > 0 ? fraReceived / SELL_RATE   : 0;
+      const kReceivedAsUSD   = SELL_RATE_K > 0 ? kReceived   / SELL_RATE_K : 0;
+      const effectiveAmountReceived = cashAmt + momoAmt + bankAmt + fraReceivedAsUSD + kReceivedAsUSD;
       const effectiveUnpaid = Math.max(0, total - effectiveAmountReceived);
       const effectiveChange = Math.max(0, effectiveAmountReceived - total);
       // Credit-sale detection: if a registered customer is selected and amount paid < total,
@@ -945,6 +976,9 @@ const POS = () => {
         fra_change_given: fraChangeGiven,
         selling_rate_used: isDual ? SELL_RATE : null,
         buying_rate_used:  isDual ? BUY_RATE  : null,
+        k_received: kReceived,
+        selling_rate_k_used: hasK ? SELL_RATE_K : null,
+        buying_rate_k_used:  hasK ? BUY_RATE_K  : null,
         // Only sent when an Administrator picked a non-today date in the Pay modal.
         // Backend re-validates the role before honouring it.
         sale_date: (isAdmin && saleDate && saleDate !== todayStr()) ? saleDate : null,
@@ -1536,7 +1570,7 @@ const POS = () => {
               {selectedCustomer ? (
                 <button
                   className="btn-checkout"
-                  onClick={() => setCreditModal({ cash: '', momo: '', bank: '' })}
+                  onClick={() => setCreditModal({ usd: '', fra: '', k: '' })}
                   disabled={cart.length === 0 || creditBlocked}
                   title={
                     cart.length === 0 ? 'Cart is empty'
@@ -1917,10 +1951,12 @@ const POS = () => {
       })()}
 
       {creditModal && selectedCustomer && (() => {
-        const cashNow = Math.max(0, parseFloat(creditModal.cash || 0));
-        const momoNow = Math.max(0, parseFloat(creditModal.momo || 0));
-        const bankNow = Math.max(0, parseFloat(creditModal.bank || 0));
-        const payNow = cashNow + momoNow + bankNow;
+        const usdNow = Math.max(0, parseFloat(creditModal.usd || 0));
+        const fraNow = Math.max(0, parseFloat(creditModal.fra || 0));
+        const kNow   = Math.max(0, parseFloat(creditModal.k   || 0));
+        const fraAsUSD = SELL_RATE   > 0 ? fraNow / SELL_RATE   : 0;
+        const kAsUSD   = SELL_RATE_K > 0 ? kNow   / SELL_RATE_K : 0;
+        const payNow = usdNow + fraAsUSD + kAsUSD;
         const newCredit = Math.max(0, total - payNow);
         const projectedOutstanding = currentOutstanding + newCredit;
         const overLimit = creditLimit > 0 && projectedOutstanding > creditLimit + 0.001;
@@ -1994,29 +2030,43 @@ const POS = () => {
                     </div>
                   )}
                   <div style={{ marginTop: 12 }}>
-                    <label style={{ fontSize: 12, color: '#6b7280', fontWeight: 600 }}>Paying Now (split across methods — any can be 0)</label>
-                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8, marginTop: 6 }}>
-                      {[
-                        { key: 'cash', label: 'Cash', color: '#16a34a' },
-                        { key: 'momo', label: 'MoMo', color: '#f59e0b' },
-                        { key: 'bank', label: 'Bank', color: '#2563eb' },
-                      ].map((f, i) => (
-                        <div key={f.key}>
-                          <div style={{ fontSize: 11, color: f.color, fontWeight: 700, textTransform: 'uppercase', marginBottom: 3 }}>{f.label}</div>
-                          <input
-                            type="number" min="0" step="0.01" autoFocus={i === 0}
-                            value={creditModal[f.key]}
-                            onChange={e => setCreditModal({ ...creditModal, [f.key]: e.target.value })}
-                            placeholder="0.00"
-                            style={{ width: '100%', padding: '8px 10px', border: `2px solid ${parseFloat(creditModal[f.key] || 0) > 0 ? f.color : '#d1d5db'}`, borderRadius: 6, fontSize: 14, fontWeight: 600, color: parseFloat(creditModal[f.key] || 0) > 0 ? f.color : '#374151', boxSizing: 'border-box' }} />
+                    <label style={{ fontSize: 12, color: '#6b7280', fontWeight: 600 }}>Paying Now (split across currencies — any can be 0)</label>
+                    {(() => {
+                      const fields = [
+                        { key: 'usd', label: 'USD', color: '#16a34a', step: '0.01', placeholder: '0.00', show: true },
+                        { key: 'fra', label: 'FRA', color: '#2563eb', step: '1',    placeholder: '0',    show: isDual },
+                        { key: 'k',   label: 'K',   color: '#7c3aed', step: '1',    placeholder: '0',    show: hasK   },
+                      ].filter(f => f.show);
+                      const cols = `repeat(${fields.length}, 1fr)`;
+                      return (
+                        <div style={{ display: 'grid', gridTemplateColumns: cols, gap: 8, marginTop: 6 }}>
+                          {fields.map((f, i) => (
+                            <div key={f.key}>
+                              <div style={{ fontSize: 11, color: f.color, fontWeight: 700, textTransform: 'uppercase', marginBottom: 3 }}>{f.label}</div>
+                              <input
+                                type="number" min="0" step={f.step} autoFocus={i === 0}
+                                value={creditModal[f.key]}
+                                onChange={e => setCreditModal({ ...creditModal, [f.key]: e.target.value })}
+                                placeholder={f.placeholder}
+                                style={{ width: '100%', padding: '8px 10px', border: `2px solid ${parseFloat(creditModal[f.key] || 0) > 0 ? f.color : '#d1d5db'}`, borderRadius: 6, fontSize: 14, fontWeight: 600, color: parseFloat(creditModal[f.key] || 0) > 0 ? f.color : '#374151', boxSizing: 'border-box' }} />
+                            </div>
+                          ))}
                         </div>
-                      ))}
-                    </div>
-                    <div style={{ display: 'flex', gap: 6, marginTop: 8 }}>
-                      <button onClick={() => setCreditModal({ cash: '0', momo: '0', bank: '0' })}
+                      );
+                    })()}
+                    <div style={{ display: 'flex', gap: 6, marginTop: 8, flexWrap: 'wrap' }}>
+                      <button onClick={() => setCreditModal({ usd: '0', fra: '0', k: '0' })}
                         style={{ padding: '4px 12px', border: '1px solid #d1d5db', borderRadius: 6, background: '#fff', fontSize: 12, cursor: 'pointer' }}>Pay $0 (full credit)</button>
-                      <button onClick={() => setCreditModal({ ...creditModal, cash: total.toFixed(2), momo: '0', bank: '0' })}
-                        style={{ padding: '4px 12px', border: '1px solid #d1d5db', borderRadius: 6, background: '#fff', fontSize: 12, cursor: 'pointer' }}>Pay full in Cash</button>
+                      <button onClick={() => setCreditModal({ usd: total.toFixed(2), fra: '0', k: '0' })}
+                        style={{ padding: '4px 12px', border: '1px solid #d1d5db', borderRadius: 6, background: '#fff', fontSize: 12, cursor: 'pointer' }}>Pay full in USD</button>
+                      {isDual && SELL_RATE > 0 && (
+                        <button onClick={() => setCreditModal({ usd: '0', fra: (total * SELL_RATE).toFixed(0), k: '0' })}
+                          style={{ padding: '4px 12px', border: '1px solid #d1d5db', borderRadius: 6, background: '#fff', fontSize: 12, cursor: 'pointer' }}>Pay full in FRA</button>
+                      )}
+                      {hasK && (
+                        <button onClick={() => setCreditModal({ usd: '0', fra: '0', k: (total * SELL_RATE_K).toFixed(0) })}
+                          style={{ padding: '4px 12px', border: '1px solid #d1d5db', borderRadius: 6, background: '#fff', fontSize: 12, cursor: 'pointer' }}>Pay full in K</button>
+                      )}
                     </div>
                     <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 8, padding: '6px 10px', background: '#fff', borderRadius: 6, fontSize: 13 }}>
                       <span style={{ color: '#6b7280' }}>Paying Now Total</span>
@@ -2091,7 +2141,7 @@ const POS = () => {
                 </button>
                 <button
                   onClick={() => {
-                    const breakdown = { cash: cashNow, momo: momoNow, bank: bankNow };
+                    const breakdown = { usd: usdNow, fra: fraNow, k: kNow };
                     setCreditModal(null);
                     handleCheckout(breakdown);
                   }}
