@@ -20,6 +20,9 @@ import {
   getTransferSourceProducts, getOutgoingTransfers, getIncomingTransfers,
   createTransfer, receiveTransfer, cancelTransfer,
 } from '../services/api';
+// v1.8.40 — show On Hand in the product's configured default unit
+// (e.g. Box) instead of the raw base unit (Bottle).
+import { formatStockForProduct } from '../utils/unitFormat';
 
 function currentBranchSlug() {
   if (isHqHost()) return getHqBranch() || '';
@@ -320,18 +323,29 @@ function CreateTransferModal({ sourceSlug, branches, onClose, onCreated, onError
                     <tr><th style={thS}>Product</th><th style={{ ...thS, textAlign: 'right' }}>On Hand</th><th style={{ ...thS, textAlign: 'right', width: 100 }}>Send Qty</th></tr>
                   </thead>
                   <tbody>
-                    {filtered.map(p => (
+                    {filtered.map(p => {
+                      // v1.8.40 — display in default unit + base in parens.
+                      // Send Qty input still expects base unit (Bottle)
+                      // — keeping the input label visible so user isn't
+                      // confused which unit to type in.
+                      const displayQty = formatStockForProduct(p.current_stock, p, {
+                        showBaseInParens: true, decimals: 0,
+                        allowNegative: true, preferDefaultUnit: true,
+                      });
+                      return (
                       <tr key={p.sync_id} style={{ borderTop: '1px solid #f1f5f9' }}>
                         <td style={tdS}>{p.name} <span style={{ color: '#94a3b8', fontSize: 10 }}>{p.unit}</span></td>
-                        <td style={{ ...tdS, textAlign: 'right' }}>{fmtQty(p.current_stock)}</td>
+                        <td style={{ ...tdS, textAlign: 'right' }}>{displayQty}</td>
                         <td style={{ ...tdS, textAlign: 'right' }}>
-                          <input type="number" min="0" step="any" placeholder="0"
+                          <input type="number" min="0" step="any" placeholder={`0 ${p.unit}`}
                             value={cart[p.sync_id]?.qty || ''}
                             onChange={e => setQty(p, e.target.value)}
+                            title={`Enter quantity in ${p.unit} (base unit)`}
                             style={{ width: 80, padding: '4px 6px', border: '1px solid #d1d5db', borderRadius: 4, fontSize: 12, textAlign: 'right' }} />
                         </td>
                       </tr>
-                    ))}
+                      );
+                    })}
                     {filtered.length === 0 && (
                       <tr><td colSpan={3} style={{ ...tdS, color: '#94a3b8', fontStyle: 'italic', padding: 16 }}>No products match.</td></tr>
                     )}
