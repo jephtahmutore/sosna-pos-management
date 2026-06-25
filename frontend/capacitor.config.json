@@ -11,10 +11,10 @@
     "appendUserAgent": "SosnaMobileApp"
   },
   "server": {
-    "url": "https://sosnazm.com",
     "androidScheme": "https",
     "allowNavigation": [
-      "sosnazm.com"
+      "sosnazm.com",
+      "*.sosnazm.com"
     ],
     "cleartext": false
   },
