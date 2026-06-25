@@ -518,12 +518,20 @@ router.put('/:id/collect-payment', auth, requirePagePerm('Cashier'), (req, res) 
            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,0,datetime('now'),datetime('now'),?)`
         );
         for (const it of items) {
-          const prod = db.prepare('SELECT sync_id, unit, alt_unit, conversion_factor, units_json FROM products WHERE id = ?').get(it.product_id);
+          // v1.8.39 — look up by sync_id first (cross-device safe); fall
+          // back to local integer id only if sync_id is missing. Same
+          // localProductId logic as the reverse endpoint — prevents
+          // FOREIGN KEY constraint failed on synced orders.
+          const prodBySync = it.product_sync_id
+            ? db.prepare('SELECT id, sync_id, unit, alt_unit, conversion_factor, units_json FROM products WHERE sync_id = ?').get(it.product_sync_id)
+            : null;
+          const prod = prodBySync || db.prepare('SELECT id, sync_id, unit, alt_unit, conversion_factor, units_json FROM products WHERE id = ?').get(it.product_id);
           const productSyncId = it.product_sync_id || prod?.sync_id || null;
+          const localProductId = prod?.id || it.product_id;
           const lineUnit = (it.unit || '').trim() || prod?.unit || null;
           const baseQty = parseFloat(it.quantity) * conversionToBase(prod, lineUnit);
           movStmt.run(
-            it.product_id, productSyncId, 'sales', 'sale', -baseQty,
+            localProductId, productSyncId, 'sales', 'sale', -baseQty,
             order.id, 'order', req.user.id,
             randomUUID(), tenantId, branchId, deviceId,
             order.sync_id
@@ -603,7 +611,13 @@ router.put('/:id/items/:itemId/reverse', auth, (req, res) => {
       if (!item) throw Object.assign(new Error('Item not found in this order'), { status: 404 });
       if (item.reversed) throw Object.assign(new Error('Item already fully reversed'), { status: 400 });
 
-      const prod = db.prepare('SELECT unit, alt_unit, conversion_factor, units_json FROM products WHERE sync_id = ?').get(item.product_sync_id);
+      // v1.8.39 — include local products.id so the stock_movements INSERT
+      // below uses the THIS-DB integer ID, not item.product_id which is
+      // the originating device's local ID (cross-device sync sends order
+      // rows verbatim so the integer can point at a nonexistent row on
+      // the receiving DB → FOREIGN KEY constraint failed).
+      const prod = db.prepare('SELECT id, unit, alt_unit, conversion_factor, units_json FROM products WHERE sync_id = ?').get(item.product_sync_id);
+      const localProductId = prod?.id || item.product_id;
 
       // Resolve which unit user is reversing in
       const reverseUnit = requestedUnit || item.unit || prod?.unit;
@@ -631,7 +645,7 @@ router.put('/:id/items/:itemId/reverse', auth, (req, res) => {
       db.prepare(
         `INSERT INTO stock_movements (product_id, product_sync_id, location, movement_type, quantity, reference_id, reference_type, notes, created_by, sync_id, tenant_id, branch_id, device_id, synced, created_at, updated_at, reference_sync_id)
          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0,datetime('now'),datetime('now'),?)`
-      ).run(item.product_id, item.product_sync_id, 'sales', 'sale_reverse', reverseBaseQty, req.params.id, 'order_reverse',
+      ).run(localProductId, item.product_sync_id, 'sales', 'sale_reverse', reverseBaseQty, req.params.id, 'order_reverse',
             `Partial reverse of ${reverseQty} ${reverseUnit}`, req.user.id,
             randomUUID(), tenantId, branchId, deviceId, order.sync_id);
 

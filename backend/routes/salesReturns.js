@@ -148,7 +148,8 @@ function confirmDamage(db, params, req, res, body) {
     if (ret.status !== 'PENDING') return res.status(400).json({ error: `Damage is ${ret.status}, not PENDING` });
 
     const items = db.prepare(
-      `SELECT sri.*, p.unit AS product_base_unit, p.alt_unit, p.conversion_factor, p.units_json
+      `SELECT sri.*, p.id AS local_product_id,
+              p.unit AS product_base_unit, p.alt_unit, p.conversion_factor, p.units_json
          FROM sales_return_items sri
          LEFT JOIN products p ON p.sync_id = sri.product_sync_id
          WHERE sri.return_sync_id = ? AND sri.deleted_at IS NULL`
@@ -171,7 +172,14 @@ function confirmDamage(db, params, req, res, body) {
                                        created_at, updated_at, reference_sync_id)
           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0,?,datetime('now'),?)
         `).run(
-          it.product_id, it.product_sync_id, 'sales', 'sales_return', -baseQty,
+          // v1.8.39 — use THIS-DB's products.id (looked up via sync_id),
+          // not it.product_id which is the originating device's local id.
+          // Cross-device sync sends the row verbatim, so a damage declared
+          // on Electron carried Electron's product_id; running the FK
+          // INSERT here on the VPS tenant DB would fail because that id
+          // doesn't exist locally.
+          it.local_product_id || it.product_id,
+          it.product_sync_id, 'sales', 'sales_return', -baseQty,
           ret.id, 'sales_return', ret.notes || null,
           confirmedBy, randomUUID(), tenantId, branchId, deviceId,
           ret.date, ret.sync_id
