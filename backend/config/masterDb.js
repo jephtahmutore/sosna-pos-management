@@ -84,6 +84,37 @@ try {
     CREATE INDEX IF NOT EXISTS idx_transfers_to_status   ON stock_transfers (to_slug, status);
     CREATE INDEX IF NOT EXISTS idx_transfers_from_status ON stock_transfers (from_slug, status);
 
+    -- ── v1.8.57 — Branch → HQ Cash Deposits ─────────────────────────────
+    -- Branch records a physical cash deposit being sent to HQ. HQ
+    -- inbox sees PENDING rows and confirms when the cash arrives.
+    -- On HQ confirm: branch Cash Book gets a PV (cash out), HQ Cash
+    -- Book gets a CR (cash in). On reject: no money moves.
+    --
+    -- Lives in master.db so branch (records it) and HQ (confirms it)
+    -- read the same row — same pattern as stock_transfers.
+    CREATE TABLE IF NOT EXISTS cash_deposits (
+      id              INTEGER PRIMARY KEY AUTOINCREMENT,
+      deposit_number  TEXT NOT NULL UNIQUE,
+      sync_id         TEXT NOT NULL UNIQUE,
+      from_slug       TEXT NOT NULL,
+      from_name       TEXT,
+      currency        TEXT NOT NULL,                        -- 'USD' | 'FRA' | 'K'
+      amount          REAL NOT NULL DEFAULT 0,              -- raw amount in the named currency
+      amount_usd      REAL NOT NULL DEFAULT 0,              -- dollar value at sale-time / sent rate
+      sell_rate       REAL,                                  -- snapshot of the rate used for amount_usd
+      notes           TEXT,
+      status          TEXT NOT NULL DEFAULT 'PENDING',      -- PENDING | CONFIRMED | REJECTED
+      created_by      INTEGER,
+      created_by_name TEXT,
+      created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+      confirmed_by    INTEGER,
+      confirmed_by_name TEXT,
+      confirmed_at    TEXT,
+      reject_reason   TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_cash_deposits_status   ON cash_deposits (status);
+    CREATE INDEX IF NOT EXISTS idx_cash_deposits_from     ON cash_deposits (from_slug, status);
+
     -- ── Phase C: HQ Purchase Receipts (no warehouse, drop-ship to branch) ──
     -- HQ has no physical stock — every supplier purchase is logged here
     -- with PER-LINE destination_slug. Branches see lines targeted at them

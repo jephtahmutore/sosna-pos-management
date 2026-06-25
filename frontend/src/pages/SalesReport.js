@@ -1336,10 +1336,17 @@ const SalesReport = () => {
                           <span style={{ color: '#6b7280' }}>Subtotal</span>
                           <span>${(parseFloat(originalSubtotal)||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</span>
                         </div>
-                        {originalDiscount > 0 && (
+                        {/* v1.8.57 — discount can be negative (= markup). Show
+                            "Total discount" in red for + values, "Total surcharge"
+                            in blue for − values. */}
+                        {Math.abs(originalDiscount) > 0.001 && (
                           <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
-                            <span style={{ color: '#dc2626' }}>Total discount</span>
-                            <span style={{ color: '#dc2626' }}>-${(parseFloat(originalDiscount)||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</span>
+                            <span style={{ color: originalDiscount > 0 ? '#dc2626' : '#2563eb' }}>
+                              {originalDiscount > 0 ? 'Total discount' : 'Total surcharge'}
+                            </span>
+                            <span style={{ color: originalDiscount > 0 ? '#dc2626' : '#2563eb' }}>
+                              {originalDiscount > 0 ? '-' : '+'}${Math.abs(originalDiscount).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}
+                            </span>
                           </div>
                         )}
                         <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8, paddingTop: 6, borderTop: '1px solid #e5e7eb', fontWeight: 700, fontSize: 14 }}>

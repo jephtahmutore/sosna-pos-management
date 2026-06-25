@@ -825,6 +825,7 @@ app.use('/api/fx-rates', require('./routes/fxRates'));
 // HQ-only routes (tenant-admin, hq/*) intentionally not mounted —
 // Electron is a branch device, not HQ.
 app.use('/api/transfers',     require('./routes/transfers'));
+app.use('/api/cash-deposits', require('./routes/cashDeposits'));
 app.use('/api/notifications', require('./routes/notifications'));
 app.use('/admin', require('./routes/admin'));
 

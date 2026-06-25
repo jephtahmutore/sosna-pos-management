@@ -106,7 +106,13 @@ const AccountReceivables = () => {
         else if (balance >= -0.01)             status = 'Paid';     // fully paid or advance
         else if (paid > 0)                     status = 'Partial';
         else                                   status = 'Unpaid';
-        return { ...c, _sold: sold, _paid: paid, _balance: balance, _status: status };
+        // v1.8.57 — carry per-currency outstanding for FRA / K display.
+        // Backend computes these using each unpaid order's captured sale rate.
+        return {
+          ...c, _sold: sold, _paid: paid, _balance: balance, _status: status,
+          _outstandingFra: parseFloat(c.outstanding_fra || 0),
+          _outstandingK:   parseFloat(c.outstanding_k   || 0),
+        };
       });
       setRows(list);
       setStats(statsRes.data || { totalSales: 0, totalReceived: 0, outstanding: 0, customers: 0, owingCount: 0 });
@@ -452,6 +458,14 @@ const AccountReceivables = () => {
                     <td style={{ padding: '10px 12px', textAlign: 'right', fontWeight: 700, color: r._balance > 0.01 ? '#b45309' : r._balance < -0.01 ? '#dc2626' : '#16a34a' }}>
                       {/* Signed value — minus sign goes BEFORE the currency symbol (standard accounting). */}
                       {r._balance < 0 ? '−' : ''}{fmt(Math.abs(r._balance))}
+                      {/* v1.8.57 — FRA / K equivalents at captured sale rates. */}
+                      {r._balance < -0.01 && (r._outstandingFra > 0.01 || r._outstandingK > 0.01) && (
+                        <div style={{ fontSize: 10, fontWeight: 500, color: '#94a3b8', marginTop: 2 }}>
+                          ≈ {r._outstandingFra > 0.01 && <>FRA {Math.round(r._outstandingFra).toLocaleString()}</>}
+                          {r._outstandingFra > 0.01 && r._outstandingK > 0.01 && ' · '}
+                          {r._outstandingK > 0.01 && <>K {Math.round(r._outstandingK).toLocaleString()}</>}
+                        </div>
+                      )}
                     </td>
                     <td style={{ padding: '10px 12px', textAlign: 'right' }}>
                       <span style={{ padding: '2px 10px', borderRadius: 10, fontSize: 11, fontWeight: 700, background: s.bg, color: s.fg }}>{r._status === 'OnHold' ? 'On Hold' : r._status}</span>
@@ -544,9 +558,21 @@ const AccountReceivables = () => {
                 </h3>
                 <div style={{ fontSize: 13, color: '#6b7280', marginTop: 4 }}>
                   From <strong>{paymentModal.customer.name}</strong>
-                  {paymentModal.customer._balance < -0.01
-                    ? <> · owes {fmt(Math.abs(paymentModal.customer._balance))}</>
-                    : <> · advance (credit applied to future credit sales)</>}
+                  {paymentModal.customer._balance < -0.01 ? (
+                    <>
+                      {' · owes '}{fmt(Math.abs(paymentModal.customer._balance))}
+                      {/* v1.8.57 — show FRA / K equivalents using captured sale rates. */}
+                      {(paymentModal.customer._outstandingFra > 0.01 || paymentModal.customer._outstandingK > 0.01) && (
+                        <span style={{ color: '#94a3b8', fontWeight: 500 }}>
+                          {' ≈ '}
+                          {paymentModal.customer._outstandingFra > 0.01 && <>FRA {Math.round(paymentModal.customer._outstandingFra).toLocaleString()}</>}
+                          {paymentModal.customer._outstandingFra > 0.01 && paymentModal.customer._outstandingK > 0.01 && ' · '}
+                          {paymentModal.customer._outstandingK > 0.01 && <>K {Math.round(paymentModal.customer._outstandingK).toLocaleString()}</>}
+                          {' (at sale-time rate)'}
+                        </span>
+                      )}
+                    </>
+                  ) : <> · advance (credit applied to future credit sales)</>}
                 </div>
               </div>
               <button onClick={() => setPaymentModal(null)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#6b7280' }}><FiX size={18} /></button>

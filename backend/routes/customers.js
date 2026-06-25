@@ -25,6 +25,14 @@ router.get('/', auth, readOnlyGuard, (req, res) => {
         COALESCE(orders_agg.total_sold, 0)
           - COALESCE(orders_agg.cash_at_sale, 0)
           - COALESCE(payments_agg.total_paid, 0) AS outstanding,
+        -- v1.8.57 — FRA / K equivalents of the outstanding, computed
+        -- using the FX rate captured at each order's sale time. Per
+        -- order: unpaid_usd × selling_rate_used. Then scaled by the
+        -- ratio of (current outstanding) / (sum of order unpaids before
+        -- AR payments) so AR payments reduce all three views together.
+        COALESCE(orders_agg.unpaid_fra_at_sale, 0) AS unpaid_fra_at_sale,
+        COALESCE(orders_agg.unpaid_k_at_sale, 0)   AS unpaid_k_at_sale,
+        COALESCE(orders_agg.unpaid_usd_for_ratio, 0) AS unpaid_usd_for_ratio,
         oldest_unpaid.oldest_order_date AS oldest_unpaid_date
       FROM customers c
       LEFT JOIN (
@@ -33,7 +41,18 @@ router.get('/', auth, readOnlyGuard, (req, res) => {
           -- cap each line's cash_at_sale at the order total — over-tender came back as change
           SUM(CASE WHEN COALESCE(amount_received, 0) > total_amount
                    THEN total_amount
-                   ELSE COALESCE(amount_received, 0) END)  AS cash_at_sale
+                   ELSE COALESCE(amount_received, 0) END)  AS cash_at_sale,
+          -- Per-order unpaid at sale time, valued in FRA and K using
+          -- the rate snapshot from when the order was placed.
+          SUM(CASE WHEN total_amount > COALESCE(amount_received, 0)
+                   THEN (total_amount - COALESCE(amount_received, 0)) * COALESCE(selling_rate_used, 0)
+                   ELSE 0 END) AS unpaid_fra_at_sale,
+          SUM(CASE WHEN total_amount > COALESCE(amount_received, 0)
+                   THEN (total_amount - COALESCE(amount_received, 0)) * COALESCE(selling_rate_k_used, 0)
+                   ELSE 0 END) AS unpaid_k_at_sale,
+          SUM(CASE WHEN total_amount > COALESCE(amount_received, 0)
+                   THEN (total_amount - COALESCE(amount_received, 0))
+                   ELSE 0 END) AS unpaid_usd_for_ratio
         FROM orders
         WHERE deleted_at IS NULL AND (status IS NULL OR status != 'Reversed')
           AND customer_sync_id IS NOT NULL${orderDateClause}
@@ -64,6 +83,16 @@ router.get('/', auth, readOnlyGuard, (req, res) => {
     }
     query += ' ORDER BY c.name';
     const rows = db.prepare(query).all(...params);
+    // v1.8.57 — scale per-currency unpaid totals by ratio of
+    // current_outstanding / sum_of_order_unpaids_at_sale, so AR
+    // payments reduce FRA/K equivalents in lockstep with USD.
+    for (const r of rows) {
+      const ratioDenom = parseFloat(r.unpaid_usd_for_ratio || 0);
+      const outstanding = Math.max(0, parseFloat(r.outstanding || 0));
+      const ratio = ratioDenom > 0 ? Math.min(1, outstanding / ratioDenom) : 0;
+      r.outstanding_fra = parseFloat(r.unpaid_fra_at_sale || 0) * ratio;
+      r.outstanding_k   = parseFloat(r.unpaid_k_at_sale   || 0) * ratio;
+    }
     res.json(rows);
   } catch (error) {
     res.status(500).json({ error: error.message });

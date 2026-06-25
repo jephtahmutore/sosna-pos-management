@@ -204,6 +204,14 @@ export const createTransfer = (data) => api.post('/transfers', data);
 export const receiveTransfer = (id) => api.put(`/transfers/${id}/receive`);
 export const cancelTransfer = (id) => api.put(`/transfers/${id}/cancel`);
 
+// v1.8.57 — Branch → HQ Cash Deposit workflow.
+// Branch creates a PENDING deposit, HQ confirms (writes PV on branch + CR
+// on HQ) or rejects (no ledger writes). Lives in master.db.
+export const getCashDeposits   = (params) => api.get('/cash-deposits', { params });
+export const createCashDeposit = (data)   => api.post('/cash-deposits', data);
+export const confirmCashDeposit = (id)    => api.put(`/cash-deposits/${id}/confirm`);
+export const rejectCashDeposit  = (id, reason) => api.put(`/cash-deposits/${id}/reject`, { reason });
+
 // HQ Purchases — Phase C v2: supplier purchases logged at HQ with
 // per-line destination branch. HQ has no warehouse / no source stock.
 // Branch confirms with actual received qty; stock arrives in branch DB

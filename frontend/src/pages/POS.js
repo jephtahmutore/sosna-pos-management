@@ -571,7 +571,10 @@ const POS = () => {
   const setLineDiscount = (cartIdx, value) => {
     setCart(prev => prev.map((item, i) => {
       if (i !== cartIdx) return item;
-      const d = Math.max(0, parseFloat(value) || 0);
+      // v1.8.57 — allow negative "discount" = markup. Effective unit
+      // price = unit_price − d (so d>0 reduces, d<0 increases). Still
+      // floor the effective price at 0 to prevent a negative line total.
+      const d = parseFloat(value) || 0;
       const effective = Math.max(0, item.unit_price - d);
       return { ...item, discount: d, total_price: parseFloat((item.quantity * effective).toFixed(2)) };
     }));
@@ -591,7 +594,7 @@ const POS = () => {
         const st = res.data?.status;
         if (st === 'approved') {
           if (discountModal.target === 'cart') {
-            setDiscount(Math.max(0, parseFloat(discountModal.draft) || 0));
+            setDiscount(parseFloat(discountModal.draft) || 0);
           } else {
             setLineDiscount(discountModal.cartIdx, discountModal.draft);
           }
@@ -652,6 +655,10 @@ const POS = () => {
   };
 
   const subtotal = cart.reduce((sum, item) => sum + item.total_price, 0);
+  // v1.8.57 — `discount` can be negative (markup). subtotal − discount:
+  //   positive discount → reduces total (sale)
+  //   negative discount → increases total (markup)
+  // Floor at 0 so a runaway discount can't produce a negative total.
   const total = Math.max(0, subtotal - parseFloat(discount || 0));
   const change = Math.max(0, parseFloat(amountReceived || 0) - total);
 
@@ -1790,13 +1797,14 @@ const POS = () => {
                   </div>
                   {/* Cart-level discount — flat K off the whole sale. */}
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '4px 0' }}>
-                    <span style={{ color: '#374151' }}>Discount (off total)</span>
+                    <span style={{ color: '#374151' }}>Change price (+/−)</span>
                     {isAdmin ? (
                       <input
-                        type="number" min="0" step="0.01" value={discount || ''}
-                        onChange={e => setDiscount(Math.max(0, parseFloat(e.target.value) || 0))}
+                        type="number" step="0.01" value={discount || ''}
+                        onChange={e => setDiscount(parseFloat(e.target.value) || 0)}
                         placeholder="0.00"
-                        style={{ width: 100, padding: '4px 8px', border: '1.5px solid #d1d5db', borderRadius: 6, fontSize: 13, fontWeight: 600, color: parseFloat(discount || 0) > 0 ? '#dc2626' : '#111827', textAlign: 'right' }}
+                        title="Positive = discount (off total). Negative = markup (added to total)."
+                        style={{ width: 100, padding: '4px 8px', border: '1.5px solid #d1d5db', borderRadius: 6, fontSize: 13, fontWeight: 600, color: parseFloat(discount || 0) > 0 ? '#dc2626' : parseFloat(discount || 0) < 0 ? '#2563eb' : '#111827', textAlign: 'right' }}
                       />
                     ) : (
                       <button
@@ -1805,14 +1813,14 @@ const POS = () => {
                         style={{
                           display: 'inline-flex', alignItems: 'center', gap: 5,
                           padding: '4px 10px', borderRadius: 14,
-                          background: parseFloat(discount || 0) > 0 ? '#fef2f2' : '#f9fafb',
-                          border: `1px ${parseFloat(discount || 0) > 0 ? 'solid #fecaca' : 'dashed #d1d5db'}`,
-                          color: parseFloat(discount || 0) > 0 ? '#dc2626' : '#6b7280',
+                          background: parseFloat(discount || 0) > 0 ? '#fef2f2' : parseFloat(discount || 0) < 0 ? '#eff6ff' : '#f9fafb',
+                          border: `1px ${parseFloat(discount || 0) > 0 ? 'solid #fecaca' : parseFloat(discount || 0) < 0 ? 'solid #bfdbfe' : 'dashed #d1d5db'}`,
+                          color: parseFloat(discount || 0) > 0 ? '#dc2626' : parseFloat(discount || 0) < 0 ? '#2563eb' : '#6b7280',
                           fontSize: 12, fontWeight: 700, cursor: 'pointer',
                         }}
                       >
                         <FiTag size={11} />
-                        {parseFloat(discount || 0) > 0 ? `${curSym}${parseFloat(discount).toFixed(2)}` : 'Add discount'}
+                        {parseFloat(discount || 0) > 0 ? `−${curSym}${parseFloat(discount).toFixed(2)}` : parseFloat(discount || 0) < 0 ? `+${curSym}${Math.abs(parseFloat(discount)).toFixed(2)}` : 'Change price'}
                       </button>
                     )}
                   </div>
@@ -2000,13 +2008,14 @@ const POS = () => {
                     <span>{money(subtotal)}</span>
                   </div>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '4px 0' }}>
-                    <span style={{ color: '#374151' }}>Discount (off total)</span>
+                    <span style={{ color: '#374151' }}>Change price (+/−)</span>
                     {isAdmin ? (
                       <input
-                        type="number" min="0" step="0.01" value={discount || ''}
-                        onChange={e => setDiscount(Math.max(0, parseFloat(e.target.value) || 0))}
+                        type="number" step="0.01" value={discount || ''}
+                        onChange={e => setDiscount(parseFloat(e.target.value) || 0)}
                         placeholder="0.00"
-                        style={{ width: 100, padding: '4px 8px', border: '1.5px solid #d1d5db', borderRadius: 6, fontSize: 13, fontWeight: 600, color: parseFloat(discount || 0) > 0 ? '#dc2626' : '#111827', textAlign: 'right' }}
+                        title="Positive = discount (off total). Negative = markup (added to total)."
+                        style={{ width: 100, padding: '4px 8px', border: '1.5px solid #d1d5db', borderRadius: 6, fontSize: 13, fontWeight: 600, color: parseFloat(discount || 0) > 0 ? '#dc2626' : parseFloat(discount || 0) < 0 ? '#2563eb' : '#111827', textAlign: 'right' }}
                       />
                     ) : (
                       <button
@@ -2015,14 +2024,14 @@ const POS = () => {
                         style={{
                           display: 'inline-flex', alignItems: 'center', gap: 5,
                           padding: '4px 10px', borderRadius: 14,
-                          background: parseFloat(discount || 0) > 0 ? '#fef2f2' : '#f9fafb',
-                          border: `1px ${parseFloat(discount || 0) > 0 ? 'solid #fecaca' : 'dashed #d1d5db'}`,
-                          color: parseFloat(discount || 0) > 0 ? '#dc2626' : '#6b7280',
+                          background: parseFloat(discount || 0) > 0 ? '#fef2f2' : parseFloat(discount || 0) < 0 ? '#eff6ff' : '#f9fafb',
+                          border: `1px ${parseFloat(discount || 0) > 0 ? 'solid #fecaca' : parseFloat(discount || 0) < 0 ? 'solid #bfdbfe' : 'dashed #d1d5db'}`,
+                          color: parseFloat(discount || 0) > 0 ? '#dc2626' : parseFloat(discount || 0) < 0 ? '#2563eb' : '#6b7280',
                           fontSize: 12, fontWeight: 700, cursor: 'pointer',
                         }}
                       >
                         <FiTag size={11} />
-                        {parseFloat(discount || 0) > 0 ? `${curSym}${parseFloat(discount).toFixed(2)}` : 'Add discount'}
+                        {parseFloat(discount || 0) > 0 ? `−${curSym}${parseFloat(discount).toFixed(2)}` : parseFloat(discount || 0) < 0 ? `+${curSym}${Math.abs(parseFloat(discount)).toFixed(2)}` : 'Change price'}
                       </button>
                     )}
                   </div>
@@ -2593,12 +2602,15 @@ const POS = () => {
         const item = isCart ? null : cart[discountModal.cartIdx];
         if (!isCart && !item) return null;
         const draftNum = parseFloat(discountModal.draft || 0) || 0;
+        // v1.8.57 — "Change price" supports both directions:
+        //   positive = discount (reduce price), negative = markup (increase price)
+        // Over-validation only applies to discounts that exceed the unit/cart amount.
         const overUnitPrice = !isCart && draftNum > parseFloat(item.unit_price || 0);
         const overSubtotal  = isCart && draftNum > subtotal;
         const totalOff = isCart ? draftNum : parseFloat(item.quantity || 0) * draftNum;
 
         const applyNow = () => {
-          if (isCart) setDiscount(Math.max(0, parseFloat(discountModal.draft) || 0));
+          if (isCart) setDiscount(parseFloat(discountModal.draft) || 0);
           else        setLineDiscount(discountModal.cartIdx, discountModal.draft);
           setDiscountModal(null);
         };
@@ -2607,6 +2619,7 @@ const POS = () => {
         const requestApply = async () => {
           if (draftNum === 0) { applyNow(); return; } // zero/clear doesn't need approval
           if (isAdmin) { applyNow(); return; }
+          // Non-admin: both discount AND markup need admin approval.
           setDiscountModal({ ...discountModal, submitting: true, error: '' });
           try {
             const res = await createDiscountRequest({
@@ -2648,7 +2661,7 @@ const POS = () => {
                   <h3 style={{ margin: 0, fontSize: 16, fontWeight: 700 }}>{
                     discountModal.pendingSyncId && !discountModal.verdict ? 'Waiting for Approval'
                     : discountModal.verdict === 'rejected' ? 'Request Rejected'
-                    : (isCart ? 'Cart Discount' : 'Line Discount')
+                    : (isCart ? 'Change Cart Price' : 'Change Line Price')
                   }</h3>
                 </div>
                 <button onClick={() => setDiscountModal(null)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#fff' }}><FiX size={20} /></button>
@@ -2674,10 +2687,10 @@ const POS = () => {
                     </div>
 
                     <label style={{ fontSize: 12, fontWeight: 700, color: '#374151', textTransform: 'uppercase', letterSpacing: 0.4, display: 'block', marginBottom: 6 }}>
-                      {isCart ? `Discount off total (${curSym})` : `Discount per ${item.unit} (${curSym})`}
+                      {isCart ? `Change off total (${curSym}) — + discount / − markup` : `Change per ${item.unit} (${curSym}) — + discount / − markup`}
                     </label>
                     <input
-                      type="number" min="0" step="0.01"
+                      type="number" step="0.01"
                       autoFocus
                       value={discountModal.draft}
                       onChange={e => setDiscountModal({ ...discountModal, draft: e.target.value })}
@@ -2686,27 +2699,30 @@ const POS = () => {
                         else if (e.key === 'Escape') setDiscountModal(null);
                       }}
                       placeholder="0.00"
-                      style={{ width: '100%', padding: '12px 14px', border: `2px solid ${(overUnitPrice || overSubtotal) ? '#dc2626' : '#d1d5db'}`, borderRadius: 10, fontSize: 18, fontWeight: 700, textAlign: 'right', boxSizing: 'border-box', outline: 'none' }}
+                      title="Positive = discount (reduces price). Negative = markup (increases price)."
+                      style={{ width: '100%', padding: '12px 14px', border: `2px solid ${(overUnitPrice || overSubtotal) ? '#dc2626' : '#d1d5db'}`, borderRadius: 10, fontSize: 18, fontWeight: 700, textAlign: 'right', boxSizing: 'border-box', outline: 'none', color: draftNum > 0 ? '#dc2626' : draftNum < 0 ? '#2563eb' : '#111827' }}
                     />
                     {overUnitPrice && (
                       <div style={{ marginTop: 8, fontSize: 12, color: '#dc2626', fontWeight: 600 }}>
-                        Discount is greater than the unit price ({curSym}{item.unit_price}).
+                        Discount is greater than the unit price ({curSym}{item.unit_price}). The line would go negative.
                       </div>
                     )}
                     {overSubtotal && (
                       <div style={{ marginTop: 8, fontSize: 12, color: '#dc2626', fontWeight: 600 }}>
-                        Discount is greater than the cart subtotal ({money(subtotal)}).
+                        Discount is greater than the cart subtotal ({money(subtotal)}). The sale would go negative.
                       </div>
                     )}
-                    {draftNum > 0 && !overUnitPrice && !overSubtotal && (
-                      <div style={{ marginTop: 10, padding: '8px 12px', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 8, fontSize: 12, color: '#991b1b', display: 'flex', justifyContent: 'space-between' }}>
-                        <span>{isCart ? 'Total off this sale:' : 'Total off this line:'}</span>
-                        <strong>−{money(totalOff)}</strong>
+                    {draftNum !== 0 && !overUnitPrice && !overSubtotal && (
+                      <div style={{ marginTop: 10, padding: '8px 12px', background: draftNum > 0 ? '#fef2f2' : '#eff6ff', border: `1px solid ${draftNum > 0 ? '#fecaca' : '#bfdbfe'}`, borderRadius: 8, fontSize: 12, color: draftNum > 0 ? '#991b1b' : '#1d4ed8', display: 'flex', justifyContent: 'space-between' }}>
+                        <span>{isCart
+                          ? (draftNum > 0 ? 'Discount off this sale:' : 'Markup on this sale:')
+                          : (draftNum > 0 ? 'Discount off this line:' : 'Markup on this line:')}</span>
+                        <strong>{draftNum > 0 ? '−' : '+'}{money(Math.abs(totalOff))}</strong>
                       </div>
                     )}
-                    {!isAdmin && draftNum > 0 && (
+                    {!isAdmin && draftNum !== 0 && (
                       <div style={{ marginTop: 10, fontSize: 11, color: '#92400e', background: '#fef3c7', border: '1px solid #fde68a', borderRadius: 8, padding: '8px 12px' }}>
-                        An administrator must approve this discount. Tap Send Request and wait for the verdict.
+                        An administrator must approve any price change. Tap Send Request and wait for the verdict.
                       </div>
                     )}
                     {discountModal.error && (
