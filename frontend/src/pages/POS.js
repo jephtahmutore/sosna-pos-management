@@ -79,7 +79,9 @@ const POS = () => {
   // Loaded from business_settings.currency_mode on mount; defaults to 'K'
   // so a fresh tenant or older API stays single-currency.
   const [currencyMode, setCurrencyMode] = useState('K');
-  const isDual = currencyMode === 'USD+FRA';
+  // isDual = any mode that accepts USD/FRA at the till (USD+FRA dual or
+  // USD+FRA+K triple). K-only branches keep it false.
+  const isDual = currencyMode === 'USD+FRA' || currencyMode === 'USD+FRA+K';
   // Workflow mode (Phase A gate). 'single_pos' = one cashier creates + pays
   // + dispatches in one step (lusaka1, mansa1 — default). 'three_station' =
   // Sales creates the order → Cashier collects payment → Dispatch releases
@@ -399,7 +401,7 @@ const POS = () => {
         if (res.data?.business?.business_address) setBusinessAddress(res.data.business.business_address);
         setBlockOversell(!!res.data?.business?.block_oversell);
         const cm = String(res.data?.business?.currency_mode || 'K').toUpperCase();
-        setCurrencyMode(cm === 'USD+FRA' ? 'USD+FRA' : 'K');
+        setCurrencyMode(['USD+FRA', 'USD+FRA+K'].includes(cm) ? cm : 'K');
         const wm = String(res.data?.business?.workflow_mode || 'single_pos').toLowerCase();
         setWorkflowMode(['three_station', 'two_station'].includes(wm) ? wm : 'single_pos');
       } catch (err) { /* use default */ }
