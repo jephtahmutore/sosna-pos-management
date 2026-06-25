@@ -107,6 +107,23 @@ const Layout = () => {
   // Pending discount-request count drives the red badge on the Approvals
   // sidebar entry. Admin-only — non-admins never poll this endpoint.
   const [pendingDiscountCount, setPendingDiscountCount] = useState(0);
+  // v1.8.37 — in-app passcode modal to gate System Settings + Cloud Sync.
+  // Replaces window.prompt() which Electron silently blocks (no dialog
+  // shown, click did nothing). State carries the navigation target +
+  // entered value + last error.
+  const [passcodeGate, setPasscodeGate] = useState(null); // { path, label, value, error }
+  const PASSCODE = '108120';
+  const openPasscodeGate = (path, label) => setPasscodeGate({ path, label, value: '', error: '' });
+  const submitPasscode = () => {
+    if (!passcodeGate) return;
+    if (passcodeGate.value !== PASSCODE) {
+      setPasscodeGate(prev => ({ ...prev, error: 'Incorrect passcode.', value: '' }));
+      return;
+    }
+    const path = passcodeGate.path;
+    setPasscodeGate(null);
+    navigate(path);
+  };
   useEffect(() => {
     if (user?.role !== 'Administrator') return;
     let cancelled = false;
@@ -739,16 +756,10 @@ const Layout = () => {
                   <div className={`nav-item ${isActive('/settings/profile') ? 'active' : ''}`} onClick={() => navigate('/settings/profile')}>
                     <FiUser className="nav-icon" /> <span>{t('profile')}</span>
                   </div>
-                  {/* v1.8.29 — password gate. Asks for the admin
-                      passcode '108120' before opening. Prevents
-                      cashier/manager from poking system config by
-                      accident even if their role technically allows it. */}
-                  <div className={`nav-item ${isActive('/settings/system') ? 'active' : ''}`} onClick={() => {
-                    const pw = window.prompt('Enter admin passcode to open System Settings:');
-                    if (pw === null) return; // cancelled
-                    if (pw !== '108120') { window.alert('Incorrect passcode.'); return; }
-                    navigate('/settings/system');
-                  }}>
+                  {/* v1.8.29 + v1.8.37 — passcode gate via in-app modal
+                      (window.prompt is silently blocked by Electron, so
+                      the click used to do nothing). */}
+                  <div className={`nav-item ${isActive('/settings/system') ? 'active' : ''}`} onClick={() => openPasscodeGate('/settings/system', 'System Settings')}>
                     <FiSliders className="nav-icon" /> <span>System Settings</span>
                   </div>
                   {user?.role === 'Administrator' && (
@@ -756,14 +767,8 @@ const Layout = () => {
                       <FiUsers className="nav-icon" /> <span>{t('users')}</span>
                     </div>
                   )}
-                  {/* v1.8.29 — same passcode gate as System Settings. */}
                   {user?.role === 'Administrator' && (
-                    <div className={`nav-item ${isActive('/setup') ? 'active' : ''}`} onClick={() => {
-                      const pw = window.prompt('Enter admin passcode to open Cloud Sync:');
-                      if (pw === null) return;
-                      if (pw !== '108120') { window.alert('Incorrect passcode.'); return; }
-                      navigate('/setup');
-                    }}>
+                    <div className={`nav-item ${isActive('/setup') ? 'active' : ''}`} onClick={() => openPasscodeGate('/setup', 'Cloud Sync')}>
                       <FiCloud className="nav-icon" /> <span>Cloud Sync</span>
                     </div>
                   )}
@@ -913,6 +918,37 @@ const Layout = () => {
         {/* Page Content - rendered by child routes */}
         <Outlet key={refreshKey} />
       </div>
+
+      {/* v1.8.37 — in-app passcode modal. Replaces window.prompt which
+          Electron silently blocks. Renders only when passcodeGate state
+          is non-null (set by openPasscodeGate on a gated nav click). */}
+      {passcodeGate && (
+        <div onClick={() => setPasscodeGate(null)}
+          style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 99999 }}>
+          <div onClick={e => e.stopPropagation()}
+            style={{ width: 360, maxWidth: '92vw', background: '#fff', borderRadius: 14, padding: 22, boxShadow: '0 20px 50px rgba(0,0,0,0.25)' }}>
+            <div style={{ fontSize: 16, fontWeight: 700, color: '#0f172a', marginBottom: 4 }}>{passcodeGate.label}</div>
+            <div style={{ fontSize: 12, color: '#6b7280', marginBottom: 16 }}>Enter the admin passcode to continue.</div>
+            <input
+              type="password" autoFocus
+              value={passcodeGate.value}
+              onChange={e => setPasscodeGate(prev => ({ ...prev, value: e.target.value, error: '' }))}
+              onKeyDown={e => { if (e.key === 'Enter') submitPasscode(); if (e.key === 'Escape') setPasscodeGate(null); }}
+              placeholder="Passcode"
+              style={{ width: '100%', padding: '12px 14px', borderRadius: 10, border: passcodeGate.error ? '2px solid #ef4444' : '1.5px solid #d1d5db', fontSize: 16, letterSpacing: 4, textAlign: 'center', fontFamily: 'monospace', outline: 'none', boxSizing: 'border-box' }}
+            />
+            {passcodeGate.error && (
+              <div style={{ color: '#dc2626', fontSize: 12, marginTop: 6, fontWeight: 600 }}>{passcodeGate.error}</div>
+            )}
+            <div style={{ display: 'flex', gap: 10, marginTop: 16 }}>
+              <button onClick={() => setPasscodeGate(null)}
+                style={{ flex: 1, padding: '10px 16px', borderRadius: 10, border: '1.5px solid #e5e7eb', background: '#fff', color: '#374151', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>Cancel</button>
+              <button onClick={submitPasscode}
+                style={{ flex: 1, padding: '10px 16px', borderRadius: 10, border: 'none', background: '#1d4ed8', color: '#fff', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>Continue</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

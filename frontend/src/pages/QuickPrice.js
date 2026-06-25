@@ -163,10 +163,10 @@ const QuickPrice = () => {
       {loading ? (
         <div style={{ padding: 60, textAlign: 'center', color: '#94a3b8' }}>Loading products…</div>
       ) : (
-        {/* v1.8.36 — plain wrapper (no data-table-container) so the
-            outer page scroll works for all 68 products. The shared
-            data-table-container class uses overflow:hidden which
-            clipped everything below the visible viewport. */}
+        // v1.8.36 — plain wrapper (no data-table-container) so the outer
+        // page scroll works for all 68 products. The shared
+        // data-table-container class uses overflow:hidden which clipped
+        // everything below the visible viewport.
         <div style={{ background: '#fff', borderRadius: 12, boxShadow: '0 1px 4px rgba(0,0,0,0.06)', overflow: 'visible' }}>
           <table className="data-table" style={{ fontSize: 13 }}>
             <thead>
