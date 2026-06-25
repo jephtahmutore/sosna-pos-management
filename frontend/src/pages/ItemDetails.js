@@ -938,7 +938,7 @@ const ItemDetails = () => {
                     >
                       <FaBarcode />
                     </button>
-                    {hasPermission('Items:Delete') && !item.is_hq_owned && <button className="action-btn delete" onClick={() => handleDelete(item)} title="Delete item"><FiTrash2 /></button>}
+                    {hasPermission('Items:Delete') && (isHqHost() || !item.is_hq_owned) && <button className="action-btn delete" onClick={() => handleDelete(item)} title="Delete item"><FiTrash2 /></button>}
                   </div>
                 </td>
               </tr>
