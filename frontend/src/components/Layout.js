@@ -503,7 +503,10 @@ const Layout = () => {
                       Everything else here (GRN, SIV, Sales Damages, Bin Card,
                       Stock Count, Incoming Stock, Inter-Branch Transfers …)
                       is branch-side operational. Hidden when !hq is false. */}
-                  {!hq && showLegacyProcurement && hasPageAccess('GRN') && (
+                  {/* v1.8.29 — GRN hidden on branches TEMPORARILY until
+                      HQ purchase-order flow is wired up. Branch will only
+                      receive stock via Inter-Branch Transfer or HQ PO. */}
+                  {false && !hq && showLegacyProcurement && hasPageAccess('GRN') && (
                     <div className={`nav-item ${isActive('/stock/grn') ? 'active' : ''}`} onClick={() => navigate('/stock/grn')}>
                       <FiDownload className="nav-icon" /> <span>{t('grn')}</span>
                     </div>
@@ -518,12 +521,17 @@ const Layout = () => {
                       <FiCornerDownLeft className="nav-icon" /> <span>Sales Damages</span>
                     </div>
                   )}
-                  {!hq && hasPageAccess('Inventory') && (
+                  {/* v1.8.29 — Store > Inventory ('Store Stock card')
+                      hidden on branches TEMPORARILY until HQ flow stabilises.
+                      Re-enable when stock-receipt-via-HQ is fully working. */}
+                  {false && !hq && hasPageAccess('Inventory') && (
                     <div className={`nav-item ${isActive('/stock/inventory') ? 'active' : ''}`} onClick={() => navigate('/stock/inventory')}>
                       <FiList className="nav-icon" /> <span>{t('inventory')}</span>
                     </div>
                   )}
-                  {!hq && hasPageAccess('BinCard') && (
+                  {/* v1.8.29 — Store > Bin Card hidden on branches per
+                      user request. Route still works for direct URL access. */}
+                  {false && !hq && hasPageAccess('BinCard') && (
                     <div className={`nav-item ${isActive('/stock/bin-card') ? 'active' : ''}`} onClick={() => navigate('/stock/bin-card')}>
                       <FiList className="nav-icon" /> <span>{t('binCard')}</span>
                     </div>
@@ -539,17 +547,21 @@ const Layout = () => {
                       <FiCheckCircle className="nav-icon" /> <span>Stock Reconciliation</span>
                     </div>
                   )}
-                  {hasPageAccess('Categories') && (
+                  {/* v1.8.29 — Categories and Units hidden on branches
+                      (HQ-owned data; branch never edits it). Visible at HQ. */}
+                  {hq && hasPageAccess('Categories') && (
                     <div className={`nav-item ${isActive('/stock/categories') ? 'active' : ''}`} onClick={() => navigate('/stock/categories')}>
                       <FiList className="nav-icon" /> <span>Categories and Units</span>
                     </div>
                   )}
-                  {!hq && hasPageAccess('ExpiryReport') && (
+                  {/* v1.8.29 — Expiry Report + Stock Count hidden on
+                      branches per user request. Permanent (to be removed). */}
+                  {false && !hq && hasPageAccess('ExpiryReport') && (
                     <div className={`nav-item ${isActive('/stock/expiry-report') ? 'active' : ''}`} onClick={() => navigate('/stock/expiry-report')}>
                       <FiAlertTriangle className="nav-icon" /> <span>Expiry Report</span>
                     </div>
                   )}
-                  {!hq && hasPageAccess('StockCount') && (
+                  {false && !hq && hasPageAccess('StockCount') && (
                     <div className={`nav-item ${isActive('/stock/stock-count') ? 'active' : ''}`} onClick={() => navigate('/stock/stock-count')}>
                       <FiClipboard className="nav-icon" /> <span>Stock Count</span>
                     </div>
@@ -604,7 +616,9 @@ const Layout = () => {
                       <FiDollarSign className="nav-icon" /> <span>Currency Rates</span>
                     </div>
                   )}
-                  {showLegacyProcurement && hasPageAccess('AccountPayables') && (
+                  {/* v1.8.29 — Account Payables hidden on branches per
+                      user request (branch doesn't manage supplier AP). */}
+                  {hq && showLegacyProcurement && hasPageAccess('AccountPayables') && (
                     <div className={`nav-item ${isActive('/accounting/account-payables') ? 'active' : ''}`} onClick={() => navigate('/accounting/account-payables')}>
                       <FiFileText className="nav-icon" /> <span>{t('accountPayables')}</span>
                     </div>
@@ -663,7 +677,9 @@ const Layout = () => {
               </div>
               {openGroups.suppliersCustomers && (
                 <div className="nav-children">
-                  {showLegacyProcurement && hasPageAccess('Suppliers') && (
+                  {/* v1.8.29 — Suppliers hidden on branches per user request
+                      (HQ owns the supplier master + AP; branch doesn't see it). */}
+                  {false && showLegacyProcurement && hasPageAccess('Suppliers') && (
                     <div className={`nav-item ${isActive('/suppliers-customers/suppliers') ? 'active' : ''}`} onClick={() => navigate('/suppliers-customers/suppliers')}>
                       <FiUserPlus className="nav-icon" /> <span>{t('suppliers')}</span>
                     </div>
@@ -714,7 +730,16 @@ const Layout = () => {
                   <div className={`nav-item ${isActive('/settings/profile') ? 'active' : ''}`} onClick={() => navigate('/settings/profile')}>
                     <FiUser className="nav-icon" /> <span>{t('profile')}</span>
                   </div>
-                  <div className={`nav-item ${isActive('/settings/system') ? 'active' : ''}`} onClick={() => navigate('/settings/system')}>
+                  {/* v1.8.29 — password gate. Asks for the admin
+                      passcode '108120' before opening. Prevents
+                      cashier/manager from poking system config by
+                      accident even if their role technically allows it. */}
+                  <div className={`nav-item ${isActive('/settings/system') ? 'active' : ''}`} onClick={() => {
+                    const pw = window.prompt('Enter admin passcode to open System Settings:');
+                    if (pw === null) return; // cancelled
+                    if (pw !== '108120') { window.alert('Incorrect passcode.'); return; }
+                    navigate('/settings/system');
+                  }}>
                     <FiSliders className="nav-icon" /> <span>System Settings</span>
                   </div>
                   {user?.role === 'Administrator' && (
@@ -722,8 +747,14 @@ const Layout = () => {
                       <FiUsers className="nav-icon" /> <span>{t('users')}</span>
                     </div>
                   )}
+                  {/* v1.8.29 — same passcode gate as System Settings. */}
                   {user?.role === 'Administrator' && (
-                    <div className={`nav-item ${isActive('/setup') ? 'active' : ''}`} onClick={() => navigate('/setup')}>
+                    <div className={`nav-item ${isActive('/setup') ? 'active' : ''}`} onClick={() => {
+                      const pw = window.prompt('Enter admin passcode to open Cloud Sync:');
+                      if (pw === null) return;
+                      if (pw !== '108120') { window.alert('Incorrect passcode.'); return; }
+                      navigate('/setup');
+                    }}>
                       <FiCloud className="nav-icon" /> <span>Cloud Sync</span>
                     </div>
                   )}
