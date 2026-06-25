@@ -471,7 +471,11 @@ router.put('/:id/collect-payment', auth, requirePagePerm('Cashier'), (req, res) 
       const totalDue = parseFloat(order.total_amount || 0);
       const change   = Math.max(0, totalAmountPaid - totalDue);
       const unpaid   = Math.max(0, totalDue - totalAmountPaid);
-      if (unpaid > 0.001) {
+      // $0.10 tolerance — FRA/K rounding leaves ≤ a few cents short on
+      // payments made entirely in the foreign currency (e.g. 57,500 FRA @
+      // 2,350 = $24.468 vs $24.50 = $0.03 short). Anything > 10¢ is a real
+      // shortage and still rejected.
+      if (unpaid > 0.10) {
         throw Object.assign(new Error(`Payment is short by ${unpaid.toFixed(2)} ${order.currency || 'USD'}`), { status: 400 });
       }
 

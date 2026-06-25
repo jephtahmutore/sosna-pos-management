@@ -565,7 +565,7 @@ export default function Cashier() {
                 Cancel
               </button>
               <button onClick={processPayment}
-                disabled={submitting || (!confirm.isOverpaid && Math.abs(confirm.unpaidBalance) >= 0.001)}
+                disabled={submitting || (!confirm.isOverpaid && confirm.unpaidBalance > 0.10)}
                 style={{ flex: 1, padding: '12px',
                          background: submitting ? '#94a3b8' : 'linear-gradient(135deg,#16a34a,#15803d)',
                          color: '#fff', border: 'none', borderRadius: 8, cursor: 'pointer', fontWeight: 700 }}>
