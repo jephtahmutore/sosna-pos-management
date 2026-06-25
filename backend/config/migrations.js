@@ -1183,6 +1183,15 @@ function initTenantDb(db) {
     'stock_movements', 'cash_receipts', 'payment_vouchers', 'cash_book',
     'business_settings', 'cash_reports', 'stock_adjustments', 'daily_actual_balance',
     'ap_payments', 'daily_profit_summary',
+    // v1.8.33 — newer tables that participate in sync. Without these
+    // index entries Mother does full-table scans on big sync push/pull.
+    'customer_payments', 'stock_reconciliations', 'stock_reconciliation_items',
+    'supplier_credit_notes', 'supplier_credit_note_items',
+    'capital_account', 'dividend_account', 'shareholders', 'loans', 'loan_transactions',
+    'cash_transfers', 'stock_count_sessions', 'stock_count_items',
+    'discount_requests', 'pv_types',
+    'branches', 'product_branch_prices',
+    'currency_exchanges', 'fx_rates',
   ];
   for (const t of SYNC_TABLES) {
     try {

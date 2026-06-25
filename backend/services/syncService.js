@@ -42,6 +42,10 @@ const SYNC_TABLES = [
   // KEEP IN SYNC with sync.js list — adding to only one will cause one-way
   // sync gaps that are hard to spot later.
   'branches', 'product_branch_prices',
+  // v1.8.33 — KEEP IN SYNC with sync.js list. currency_exchanges = drawer
+  // FX swaps that feed Cash Report Expected; fx_rates = the rate table
+  // every receipt + cashier pay modal reads from. Both MUST sync.
+  'currency_exchanges', 'fx_rates',
 ];
 
 const DEFAULT_VPS_URL = (process.env.VPS_URL || 'https://sosnazm.com').replace(/\/$/, '');

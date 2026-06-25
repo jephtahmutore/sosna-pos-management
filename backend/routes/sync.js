@@ -139,6 +139,11 @@ const SYNC_TABLES = [
   // Both tables must sync so per-branch prices + FX rates stay consistent
   // across devices. KEEP IN SYNC with syncService.js.
   'branches', 'product_branch_prices',
+  // v1.8.33 — KEEP IN SYNC with syncService.js. Missing both of these
+  // before release would have meant: drawer currency exchanges done on
+  // one device never reach the others (cash report Expected drifts);
+  // FX rate changes never propagate (cashier rings up at stale rate).
+  'currency_exchanges', 'fx_rates',
 ];
 
 // ─── POST /api/sync/register ─────────────────────────────────────────────────

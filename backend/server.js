@@ -819,6 +819,13 @@ app.use('/api/discount-requests', require('./routes/discountRequests'));
 app.use('/api/sync', require('./routes/sync'));
 app.use('/api/updates', require('./routes/updates'));
 app.use('/api/fx-rates', require('./routes/fxRates'));
+// v1.8.33 — branch Electron needs these two: Inter-Branch Transfers
+// (sidebar + page) and sidebar notification badges. Without them
+// Electron 404s on every sidebar load + the Transfers menu item.
+// HQ-only routes (tenant-admin, hq/*) intentionally not mounted —
+// Electron is a branch device, not HQ.
+app.use('/api/transfers',     require('./routes/transfers'));
+app.use('/api/notifications', require('./routes/notifications'));
 app.use('/admin', require('./routes/admin'));
 
 app.get('/api/health', (req, res) => {
