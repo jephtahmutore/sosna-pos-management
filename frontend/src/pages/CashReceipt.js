@@ -20,7 +20,14 @@ const CashReceipt = () => {
   const { hasPermission } = useAuth();
   const { symbol: curSym } = useCurrency();
   const { t } = useLanguage();
-  const [stats, setStats]     = useState({ todayReceipts: 0, thisMonth: 0, totalReceipts: 0 });
+  // v1.8.32 — per-currency totals. Backend returns today/month/total
+  // breakdowns alongside the legacy USD-only fields.
+  const [stats, setStats]     = useState({
+    todayReceipts: 0, thisMonth: 0, totalReceipts: 0,
+    today: { usd: 0, fra: 0, k: 0 },
+    month: { usd: 0, fra: 0, k: 0 },
+    total: { usd: 0, fra: 0, k: 0 },
+  });
   const [receipts, setReceipts] = useState([]);
   const [showForm, setShowForm] = useState(false);
   const [saving, setSaving]   = useState(false);
@@ -50,9 +57,12 @@ const CashReceipt = () => {
     setTimeout(() => setToast(null), 3000);
   };
 
+  // v1.8.32 — triple-currency form. usd/fra/k each in own currency
+  // (same shape as PV modal). Legacy cash/bank/momo dropped from the
+  // form state — backend still accepts them for old API callers.
   const [form, setForm] = useState({
     received_from: '', description: '',
-    cash_amount: '', bank_amount: '', momo_amount: '',
+    usd_amount: '', fra_amount: '', k_amount: '',
     date: todayStr,
   });
 
@@ -82,7 +92,7 @@ const CashReceipt = () => {
   const openForm = () => {
     setEditMode(false);
     setEditId(null);
-    setForm({ received_from: '', description: '', cash_amount: '', bank_amount: '', momo_amount: '', date: todayStr });
+    setForm({ received_from: '', description: '', usd_amount: '', fra_amount: '', k_amount: '', date: todayStr });
     setFormError('');
     setShowForm(true);
   };
@@ -90,19 +100,21 @@ const CashReceipt = () => {
   const openEdit = (r) => {
     setEditMode(true);
     setEditId(r.id);
-    // Prefer split columns if populated; otherwise fall back to legacy 'amount'
-    // dropped into the Cash bucket so the form is editable.
-    const ca = parseFloat(r.cash_amount || 0) || 0;
-    const ba = parseFloat(r.bank_amount || 0) || 0;
-    const ma = parseFloat(r.momo_amount || 0) || 0;
-    const splitsSum = ca + ba + ma;
+    // v1.8.32 — prefer usd/fra/k columns; fall back to legacy
+    // cash/bank/momo (treated as USD/FRA/K respectively for old rows
+    // that pre-date the triple-currency split), then to legacy amount
+    // as a USD bucket so the form is always editable.
+    const usd = parseFloat(r.usd_amount || r.cash_amount || 0) || 0;
+    const fra = parseFloat(r.fra_amount || r.bank_amount || 0) || 0;
+    const k   = parseFloat(r.k_amount   || r.momo_amount || 0) || 0;
+    const splitsSum = usd + fra + k;
     const legacy = parseFloat(r.amount || 0) || 0;
     setForm({
       received_from:  r.received_from  || '',
       description:    r.description    || '',
-      cash_amount:    splitsSum > 0 ? (ca > 0 ? String(ca) : '') : (legacy > 0 ? String(legacy) : ''),
-      bank_amount:    splitsSum > 0 ? (ba > 0 ? String(ba) : '') : '',
-      momo_amount:    splitsSum > 0 ? (ma > 0 ? String(ma) : '') : '',
+      usd_amount:     splitsSum > 0 ? (usd > 0 ? String(usd) : '') : (legacy > 0 ? String(legacy) : ''),
+      fra_amount:     fra > 0 ? String(fra) : '',
+      k_amount:       k   > 0 ? String(k)   : '',
       date:           (r.date || todayStr).split('T')[0],
     });
     setFormError('');
@@ -112,34 +124,28 @@ const CashReceipt = () => {
   const handleSave = async () => {
     setFormError('');
     if (!form.received_from.trim()) return setFormError('Received From is required.');
-    const cash = parseFloat(form.cash_amount || 0) || 0;
-    const bank = parseFloat(form.bank_amount || 0) || 0;
-    const momo = parseFloat(form.momo_amount || 0) || 0;
-    const total = cash + bank + momo;
-    if (total <= 0) return setFormError('Total amount must be greater than 0.');
+    const usd = parseFloat(form.usd_amount || 0) || 0;
+    const fra = parseFloat(form.fra_amount || 0) || 0;
+    const k   = parseFloat(form.k_amount   || 0) || 0;
+    if (usd <= 0 && fra <= 0 && k <= 0) return setFormError('Enter an amount in at least one currency.');
 
     if (editMode) {
       if (!window.confirm('Are you sure you want to update this record?')) return;
     }
     setSaving(true);
     try {
-      // Derive payment_method label for the list view: Cash / Bank Transfer /
-      // Mobile Money / Mixed. The split columns are the source of truth; this
-      // is just a human-friendly badge.
-      const nonZero = [cash > 0, bank > 0, momo > 0].filter(Boolean).length;
-      const paymentMethod = nonZero > 1 ? 'Mixed'
-        : cash > 0 ? 'Cash'
-        : bank > 0 ? 'Bank Transfer'
-        : momo > 0 ? 'Mobile Money'
-        : 'Cash';
+      // v1.8.32 — payment_method label = the currency used (since CR
+      // is one-currency-per-receipt). Backend doesn't care about the
+      // label; this is just for the list-view badge.
+      const paymentMethod = usd > 0 ? 'USD' : fra > 0 ? 'FRA' : k > 0 ? 'K' : 'Cash';
       const payload = {
         received_from:  form.received_from.trim(),
         description:    form.description.trim(),
         payment_method: paymentMethod,
-        amount:         total,
-        cash_amount:    cash,
-        bank_amount:    bank,
-        momo_amount:    momo,
+        amount:         usd, // legacy column = USD-equivalent only (= USD itself)
+        usd_amount:     usd,
+        fra_amount:     fra,
+        k_amount:       k,
         date:           form.date,
       };
       if (editMode) {
@@ -240,28 +246,49 @@ const CashReceipt = () => {
         </div>
       </div>
 
-      {/* ── Stat Cards ─────────────────────────────────────────────── */}
-      <div className="stat-cards">
-        <div className="stat-card green">
-          <div className="stat-icon"><FiDollarSign /></div>
-          <div><div className="stat-label">{t('todaysReceipts')}</div><div className="stat-value">{hasPermission('CashReceipt:View') ? `${curSym}${fmt2(stats.todayReceipts)}` : 'N/A'}</div></div>
-        </div>
-        <div className="stat-card blue">
-          <div className="stat-icon"><FiCalendar /></div>
-          <div><div className="stat-label">{t('thisMonth')}</div><div className="stat-value">{hasPermission('CashReceipt:View') ? `${curSym}${fmt2(stats.thisMonth)}` : 'N/A'}</div></div>
-        </div>
-        <div className="stat-card purple">
-          <div className="stat-icon"><FiFileText /></div>
-          <div><div className="stat-label">{t('totalReceipts')}</div><div className="stat-value">{hasPermission('CashReceipt:View') ? stats.totalReceipts : 'N/A'}</div></div>
-        </div>
-        <div className="stat-card orange">
-          <div className="stat-icon"><FiDollarSign /></div>
-          <div>
-            <div className="stat-label">{t('total')}</div>
-            <div className="stat-value" style={{ fontSize: 18 }}>{hasPermission('CashReceipt:View') ? `$${fmt2(receipts.reduce((s, r) => s + parseFloat(r.amount || 0), 0))}` : 'N/A'}</div>
+      {/* v1.8.32 — per-currency stat cards. Today / This Month / Total
+          render USD/FRA/K. Total Receipts stays as a count. Same shape
+          as the PV page (v1.8.25). */}
+      {(() => {
+        const allowed = hasPermission('CashReceipt:View');
+        const fmtU = (n) => `$${fmt2(n)}`;
+        const fmtN = (n) => Math.round(parseFloat(n || 0)).toLocaleString('en-US');
+        const Line = ({ label, val }) => (
+          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, lineHeight: 1.6 }}>
+            <span style={{ opacity: 0.85 }}>{label}</span><strong>{val}</strong>
           </div>
-        </div>
-      </div>
+        );
+        const Card = ({ label, ccyData, bg, icon }) => (
+          <div style={{ borderRadius: 14, padding: '14px 18px', background: bg, color: '#fff', boxShadow: '0 4px 16px rgba(0,0,0,0.1)', position: 'relative', overflow: 'hidden' }}>
+            <div style={{ position: 'absolute', right: -10, top: -10, width: 60, height: 60, borderRadius: '50%', background: 'rgba(255,255,255,0.1)' }} />
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+              {icon} <div style={{ fontSize: 11, fontWeight: 700, opacity: 0.9, textTransform: 'uppercase', letterSpacing: 0.5 }}>{label}</div>
+            </div>
+            {allowed ? (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
+                <Line label="USD" val={fmtU(ccyData?.usd || 0)} />
+                <Line label="FRA" val={fmtN(ccyData?.fra || 0)} />
+                <Line label="K"   val={fmtN(ccyData?.k   || 0)} />
+              </div>
+            ) : <div style={{ fontSize: 18, fontWeight: 800 }}>N/A</div>}
+          </div>
+        );
+        return (
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 14, marginBottom: 18 }}>
+            <Card label={t('todaysReceipts')} ccyData={stats.today} bg="linear-gradient(135deg,#22c55e,#15803d)" icon={<FiDollarSign size={20} />} />
+            <Card label={t('thisMonth')}      ccyData={stats.month} bg="linear-gradient(135deg,#3b82f6,#1d4ed8)" icon={<FiCalendar size={20} />} />
+            <div style={{ borderRadius: 14, padding: '14px 18px', background: 'linear-gradient(135deg,#a855f7,#6d28d9)', color: '#fff', boxShadow: '0 4px 16px rgba(0,0,0,0.1)', position: 'relative', overflow: 'hidden', display: 'flex', alignItems: 'center', gap: 14 }}>
+              <div style={{ position: 'absolute', right: -10, top: -10, width: 60, height: 60, borderRadius: '50%', background: 'rgba(255,255,255,0.1)' }} />
+              <FiFileText size={28} />
+              <div>
+                <div style={{ fontSize: 11, fontWeight: 700, opacity: 0.9, textTransform: 'uppercase', letterSpacing: 0.5 }}>{t('totalReceipts')}</div>
+                <div style={{ fontSize: 28, fontWeight: 800 }}>{allowed ? stats.totalReceipts : 'N/A'}</div>
+              </div>
+            </div>
+            <Card label={t('total')} ccyData={stats.total} bg="linear-gradient(135deg,#f97316,#c2410c)" icon={<FiDollarSign size={20} />} />
+          </div>
+        );
+      })()}
 
       {/* ── Date Filter Bar ─────────────────────────────────────────── */}
       <div style={{
@@ -313,18 +340,30 @@ const CashReceipt = () => {
           <table className="data-table">
             <thead>
               <tr>
-                <th>{t('receiptNumber')}</th><th>{t('date')}</th><th>{t('receivedFrom')}</th><th>{t('description')}</th><th>{t('paymentMethod')}</th><th>{t('amount')}</th><th></th>
+                <th>{t('receiptNumber')}</th><th>{t('date')}</th><th>{t('receivedFrom')}</th><th>{t('description')}</th><th>{t('paymentMethod')}</th>
+                {/* v1.8.32 — single Amount column split into 3 per-currency. */}
+                <th style={{ textAlign: 'right', color: '#16a34a' }}>USD ($)</th>
+                <th style={{ textAlign: 'right', color: '#7c3aed' }}>FRA</th>
+                <th style={{ textAlign: 'right', color: '#ea580c' }}>K</th>
+                <th></th>
               </tr>
             </thead>
             <tbody>
-              {filteredReceipts.map(r => (
+              {filteredReceipts.map(r => {
+                const ru = parseFloat(r.usd_amount) > 0 ? parseFloat(r.usd_amount) : parseFloat(r.cash_amount || 0);
+                const rf = parseFloat(r.fra_amount) > 0 ? parseFloat(r.fra_amount) : parseFloat(r.bank_amount || 0);
+                const rk = parseFloat(r.k_amount)   > 0 ? parseFloat(r.k_amount)   : parseFloat(r.momo_amount || 0);
+                const dash = <span style={{ color: '#cbd5e1' }}>—</span>;
+                return (
                 <tr key={r.id}>
                   <td style={{ fontWeight: 500 }}>{r.receipt_number}</td>
                   <td>{formatDate(r.date)}</td>
                   <td>{r.received_from}</td>
                   <td style={{ color: '#6b7280' }}>{r.description || '—'}</td>
                   <td><span className={`badge ${getPaymentColor(r.payment_method)}`}>{r.payment_method}</span></td>
-                  <td style={{ color: '#16a34a', fontWeight: 600 }}>{curSym}{fmt2(r.amount)}</td>
+                  <td style={{ textAlign: 'right', color: ru > 0 ? '#16a34a' : '', fontWeight: ru > 0 ? 700 : 400 }}>{ru > 0 ? `$${fmt2(ru)}` : dash}</td>
+                  <td style={{ textAlign: 'right', color: rf > 0 ? '#7c3aed' : '', fontWeight: rf > 0 ? 700 : 400 }}>{rf > 0 ? Math.round(rf).toLocaleString('en-US') : dash}</td>
+                  <td style={{ textAlign: 'right', color: rk > 0 ? '#ea580c' : '', fontWeight: rk > 0 ? 700 : 400 }}>{rk > 0 ? Math.round(rk).toLocaleString('en-US') : dash}</td>
                   <td>
                     <div style={{ display: 'flex', gap: 6 }}>
                       <button
@@ -357,16 +396,26 @@ const CashReceipt = () => {
                     </div>
                   </td>
                 </tr>
-              ))}
+                );
+              })}
             </tbody>
             <tfoot>
+              {/* v1.8.32 — per-currency footer totals. */}
               <tr style={{ fontWeight: 700, borderTop: '2px solid #e5e7eb', background: '#f9fafb' }}>
-                <td colSpan={6} style={{ padding: '10px 14px', textAlign: 'right', color: '#374151', fontSize: 13 }}>
+                <td colSpan={5} style={{ padding: '10px 14px', textAlign: 'right', color: '#374151', fontSize: 13 }}>
                   Total ({filteredReceipts.length} receipt{filteredReceipts.length !== 1 ? 's' : ''})
                 </td>
-                <td style={{ padding: '10px 14px', color: '#16a34a', fontWeight: 700, fontSize: 14 }}>
-                  ${fmt2(filteredTotal)}
-                </td>
+                {(() => {
+                  const tu = filteredReceipts.reduce((s, r) => s + (parseFloat(r.usd_amount) > 0 ? parseFloat(r.usd_amount) : parseFloat(r.cash_amount || 0)), 0);
+                  const tf = filteredReceipts.reduce((s, r) => s + (parseFloat(r.fra_amount) > 0 ? parseFloat(r.fra_amount) : parseFloat(r.bank_amount || 0)), 0);
+                  const tk = filteredReceipts.reduce((s, r) => s + (parseFloat(r.k_amount)   > 0 ? parseFloat(r.k_amount)   : parseFloat(r.momo_amount || 0)), 0);
+                  return (<>
+                    <td style={{ padding: '10px 14px', textAlign: 'right', color: '#16a34a', fontWeight: 700, fontSize: 13 }}>${fmt2(tu)}</td>
+                    <td style={{ padding: '10px 14px', textAlign: 'right', color: '#7c3aed', fontWeight: 700, fontSize: 13 }}>{Math.round(tf).toLocaleString('en-US')}</td>
+                    <td style={{ padding: '10px 14px', textAlign: 'right', color: '#ea580c', fontWeight: 700, fontSize: 13 }}>{Math.round(tk).toLocaleString('en-US')}</td>
+                    <td></td>
+                  </>);
+                })()}
               </tr>
             </tfoot>
           </table>
@@ -531,7 +580,8 @@ const CashReceipt = () => {
       {/* ── New / Edit Receipt Modal ────────────────────────────────── */}
       {showForm && (
         <Portal>
-        <div className="modal-overlay" onClick={() => setShowForm(false)}>
+        {/* v1.8.32 — click-outside does NOT close (mirrors PV modal v1.8.24). */}
+        <div className="modal-overlay">
           <div className="modal" onClick={e => e.stopPropagation()}>
             <div className="modal-header">
               <h3>{editMode ? 'Edit Cash Receipt' : 'New Cash Receipt'}</h3>
@@ -550,32 +600,42 @@ const CashReceipt = () => {
                 </div>
               </div>
 
-              {/* Amount split across methods — mirrors the AP Record Payment modal. */}
+              {/* v1.8.32 — triple-currency. One CR = one currency. Disable
+                  the other two inputs once any one has a value > 0; clear
+                  the active one to switch. Mirrors PV modal v1.8.24. */}
               <div className="form-group">
                 <label style={{ fontSize: 11, fontWeight: 700, color: '#6b7280', textTransform: 'uppercase', letterSpacing: 0.5, display: 'block', marginBottom: 8 }}>
-                  Amount Received (split across methods)
+                  Amount Received
                 </label>
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10 }}>
                   {[
-                    { key: 'cash_amount', label: 'Cash', color: '#16a34a' },
-                    { key: 'bank_amount', label: 'Bank', color: '#2563eb' },
-                    { key: 'momo_amount', label: 'MoMo', color: '#f59e0b' },
-                  ].map((f) => (
-                    <div key={f.key}>
-                      <label style={{ fontSize: 11, color: f.color, fontWeight: 700, textTransform: 'uppercase', marginBottom: 3, display: 'block' }}>{f.label}</label>
-                      <input type="number" min="0" step="0.01"
-                        value={form[f.key]}
-                        onChange={e => setForm(prev => ({ ...prev, [f.key]: e.target.value }))}
-                        placeholder="0.00"
-                        style={{ width: '100%', padding: '8px 10px', border: `2px solid ${parseFloat(form[f.key] || 0) > 0 ? f.color : '#d1d5db'}`, borderRadius: 6, fontSize: 14, fontWeight: 600, color: parseFloat(form[f.key] || 0) > 0 ? f.color : '#374151', boxSizing: 'border-box' }} />
-                    </div>
-                  ))}
-                </div>
-                <div style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 10px', background: '#f9fafb', borderRadius: 6, fontSize: 13, marginTop: 8 }}>
-                  <span style={{ color: '#6b7280' }}>Total</span>
-                  <span style={{ fontWeight: 800, color: '#1d4ed8' }}>
-                    {curSym}{(parseFloat(form.cash_amount || 0) + parseFloat(form.bank_amount || 0) + parseFloat(form.momo_amount || 0)).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                  </span>
+                    { key: 'usd_amount', label: 'USD ($)', color: '#16a34a', step: '0.01', placeholder: '0.00' },
+                    { key: 'fra_amount', label: 'FRA',     color: '#7c3aed', step: '1',    placeholder: '0' },
+                    { key: 'k_amount',   label: 'K',       color: '#ea580c', step: '1',    placeholder: '0' },
+                  ].map((f) => {
+                    const otherKeys = ['usd_amount', 'fra_amount', 'k_amount'].filter(k => k !== f.key);
+                    const locked = otherKeys.some(k => parseFloat(form[k] || 0) > 0);
+                    return (
+                      <div key={f.key}>
+                        <label style={{ fontSize: 11, color: locked ? '#cbd5e1' : f.color, fontWeight: 700, textTransform: 'uppercase', marginBottom: 3, display: 'block' }}>{f.label}{locked && ' (locked)'}</label>
+                        <input type="number" min="0" step={f.step}
+                          disabled={locked}
+                          value={form[f.key]}
+                          onChange={e => setForm(prev => ({ ...prev, [f.key]: e.target.value }))}
+                          placeholder={f.placeholder}
+                          title={locked ? 'Clear the other currency to switch — one CR = one currency.' : ''}
+                          style={{
+                            width: '100%', padding: '8px 10px',
+                            border: `2px solid ${locked ? '#e5e7eb' : (parseFloat(form[f.key] || 0) > 0 ? f.color : '#d1d5db')}`,
+                            borderRadius: 6, fontSize: 14, fontWeight: 600,
+                            color: locked ? '#cbd5e1' : (parseFloat(form[f.key] || 0) > 0 ? f.color : '#374151'),
+                            background: locked ? '#f9fafb' : '#fff',
+                            cursor: locked ? 'not-allowed' : 'text',
+                            boxSizing: 'border-box',
+                          }} />
+                      </div>
+                    );
+                  })}
                 </div>
               </div>
 

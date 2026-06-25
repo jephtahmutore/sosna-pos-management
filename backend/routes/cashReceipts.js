@@ -79,26 +79,34 @@ router.get('/check-sales', auth, readOnlyGuard, (req, res) => {
 router.post('/', auth, (req, res) => {
   try {
     const { received_from, description, payment_method, amount, date,
-            cash_amount, bank_amount, momo_amount } = req.body;
+            cash_amount, bank_amount, momo_amount,
+            usd_amount, fra_amount, k_amount } = req.body;
     const crDate = date || new Date().toISOString().split('T')[0];
     const receiptNum = syncConfig.generateNumber('CR', 'cash_receipts');
     const tenantId = syncConfig.getTenantId(req);
     const { branchId, deviceId } = syncConfig.getConfig();
-    // Prefer client-sent per-method splits (the new CR form sends these
-    // directly). Fall back to deriving from payment_method for any older
-    // caller that still POSTs a single-method receipt.
-    const sumSplits = (parseFloat(cash_amount) || 0) + (parseFloat(bank_amount) || 0) + (parseFloat(momo_amount) || 0);
-    const splits = sumSplits > 0
+    // v1.8.32 — triple-currency split. Prefer client-sent usd/fra/k.
+    // Legacy cash/bank/momo accepted for back-compat with old clients.
+    // amount column holds USD-equivalent (= usd_amount only) so legacy
+    // reports keep working. Per-currency lives in the dedicated columns.
+    const usdAmt = parseFloat(usd_amount) || 0;
+    const fraAmt = parseFloat(fra_amount) || 0;
+    const kAmt   = parseFloat(k_amount)   || 0;
+    const sumCcy = usdAmt + fraAmt + kAmt;
+    const sumLegacy = (parseFloat(cash_amount) || 0) + (parseFloat(bank_amount) || 0) + (parseFloat(momo_amount) || 0);
+    const splits = sumLegacy > 0
       ? { cash: parseFloat(cash_amount) || 0, bank: parseFloat(bank_amount) || 0, momo: parseFloat(momo_amount) || 0 }
       : deriveCRSplits(payment_method, amount);
-    const totalAmount = sumSplits > 0 ? sumSplits : parseFloat(amount) || 0;
+    const totalAmount = sumCcy > 0 ? usdAmt : (sumLegacy > 0 ? sumLegacy : parseFloat(amount) || 0);
     const info = db.prepare(
       `INSERT INTO cash_receipts (receipt_number, received_from, description, payment_method, amount,
                                   cash_amount, bank_amount, momo_amount,
+                                  usd_amount, fra_amount, k_amount,
                                   date, created_by, sync_id, tenant_id, branch_id, device_id, synced, created_at, updated_at)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,datetime('now'),datetime('now'))`
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,datetime('now'),datetime('now'))`
     ).run(receiptNum, received_from, description, payment_method, totalAmount,
           splits.cash, splits.bank, splits.momo,
+          usdAmt, fraAmt, kAmt,
           crDate, req.user.id, randomUUID(), tenantId, branchId, deviceId);
     const row = db.prepare('SELECT * FROM cash_receipts WHERE id = ?').get(info.lastInsertRowid);
     res.status(201).json(row);
@@ -121,20 +129,27 @@ router.delete('/:id', auth, (req, res) => {
 router.put('/:id', auth, (req, res) => {
   try {
     const { received_from, description, payment_method, amount, date,
-            cash_amount, bank_amount, momo_amount } = req.body;
-    const sumSplits = (parseFloat(cash_amount) || 0) + (parseFloat(bank_amount) || 0) + (parseFloat(momo_amount) || 0);
-    const splits = sumSplits > 0
+            cash_amount, bank_amount, momo_amount,
+            usd_amount, fra_amount, k_amount } = req.body;
+    const usdAmt = parseFloat(usd_amount) || 0;
+    const fraAmt = parseFloat(fra_amount) || 0;
+    const kAmt   = parseFloat(k_amount)   || 0;
+    const sumCcy = usdAmt + fraAmt + kAmt;
+    const sumLegacy = (parseFloat(cash_amount) || 0) + (parseFloat(bank_amount) || 0) + (parseFloat(momo_amount) || 0);
+    const splits = sumLegacy > 0
       ? { cash: parseFloat(cash_amount) || 0, bank: parseFloat(bank_amount) || 0, momo: parseFloat(momo_amount) || 0 }
       : deriveCRSplits(payment_method, amount);
-    const totalAmount = sumSplits > 0 ? sumSplits : parseFloat(amount) || 0;
+    const totalAmount = sumCcy > 0 ? usdAmt : (sumLegacy > 0 ? sumLegacy : parseFloat(amount) || 0);
     const info = db.prepare(
       `UPDATE cash_receipts
           SET received_from=?, description=?, payment_method=?, amount=?,
               cash_amount=?, bank_amount=?, momo_amount=?,
+              usd_amount=?, fra_amount=?, k_amount=?,
               date=?, updated_at=datetime('now'), synced=0
         WHERE id=?`
     ).run(received_from, description, payment_method, totalAmount,
           splits.cash, splits.bank, splits.momo,
+          usdAmt, fraAmt, kAmt,
           date, req.params.id);
     if (info.changes === 0) return res.status(404).json({ error: 'Receipt not found' });
     const row = db.prepare('SELECT * FROM cash_receipts WHERE id = ?').get(req.params.id);
