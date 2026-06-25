@@ -16,7 +16,7 @@ import {
   FiRefreshCw, FiPlus, FiTruck, FiInbox, FiCheckCircle, FiXCircle, FiTrash2,
 } from 'react-icons/fi';
 import {
-  isHqHost, getHqBranch, getHqBranches,
+  isHqHost, getHqBranch, getHqBranches, getBranchSlug,
   getTransferSourceProducts, getOutgoingTransfers, getIncomingTransfers,
   createTransfer, receiveTransfer, cancelTransfer,
 } from '../services/api';
@@ -26,8 +26,15 @@ import { formatStockForProduct } from '../utils/unitFormat';
 
 function currentBranchSlug() {
   if (isHqHost()) return getHqBranch() || '';
-  try { return window.location.hostname.split('.')[0]; }
-  catch { return ''; }
+  // Electron's hostname is always "localhost" — use the slug cached at
+  // boot from /api/sync/status's vpsUrl (set in App.js).
+  try {
+    const host = window.location.hostname;
+    if (host === 'localhost' || host === '127.0.0.1') {
+      return getBranchSlug() || '';
+    }
+    return host.split('.')[0];
+  } catch { return getBranchSlug() || ''; }
 }
 
 const fmtMoney = (n) => `$${parseFloat(n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;

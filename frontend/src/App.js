@@ -3,7 +3,7 @@ import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-d
 import { AuthProvider, useAuth } from './context/AuthContext';
 import { LanguageProvider } from './context/LanguageContext';
 import { CurrencyProvider } from './context/CurrencyContext';
-import { isHqHost } from './services/api';
+import { isHqHost, setBranchSlug } from './services/api';
 
 // HQ-only route gate. Every /hq/* page assumes a multi-branch HQ context
 // (master.db queries, branch picker, cross-branch reports). On a branch
@@ -173,6 +173,16 @@ function AppRoutes() {
         if (!data) return;
         // On web, subdomain identifies the tenant — skip Setup, go straight to login
         setIsConfigured(isWeb ? true : !!data.isConfigured);
+        // Electron-only: cache this install's branch slug for pages that
+        // need it client-side (e.g. Inter-Branch Transfers). Derived from
+        // vpsUrl like "https://kassumbalesa1.sosnazm.com" -> "kassumbalesa1".
+        if (!isWeb && data.vpsUrl) {
+          try {
+            const host = new URL(data.vpsUrl).hostname;
+            const derivedSlug = host.split('.')[0];
+            if (derivedSlug) setBranchSlug(derivedSlug);
+          } catch { /* ignore malformed vpsUrl */ }
+        }
         if (data.isConfigured && data.tenantId && data.tenantId !== 'local-only') {
           const base = data.vpsUrl || '';
           // 3-second timeout so the license check doesn't hang forever if VPS is unreachable.

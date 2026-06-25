@@ -42,6 +42,22 @@ export const setHqBranch = (slug) => {
   } catch { /* ignore */ }
 };
 
+// Electron-only: the branch slug this install belongs to. Cached at boot
+// from /api/sync/status's vpsUrl. Used by pages that need to render or
+// pass the slug client-side (e.g. Inter-Branch Transfers) since
+// window.location.hostname is always "localhost" in Electron.
+export const BRANCH_SLUG_KEY = 'branch.slug';
+export const getBranchSlug = () => {
+  try { return localStorage.getItem(BRANCH_SLUG_KEY) || ''; }
+  catch { return ''; }
+};
+export const setBranchSlug = (slug) => {
+  try {
+    if (slug) localStorage.setItem(BRANCH_SLUG_KEY, slug);
+    else localStorage.removeItem(BRANCH_SLUG_KEY);
+  } catch { /* ignore */ }
+};
+
 // Add token + HQ branch header to requests
 api.interceptors.request.use((config) => {
   const token = localStorage.getItem('token');

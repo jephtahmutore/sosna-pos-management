@@ -64,7 +64,9 @@ router.get('/source-products', hqAuth, (req, res) => {
     if (!slug || !isRegistered(slug)) return res.status(400).json({ error: 'Unknown source branch' });
     const db = getTenantDb(slug);
     const products = db.prepare(`
-      SELECT id, sync_id, name, unit, cost_price, selling_price,
+      SELECT id, sync_id, name, unit, alt_unit, conversion_factor,
+             units_json, default_unit,
+             cost_price, selling_price,
              current_stock, min_stock
         FROM products
        WHERE deleted_at IS NULL AND status != 'Inactive'
