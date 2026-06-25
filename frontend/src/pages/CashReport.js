@@ -356,7 +356,10 @@ const CashReport = () => {
       const fra  = parseFloat(form.fra_received)   || 0;
       const kAmt = parseFloat(form.k_received)     || 0;
       const exp  = parseFloat(form.expenses)       || 0;
-      const pend = parseFloat(form.pending)        || 0;
+      // v1.8.54 — credit is no longer counted manually; force pending to
+      // mirror the system's creditExpected so the saved snapshot matches
+      // the on-screen card (which always reads Counted = Expected).
+      const pend = parseFloat(creditExpected || 0)  || 0;
       // v1.8.10 — convert FRA/K to USD before summing (same as auto-calc).
       const fraAsUsd = fxRate.sell  > 0 ? fra / fxRate.sell  : 0;
       const kAsUsd   = fxRate.sellK > 0 ? kAmt / fxRate.sellK : 0;
@@ -964,8 +967,10 @@ const CashReport = () => {
               red (money owed). No expenses subtraction (credit doesn't come
               out of any drawer). No view/+ buttons. */}
           {(() => {
-            const counted = parseFloat(form.pending || 0) || 0;
-            const diff    = counted - creditExpected;
+            // v1.8.54 — credit isn't physical cash so there's nothing to
+            // count. Counted always = Expected, diff always 0.
+            const counted = creditExpected;
+            const diff    = 0;
             const isOk    = Math.abs(diff) < 0.01;
             const status  = isOk ? 'OK'
                           : diff > 0 ? (diff < 10 ? 'Slight Surplus' : 'Surplus')
@@ -987,11 +992,14 @@ const CashReport = () => {
                 </div>
 
                 <div>
-                  <label style={{ fontSize: 10, color: '#6b7280', fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.4 }}>Counted</label>
-                  <input type="number" value={form.pending}
-                    onChange={e => setForm({ ...form, pending: e.target.value })}
-                    disabled={!editMode} placeholder="0.00" step="0.01"
-                    style={{ ...inputStyle(editMode), marginTop: 4, fontSize: 16, fontWeight: 600 }} />
+                  <label style={{ fontSize: 10, color: '#6b7280', fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.4 }}>Counted <span style={{ fontWeight: 500, textTransform: 'none', color: '#94a3b8' }}>· auto from POS (read-only)</span></label>
+                  {/* v1.8.54 — Credit isn't physical cash, nothing to count.
+                      Always show creditExpected, never editable. The form
+                      still stores form.pending so the saved snapshot stays
+                      consistent with what the user sees. */}
+                  <input type="number" value={creditExpected.toFixed(2)}
+                    disabled readOnly placeholder="0.00" step="0.01"
+                    style={{ ...inputStyle(false), marginTop: 4, fontSize: 16, fontWeight: 600 }} />
                 </div>
 
                 <div style={{ fontSize: 12, color: '#475569', display: 'flex', flexDirection: 'column', gap: 2, padding: '8px 10px', background: '#fff', borderRadius: 6, border: '1px solid #e5e7eb' }}>
