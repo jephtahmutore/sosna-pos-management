@@ -128,12 +128,17 @@ router.put('/:id/confirm-dispatch', auth, requirePagePerm('Dispatch'), (req, res
 router.get('/cashier-inbox', auth, requirePagePerm('Cashier'), readOnlyGuard, (req, res) => {
   try {
     const rows = db.prepare(
-      `SELECT o.id, o.order_number, o.customer_name, o.total_amount, o.subtotal, o.discount,
+      `SELECT o.id, o.order_number, o.customer_name, o.customer_id, o.customer_sync_id,
+              o.total_amount, o.subtotal, o.discount,
               o.sales_at, o.sales_user_id, o.currency,
+              c.credit_limit AS customer_credit_limit,
+              c.credit_status AS customer_credit_status,
+              c.outstanding AS customer_outstanding,
               TRIM(COALESCE(u.first_name, '') || ' ' || COALESCE(u.last_name, '')) AS sales_by_name,
               (SELECT COUNT(*) FROM order_items oi WHERE oi.order_sync_id = o.sync_id AND oi.deleted_at IS NULL) AS item_count
        FROM orders o
-       LEFT JOIN users u ON u.id = o.sales_user_id
+       LEFT JOIN users u     ON u.id = o.sales_user_id
+       LEFT JOIN customers c ON c.id = o.customer_id AND c.deleted_at IS NULL
        WHERE o.deleted_at IS NULL
          AND o.status = 'PENDING_PAYMENT'
          AND o.tenant_id = ?
@@ -471,13 +476,36 @@ router.put('/:id/collect-payment', auth, requirePagePerm('Cashier'), (req, res) 
       const totalDue = parseFloat(order.total_amount || 0);
       const change   = Math.max(0, totalAmountPaid - totalDue);
       const unpaid   = Math.max(0, totalDue - totalAmountPaid);
-      // $0.10 tolerance — FRA/K rounding leaves ≤ a few cents short on
-      // payments made entirely in the foreign currency (e.g. 57,500 FRA @
-      // 2,350 = $24.468 vs $24.50 = $0.03 short). Anything > 10¢ is a real
-      // shortage and still rejected.
-      if (unpaid > 0.10) {
+
+      // v1.8.49 — credit-at-Cashier. When the order has a registered
+      // customer attached (set on the Sales/Reception screen), the Cashier
+      // is allowed to take partial payment; the unpaid portion becomes a
+      // credit balance on the customer. Walk-ins still must pay in full
+      // (with the same 10¢ FRA/K rounding tolerance).
+      const hasRegisteredCustomer = !!order.customer_id;
+      if (hasRegisteredCustomer && unpaid > 0.10) {
+        // Optional credit-limit guard — mirrors POS rule.
+        const cust = db.prepare(
+          'SELECT id, credit_limit, credit_status, outstanding FROM customers WHERE id = ? AND deleted_at IS NULL AND tenant_id = ?'
+        ).get(order.customer_id, req.user.tenantId);
+        if (cust) {
+          if (cust.credit_status === 'OnHold') {
+            throw Object.assign(new Error('Customer is on hold — payment in full required'), { status: 400 });
+          }
+          const limit = parseFloat(cust.credit_limit || 0);
+          if (limit > 0) {
+            const projected = parseFloat(cust.outstanding || 0) + unpaid;
+            if (projected > limit + 0.001) {
+              throw Object.assign(new Error(`Would exceed credit limit by ${(projected - limit).toFixed(2)}`), { status: 400 });
+            }
+          }
+        }
+      } else if (unpaid > 0.10) {
         throw Object.assign(new Error(`Payment is short by ${unpaid.toFixed(2)} ${order.currency || 'USD'}`), { status: 400 });
       }
+      const isCreditCollection = hasRegisteredCustomer && unpaid > 0.10;
+      const isFullCredit       = hasRegisteredCustomer && totalAmountPaid < 0.001;
+      const paymentMethod      = isFullCredit ? 'Credit' : isCreditCollection ? 'Partial-Credit' : 'Cash';
 
       // v1.6.3 — detect workflow mode. two_station = stock deducts here.
       const wm = (db.prepare("SELECT workflow_mode FROM business_settings LIMIT 1").get()?.workflow_mode || 'three_station').toLowerCase();
@@ -501,7 +529,7 @@ router.put('/:id/collect-payment', auth, requirePagePerm('Cashier'), (req, res) 
                k_change_given      = ?,
                selling_rate_k_used = ?,
                buying_rate_k_used  = ?,
-               payment_method      = 'Cash',
+               payment_method      = ?,
                ${isTwoStation ? 'dispatch_user_id = ?, dispatched_at = datetime(\'now\'),' : ''}
                synced              = 0,
                updated_at          = datetime('now')
@@ -514,6 +542,7 @@ router.put('/:id/collect-payment', auth, requirePagePerm('Cashier'), (req, res) 
         change,
         paidFRA, givenFRA, sellRate || null, buyRate || null,
         paidK,   givenK,   sellRateK || null, buyRateK || null,
+        paymentMethod,
         ...(isTwoStation ? [req.user.id] : []),
         req.params.id,
       ]);

@@ -1569,7 +1569,28 @@ const POS = () => {
               <button className="btn-clear" onClick={() => setCart([])}>
                 <FiX /> Clear
               </button>
-              {selectedCustomer ? (
+              {sendsToCashier ? (
+                // v1.8.49 — in 2/3-station mode the Cashier is the only one
+                // who handles money, so credit decisions belong there too.
+                // Reception just attaches the customer (if any) + sends the
+                // order. The Cashier sees the registered customer on the
+                // order and the Pay modal exposes the credit option there.
+                <button
+                  className="btn-checkout"
+                  onClick={handleSendToCashier}
+                  disabled={cart.length === 0 || creditBlocked}
+                  title={
+                    cart.length === 0 ? 'Cart is empty'
+                      : onHold ? 'Customer on hold — payment in full required at Cashier'
+                      : overLimit ? 'Sale would exceed credit limit'
+                      : selectedCustomer ? 'Sends to Cashier — partial payment / credit handled there'
+                      : 'Sends the order to the Cashier inbox for payment'
+                  }
+                  style={{ background: selectedCustomer ? 'linear-gradient(135deg,#d97706,#b45309)' : 'linear-gradient(135deg,#0ea5e9,#0369a1)' }}
+                >
+                  {selectedCustomer ? <><FiFileText /> Send to Cashier (Credit) →</> : <><FiShoppingCart /> Confirm & Send to Cashier →</>}
+                </button>
+              ) : selectedCustomer ? (
                 <button
                   className="btn-checkout"
                   onClick={() => setCreditModal({ usd: '', fra: '', k: '' })}
@@ -1583,16 +1604,6 @@ const POS = () => {
                   style={{ background: 'linear-gradient(135deg,#d97706,#b45309)' }}
                 >
                   <FiFileText /> Credit Sale →
-                </button>
-              ) : sendsToCashier ? (
-                <button
-                  className="btn-checkout"
-                  onClick={handleSendToCashier}
-                  disabled={cart.length === 0}
-                  title={cart.length === 0 ? 'Cart is empty' : 'Sends the order to the Cashier inbox for payment'}
-                  style={{ background: 'linear-gradient(135deg,#0ea5e9,#0369a1)' }}
-                >
-                  <FiShoppingCart /> Confirm & Send to Cashier →
                 </button>
               ) : (
                 <button

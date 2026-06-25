@@ -220,10 +220,26 @@ export default function Cashier() {
   };
 
   const calc = computePayment();
-  // Match Sirak: enable as soon as any payment is entered. Backend rejects
-  // short payments (see /collect-payment guard) — UI also shows the unpaid
-  // banner so the cashier sees it before clicking.
-  const canConfirm = !!selected && !!calc && (calc.paidUSD > 0 || calc.paidFRA > 0 || calc.paidK > 0);
+  // v1.8.49 — credit-at-Cashier. If the order has a registered customer
+  // (set on the Sales/Reception screen), the cashier can take partial /
+  // zero payment — the unpaid portion lives on the customer's outstanding.
+  // Walk-ins still need to pay in full (10¢ rounding tolerance).
+  const hasRegisteredCustomer = !!(selected && selected.customer_id);
+  const creditAvailable = hasRegisteredCustomer
+    ? Math.max(0, parseFloat(selected.customer_credit_limit || 0) - parseFloat(selected.customer_outstanding || 0))
+    : 0;
+  const wouldExceedLimit = hasRegisteredCustomer && !!calc
+    && parseFloat(selected.customer_credit_limit || 0) > 0
+    && (parseFloat(selected.customer_outstanding || 0) + calc.unpaidBalance) > parseFloat(selected.customer_credit_limit || 0) + 0.001;
+  const onHold = hasRegisteredCustomer && selected.customer_credit_status === 'OnHold';
+  // Walk-in: require any payment + must cover the full total (within 10¢).
+  // Registered customer: any payment OR full credit (0) is allowed,
+  // provided the customer isn't on hold and isn't over-limit.
+  const canConfirm = !!selected && !!calc && !onHold && !wouldExceedLimit && (
+    hasRegisteredCustomer
+      ? true                                                     // partial / full / 0 all OK
+      : (calc.paidUSD > 0 || calc.paidFRA > 0 || calc.paidK > 0) // walk-in: must enter something
+  );
 
   return (
     <div className="page-content">
@@ -303,8 +319,32 @@ export default function Cashier() {
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 18 }}>
               {/* Left half: order + items */}
               <div>
-                <h3 style={{ margin: '0 0 4px 0', fontSize: 16, color: '#0f172a' }}>Order {selected.order_number}</h3>
-                <p style={{ margin: 0, fontSize: 12, color: '#64748b' }}>Customer: <strong>{selected.customer_name || 'Walk-in'}</strong></p>
+                <h3 style={{ margin: '0 0 4px 0', fontSize: 16, color: '#0f172a' }}>
+                  Order {selected.order_number}
+                  {hasRegisteredCustomer && (
+                    <span style={{ marginLeft: 8, padding: '2px 8px', background: '#fef3c7', color: '#92400e', borderRadius: 999, fontSize: 10, fontWeight: 700, verticalAlign: 'middle' }}>
+                      CREDIT-ELIGIBLE
+                    </span>
+                  )}
+                  {onHold && (
+                    <span style={{ marginLeft: 6, padding: '2px 8px', background: '#fee2e2', color: '#b91c1c', borderRadius: 999, fontSize: 10, fontWeight: 700, verticalAlign: 'middle' }}>
+                      ON HOLD
+                    </span>
+                  )}
+                </h3>
+                <p style={{ margin: 0, fontSize: 12, color: '#64748b' }}>
+                  Customer: <strong>{selected.customer_name || 'Walk-in'}</strong>
+                  {hasRegisteredCustomer && parseFloat(selected.customer_credit_limit || 0) > 0 && (
+                    <> · Limit {fmtUSD(selected.customer_credit_limit)} · Outstanding {fmtUSD(selected.customer_outstanding || 0)} · Available {fmtUSD(creditAvailable)}</>
+                  )}
+                </p>
+                {hasRegisteredCustomer && calc && calc.unpaidBalance > 0.10 && (
+                  <div style={{ marginTop: 8, padding: '8px 10px', background: wouldExceedLimit ? '#fee2e2' : '#fef3c7', border: `1px solid ${wouldExceedLimit ? '#fecaca' : '#fde68a'}`, borderRadius: 6, fontSize: 12, color: wouldExceedLimit ? '#991b1b' : '#92400e', fontWeight: 600 }}>
+                    {wouldExceedLimit
+                      ? `⚠ Would exceed credit limit. Available is only ${fmtUSD(creditAvailable)}.`
+                      : `Will create credit of ${fmtUSD(calc.unpaidBalance)} on this customer's account.`}
+                  </div>
+                )}
                 <div style={{ marginTop: 14, border: '1px solid #e5e7eb', borderRadius: 8, overflow: 'hidden' }}>
                   <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
                     <thead style={{ background: '#f8fafc' }}>
@@ -565,7 +605,7 @@ export default function Cashier() {
                 Cancel
               </button>
               <button onClick={processPayment}
-                disabled={submitting || (!confirm.isOverpaid && confirm.unpaidBalance > 0.10)}
+                disabled={submitting || (!hasRegisteredCustomer && !confirm.isOverpaid && confirm.unpaidBalance > 0.10)}
                 style={{ flex: 1, padding: '12px',
                          background: submitting ? '#94a3b8' : 'linear-gradient(135deg,#16a34a,#15803d)',
                          color: '#fff', border: 'none', borderRadius: 8, cursor: 'pointer', fontWeight: 700 }}>
