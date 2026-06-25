@@ -1144,49 +1144,61 @@ const CashReport = () => {
         </span>
       </div>
 
-      {/* ── Report History ───────────────────────────────────────── */}
       {/* ── Summary Strip ────────────────────────────────────────── */}
+      {/* v1.8.27 — per-currency aggregates across the filtered reports.
+          Reads the new usd/fra/k_received + usd/fra/k_expected columns;
+          falls back to legacy single fields for old rows. Each card
+          shows USD / FRA / K with diff per currency. */}
       {filteredReports.length > 0 && (() => {
-        const totalExpected   = filteredReports.reduce((s, r) => s + parseFloat(r.expected   || 0), 0);
-        // Read r.total — see note in the day-summary effect for why.
-        const totalAfterChange = filteredReports.reduce((s, r) => s + parseFloat(r.total || 0), 0);
-        const totalDifference  = totalAfterChange - totalExpected;
-        const diffStatus = getStatus(totalDifference);
-        const summaryCards = [
-          { label: 'Total Expected Cash', value: totalExpected,    color: '#2563eb', bg: '#eff6ff', border: '#bfdbfe' },
-          { label: 'Total Cash on Hand',  value: totalAfterChange, color: '#16a34a', bg: '#f0fdf4', border: '#bbf7d0' },
-          { label: 'Total Difference',    value: totalDifference,
-            color: totalDifference < 0 ? '#dc2626' : totalDifference > 0 ? '#16a34a' : '#6b7280',
-            bg:    totalDifference < 0 ? '#fef2f2' : totalDifference > 0 ? '#f0fdf4' : '#f9fafb',
-            border:totalDifference < 0 ? '#fecaca' : totalDifference > 0 ? '#bbf7d0' : '#e5e7eb',
-            badge: diffStatus },
+        const sumCol = (col) => filteredReports.reduce((s, r) => s + (parseFloat(r[col] || 0) || 0), 0);
+        const expU = sumCol('usd_expected');
+        const expF = sumCol('fra_expected');
+        const expK = sumCol('k_expected');
+        const gotU = sumCol('usd_received') + filteredReports.reduce((s, r) => parseFloat(r.usd_received || 0) > 0 ? s : s + (parseFloat(r.cash || 0) || 0), 0);
+        const gotF = sumCol('fra_received') + filteredReports.reduce((s, r) => parseFloat(r.fra_received || 0) > 0 ? s : s + (parseFloat(r.mobile_money || 0) || 0), 0);
+        const gotK = sumCol('k_received')   + filteredReports.reduce((s, r) => parseFloat(r.k_received   || 0) > 0 ? s : s + (parseFloat(r.bank || 0) || 0), 0);
+        const diffU = gotU - expU;
+        const diffF = gotF - expF;
+        const diffK = gotK - expK;
+        const fmtU = (n) => `$${parseFloat(n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+        const fmtN = (n) => Math.round(parseFloat(n || 0)).toLocaleString('en-US');
+        const Line = ({ label, val, color }) => (
+          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, lineHeight: 1.6 }}>
+            <span style={{ opacity: 0.85 }}>{label}</span><strong style={{ color }}>{val}</strong>
+          </div>
+        );
+        const cards = [
+          {
+            label: 'Total Expected Cash', bg: 'linear-gradient(135deg,#3b82f6,#1d4ed8)',
+            usd: fmtU(expU), fra: fmtN(expF), k: fmtN(expK),
+          },
+          {
+            label: 'Total Cash on Hand', bg: 'linear-gradient(135deg,#22c55e,#15803d)',
+            usd: fmtU(gotU), fra: fmtN(gotF), k: fmtN(gotK),
+          },
+          {
+            label: 'Total Difference',
+            bg: diffU < 0 || diffF < 0 || diffK < 0
+              ? 'linear-gradient(135deg,#ef4444,#b91c1c)'
+              : diffU > 0 || diffF > 0 || diffK > 0
+              ? 'linear-gradient(135deg,#f97316,#c2410c)'
+              : 'linear-gradient(135deg,#22c55e,#15803d)',
+            usd: `${diffU > 0 ? '+' : ''}${fmtU(diffU)}`,
+            fra: `${diffF > 0 ? '+' : ''}${fmtN(diffF)}`,
+            k:   `${diffK > 0 ? '+' : ''}${fmtN(diffK)}`,
+          },
         ];
         return (
-          <div className="no-print" style={{ display: 'flex', gap: 16, marginBottom: 20 }}>
-            {summaryCards.map(card => (
-              <div key={card.label} style={{
-                flex: 1, padding: '18px 22px', borderRadius: 12,
-                background: card.bg, border: `1.5px solid ${card.border}`,
-                boxShadow: '0 1px 4px rgba(0,0,0,0.06)',
-              }}>
-                <div style={{ fontSize: 11, color: '#6b7280', fontWeight: 600, letterSpacing: 0.5, textTransform: 'uppercase', marginBottom: 6 }}>
-                  {card.label}
+          <div className="no-print" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 14, marginBottom: 20 }}>
+            {cards.map(c => (
+              <div key={c.label} style={{ borderRadius: 14, padding: '14px 18px', background: c.bg, color: '#fff', boxShadow: '0 4px 16px rgba(0,0,0,0.1)', position: 'relative', overflow: 'hidden' }}>
+                <div style={{ position: 'absolute', right: -10, top: -10, width: 60, height: 60, borderRadius: '50%', background: 'rgba(255,255,255,0.1)' }} />
+                <div style={{ fontSize: 11, fontWeight: 700, opacity: 0.9, textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 8 }}>{c.label}</div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
+                  <Line label="USD" val={c.usd} color="#fff" />
+                  <Line label="FRA" val={c.fra} color="#fff" />
+                  <Line label="K"   val={c.k}   color="#fff" />
                 </div>
-                <div style={{ fontSize: 22, fontWeight: 700, color: card.color, letterSpacing: -0.5 }}>
-                  {curSym}{Math.abs(card.value).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                  {card.badge && (
-                    <span style={{
-                      marginLeft: 10, fontSize: 11, fontWeight: 600,
-                      padding: '2px 10px', borderRadius: 20,
-                      background: card.color + '1a', color: card.color, verticalAlign: 'middle'
-                    }}>{card.badge}</span>
-                  )}
-                </div>
-                {card.label === 'Total Difference' && totalDifference !== 0 && (
-                  <div style={{ fontSize: 11, color: card.color, marginTop: 4 }}>
-                    {totalDifference < 0 ? '▼ Short' : '▲ Surplus'} by {curSym}{Math.abs(totalDifference).toLocaleString(undefined, { minimumFractionDigits: 2 })}
-                  </div>
-                )}
               </div>
             ))}
           </div>
