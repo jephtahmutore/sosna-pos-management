@@ -23,6 +23,13 @@ const QuickPrice = () => {
   // initial value tells us which rows are dirty.
   const [basePrices, setBasePrices] = useState({});
   const [initialBase, setInitialBase] = useState({});
+  // v1.8.38 — track which cell is currently being edited + its raw text.
+  // The focused cell shows what the user typed verbatim (so "3" stays "3"
+  // instead of being instantly reformatted to "3.00", which made typing
+  // additional digits impossible). Non-focused cells stay derived from
+  // basePrices so editing one auto-updates the others.
+  const [editingKey, setEditingKey] = useState(null);   // e.g. "12:Box"
+  const [editingRaw, setEditingRaw] = useState('');
   const [toast, setToast] = useState(null);
 
   const showToast = (msg, type = 'success') => {
@@ -66,7 +73,11 @@ const QuickPrice = () => {
 
   // Edit handler — given a product and the unit the user typed into, plus the
   // new dollar value entered, set basePrices[id] = newValue / unitConv.
-  const handleCellChange = (productId, conv, newDisplayValue) => {
+  // Also stores the raw text so the focused cell renders verbatim while
+  // user is mid-typing (avoids the "type 3, can't add another 3" bug).
+  const handleCellChange = (productId, unitName, conv, newDisplayValue) => {
+    setEditingKey(`${productId}:${unitName}`);
+    setEditingRaw(newDisplayValue);
     const v = parseFloat(newDisplayValue);
     const safe = isNaN(v) || v < 0 ? 0 : v;
     const c = parseFloat(conv) || 1;
@@ -131,7 +142,10 @@ const QuickPrice = () => {
   }
 
   return (
-    <div className="page-container">
+    // v1.8.38 — was "page-container" which has no overflow handling;
+    // the standard scroll container is .page-content (line 386 of
+    // index.css). Switching so all 68 products are reachable.
+    <div className="page-content">
       <div className="page-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <div>
           <h1>Quick Price Update</h1>
@@ -189,7 +203,13 @@ const QuickPrice = () => {
                     <td>
                       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 14, alignItems: 'center' }}>
                         {p._units.map((u, i) => {
-                          const val = cellValue(p.id, u.conv);
+                          const cellKey = `${p.id}:${u.name}`;
+                          const isEditing = editingKey === cellKey;
+                          // While the user is mid-typing in THIS cell, show
+                          // the raw text verbatim. Otherwise show the
+                          // derived value (basePrice × this unit's conv).
+                          const derived = cellValue(p.id, u.conv);
+                          const displayValue = isEditing ? editingRaw : (derived === 0 ? '' : derived.toFixed(2));
                           const isLast = i === p._units.length - 1;
                           return (
                             <React.Fragment key={u.name}>
@@ -200,9 +220,11 @@ const QuickPrice = () => {
                                 <div style={{ position: 'relative' }}>
                                   <span style={{ position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)', fontSize: 12, color: '#94a3b8', pointerEvents: 'none' }}>{curSym}</span>
                                   <input
-                                    type="number" min="0" step="0.01"
-                                    value={val === 0 ? '' : val.toFixed(2)}
-                                    onChange={e => handleCellChange(p.id, u.conv, e.target.value)}
+                                    type="text" inputMode="decimal"
+                                    value={displayValue}
+                                    onChange={e => handleCellChange(p.id, u.name, u.conv, e.target.value)}
+                                    onBlur={() => { setEditingKey(null); setEditingRaw(''); }}
+                                    onFocus={() => { setEditingKey(cellKey); setEditingRaw(displayValue); }}
                                     onWheel={e => e.target.blur()}
                                     placeholder="0.00"
                                     style={{

@@ -115,6 +115,11 @@ const POS = () => {
   const [numpadValue, setNumpadValue] = useState('');
   const [contextMenu, setContextMenu] = useState(null); // { x, y, item }
   const [qtyEdit, setQtyEdit] = useState(null);         // { item, value }
+  // v1.8.38 — Qty-on-add modal. Replaces the old "tap a product → 1 added
+  // to cart instantly" with "tap a product → small modal asks for qty
+  // first". Less mis-clicks, less corrective +/- in the cart.
+  // Shape: { product, unit, value } where unit is the unit name to add.
+  const [qtyOnAdd, setQtyOnAdd] = useState(null);
   const [quickItems, setQuickItems] = useState([]);
   const [quickSyncIds, setQuickSyncIds] = useState(new Set());
   const [customers, setCustomers] = useState([]);
@@ -129,7 +134,7 @@ const POS = () => {
   // Mobile scroll-lock while any modal is open.
   useModalScrollLock(
     showNumpad || !!payModal || !!creditModal || showReceipt ||
-    !!contextMenu || !!qtyEdit || !!discountModal
+    !!contextMenu || !!qtyEdit || !!qtyOnAdd || !!discountModal
   );
 
   // Auto-close the mobile cart sheet when the cart goes empty (sale just
@@ -478,7 +483,10 @@ const POS = () => {
   };
 
   const addToCart = (product, qty = 1, forceUnit = null) => {
-    if (search) setSearch('');
+    // v1.8.38 — search is no longer auto-cleared on add. User now
+    // controls clearing via the new Clear button beside the input,
+    // so multiple tap-to-add operations on the same search result
+    // don't keep refiltering between every add.
     // ── Stock guard (job 1) ─────────────────────────────────────────────
     // Two checks gated on the System Settings toggle:
     //  (a) refuse entirely when sales_balance <= 0;
@@ -1202,9 +1210,18 @@ const POS = () => {
             </div>
           </div>
 
-          <div className="search-input-container">
+          {/* v1.8.38 — Clear button. Sits inside the search container
+              so it shares the same border/background. Hidden when the
+              search is empty. */}
+          <div className="search-input-container" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
             <FiSearch style={{ color: '#9ca3af' }} />
-            <input type="text" placeholder="Search products by name..." value={search} onChange={e => setSearch(e.target.value)} />
+            <input type="text" placeholder="Search products by name..." value={search} onChange={e => setSearch(e.target.value)} style={{ flex: 1 }} />
+            {search && (
+              <button onClick={() => setSearch('')} title="Clear search"
+                style={{ padding: '4px 12px', borderRadius: 8, border: '1px solid #e5e7eb', background: '#fff', color: '#6b7280', cursor: 'pointer', fontSize: 12, fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+                <FiX size={12} /> Clear
+              </button>
+            )}
           </div>
 
           {barcodeMsg && (
@@ -1274,7 +1291,7 @@ const POS = () => {
               const isLowStock = salesBalance > 0 && salesBalance < lowThreshold;
               return (
                 <div key={product.id} className="product-card"
-                  onClick={() => { if (!stockBlocked) addToCart(product); }}
+                  onClick={() => { if (!stockBlocked) setQtyOnAdd({ product, unit: displayUnit.name, value: '1' }); }}
                   title={stockBlocked ? `${product.name} is out of stock` : (isLowStock ? `Low stock — only ${salesBalance} left (threshold ${lowThreshold})` : '')}
                   style={{ display: 'flex', alignItems: 'center', gap: 10, border: isLowStock ? '2px solid #dc2626' : (salesBalance <= 0 ? '2px solid #fca5a5' : undefined), background: isLowStock ? '#fef2f2' : (salesBalance <= 0 ? '#fff5f5' : undefined), position: 'relative', cursor: stockBlocked ? 'not-allowed' : 'pointer' }}>
                   {/* Star pin button */}
@@ -1314,7 +1331,7 @@ const POS = () => {
                           {altUnits.map(u => (
                             <button
                               key={u.name}
-                              onClick={e => { e.stopPropagation(); addToCart(product, 1, u.name); }}
+                              onClick={e => { e.stopPropagation(); setQtyOnAdd({ product, unit: u.name, value: '1' }); }}
                               title={`Add 1 ${u.name} (${curSym}${(parseFloat(u.price) || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })})`}
                               style={{
                                 padding: '6px 12px', borderRadius: 14, fontSize: 12.5, fontWeight: 700, cursor: 'pointer',
@@ -2379,6 +2396,56 @@ const POS = () => {
         </div>
         </Portal>
       )}
+
+      {/* v1.8.38 — Qty-on-add modal. Pops when user taps a product card
+          or alt-unit chip; asks for qty before going to cart. Default 1,
+          auto-focus, Enter submits, Esc cancels. */}
+      {qtyOnAdd && (() => {
+        const typed = parseFloat(qtyOnAdd.value || 0);
+        const invalid = !qtyOnAdd.value || typed <= 0;
+        const submit = () => {
+          if (invalid) return;
+          const p = qtyOnAdd.product;
+          const u = qtyOnAdd.unit;
+          setQtyOnAdd(null);
+          addToCart(p, typed, u);
+        };
+        // Unit price for the chosen unit (look it up on the product).
+        let unitPrice = 0;
+        try {
+          const arr = JSON.parse(qtyOnAdd.product.units_json || '[]');
+          const found = Array.isArray(arr) ? arr.find(x => x.name === qtyOnAdd.unit) : null;
+          unitPrice = parseFloat(found?.price || qtyOnAdd.product.selling_price || 0) || 0;
+        } catch { unitPrice = parseFloat(qtyOnAdd.product.selling_price || 0) || 0; }
+        return (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.4)', zIndex: 99999, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+          onClick={() => setQtyOnAdd(null)}>
+          <div onClick={e => e.stopPropagation()}
+            style={{ width: 320, maxWidth: '90vw', background: '#fff', borderRadius: 14, padding: 22, boxShadow: '0 20px 50px rgba(0,0,0,0.25)' }}>
+            <h4 style={{ margin: '0 0 4px', fontSize: 15, fontWeight: 700, color: '#111827' }}>{qtyOnAdd.product.name}</h4>
+            <p style={{ margin: '0 0 14px', fontSize: 12, color: '#6b7280' }}>{curSym}{unitPrice.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} / {qtyOnAdd.unit}</p>
+            <label style={{ display: 'block', fontSize: 11, fontWeight: 700, color: '#6b7280', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 6 }}>Quantity ({qtyOnAdd.unit})</label>
+            <input
+              type="number" min="0" step="any" autoFocus
+              value={qtyOnAdd.value}
+              onChange={e => setQtyOnAdd(prev => ({ ...prev, value: e.target.value }))}
+              onKeyDown={e => { if (e.key === 'Enter') submit(); if (e.key === 'Escape') setQtyOnAdd(null); }}
+              onFocus={e => e.target.select()}
+              style={{ width: '100%', padding: '12px 14px', borderRadius: 10, border: invalid ? '2px solid #fca5a5' : '2px solid #16a34a', fontSize: 22, fontWeight: 700, textAlign: 'center', outline: 'none', boxSizing: 'border-box' }}
+            />
+            <div style={{ marginTop: 10, fontSize: 12, color: '#6b7280', textAlign: 'center' }}>
+              Total: <strong style={{ color: '#0f172a' }}>{curSym}{(typed * unitPrice).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</strong>
+            </div>
+            <div style={{ display: 'flex', gap: 10, marginTop: 18 }}>
+              <button onClick={() => setQtyOnAdd(null)}
+                style={{ flex: 1, padding: '10px 16px', borderRadius: 10, border: '1.5px solid #e5e7eb', background: '#fff', color: '#374151', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>Cancel</button>
+              <button onClick={submit} disabled={invalid}
+                style={{ flex: 1, padding: '10px 16px', borderRadius: 10, border: 'none', background: invalid ? '#cbd5e1' : '#16a34a', color: '#fff', fontSize: 13, fontWeight: 700, cursor: invalid ? 'not-allowed' : 'pointer' }}>Add to Cart</button>
+            </div>
+          </div>
+        </div>
+        );
+      })()}
 
       {/* ── Change Quantity modal ── */}
       {qtyEdit && (() => {
