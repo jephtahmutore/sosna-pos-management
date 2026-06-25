@@ -176,78 +176,78 @@ const QuickPrice = () => {
 
       {loading ? (
         <div style={{ padding: 60, textAlign: 'center', color: '#94a3b8' }}>Loading products…</div>
+      ) : filteredProducts.length === 0 ? (
+        <div style={{ padding: 40, textAlign: 'center', color: '#94a3b8', background: '#fff', borderRadius: 12 }}>No products match.</div>
       ) : (
-        // v1.8.36 — plain wrapper (no data-table-container) so the outer
-        // page scroll works for all 68 products. The shared
-        // data-table-container class uses overflow:hidden which clipped
-        // everything below the visible viewport.
-        <div style={{ background: '#fff', borderRadius: 12, boxShadow: '0 1px 4px rgba(0,0,0,0.06)', overflow: 'visible' }}>
-          <table className="data-table" style={{ fontSize: 13 }}>
-            <thead>
-              <tr>
-                <th style={{ minWidth: 220 }}>Product</th>
-                <th style={{ textAlign: 'left', color: '#6b7280', fontWeight: 600 }}>Units (biggest → smallest) — type in any cell, others auto-derive</th>
-              </tr>
-            </thead>
-            <tbody>
-              {filteredProducts.length === 0 ? (
-                <tr><td colSpan={2} style={{ padding: 40, textAlign: 'center', color: '#94a3b8' }}>No products match.</td></tr>
-              ) : filteredProducts.map(p => {
-                const isDirty = dirtyIds.has(p.id);
-                return (
-                  <tr key={p.id} style={{ background: isDirty ? '#fffbeb' : undefined }}>
-                    <td>
-                      <div style={{ fontWeight: 600, color: '#0f172a' }}>{p.name}</div>
-                      <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 2 }}>{p.code}{isDirty && <span style={{ marginLeft: 8, color: '#d97706', fontWeight: 700 }}>● unsaved</span>}</div>
-                    </td>
-                    <td>
-                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 14, alignItems: 'center' }}>
-                        {p._units.map((u, i) => {
-                          const cellKey = `${p.id}:${u.name}`;
-                          const isEditing = editingKey === cellKey;
-                          // While the user is mid-typing in THIS cell, show
-                          // the raw text verbatim. Otherwise show the
-                          // derived value (basePrice × this unit's conv).
-                          const derived = cellValue(p.id, u.conv);
-                          const displayValue = isEditing ? editingRaw : (derived === 0 ? '' : derived.toFixed(2));
-                          const isLast = i === p._units.length - 1;
-                          return (
-                            <React.Fragment key={u.name}>
-                              <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
-                                <label style={{ fontSize: 10, fontWeight: 700, color: '#6b7280', textTransform: 'uppercase', letterSpacing: 0.4 }}>
-                                  {u.name}{u.is_base && parseFloat(u.conv) === 1 ? '' : ` (${u.conv})`}
-                                </label>
-                                <div style={{ position: 'relative' }}>
-                                  <span style={{ position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)', fontSize: 12, color: '#94a3b8', pointerEvents: 'none' }}>{curSym}</span>
-                                  <input
-                                    type="text" inputMode="decimal"
-                                    value={displayValue}
-                                    onChange={e => handleCellChange(p.id, u.name, u.conv, e.target.value)}
-                                    onBlur={() => { setEditingKey(null); setEditingRaw(''); }}
-                                    onFocus={() => { setEditingKey(cellKey); setEditingRaw(displayValue); }}
-                                    onWheel={e => e.target.blur()}
-                                    placeholder="0.00"
-                                    style={{
-                                      width: 110, padding: '8px 10px 8px 24px',
-                                      borderRadius: 8, fontSize: 13, fontWeight: 600,
-                                      border: `2px solid ${isDirty ? '#f59e0b' : '#e5e7eb'}`,
-                                      background: isDirty ? '#fffbeb' : '#fff',
-                                      color: '#0f172a', outline: 'none',
-                                      boxSizing: 'border-box',
-                                    }} />
-                                </div>
-                              </div>
-                              {!isLast && <span style={{ color: '#cbd5e1', fontSize: 18 }}>→</span>}
-                            </React.Fragment>
-                          );
-                        })}
-                      </div>
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
+        // v1.8.41 — card layout. Each product is its own card; units are
+        // stacked vertically inside with full-width inputs. Same on
+        // desktop and mobile (no more table getting cut off on phones).
+        // Edit any cell → others auto-derive (logic unchanged).
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap: 14 }}>
+          {filteredProducts.map(p => {
+            const isDirty = dirtyIds.has(p.id);
+            return (
+              <div key={p.id} style={{
+                background: '#fff',
+                border: `1.5px solid ${isDirty ? '#f59e0b' : '#e5e7eb'}`,
+                borderRadius: 12,
+                padding: 14,
+                boxShadow: '0 1px 3px rgba(0,0,0,0.04)',
+              }}>
+                {/* Header: name + code + dirty marker */}
+                <div style={{ marginBottom: 12, paddingBottom: 10, borderBottom: '1px dashed #e5e7eb' }}>
+                  <div style={{ fontWeight: 700, color: '#0f172a', fontSize: 14, lineHeight: 1.2 }}>{p.name}</div>
+                  <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 3 }}>
+                    {p.code}
+                    {isDirty && <span style={{ marginLeft: 8, color: '#d97706', fontWeight: 700 }}>● unsaved</span>}
+                  </div>
+                </div>
+
+                {/* Units stacked top → bottom (biggest first). */}
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                  {p._units.map((u, i) => {
+                    const cellKey = `${p.id}:${u.name}`;
+                    const isEditing = editingKey === cellKey;
+                    const derived = cellValue(p.id, u.conv);
+                    const displayValue = isEditing ? editingRaw : (derived === 0 ? '' : derived.toFixed(2));
+                    const isLast = i === p._units.length - 1;
+                    return (
+                      <React.Fragment key={u.name}>
+                        <div>
+                          <label style={{ fontSize: 10, fontWeight: 700, color: '#6b7280', textTransform: 'uppercase', letterSpacing: 0.5, display: 'block', marginBottom: 4 }}>
+                            {u.name}{u.is_base && parseFloat(u.conv) === 1 ? '' : ` (1 ${u.name} = ${u.conv} ${p._units[p._units.length - 1].name})`}
+                          </label>
+                          <div style={{ position: 'relative' }}>
+                            <span style={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)', fontSize: 14, color: '#94a3b8', pointerEvents: 'none', fontWeight: 600 }}>{curSym}</span>
+                            <input
+                              type="text" inputMode="decimal"
+                              value={displayValue}
+                              onChange={e => handleCellChange(p.id, u.name, u.conv, e.target.value)}
+                              onBlur={() => { setEditingKey(null); setEditingRaw(''); }}
+                              onFocus={() => { setEditingKey(cellKey); setEditingRaw(displayValue); }}
+                              onWheel={e => e.target.blur()}
+                              placeholder="0.00"
+                              style={{
+                                width: '100%', padding: '11px 12px 11px 28px',
+                                borderRadius: 8, fontSize: 16, fontWeight: 700,
+                                border: `2px solid ${isDirty ? '#f59e0b' : '#e5e7eb'}`,
+                                background: isDirty ? '#fffbeb' : '#fff',
+                                color: '#0f172a', outline: 'none',
+                                boxSizing: 'border-box',
+                                textAlign: 'right',
+                              }} />
+                          </div>
+                        </div>
+                        {!isLast && (
+                          <div style={{ textAlign: 'center', color: '#cbd5e1', fontSize: 14, lineHeight: 1 }}>↓</div>
+                        )}
+                      </React.Fragment>
+                    );
+                  })}
+                </div>
+              </div>
+            );
+          })}
         </div>
       )}
 
