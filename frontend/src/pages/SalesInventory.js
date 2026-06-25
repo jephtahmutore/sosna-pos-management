@@ -10,6 +10,9 @@ import {
 import Portal from '../utils/Portal';
 import useModalScrollLock from '../utils/useModalScrollLock';
 import printHtml from '../utils/printHtml';
+// v1.8.30 — display quantities in the largest configured packaging
+// (e.g. "10 box + 4 pcs") instead of raw base-unit count.
+import { formatStockForProduct } from '../utils/unitFormat';
 const SalesInventory = () => {
   const { user, hasPermission } = useAuth();
   const { symbol: curSym } = useCurrency();
@@ -517,9 +520,10 @@ const SalesInventory = () => {
                   <th style={{ textAlign: 'right' }}>Total Sales</th>
                   <th style={{ textAlign: 'right' }}>Returns</th>
                   <th style={{ textAlign: 'right' }}>Sales Bal.</th>
-                  <th style={{ textAlign: 'right', color: '#15803d', background: '#f0fdf4' }}>Actual Bal.</th>
-                  <th style={{ textAlign: 'right' }}>Difference</th>
-                  <th>Reason</th>
+                  {/* v1.8.30 — Actual Bal / Difference / Reason columns
+                      removed per user request (not needed on this view).
+                      Underlying save logic kept for back-compat in case
+                      another page needs it. */}
                   <th style={{ textAlign: 'right' }}>Cost Price</th>
                   <th style={{ textAlign: 'right' }}>Selling Price</th>
                   <th style={{ textAlign: 'right' }}>Total Cost</th>
@@ -548,147 +552,19 @@ const SalesInventory = () => {
                           <strong style={{ color: '#111827' }}>{product.name}</strong>
                         </div>
                       </td>
-                      <td style={{ textAlign: 'right' }}>{r.openingBalance.toLocaleString()}</td>
-                      <td style={{ textAlign: 'right', color: r.input > 0 ? '#2563eb' : '#9ca3af' }}>{r.input.toLocaleString()}</td>
-                      <td style={{ textAlign: 'right', fontWeight: 600 }}>{r.totalStock.toLocaleString()}</td>
-                      <td style={{ textAlign: 'right', color: r.totalSales > 0 ? '#dc2626' : '#9ca3af' }}>{r.totalSales.toLocaleString()}</td>
-                      <td style={{ textAlign: 'right', color: r.salesReturns > 0 ? '#d97706' : '#9ca3af' }}>{r.salesReturns > 0 ? r.salesReturns.toLocaleString() : '—'}</td>
-                      <td style={{ textAlign: 'right', fontWeight: 600 }}>{r.salesBalance.toLocaleString()}</td>
+                      {/* v1.8.30 — display in largest configured packaging
+                          (e.g. '10 box' instead of '60 pcs'). showBaseInParens
+                          off to keep the table compact. Falls back to raw
+                          base-unit count when the product has no alt unit. */}
+                      <td style={{ textAlign: 'right' }}>{formatStockForProduct(r.openingBalance, product, { showBaseInParens: false, decimals: 0 })}</td>
+                      <td style={{ textAlign: 'right', color: r.input > 0 ? '#2563eb' : '#9ca3af' }}>{formatStockForProduct(r.input, product, { showBaseInParens: false, decimals: 0 })}</td>
+                      <td style={{ textAlign: 'right', fontWeight: 600 }}>{formatStockForProduct(r.totalStock, product, { showBaseInParens: false, decimals: 0 })}</td>
+                      <td style={{ textAlign: 'right', color: r.totalSales > 0 ? '#dc2626' : '#9ca3af' }}>{formatStockForProduct(r.totalSales, product, { showBaseInParens: false, decimals: 0 })}</td>
+                      <td style={{ textAlign: 'right', color: r.salesReturns > 0 ? '#d97706' : '#9ca3af' }}>{r.salesReturns > 0 ? formatStockForProduct(r.salesReturns, product, { showBaseInParens: false, decimals: 0 }) : '—'}</td>
+                      <td style={{ textAlign: 'right', fontWeight: 600 }}>{formatStockForProduct(r.salesBalance, product, { showBaseInParens: false, decimals: 0 })}</td>
 
-                      {/* Actual Balance */}
-                      <td style={{ textAlign: 'right', background: '#f0fdf4' }}>
-                        {locked ? (
-                          <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6, justifyContent: 'flex-end' }}>
-                            <span style={{ fontWeight: 700, color: '#15803d', fontSize: 13 }}>
-                              {r.actualVal.toFixed(2)}
-                            </span>
-                            {hasPermission('SalesInventory:Edit') && (
-                              <button
-                                onClick={() => setEditingRows(prev => ({ ...prev, [product.id]: true }))}
-                                title="Edit actual balance"
-                                style={{
-                                  background: 'none', border: 'none', cursor: 'pointer',
-                                  color: '#9ca3af', padding: 3, display: 'flex', alignItems: 'center',
-                                  borderRadius: 4, transition: 'color 0.15s',
-                                }}
-                                onMouseEnter={e => e.currentTarget.style.color = '#2563eb'}
-                                onMouseLeave={e => e.currentTarget.style.color = '#9ca3af'}
-                              >
-                                <FiEdit2 size={13} />
-                              </button>
-                            )}
-                          </div>
-                        ) : (
-                          <input
-                            type="number" step="0.01" min="0"
-                            data-actualindex={rowIndex}
-                            value={actualBalances[product.id] ?? ''}
-                            onChange={e => {
-                              const val = e.target.value;
-                              setActualBalances(prev => ({ ...prev, [product.id]: val }));
-                              if (val !== '') {
-                                const diff = parseFloat(val) - r.salesBalance;
-                                const autoReason = diff < 0 ? 'Weight Loss' : 'Overage';
-                                const currentReason = reasons[product.id];
-                                // Auto-select only if no reason set, or if current reason is one of the auto ones
-                                if (!currentReason || currentReason === 'Weight Loss' || currentReason === 'Overage') {
-                                  setReasons(prev => ({ ...prev, [product.id]: autoReason }));
-                                }
-                              }
-                            }}
-                            onWheel={e => e.target.blur()}
-                            onKeyDown={e => {
-                              if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
-                                e.preventDefault();
-                                const target = document.querySelector(`[data-actualindex="${rowIndex + (e.key === 'ArrowDown' ? 1 : -1)}"]`);
-                                if (target) target.focus();
-                              }
-                            }}
-                            style={{
-                              width: 90, textAlign: 'right', padding: '6px 10px', borderRadius: 8,
-                              border: hasActual ? '2px solid #16a34a' : '1.5px solid #d1d5db',
-                              fontSize: 13, fontWeight: hasActual ? 700 : 400,
-                              background: hasActual ? '#dcfce7' : '#fff',
-                              color: '#15803d', outline: 'none', transition: 'all 0.2s',
-                              boxShadow: hasActual ? '0 0 0 3px rgba(22,163,74,0.12)' : 'none',
-                            }}
-                            placeholder="0.00"
-                          />
-                        )}
-                      </td>
-
-                      {/* Difference */}
-                      <td style={{
-                        textAlign: 'right', fontWeight: 600,
-                        color: r.difference < 0 ? '#dc2626' : r.difference > 0 ? '#16a34a' : '#374151'
-                      }}>
-                        {r.difference.toFixed(2)}
-                      </td>
-
-                      {/* Reason */}
-                      <td>
-                        {r.difference !== 0 ? (
-                          locked ? (
-                            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                              <span style={{
-                                fontSize: 11, color: '#374151', background: '#f3f4f6',
-                                borderRadius: 6, padding: '3px 8px', fontWeight: 500,
-                                maxWidth: 120, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-                                display: 'inline-block'
-                              }} title={reasons[product.id] || '—'}>
-                                {reasons[product.id] || '—'}
-                              </span>
-                              {hasPermission('SalesInventory:Edit') && (
-                                <button
-                                  onClick={() => setEditingRows(prev => ({ ...prev, [product.id]: true }))}
-                                  title="Edit this row"
-                                  style={{
-                                    background: 'none', border: 'none', cursor: 'pointer',
-                                    color: '#9ca3af', padding: 3, display: 'flex', alignItems: 'center',
-                                    borderRadius: 4, transition: 'color 0.15s',
-                                  }}
-                                  onMouseEnter={e => e.currentTarget.style.color = '#2563eb'}
-                                  onMouseLeave={e => e.currentTarget.style.color = '#9ca3af'}
-                                >
-                                  <FiEdit2 size={13} />
-                                </button>
-                              )}
-                            </div>
-                          ) : (
-                            <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-                              <select
-                                value={getSelectValue(product.id)}
-                                onChange={e => handleReasonChange(product.id, e.target.value)}
-                                style={{
-                                  padding: '4px 8px', borderRadius: 6, border: '1px solid #d1d5db',
-                                  fontSize: 11, background: '#fff', minWidth: 100, cursor: 'pointer'
-                                }}
-                              >
-                                <option value="Weight Loss">Weight Loss</option>
-                                <option value="Shortage">Shortage</option>
-                                <option value="Overage">Overage</option>
-                                <option value="Other">Other</option>
-                              </select>
-                              {/* Show custom text indicator */}
-                              {reasons[product.id] && !PRESET_REASONS.includes(reasons[product.id]) && (
-                                <span
-                                  title={reasons[product.id]}
-                                  style={{
-                                    fontSize: 10, color: '#2563eb', cursor: 'pointer',
-                                    background: '#eff6ff', borderRadius: 4, padding: '2px 6px', whiteSpace: 'nowrap'
-                                  }}
-                                  onClick={() => setOtherModal({ productId: product.id, text: reasons[product.id] })}
-                                >
-                                  ✎ custom
-                                </span>
-                              )}
-                            </div>
-                          )
-                        ) : (
-                          <span style={{ color: '#9ca3af' }}>—</span>
-                        )}
-                      </td>
-
+                      {/* v1.8.30 — Actual Balance / Difference / Reason
+                          columns removed per user request. */}
                       <td style={{ textAlign: 'right' }}>{curSym}{r.costPrice.toFixed(2)}</td>
                       <td style={{ textAlign: 'right' }}>{curSym}{r.sellingPrice.toFixed(2)}</td>
                       <td style={{ textAlign: 'right' }}>{curSym}{fmt(r.totalCostPrice)}</td>
@@ -703,7 +579,7 @@ const SalesInventory = () => {
                     </tr>
                     {isExpanded && (
                       <tr style={{ background: '#f0f9ff' }}>
-                        <td colSpan={16} style={{ padding: '6px 24px 10px 32px' }}>
+                        <td colSpan={13} style={{ padding: '6px 24px 10px 32px' }}>
                           {!sivBreakdowns[product.id] ? (
                             <span style={{ fontSize: 12, color: '#9ca3af' }}>Loading...</span>
                           ) : sivBreakdowns[product.id].length === 0 ? (
