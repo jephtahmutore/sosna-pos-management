@@ -223,7 +223,7 @@ export default function Cashier() {
   // Match Sirak: enable as soon as any payment is entered. Backend rejects
   // short payments (see /collect-payment guard) — UI also shows the unpaid
   // banner so the cashier sees it before clicking.
-  const canConfirm = !!selected && !!calc && (calc.paidUSD > 0 || calc.paidFRA > 0);
+  const canConfirm = !!selected && !!calc && (calc.paidUSD > 0 || calc.paidFRA > 0 || calc.paidK > 0);
 
   return (
     <div className="page-content">
