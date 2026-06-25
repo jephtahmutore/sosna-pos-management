@@ -218,8 +218,23 @@ router.post('/', auth, (req, res) => {
     const overrideTs = overrideDate ? `${overrideDate} ${new Date().toTimeString().slice(0, 8)}` : null;
     const tsExpr = overrideTs ? '?' : "datetime('now')";
     const tsArgs = overrideTs ? [overrideTs] : [];
-    // Derive a sane split if the client only sent the legacy amount_received.
-    const cashIn = parseFloat(cash_received ?? (payment_method === 'Mobile Money' || payment_method === 'Transfer' || payment_method === 'Bank' || payment_method === 'Bank Transfer' ? 0 : amount_received || 0)) || 0;
+    // v1.8.53 — for multi-currency sales (Sosna), `cash_received` MUST be
+    // the physical USD only — never the dollar-VALUE of all cash. Falling
+    // back to `amount_received` double-counts foreign-currency payments
+    // (they appear in both the K/FRA bucket AND the USD bucket).
+    //
+    // Rule:
+    //   - If any FRA/K was paid → cash_received = whatever the client sent,
+    //     defaulting to 0 (NOT amount_received).
+    //   - Otherwise → keep legacy fallback so single-currency tenants
+    //     (lusaka1, mansa1 K-only or USD-only) still work.
+    const fraInForFallback = parseFloat(fra_received || 0) || 0;
+    const kInForFallback   = parseFloat(k_received   || 0) || 0;
+    const isMultiCurrency  = fraInForFallback > 0 || kInForFallback > 0;
+    const legacyFallback   = (payment_method === 'Mobile Money' || payment_method === 'Transfer' || payment_method === 'Bank' || payment_method === 'Bank Transfer') ? 0 : (amount_received || 0);
+    const cashIn = isMultiCurrency
+      ? (parseFloat(cash_received || 0) || 0)
+      : (parseFloat(cash_received ?? legacyFallback) || 0);
     const momoIn = parseFloat(momo_received ?? (payment_method === 'Mobile Money' ? amount_received || 0 : 0)) || 0;
     const bankIn = parseFloat(bank_received ?? (payment_method === 'Transfer' || payment_method === 'Bank' || payment_method === 'Bank Transfer' ? amount_received || 0 : 0)) || 0;
     const totalReceived = cashIn + momoIn + bankIn;

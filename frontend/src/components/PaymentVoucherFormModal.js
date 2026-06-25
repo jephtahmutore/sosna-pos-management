@@ -150,14 +150,15 @@ const PaymentVoucherFormModal = ({
                 <input type="date" value={form.date} onChange={e => setForm({ ...form, date: e.target.value })} />
               </div>
               <div className="form-group">
-                <label>Type</label>
+                <label>Type <span style={{ color: '#dc2626' }}>*</span></label>
                 {/* v1.8.25 — start blank so the user can't save with the
                     wrong default ('Council' wasn't always right). Save
-                    handler rejects empty category with an error. */}
-                <select value={form.category}
+                    handler rejects empty category with an error.
+                    v1.8.53 — Update button also disabled until Type is set. */}
+                <select value={form.category} required
                   onChange={e => setForm({ ...form, category: e.target.value })}
-                  style={{ borderColor: form.category ? '' : '#fbbf24', background: form.category ? '' : '#fffbeb' }}>
-                  <option value="">— Select Type —</option>
+                  style={{ borderColor: form.category ? '' : '#dc2626', background: form.category ? '' : '#fef2f2' }}>
+                  <option value="">— Select Type (required) —</option>
                   {pvTypes.length === 0
                     ? <option value="Other">Other</option>
                     : pvTypes.map(t => <option key={t.id} value={t.name}>{t.name}</option>)}
@@ -246,7 +247,8 @@ const PaymentVoucherFormModal = ({
           </div>
           <div className="modal-footer">
             <button className="btn btn-secondary" onClick={onClose}>Cancel</button>
-            <button className="btn btn-primary" onClick={handleSave} disabled={saving}>
+            <button className="btn btn-primary" onClick={handleSave} disabled={saving || !form.category}
+              title={!form.category ? 'Pick a Type first' : ''}>
               {saving ? 'Saving...' : editVoucher ? 'Update Voucher' : 'Save Voucher'}
             </button>
           </div>

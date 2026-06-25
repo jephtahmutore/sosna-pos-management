@@ -1543,6 +1543,37 @@ function initTenantDb(db) {
   addCol('orders',   'k_change_given',     'REAL DEFAULT 0');
   addCol('orders',   'selling_rate_k_used','REAL');
   addCol('orders',   'buying_rate_k_used', 'REAL');
+
+  // ── v1.8.53 — one-time backfill: cash_received double-count cleanup ──
+  // Foreign-currency-only payments stored the dollar-VALUE in cash_received,
+  // double-counting against the FRA/K bucket. Recompute cash_received from
+  // amount_received minus the foreign-as-USD portions, but only for rows
+  // where cash_received == amount_received (the bug fingerprint).
+  // Tracked via sync_config so it runs exactly once per DB.
+  try {
+    const flag = db.prepare("SELECT value FROM sync_config WHERE key = 'migration_v1_8_53_cash_received_backfill'").get();
+    if (!flag) {
+      const result = db.prepare(`
+        UPDATE orders
+           SET cash_received = MAX(0, amount_received
+               - (CASE WHEN COALESCE(selling_rate_used, 0)   > 0 THEN fra_received / selling_rate_used   ELSE 0 END)
+               - (CASE WHEN COALESCE(selling_rate_k_used, 0) > 0 THEN k_received   / selling_rate_k_used ELSE 0 END)),
+               synced = 0,
+               updated_at = datetime('now')
+         WHERE deleted_at IS NULL
+           AND (status IS NULL OR status != 'Reversed')
+           AND (COALESCE(fra_received, 0) > 0 OR COALESCE(k_received, 0) > 0)
+           AND ABS(COALESCE(cash_received, 0) - COALESCE(amount_received, 0)) < 0.01
+      `).run();
+      db.prepare("INSERT OR REPLACE INTO sync_config (key, value) VALUES (?, ?)")
+        .run('migration_v1_8_53_cash_received_backfill', String(result.changes || 0));
+      if (result.changes > 0) {
+        console.log(`[migration v1.8.53] backfilled cash_received on ${result.changes} order(s)`);
+      }
+    }
+  } catch (e) {
+    console.warn('[migration v1.8.53] cash_received backfill skipped:', e.message);
+  }
 }
 
 module.exports = { initTenantDb };
