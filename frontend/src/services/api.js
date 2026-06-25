@@ -86,6 +86,8 @@ export const getDashboard = () => api.get('/dashboard');
 export const getProducts = (params) => api.get('/products', { params });
 export const getProduct = (id) => api.get(`/products/${id}`);
 export const getQuickItems = () => api.get('/products/quick-items');
+// v1.8.34 — Quick Price Update bulk save.
+export const bulkUpdatePrices = (updates) => api.post('/products/bulk-update-prices', { updates });
 export const addQuickItem = (product_sync_id) => api.post('/products/quick-items', { product_sync_id });
 export const removeQuickItem = (productSyncId) => api.delete(`/products/quick-items/${productSyncId}`);
 export const createProduct = (data) => api.post('/products', data);

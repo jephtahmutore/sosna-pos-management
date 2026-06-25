@@ -498,6 +498,15 @@ const Layout = () => {
                       <FiFileText className="nav-icon" /> <span>{t('itemDetails')}</span>
                     </div>
                   )}
+                  {/* v1.8.34 — Quick Price Update. Bulk selling-price editor.
+                      Branch-only (HQ doesn't manage prices) and gated by
+                      Items:Edit so cashier-supervisors can adjust prices
+                      without full item-edit rights. */}
+                  {!hq && hasPageAccess('Items') && (
+                    <div className={`nav-item ${isActive('/stock/quick-price') ? 'active' : ''}`} onClick={() => navigate('/stock/quick-price')}>
+                      <FiDollarSign className="nav-icon" /> <span>Quick Price</span>
+                    </div>
+                  )}
                   {/* v1.8.9 — at HQ, the Store group keeps only Item Details
                       + Categories and Units (HQ-owned data pushed to branches).
                       Everything else here (GRN, SIV, Sales Damages, Bin Card,

@@ -36,6 +36,7 @@ import HqConfirmDamages from './pages/HqConfirmDamages';
 import HqProducts from './pages/HqProducts';
 import IncomingStock from './pages/IncomingStock';
 import ItemDetails from './pages/ItemDetails';
+import QuickPrice from './pages/QuickPrice'; // v1.8.34 — bulk price editor
 import GRN from './pages/GRN';
 import EmptyReturns from './pages/EmptyReturns';
 import SIV from './pages/SIV';
@@ -112,6 +113,7 @@ const CUSTOM_PRIORITY = [
   { page: 'CashReport',       path: '/pos/cash-report' },
   { page: 'SalesBinCard',     path: '/pos/sales-bin-card' },
   { page: 'Items',            path: '/stock/items' },
+  { page: 'QuickPrice',       path: '/stock/quick-price' },
   { page: 'GRN',              path: '/stock/grn' },
   { page: 'SIV',              path: '/stock/siv' },
   { page: 'SalesReturns',     path: '/stock/sales-damages' },
@@ -277,6 +279,7 @@ function AppRoutes() {
         <Route path="pos/cash-report" element={<PermRoute perms={['Sales','Reports','CashReport:View','CashReport:Add','CashReport:Edit','CashReport:Delete']}><CashReport /></PermRoute>} />
         <Route path="pos/sales-bin-card" element={<PermRoute perms={['Sales','Reports','SalesBinCard:View','SalesBinCard:Add','SalesBinCard:Edit','SalesBinCard:Delete']}><SalesBinCard /></PermRoute>} />
         <Route path="stock/items" element={<PermRoute perms={['Stock','GRN','SIV','Items:View','Items:Add','Items:Edit','Items:Delete']}><ItemDetails /></PermRoute>} />
+        <Route path="stock/quick-price" element={<PermRoute perms={['Stock','Items:Edit','QuickPrice:View']}><QuickPrice /></PermRoute>} />
         <Route path="stock/grn" element={<PermRoute perms={['GRN','Stock','GRN:View','GRN:Add','GRN:Edit','GRN:Delete']}><GRN /></PermRoute>} />
         <Route path="stock/empty-returns" element={<PermRoute perms={['GRN','Stock','GRN:View','GRN:Add','GRN:Edit','GRN:Delete']}><EmptyReturns /></PermRoute>} />
         <Route path="stock/siv" element={<PermRoute perms={['SIV','Stock','SIV:View','SIV:Add','SIV:Edit','SIV:Delete']}><SIV /></PermRoute>} />

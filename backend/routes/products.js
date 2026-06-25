@@ -797,4 +797,54 @@ router.post('/bulk-siv-store-to-sales', auth, (req, res) => {
   }
 });
 
+// ─── POST /api/products/bulk-update-prices ──────────────────────────────────
+// v1.8.34 — Quick Price Update page. Accepts a list of products with a single
+// "base price" (price for the base unit, e.g. price per Bottle). For each
+// product, updates units_json so every packaging's price = base_price × conv,
+// and updates the legacy selling_price column = base_price. Single transaction.
+//
+// Body: { updates: [{ id: 123, base_price: 1.10 }, ...] }
+router.post('/bulk-update-prices', auth, (req, res) => {
+  try {
+    const updates = Array.isArray(req.body?.updates) ? req.body.updates : [];
+    if (updates.length === 0) return res.status(400).json({ error: 'No updates provided.' });
+
+    const select = db.prepare('SELECT id, units_json, is_hq_owned FROM products WHERE id = ? AND tenant_id = ?');
+    const update = db.prepare(`UPDATE products SET units_json = ?, selling_price = ?, alt_price = ?,
+                                 updated_at = datetime('now'), synced = 0 WHERE id = ?`);
+
+    const tx = db.transaction(() => {
+      let count = 0;
+      for (const u of updates) {
+        const id = parseInt(u.id, 10);
+        const basePrice = parseFloat(u.base_price);
+        if (!id || !(basePrice >= 0)) continue;
+        const row = select.get(id, req.user.tenantId);
+        if (!row) continue;
+        let units = [];
+        try { units = JSON.parse(row.units_json || '[]'); } catch {}
+        if (!Array.isArray(units) || units.length === 0) continue;
+        const updatedUnits = units.map(unit => ({
+          ...unit,
+          price: parseFloat((basePrice * (parseFloat(unit.conv) || 1)).toFixed(4)),
+        }));
+        // alt_price = price of largest non-base unit (legacy column some
+        // reports still read). Falls back to base price when no alt unit.
+        const nonBase = updatedUnits.filter(x => !x.is_base);
+        const altPrice = nonBase.length > 0
+          ? nonBase.sort((a, b) => parseFloat(b.conv) - parseFloat(a.conv))[0].price
+          : basePrice;
+        update.run(JSON.stringify(updatedUnits), basePrice, altPrice, id);
+        count++;
+      }
+      return count;
+    });
+
+    const updated = tx();
+    res.json({ updated });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 module.exports = router;
