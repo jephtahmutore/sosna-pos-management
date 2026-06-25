@@ -52,7 +52,13 @@ const AccountReceivables = () => {
   // v1.8.55 — triple-currency AR receipts (Sosna). usd/fra/k mirror the
   // Cashier Pay modal. Legacy bank/momo columns are no longer collected
   // from the UI but the backend still accepts them for backwards compat.
-  const [paymentForm, setPaymentForm] = useState({ usd_amount: '', fra_amount: '', k_amount: '', payment_date: todayStr(), reference: '', notes: '' });
+  // v1.8.56 — `sell_rate` / `sell_rate_k` are editable per-receipt
+  // overrides (default to the current FX rate at open time).
+  const [paymentForm, setPaymentForm] = useState({
+    usd_amount: '', fra_amount: '', k_amount: '',
+    sell_rate: '', sell_rate_k: '',
+    payment_date: todayStr(), reference: '', notes: '',
+  });
   const [statementModal, setStatementModal] = useState(null);
   // Lightweight modal for viewing a single order's items + payment breakdown from inside AR.
   const [orderDetail, setOrderDetail] = useState(null); // { loading, data?, error? }
@@ -232,11 +238,15 @@ const AccountReceivables = () => {
 
   const openPayment = (c) => {
     // v1.8.55 — default to USD pre-filled with the customer's balance.
-    // The cashier can clear it and enter FRA/K instead, or split across.
+    // v1.8.56 — pre-fill sell rates from the current live FX rates;
+    //          the accountant can override per-receipt if the customer
+    //          negotiated a different rate.
     setPaymentForm({
       usd_amount: c._balance < 0 ? Math.abs(c._balance).toFixed(2) : '',
       fra_amount: '',
       k_amount: '',
+      sell_rate:   SELL_RATE   > 0 ? String(SELL_RATE)   : '',
+      sell_rate_k: SELL_RATE_K > 0 ? String(SELL_RATE_K) : '',
       payment_date: todayStr(),
       reference: '', notes: '',
     });
@@ -246,18 +256,24 @@ const AccountReceivables = () => {
     const usd = parseFloat(paymentForm.usd_amount || 0) || 0;
     const fra = parseFloat(paymentForm.fra_amount || 0) || 0;
     const kAmt= parseFloat(paymentForm.k_amount   || 0) || 0;
-    const fraAsUsd = SELL_RATE   > 0 ? fra  / SELL_RATE   : 0;
-    const kAsUsd   = SELL_RATE_K > 0 ? kAmt / SELL_RATE_K : 0;
+    // v1.8.56 — use the per-receipt rate from the form (defaults to
+    // current live rate but the accountant may override).
+    const sellRate  = parseFloat(paymentForm.sell_rate   || 0) || 0;
+    const sellRateK = parseFloat(paymentForm.sell_rate_k || 0) || 0;
+    const fraAsUsd = sellRate  > 0 ? fra  / sellRate  : 0;
+    const kAsUsd   = sellRateK > 0 ? kAmt / sellRateK : 0;
     const totalUsd = usd + fraAsUsd + kAsUsd;
     if (!(totalUsd > 0)) { showToast('Enter at least one currency > 0', 'error'); return; }
+    if (fra > 0 && !(sellRate > 0))  { showToast('FRA Sell rate is required', 'error'); return; }
+    if (kAmt > 0 && !(sellRateK > 0)){ showToast('K Sell rate is required', 'error'); return; }
     try {
       await createCustomerPayment({
         customer_id: paymentModal.customer.id,
         usd_amount: usd,
         fra_amount: fra,
         k_amount:   kAmt,
-        selling_rate_used:   isDual ? SELL_RATE   : null,
-        selling_rate_k_used: hasK   ? SELL_RATE_K : null,
+        selling_rate_used:   isDual ? sellRate   : null,
+        selling_rate_k_used: hasK   ? sellRateK  : null,
         payment_date: paymentForm.payment_date,
         reference:    paymentForm.reference,
         notes:        paymentForm.notes,
@@ -536,6 +552,45 @@ const AccountReceivables = () => {
               <button onClick={() => setPaymentModal(null)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#6b7280' }}><FiX size={18} /></button>
             </div>
             <div style={{ padding: 22, display: 'grid', gap: 12 }}>
+              {/* v1.8.56 — per-receipt FX rate (defaults to live rate, editable).
+                  Only shown when FRA or K is enabled for this tenant. */}
+              {(isDual || hasK) && (
+                <div style={{ background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 8, padding: 12 }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                    <div style={{ fontSize: 11, fontWeight: 700, color: '#92400e', textTransform: 'uppercase', letterSpacing: 0.4 }}>FX Rate for this receipt</div>
+                    <button type="button"
+                      onClick={() => setPaymentForm({
+                        ...paymentForm,
+                        sell_rate:   SELL_RATE   > 0 ? String(SELL_RATE)   : '',
+                        sell_rate_k: SELL_RATE_K > 0 ? String(SELL_RATE_K) : '',
+                      })}
+                      style={{ padding: '3px 10px', fontSize: 11, background: '#fff', color: '#92400e', border: '1px solid #fde68a', borderRadius: 4, cursor: 'pointer', fontWeight: 600 }}>
+                      Reset to default
+                    </button>
+                  </div>
+                  <div style={{ display: 'grid', gridTemplateColumns: isDual && hasK ? '1fr 1fr' : '1fr', gap: 10 }}>
+                    {isDual && (
+                      <div>
+                        <label style={{ fontSize: 11, color: '#92400e', fontWeight: 600, display: 'block', marginBottom: 3 }}>Sell rate (paid in FRA)</label>
+                        <input type="number" min="0" step="0.01" value={paymentForm.sell_rate}
+                          onChange={e => setPaymentForm({ ...paymentForm, sell_rate: e.target.value })}
+                          placeholder={SELL_RATE > 0 ? String(SELL_RATE) : '0'}
+                          style={{ width: '100%', padding: '6px 8px', border: '1px solid #d1d5db', borderRadius: 6, fontSize: 13, fontWeight: 600, boxSizing: 'border-box' }} />
+                      </div>
+                    )}
+                    {hasK && (
+                      <div>
+                        <label style={{ fontSize: 11, color: '#92400e', fontWeight: 600, display: 'block', marginBottom: 3 }}>Sell rate (paid in K)</label>
+                        <input type="number" min="0" step="0.01" value={paymentForm.sell_rate_k}
+                          onChange={e => setPaymentForm({ ...paymentForm, sell_rate_k: e.target.value })}
+                          placeholder={SELL_RATE_K > 0 ? String(SELL_RATE_K) : '0'}
+                          style={{ width: '100%', padding: '6px 8px', border: '1px solid #d1d5db', borderRadius: 6, fontSize: 13, fontWeight: 600, boxSizing: 'border-box' }} />
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+
               {/* v1.8.55 — Triple-currency receipt: USD / FRA / K (no Bank/MoMo on Sosna). */}
               <div style={{ fontSize: 11, fontWeight: 700, color: '#6b7280', textTransform: 'uppercase', letterSpacing: 0.5 }}>Amount Paid (split across currencies)</div>
               {(() => {
@@ -564,8 +619,10 @@ const AccountReceivables = () => {
                 const usd = parseFloat(paymentForm.usd_amount || 0) || 0;
                 const fra = parseFloat(paymentForm.fra_amount || 0) || 0;
                 const kAmt= parseFloat(paymentForm.k_amount   || 0) || 0;
-                const fraAsUsd = SELL_RATE   > 0 ? fra  / SELL_RATE   : 0;
-                const kAsUsd   = SELL_RATE_K > 0 ? kAmt / SELL_RATE_K : 0;
+                const sellRate  = parseFloat(paymentForm.sell_rate   || 0) || 0;
+                const sellRateK = parseFloat(paymentForm.sell_rate_k || 0) || 0;
+                const fraAsUsd = sellRate  > 0 ? fra  / sellRate  : 0;
+                const kAsUsd   = sellRateK > 0 ? kAmt / sellRateK : 0;
                 const totalUsd = usd + fraAsUsd + kAsUsd;
                 return (
                   <div style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 10px', background: '#f9fafb', borderRadius: 6, fontSize: 13 }}>
