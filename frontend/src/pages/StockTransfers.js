@@ -256,18 +256,39 @@ function CreateTransferModal({ sourceSlug, branches, onClose, onCreated, onError
     return q ? products.filter(p => (p.name || '').toLowerCase().includes(q)) : products;
   }, [products, search]);
 
+  // v1.8.47 — input + cart speak the product's configured default unit
+  // (e.g. Box) instead of always the base unit (Bottle). cart.qty is the
+  // value the user typed *in that unit*. We convert to base only at
+  // submit time so the backend math (conversionToBase) stays identical.
+  const getDisplayUnit = (p) => {
+    const baseName = p?.unit || '';
+    let units = null;
+    if (p?.units_json) {
+      try { units = JSON.parse(p.units_json); } catch { units = null; }
+    }
+    if (!Array.isArray(units) || units.length === 0) return { name: baseName, conv: 1 };
+    const defaultName = (p?.default_unit || '').trim().toLowerCase();
+    if (!defaultName) return { name: baseName, conv: 1 };
+    const match = units.find(u => (u.name || '').toLowerCase() === defaultName && parseFloat(u.conv) > 0);
+    return match ? { name: match.name, conv: parseFloat(match.conv) } : { name: baseName, conv: 1 };
+  };
+
   const setQty = (p, qty) => {
     const n = parseFloat(qty) || 0;
     setCart(c => {
       const next = { ...c };
       if (n <= 0) delete next[p.sync_id];
-      else next[p.sync_id] = { product: p, qty: n };
+      else {
+        const u = getDisplayUnit(p);
+        next[p.sync_id] = { product: p, qty: n, unitName: u.name, unitConv: u.conv };
+      }
       return next;
     });
   };
 
   const cartItems = Object.values(cart);
-  const totalValue = cartItems.reduce((s, x) => s + x.qty * (x.product.cost_price || 0), 0);
+  // qty is in display unit; cost_price is per base unit — multiply by conv.
+  const totalValue = cartItems.reduce((s, x) => s + x.qty * (x.unitConv || 1) * (x.product.cost_price || 0), 0);
 
   const submit = async () => {
     if (!toSlug)          return onError('Pick a destination branch');
@@ -281,8 +302,10 @@ function CreateTransferModal({ sourceSlug, branches, onClose, onCreated, onError
         items: cartItems.map(x => ({
           product_sync_id: x.product.sync_id,
           product_name:    x.product.name,
+          // Always send in base unit — backend conversionToBase(prod, unit)
+          // expects (qty, unit) to be self-consistent. Easiest: convert here.
           unit:            x.product.unit,
-          quantity:        x.qty,
+          quantity:        x.qty * (x.unitConv || 1),
           cost_price:      x.product.cost_price || 0,
         })),
       });
@@ -331,23 +354,22 @@ function CreateTransferModal({ sourceSlug, branches, onClose, onCreated, onError
                   </thead>
                   <tbody>
                     {filtered.map(p => {
-                      // v1.8.40 — display in default unit + base in parens.
-                      // Send Qty input still expects base unit (Bottle)
-                      // — keeping the input label visible so user isn't
-                      // confused which unit to type in.
+                      // v1.8.47 — both On Hand display and Send Qty input now
+                      // use the product's configured default unit (e.g. Box).
                       const displayQty = formatStockForProduct(p.current_stock, p, {
                         showBaseInParens: true, decimals: 0,
                         allowNegative: true, preferDefaultUnit: true,
                       });
+                      const dispUnit = getDisplayUnit(p);
                       return (
                       <tr key={p.sync_id} style={{ borderTop: '1px solid #f1f5f9' }}>
                         <td style={tdS}>{p.name} <span style={{ color: '#94a3b8', fontSize: 10 }}>{p.unit}</span></td>
                         <td style={{ ...tdS, textAlign: 'right' }}>{displayQty}</td>
                         <td style={{ ...tdS, textAlign: 'right' }}>
-                          <input type="number" min="0" step="any" placeholder={`0 ${p.unit}`}
+                          <input type="number" min="0" step="any" placeholder={`0 ${dispUnit.name}`}
                             value={cart[p.sync_id]?.qty || ''}
                             onChange={e => setQty(p, e.target.value)}
-                            title={`Enter quantity in ${p.unit} (base unit)`}
+                            title={`Enter quantity in ${dispUnit.name}`}
                             style={{ width: 80, padding: '4px 6px', border: '1px solid #d1d5db', borderRadius: 4, fontSize: 12, textAlign: 'right' }} />
                         </td>
                       </tr>
@@ -369,20 +391,26 @@ function CreateTransferModal({ sourceSlug, branches, onClose, onCreated, onError
                   <p style={{ color: '#94a3b8', fontSize: 12, fontStyle: 'italic', textAlign: 'center', margin: '40px 0' }}>Enter quantities in the table to build the transfer.</p>
                 ) : (
                   <>
-                    {cartItems.map(x => (
-                      <div key={x.product.sync_id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '6px 4px', borderBottom: '1px dashed #e5e7eb' }}>
-                        <div>
-                          <div style={{ fontWeight: 600, fontSize: 13 }}>{x.product.name}</div>
-                          <div style={{ fontSize: 10, color: '#64748b' }}>{fmtQty(x.qty)} {x.product.unit} × {fmtMoney(x.product.cost_price)}</div>
+                    {cartItems.map(x => {
+                      const unitName = x.unitName || x.product.unit;
+                      const conv     = x.unitConv || 1;
+                      const perUnit  = (x.product.cost_price || 0) * conv;
+                      const lineTotal= x.qty * perUnit;
+                      return (
+                        <div key={x.product.sync_id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '6px 4px', borderBottom: '1px dashed #e5e7eb' }}>
+                          <div>
+                            <div style={{ fontWeight: 600, fontSize: 13 }}>{x.product.name}</div>
+                            <div style={{ fontSize: 10, color: '#64748b' }}>{fmtQty(x.qty)} {unitName} × {fmtMoney(perUnit)}</div>
+                          </div>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                            <strong style={{ fontSize: 13 }}>{fmtMoney(lineTotal)}</strong>
+                            <button onClick={() => setQty(x.product, 0)} style={{ background: 'none', border: 'none', color: '#dc2626', cursor: 'pointer', padding: 2 }}>
+                              <FiTrash2 size={14} />
+                            </button>
+                          </div>
                         </div>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                          <strong style={{ fontSize: 13 }}>{fmtMoney(x.qty * (x.product.cost_price || 0))}</strong>
-                          <button onClick={() => setQty(x.product, 0)} style={{ background: 'none', border: 'none', color: '#dc2626', cursor: 'pointer', padding: 2 }}>
-                            <FiTrash2 size={14} />
-                          </button>
-                        </div>
-                      </div>
-                    ))}
+                      );
+                    })}
                     <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 10, paddingTop: 8, borderTop: '1px solid #cbd5e1' }}>
                       <strong>Total value</strong>
                       <strong>{fmtMoney(totalValue)}</strong>
