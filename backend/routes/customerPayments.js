@@ -146,35 +146,72 @@ router.get('/', auth, readOnlyGuard, (req, res) => {
 // Mints one CR per non-zero method so the Cash Book reflects each cash event separately.
 router.post('/', auth, (req, res) => {
   try {
-    const { customer_id, cash_amount, bank_amount, momo_amount, payment_date, reference, notes } = req.body;
+    const {
+      customer_id, payment_date, reference, notes,
+      // legacy (still accepted from older clients / non-Sosna tenants)
+      cash_amount, bank_amount, momo_amount,
+      // v1.8.55 — triple-currency AR receipts (Sosna)
+      usd_amount, fra_amount, k_amount, selling_rate_used, selling_rate_k_used,
+    } = req.body;
     if (!customer_id) return res.status(400).json({ error: 'customer_id required' });
-    const cash = parseFloat(cash_amount || 0) || 0;
-    const bank = parseFloat(bank_amount || 0) || 0;
-    const momo = parseFloat(momo_amount || 0) || 0;
-    const total = cash + bank + momo;
-    if (!(total > 0)) return res.status(400).json({ error: 'At least one of Cash / Bank / Mobile Money must be > 0' });
+
+    // Detect which shape the client sent. New triple-currency clients
+    // send usd_amount / fra_amount / k_amount; old clients send
+    // cash_amount / bank_amount / momo_amount. Either is accepted.
+    const isTripleCcy = usd_amount !== undefined || fra_amount !== undefined || k_amount !== undefined;
+    const usd = parseFloat(usd_amount  || (isTripleCcy ? 0 : cash_amount) || 0) || 0;
+    const fra = parseFloat(fra_amount  || 0) || 0;
+    const kAmt= parseFloat(k_amount    || 0) || 0;
+    const bank = isTripleCcy ? 0 : (parseFloat(bank_amount || 0) || 0);
+    const momo = isTripleCcy ? 0 : (parseFloat(momo_amount || 0) || 0);
+    const sellRate  = parseFloat(selling_rate_used   || 0) || 0;
+    const sellRateK = parseFloat(selling_rate_k_used || 0) || 0;
+    const fraAsUsd  = sellRate  > 0 ? fra  / sellRate  : 0;
+    const kAsUsd    = sellRateK > 0 ? kAmt / sellRateK : 0;
+    const totalUsd  = usd + fraAsUsd + kAsUsd + bank + momo;
+    if (!(totalUsd > 0)) {
+      return res.status(400).json({ error: 'At least one of USD / FRA / K (or Cash / Bank / Mobile Money) must be > 0' });
+    }
     const customer = db.prepare('SELECT sync_id, name FROM customers WHERE id = ?').get(customer_id);
     if (!customer) return res.status(404).json({ error: 'Customer not found' });
     const tenantId = syncConfig.getTenantId(req);
     const { branchId, deviceId } = syncConfig.getConfig();
     const finalDate = payment_date || new Date().toISOString().slice(0, 10);
-    const methodLabel = deriveMethodLabel(cash, bank, momo);
+    // cash_amount stays as the dollar VALUE of the receipt — Cash Book
+    // and other legacy aggregations still SUM(cash_amount). For triple-
+    // currency, that's usd + fra-as-usd + k-as-usd.
+    const cashForLegacy = isTripleCcy ? (usd + fraAsUsd + kAsUsd) : usd;
+    const methodLabel = isTripleCcy
+      ? (() => {
+          const parts = [];
+          if (usd  > 0) parts.push('USD');
+          if (fra  > 0) parts.push('FRA');
+          if (kAmt > 0) parts.push('K');
+          return parts.length <= 1 ? (parts[0] || 'Cash') : 'Mixed';
+        })()
+      : deriveMethodLabel(usd, bank, momo);
     const paySyncId = randomUUID();
 
     const row = db.transaction(() => {
       const info = db.prepare(`
-        INSERT INTO customer_payments (customer_id, customer_sync_id, amount, cash_amount, bank_amount, momo_amount,
+        INSERT INTO customer_payments (customer_id, customer_sync_id, amount,
+                                       cash_amount, bank_amount, momo_amount,
+                                       usd_amount, fra_amount, k_amount,
+                                       selling_rate_used, selling_rate_k_used,
                                        payment_date, payment_method, reference, notes, created_by,
                                        sync_id, tenant_id, branch_id, device_id, synced, created_at, updated_at)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,datetime('now'),datetime('now'))
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,datetime('now'),datetime('now'))
       `).run(
-        customer_id, customer.sync_id, total, cash, bank, momo,
+        customer_id, customer.sync_id, totalUsd,
+        cashForLegacy, bank, momo,
+        usd, fra, kAmt,
+        sellRate || null, sellRateK || null,
         finalDate, methodLabel, reference || null, notes || null, req.user.id,
         paySyncId, tenantId, branchId, deviceId
       );
       const id = info.lastInsertRowid;
       const crSyncId = mintReceipt({
-        customerPaymentId: id, customer, cash, bank, momo, date: finalDate, notes,
+        customerPaymentId: id, customer, cash: cashForLegacy, bank, momo, date: finalDate, notes,
         createdBy: req.user.id, tenantId, branchId, deviceId,
       });
       if (crSyncId) {
@@ -192,33 +229,63 @@ router.post('/', auth, (req, res) => {
 // PUT — update a split-method payment. CRs are voided + re-minted from the new amounts.
 router.put('/:id', auth, (req, res) => {
   try {
-    const { cash_amount, bank_amount, momo_amount, payment_date, reference, notes } = req.body;
+    const {
+      payment_date, reference, notes,
+      // legacy
+      cash_amount, bank_amount, momo_amount,
+      // v1.8.55 triple-currency
+      usd_amount, fra_amount, k_amount, selling_rate_used, selling_rate_k_used,
+    } = req.body;
     const prev = db.prepare('SELECT customer_id, customer_sync_id FROM customer_payments WHERE id = ? AND tenant_id = ?')
       .get(req.params.id, req.user.tenantId);
     if (!prev) return res.status(404).json({ error: 'Payment not found' });
     const customer = db.prepare('SELECT sync_id, name FROM customers WHERE id = ?').get(prev.customer_id);
     if (!customer) return res.status(404).json({ error: 'Customer not found' });
 
-    const cash = parseFloat(cash_amount || 0) || 0;
-    const bank = parseFloat(bank_amount || 0) || 0;
-    const momo = parseFloat(momo_amount || 0) || 0;
-    const total = cash + bank + momo;
-    if (!(total > 0)) return res.status(400).json({ error: 'At least one of Cash / Bank / Mobile Money must be > 0' });
-    const methodLabel = deriveMethodLabel(cash, bank, momo);
+    const isTripleCcy = usd_amount !== undefined || fra_amount !== undefined || k_amount !== undefined;
+    const usd  = parseFloat(usd_amount  || (isTripleCcy ? 0 : cash_amount) || 0) || 0;
+    const fra  = parseFloat(fra_amount  || 0) || 0;
+    const kAmt = parseFloat(k_amount    || 0) || 0;
+    const bank = isTripleCcy ? 0 : (parseFloat(bank_amount || 0) || 0);
+    const momo = isTripleCcy ? 0 : (parseFloat(momo_amount || 0) || 0);
+    const sellRate  = parseFloat(selling_rate_used   || 0) || 0;
+    const sellRateK = parseFloat(selling_rate_k_used || 0) || 0;
+    const fraAsUsd  = sellRate  > 0 ? fra  / sellRate  : 0;
+    const kAsUsd    = sellRateK > 0 ? kAmt / sellRateK : 0;
+    const totalUsd  = usd + fraAsUsd + kAsUsd + bank + momo;
+    if (!(totalUsd > 0)) return res.status(400).json({ error: 'At least one of USD / FRA / K (or Cash / Bank / Mobile Money) must be > 0' });
+    const cashForLegacy = isTripleCcy ? (usd + fraAsUsd + kAsUsd) : usd;
+    const methodLabel = isTripleCcy
+      ? (() => {
+          const parts = [];
+          if (usd  > 0) parts.push('USD');
+          if (fra  > 0) parts.push('FRA');
+          if (kAmt > 0) parts.push('K');
+          return parts.length <= 1 ? (parts[0] || 'Cash') : 'Mixed';
+        })()
+      : deriveMethodLabel(usd, bank, momo);
     const tenantId = req.user.tenantId;
     const { branchId, deviceId } = syncConfig.getConfig();
 
     db.transaction(() => {
       db.prepare(`
-        UPDATE customer_payments SET amount = ?, cash_amount = ?, bank_amount = ?, momo_amount = ?,
+        UPDATE customer_payments SET amount = ?,
+          cash_amount = ?, bank_amount = ?, momo_amount = ?,
+          usd_amount = ?, fra_amount = ?, k_amount = ?,
+          selling_rate_used = ?, selling_rate_k_used = ?,
           payment_date = ?, payment_method = ?, reference = ?, notes = ?,
           updated_at = datetime('now'), synced = 0
         WHERE id = ? AND tenant_id = ?
-      `).run(total, cash, bank, momo, payment_date, methodLabel, reference || null, notes || null, req.params.id, tenantId);
+      `).run(totalUsd,
+             cashForLegacy, bank, momo,
+             usd, fra, kAmt,
+             sellRate || null, sellRateK || null,
+             payment_date, methodLabel, reference || null, notes || null,
+             req.params.id, tenantId);
 
       voidLinkedReceipts(parseInt(req.params.id));
       const crSyncId = mintReceipt({
-        customerPaymentId: parseInt(req.params.id), customer, cash, bank, momo,
+        customerPaymentId: parseInt(req.params.id), customer, cash: cashForLegacy, bank, momo,
         date: payment_date, notes, createdBy: req.user.id, tenantId, branchId, deviceId,
       });
       db.prepare('UPDATE customer_payments SET cash_receipt_sync_id = ? WHERE id = ?').run(crSyncId, req.params.id);

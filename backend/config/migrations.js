@@ -787,6 +787,16 @@ function initTenantDb(db) {
   addCol('customer_payments',  'cash_amount', 'REAL NOT NULL DEFAULT 0');
   addCol('customer_payments',  'bank_amount', 'REAL NOT NULL DEFAULT 0');
   addCol('customer_payments',  'momo_amount', 'REAL NOT NULL DEFAULT 0');
+  // v1.8.55 — triple-currency AR receipts (Sosna). cash_amount stays as
+  // the dollar VALUE of the receipt (matches existing cash_receipts /
+  // Cash Book aggregations). usd_amount is the physical USD portion;
+  // fra_amount + k_amount are the foreign-currency portions; the
+  // selling rates are snapshotted so historical receipts always reconcile.
+  addCol('customer_payments',  'usd_amount',         'REAL NOT NULL DEFAULT 0');
+  addCol('customer_payments',  'fra_amount',         'REAL NOT NULL DEFAULT 0');
+  addCol('customer_payments',  'k_amount',           'REAL NOT NULL DEFAULT 0');
+  addCol('customer_payments',  'selling_rate_used',  'REAL');
+  addCol('customer_payments',  'selling_rate_k_used','REAL');
   addCol('ap_payments',        'cash_amount', 'REAL NOT NULL DEFAULT 0');
   addCol('ap_payments',        'bank_amount', 'REAL NOT NULL DEFAULT 0');
   addCol('ap_payments',        'momo_amount', 'REAL NOT NULL DEFAULT 0');

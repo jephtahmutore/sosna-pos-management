@@ -3,7 +3,7 @@ import {
   getCustomers, getArStats,
   getCustomerStatement, createCustomerPayment,
   getCustomerPayments, deleteCustomerPayment,
-  getSettings, getOrder,
+  getSettings, getOrder, getCurrentFxRate,
 } from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import { useCurrency } from '../context/CurrencyContext';
@@ -32,8 +32,14 @@ const statusBadge = (status) => {
 
 const AccountReceivables = () => {
   const { hasPermission, user: authUser } = useAuth();
-  const { symbol: curSym } = useCurrency();
+  const { symbol: curSym, currencyMode } = useCurrency();
   const { t } = useLanguage();
+  // v1.8.55 — Sosna triple-currency gating + live FX rates for AR receipts.
+  const isDual = currencyMode === 'USD+FRA' || currencyMode === 'USD+FRA+K';
+  const [fxRate, setFxRate] = useState({ sell: 0, buy: 0, sellK: 0, buyK: 0 });
+  const SELL_RATE   = fxRate.sell;
+  const SELL_RATE_K = fxRate.sellK;
+  const hasK        = SELL_RATE_K > 0;
   // Local fmt — uses the tenant's primary currency symbol.
   const fmt = (n) => `${curSym}${parseFloat(n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
   const [businessInfo, setBusinessInfo] = useState({});
@@ -43,7 +49,10 @@ const AccountReceivables = () => {
   const [search, setSearch] = useState('');
   const [tab, setTab] = useState('receivables'); // receivables | payments
   const [paymentModal, setPaymentModal] = useState(null);
-  const [paymentForm, setPaymentForm] = useState({ cash_amount: '', bank_amount: '', momo_amount: '', payment_date: todayStr(), reference: '', notes: '' });
+  // v1.8.55 — triple-currency AR receipts (Sosna). usd/fra/k mirror the
+  // Cashier Pay modal. Legacy bank/momo columns are no longer collected
+  // from the UI but the backend still accepts them for backwards compat.
+  const [paymentForm, setPaymentForm] = useState({ usd_amount: '', fra_amount: '', k_amount: '', payment_date: todayStr(), reference: '', notes: '' });
   const [statementModal, setStatementModal] = useState(null);
   // Lightweight modal for viewing a single order's items + payment breakdown from inside AR.
   const [orderDetail, setOrderDetail] = useState(null); // { loading, data?, error? }
@@ -102,6 +111,19 @@ const AccountReceivables = () => {
   useEffect(() => {
     fetchAll();
     getSettings().then(r => setBusinessInfo(r.data?.business || {})).catch(() => {});
+    // v1.8.55 — pull current FX rates so the AR receipt can convert FRA/K
+    // to USD at the same rates the Cashier uses.
+    getCurrentFxRate().then(r => {
+      const d = r.data;
+      if (d && d.sell_rate > 0 && d.buy_rate > 0) {
+        setFxRate({
+          sell:  parseFloat(d.sell_rate)   || 0,
+          buy:   parseFloat(d.buy_rate)    || 0,
+          sellK: parseFloat(d.sell_rate_k || 0) || 0,
+          buyK:  parseFloat(d.buy_rate_k  || 0) || 0,
+        });
+      }
+    }).catch(() => {});
     window.addEventListener('sync-complete', fetchAll);
     return () => window.removeEventListener('sync-complete', fetchAll);
   }, [fetchAll]);
@@ -209,22 +231,37 @@ const AccountReceivables = () => {
   );
 
   const openPayment = (c) => {
-    // Default everything to Cash for the customer's balance; user can split as needed.
+    // v1.8.55 — default to USD pre-filled with the customer's balance.
+    // The cashier can clear it and enter FRA/K instead, or split across.
     setPaymentForm({
-      // Pre-fill the payment input with what the customer owes (negative balance under flipped convention).
-      cash_amount: c._balance < 0 ? Math.abs(c._balance).toFixed(2) : '',
-      bank_amount: '',
-      momo_amount: '',
+      usd_amount: c._balance < 0 ? Math.abs(c._balance).toFixed(2) : '',
+      fra_amount: '',
+      k_amount: '',
       payment_date: todayStr(),
       reference: '', notes: '',
     });
     setPaymentModal({ customer: c });
   };
   const savePayment = async () => {
-    const total = parseFloat(paymentForm.cash_amount || 0) + parseFloat(paymentForm.bank_amount || 0) + parseFloat(paymentForm.momo_amount || 0);
-    if (!(total > 0)) { showToast('Enter at least one method > 0', 'error'); return; }
+    const usd = parseFloat(paymentForm.usd_amount || 0) || 0;
+    const fra = parseFloat(paymentForm.fra_amount || 0) || 0;
+    const kAmt= parseFloat(paymentForm.k_amount   || 0) || 0;
+    const fraAsUsd = SELL_RATE   > 0 ? fra  / SELL_RATE   : 0;
+    const kAsUsd   = SELL_RATE_K > 0 ? kAmt / SELL_RATE_K : 0;
+    const totalUsd = usd + fraAsUsd + kAsUsd;
+    if (!(totalUsd > 0)) { showToast('Enter at least one currency > 0', 'error'); return; }
     try {
-      await createCustomerPayment({ customer_id: paymentModal.customer.id, ...paymentForm });
+      await createCustomerPayment({
+        customer_id: paymentModal.customer.id,
+        usd_amount: usd,
+        fra_amount: fra,
+        k_amount:   kAmt,
+        selling_rate_used:   isDual ? SELL_RATE   : null,
+        selling_rate_k_used: hasK   ? SELL_RATE_K : null,
+        payment_date: paymentForm.payment_date,
+        reference:    paymentForm.reference,
+        notes:        paymentForm.notes,
+      });
       setPaymentModal(null);
       await fetchAll();
       showToast('Payment recorded — Cash Receipt issued');
@@ -499,30 +536,44 @@ const AccountReceivables = () => {
               <button onClick={() => setPaymentModal(null)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#6b7280' }}><FiX size={18} /></button>
             </div>
             <div style={{ padding: 22, display: 'grid', gap: 12 }}>
-              {/* Split payment — any combination of Cash + Bank + MoMo */}
-              <div style={{ fontSize: 11, fontWeight: 700, color: '#6b7280', textTransform: 'uppercase', letterSpacing: 0.5 }}>Amount Paid (split across methods)</div>
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10 }}>
-                {[
-                  { key: 'cash_amount', label: 'Cash', color: '#16a34a' },
-                  { key: 'bank_amount', label: 'Bank', color: '#2563eb' },
-                  { key: 'momo_amount', label: 'MoMo', color: '#f59e0b' },
-                ].map((f, i) => (
-                  <div key={f.key}>
-                    <label style={{ fontSize: 11, color: f.color, fontWeight: 700, textTransform: 'uppercase', marginBottom: 3, display: 'block' }}>{f.label}</label>
-                    <input type="number" min="0" step="0.01" autoFocus={i === 0}
-                      value={paymentForm[f.key]}
-                      onChange={e => setPaymentForm({ ...paymentForm, [f.key]: e.target.value })}
-                      placeholder="0.00"
-                      style={{ width: '100%', padding: '8px 10px', border: `2px solid ${parseFloat(paymentForm[f.key] || 0) > 0 ? f.color : '#d1d5db'}`, borderRadius: 6, fontSize: 14, fontWeight: 600, color: parseFloat(paymentForm[f.key] || 0) > 0 ? f.color : '#374151', boxSizing: 'border-box' }} />
+              {/* v1.8.55 — Triple-currency receipt: USD / FRA / K (no Bank/MoMo on Sosna). */}
+              <div style={{ fontSize: 11, fontWeight: 700, color: '#6b7280', textTransform: 'uppercase', letterSpacing: 0.5 }}>Amount Paid (split across currencies)</div>
+              {(() => {
+                const fields = [
+                  { key: 'usd_amount', label: 'USD', color: '#16a34a', step: '0.01', placeholder: '0.00', show: true },
+                  { key: 'fra_amount', label: 'FRA', color: '#2563eb', step: '1',    placeholder: '0',    show: isDual },
+                  { key: 'k_amount',   label: 'K',   color: '#7c3aed', step: '1',    placeholder: '0',    show: hasK   },
+                ].filter(f => f.show);
+                const cols = `repeat(${fields.length}, 1fr)`;
+                return (
+                  <div style={{ display: 'grid', gridTemplateColumns: cols, gap: 10 }}>
+                    {fields.map((f, i) => (
+                      <div key={f.key}>
+                        <label style={{ fontSize: 11, color: f.color, fontWeight: 700, textTransform: 'uppercase', marginBottom: 3, display: 'block' }}>{f.label}</label>
+                        <input type="number" min="0" step={f.step} autoFocus={i === 0}
+                          value={paymentForm[f.key]}
+                          onChange={e => setPaymentForm({ ...paymentForm, [f.key]: e.target.value })}
+                          placeholder={f.placeholder}
+                          style={{ width: '100%', padding: '8px 10px', border: `2px solid ${parseFloat(paymentForm[f.key] || 0) > 0 ? f.color : '#d1d5db'}`, borderRadius: 6, fontSize: 14, fontWeight: 600, color: parseFloat(paymentForm[f.key] || 0) > 0 ? f.color : '#374151', boxSizing: 'border-box' }} />
+                      </div>
+                    ))}
                   </div>
-                ))}
-              </div>
-              <div style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 10px', background: '#f9fafb', borderRadius: 6, fontSize: 13 }}>
-                <span style={{ color: '#6b7280' }}>Total</span>
-                <span style={{ fontWeight: 800, color: '#1d4ed8' }}>
-                  {fmt(parseFloat(paymentForm.cash_amount || 0) + parseFloat(paymentForm.bank_amount || 0) + parseFloat(paymentForm.momo_amount || 0))}
-                </span>
-              </div>
+                );
+              })()}
+              {(() => {
+                const usd = parseFloat(paymentForm.usd_amount || 0) || 0;
+                const fra = parseFloat(paymentForm.fra_amount || 0) || 0;
+                const kAmt= parseFloat(paymentForm.k_amount   || 0) || 0;
+                const fraAsUsd = SELL_RATE   > 0 ? fra  / SELL_RATE   : 0;
+                const kAsUsd   = SELL_RATE_K > 0 ? kAmt / SELL_RATE_K : 0;
+                const totalUsd = usd + fraAsUsd + kAsUsd;
+                return (
+                  <div style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 10px', background: '#f9fafb', borderRadius: 6, fontSize: 13 }}>
+                    <span style={{ color: '#6b7280' }}>Total (≈ USD)</span>
+                    <span style={{ fontWeight: 800, color: totalUsd > 0 ? '#1d4ed8' : '#9ca3af' }}>{fmt(totalUsd)}</span>
+                  </div>
+                );
+              })()}
               <div className="form-group">
                 <label>Date</label>
                 <input type="date" value={paymentForm.payment_date} onChange={e => setPaymentForm({ ...paymentForm, payment_date: e.target.value })} />
