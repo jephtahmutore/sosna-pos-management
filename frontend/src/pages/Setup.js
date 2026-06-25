@@ -34,6 +34,9 @@ const Setup = ({ onComplete, startAtCreateAdmin = false }) => {
   const [showPassword, setShowPassword]   = useState(false);
   const [showConfirm, setShowConfirm]     = useState(false);
   const [adminPermissions, setAdminPermissions] = useState([]);
+  // v1.8.42 — state for the "Refresh from VPS" recovery action.
+  const [refreshState, setRefreshState] = useState('idle'); // 'idle' | 'running' | 'done' | 'error'
+  const [refreshMsg, setRefreshMsg] = useState('');
 
   const ALL_PERMISSIONS = ['POS','Sales','Stock','GRN','SIV','Reports','Accounting','Customers','Suppliers','Full Access'];
   const togglePermission = (perm) => {
@@ -245,6 +248,40 @@ const Setup = ({ onComplete, startAtCreateAdmin = false }) => {
               <div style={{ fontSize: 32, fontFamily: 'monospace', fontWeight: 700, letterSpacing: '6px', color: '#991b1b' }}>{existingBranchCode}</div>
             </div>
           )}
+          {/* v1.8.42 — recovery action. Clears the "synced=0" flag on
+              every local row, which unblocks the PROTECT-on-pull rule
+              so the next sync cycle overwrites local with VPS state.
+              Use when local data drifted (e.g. orders show wrong status
+              that's correct on web). Discards any unpushed local edits. */}
+          <div style={{ marginBottom: 12, padding: '12px 14px', background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 10 }}>
+            <div style={{ fontSize: 12, fontWeight: 700, color: '#92400e', marginBottom: 4 }}>⚠ Recovery: Refresh from VPS</div>
+            <div style={{ fontSize: 11, color: '#78350f', marginBottom: 8, lineHeight: 1.4 }}>
+              Use only if this PC's data is out of sync with the website. Clears pending sync flags so the next pull overwrites local data with VPS as truth. <strong>Any unpushed local edits will be lost.</strong>
+            </div>
+            <button
+              onClick={async () => {
+                if (refreshState === 'running') return;
+                if (!window.confirm('This will discard any local changes not yet pushed to the cloud, and overwrite this PC’s data with what the cloud has.\n\nProceed?')) return;
+                setRefreshState('running'); setRefreshMsg('');
+                try {
+                  const { clearPendingSyncFlags } = await import('../services/api');
+                  const res = await clearPendingSyncFlags();
+                  setRefreshState('done');
+                  setRefreshMsg(`Cleared ${res.data?.recordsCleared ?? 0} pending flag${res.data?.recordsCleared === 1 ? '' : 's'}. Next sync (~30s) will pull fresh data from VPS.`);
+                } catch (e) {
+                  setRefreshState('error');
+                  setRefreshMsg(e?.response?.data?.error || e.message || 'Refresh failed.');
+                }
+              }}
+              disabled={refreshState === 'running'}
+              style={{ width: '100%', padding: '10px', background: refreshState === 'running' ? '#fcd34d' : '#d97706', color: '#fff', border: 'none', borderRadius: 8, fontSize: 13, fontWeight: 700, cursor: refreshState === 'running' ? 'not-allowed' : 'pointer' }}>
+              {refreshState === 'running' ? 'Refreshing…' : 'Refresh from VPS (Clear Pending)'}
+            </button>
+            {refreshMsg && (
+              <div style={{ marginTop: 8, fontSize: 11, color: refreshState === 'error' ? '#b91c1c' : '#15803d', fontWeight: 600 }}>{refreshMsg}</div>
+            )}
+          </div>
+
           <button onClick={() => navigate('/dashboard')} style={{ width: '100%', padding: '12px', background: '#dc2626', color: '#fff', border: 'none', borderRadius: 8, fontSize: 15, fontWeight: 600, cursor: 'pointer', marginBottom: 10 }}>
             Go to Dashboard
           </button>

@@ -626,6 +626,34 @@ router.post('/force-resync', (req, res) => {
   }
 });
 
+// ─── POST /api/sync/clear-pending ────────────────────────────────────────────
+// v1.8.42 — OPPOSITE of force-resync. Flips synced=0 → synced=1 across all
+// SYNC_TABLES, so the PROTECT-on-pull rule (services/syncService.js:214-216)
+// stops blocking remote overwrites. Used to recover from "Electron stuck
+// with stale local state because pushes failed silently" — declares the
+// VPS as truth, drops any unpushed local edits.
+//
+// Also nukes last_pull_time so the next pull replays history from epoch
+// and definitely overwrites the freshly-unblocked rows.
+router.post('/clear-pending', (req, res) => {
+  try {
+    const result = {};
+    let total = 0;
+    for (const table of SYNC_TABLES) {
+      const cols = db.prepare(`PRAGMA table_info(${table})`).all().map(c => c.name);
+      if (cols.includes('synced')) {
+        const info = db.prepare(`UPDATE ${table} SET synced = 1 WHERE synced = 0`).run();
+        if (info.changes > 0) result[table] = info.changes;
+        total += info.changes;
+      }
+    }
+    db.prepare("DELETE FROM sync_config WHERE key = 'last_pull_time'").run();
+    res.json({ success: true, recordsCleared: total, byTable: result });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // ─── POST /api/sync/wipe-tenant ──────────────────────────────────────────────
 // Called by VPS: hard-deletes all data records for a given tenantId
 router.post('/wipe-tenant', (req, res) => {

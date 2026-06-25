@@ -486,6 +486,10 @@ export const deleteSalesReturn = (id) => api.delete(`/sales-returns/${id}`);
 
 // LAN Sync (Mother / Child architecture)
 export const getLanConfig = () => api.get('/sync/lan-config');
+// v1.8.42 — recovery helper. Marks every synced=0 row as synced=1 so the
+// PROTECT-on-pull rule stops blocking remote overwrites. Use when local
+// has drifted from VPS and you want VPS as truth.
+export const clearPendingSyncFlags = () => api.post('/sync/clear-pending');
 export const updateLanConfig = (data) => api.put('/sync/lan-config', data);
 export const getLanStatus = () => api.get('/sync/lan-status');
 
