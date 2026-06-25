@@ -100,7 +100,29 @@ router.get('/daily', auth, readOnlyGuard, (req, res) => {
        FROM orders WHERE ${orderDateClause} AND deleted_at IS NULL AND tenant_id = ?
        AND (status IS NULL OR status != 'Reversed')${userFilter}`
     ).get(...baseParams).total;
-    const usdNet = parseFloat(sumOrders('cash_received')) - parseFloat(sumOrders('change_amount'));
+    // v1.8.58 — DERIVE usdNet at query time instead of trusting the stored
+    // cash_received column. Some legacy / cross-device-synced rows have
+    // cash_received = amount_received (double-counting the FRA/K portion
+    // as USD), which inflates USD Expected by the foreign-as-USD amount.
+    // Deriving it from amount_received MINUS the FRA/K-as-USD portions
+    // is bulletproof regardless of how cash_received was stored.
+    //   usdCashFromAmount = SUM(amount_received - fra_received/sell - k_received/sellK)
+    //                       per order (using each row's snapshotted rates)
+    const usdCashRow = db.prepare(
+      `SELECT COALESCE(SUM(
+         MAX(0, COALESCE(amount_received, 0)
+                - (CASE WHEN COALESCE(selling_rate_used, 0)   > 0
+                        THEN COALESCE(fra_received, 0) / selling_rate_used
+                        ELSE 0 END)
+                - (CASE WHEN COALESCE(selling_rate_k_used, 0) > 0
+                        THEN COALESCE(k_received, 0) / selling_rate_k_used
+                        ELSE 0 END))
+       ), 0) AS total
+         FROM orders
+        WHERE ${orderDateClause} AND deleted_at IS NULL AND tenant_id = ?
+          AND (status IS NULL OR status != 'Reversed')${userFilter}`
+    ).get(...baseParams);
+    const usdNet = parseFloat(usdCashRow.total) - parseFloat(sumOrders('change_amount'));
     const fraNet = parseFloat(sumOrders('fra_received'))  - parseFloat(sumOrders('fra_change_given'));
     const kNet   = parseFloat(sumOrders('k_received'))    - parseFloat(sumOrders('k_change_given'));
 
