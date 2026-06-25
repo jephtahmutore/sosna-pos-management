@@ -74,11 +74,19 @@ export function altUnitCount(qty, conversion) {
 //
 // Pass the full product object — we read units_json (multi-unit) and fall back to alt_unit.
 export function formatStockForProduct(qty, product, opts = {}) {
-  const { showBaseInParens = true, decimals = 2 } = opts;
+  const {
+    showBaseInParens = true,
+    decimals = 2,
+    // v1.8.31 — for stock reports that prefer the configured default unit
+    // even when the qty is negative (over-issued) or smaller than the
+    // largest pack. e.g. Sales Inventory: '−106 Box' instead of
+    // '−2544 Bottle', '0 Box' instead of '0 Bottle'.
+    allowNegative = false,
+    preferDefaultUnit = false,
+  } = opts;
   const q = Number(qty) || 0;
   const base = product?.unit || '';
 
-  // Parse units. We avoid importing productUnits.js to keep this file dependency-free.
   let units = null;
   if (product?.units_json) {
     try { units = JSON.parse(product.units_json); } catch { units = null; }
@@ -87,30 +95,50 @@ export function formatStockForProduct(qty, product, opts = {}) {
     return formatStock(q, base, product?.alt_unit, product?.conversion_factor, opts);
   }
 
-  // v1.8.3: cascade through every configured packaging from largest to smallest
-  // before falling back to base. e.g. HUNTER DRY (Box=24, Six Pack=6, Bottle):
-  // 350 Box + 6 Bottle remainder → "350 Box + 1 Six Pack" (collapses cleanly).
   const nonBase = units
     .filter(u => !u.is_base && parseFloat(u.conv) > 1)
     .map(u => ({ name: u.name, conv: parseFloat(u.conv) }))
     .sort((a, b) => b.conv - a.conv);
 
-  const big = nonBase[0]; // largest
-  if (!big || q <= 0 || q < big.conv) {
+  // v1.8.31 — if the product has a `default_unit` set, prefer that one
+  // for single-unit display (always show in box if box is default, even
+  // when the qty is 0 or < 1 box). Falls back to largest if no default.
+  const defaultName = (product?.default_unit || '').trim();
+  const defaultMatch = defaultName ? nonBase.find(u => u.name.toLowerCase() === defaultName.toLowerCase()) : null;
+  const big = defaultMatch || nonBase[0];
+
+  // Bail out to base unit only when there is no alt packaging at all, or
+  // when the qty is exactly 0 and we're not forcing default-unit display.
+  if (!big) {
+    return `${round2(q).toFixed(decimals)} ${base}`.trim();
+  }
+  if ((q < 0 && !allowNegative) || (q !== 0 && q > -big.conv && q < big.conv && !preferDefaultUnit)) {
     return `${round2(q).toFixed(decimals)} ${base}`.trim();
   }
 
-  // Greedy break-down from largest to smallest packaging.
-  let remaining = q;
+  // v1.8.31 — for preferDefaultUnit, render purely in the chosen unit
+  // (no greedy multi-pack cascade) so the table reads cleanly.
+  if (preferDefaultUnit && defaultMatch) {
+    const inUnit = round2(q / defaultMatch.conv);
+    const core = `${inUnit.toFixed(decimals)} ${defaultMatch.name}`;
+    return showBaseInParens
+      ? `${core} (${round2(q).toFixed(decimals)} ${base})`
+      : core;
+  }
+
+  // Greedy break-down from largest to smallest packaging (legacy behaviour).
+  const sign = q < 0 ? -1 : 1;
+  let remaining = Math.abs(q);
   const parts = [];
   for (const u of nonBase) {
     const n = Math.floor(remaining / u.conv);
     if (n > 0) {
-      parts.push(`${n} ${u.name}`);
+      parts.push(`${sign < 0 ? '−' : ''}${n} ${u.name}`);
       remaining = round2(remaining - n * u.conv);
     }
   }
-  if (remaining > 0) parts.push(`${remaining.toFixed(decimals)} ${base}`);
+  if (remaining > 0) parts.push(`${sign < 0 ? '−' : ''}${remaining.toFixed(decimals)} ${base}`);
+  if (parts.length === 0) parts.push(`0 ${base}`);
 
   const core = parts.join(' + ');
   return showBaseInParens

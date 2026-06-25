@@ -710,12 +710,19 @@ const ItemDetails = () => {
             <p style={{ fontSize: 13, color: '#475569', lineHeight: 1.5, margin: '0 0 14px 0' }}>
               This will issue ONE SIV that moves every item with store balance &gt; 0 onto the sales floor. Enter the manager password to confirm.
             </p>
+            {/* v1.8.5: autoComplete=new-password + a unique name keep Chrome
+                from auto-filling the saved manager password. We don't want
+                the browser to remember this — it's an action gate, not a login. */}
             <input
               type="password"
+              name="bulk-siv-confirm-action"
               value={bulkSivPassword}
               onChange={e => { setBulkSivPassword(e.target.value); setBulkSivError(''); }}
               onKeyDown={e => { if (e.key === 'Enter') runBulkSiv(); }}
               autoFocus
+              autoComplete="new-password"
+              data-lpignore="true"
+              data-1p-ignore="true"
               placeholder="Password"
               style={{ width: '100%', padding: '10px 12px', border: '1.5px solid #d1d5db', borderRadius: 8, fontSize: 14, marginBottom: 8, boxSizing: 'border-box' }}
             />

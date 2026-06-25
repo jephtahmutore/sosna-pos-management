@@ -795,6 +795,12 @@ function initTenantDb(db) {
   addCol('cash_receipts',      'cash_amount', 'REAL NOT NULL DEFAULT 0');
   addCol('cash_receipts',      'bank_amount', 'REAL NOT NULL DEFAULT 0');
   addCol('cash_receipts',      'momo_amount', 'REAL NOT NULL DEFAULT 0');
+  // v1.8.31 — triple-currency receipts. Same pattern as payment_vouchers
+  // (see v1.8.5). One CR = one currency. Legacy cash/bank/momo kept for
+  // back-compat; reads should prefer usd/fra/k via CASE WHEN.
+  addCol('cash_receipts',      'usd_amount',  'REAL NOT NULL DEFAULT 0');
+  addCol('cash_receipts',      'fra_amount',  'REAL NOT NULL DEFAULT 0');
+  addCol('cash_receipts',      'k_amount',    'REAL NOT NULL DEFAULT 0');
   addCol('payment_vouchers',   'cash_amount', 'REAL NOT NULL DEFAULT 0');
   addCol('payment_vouchers',   'bank_amount', 'REAL NOT NULL DEFAULT 0');
   addCol('payment_vouchers',   'momo_amount', 'REAL NOT NULL DEFAULT 0');

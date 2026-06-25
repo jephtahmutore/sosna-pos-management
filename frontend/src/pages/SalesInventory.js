@@ -552,16 +552,17 @@ const SalesInventory = () => {
                           <strong style={{ color: '#111827' }}>{product.name}</strong>
                         </div>
                       </td>
-                      {/* v1.8.30 — display in largest configured packaging
-                          (e.g. '10 box' instead of '60 pcs'). showBaseInParens
-                          off to keep the table compact. Falls back to raw
-                          base-unit count when the product has no alt unit. */}
-                      <td style={{ textAlign: 'right' }}>{formatStockForProduct(r.openingBalance, product, { showBaseInParens: false, decimals: 0 })}</td>
-                      <td style={{ textAlign: 'right', color: r.input > 0 ? '#2563eb' : '#9ca3af' }}>{formatStockForProduct(r.input, product, { showBaseInParens: false, decimals: 0 })}</td>
-                      <td style={{ textAlign: 'right', fontWeight: 600 }}>{formatStockForProduct(r.totalStock, product, { showBaseInParens: false, decimals: 0 })}</td>
-                      <td style={{ textAlign: 'right', color: r.totalSales > 0 ? '#dc2626' : '#9ca3af' }}>{formatStockForProduct(r.totalSales, product, { showBaseInParens: false, decimals: 0 })}</td>
-                      <td style={{ textAlign: 'right', color: r.salesReturns > 0 ? '#d97706' : '#9ca3af' }}>{r.salesReturns > 0 ? formatStockForProduct(r.salesReturns, product, { showBaseInParens: false, decimals: 0 }) : '—'}</td>
-                      <td style={{ textAlign: 'right', fontWeight: 600 }}>{formatStockForProduct(r.salesBalance, product, { showBaseInParens: false, decimals: 0 })}</td>
+                      {/* v1.8.31 — always render in the product's configured
+                          default unit (e.g. 'Box'). preferDefaultUnit forces
+                          single-unit display; allowNegative renders '−106 Box'
+                          for over-issued stock instead of falling back to
+                          base 'Bottle' which made the table inconsistent. */}
+                      <td style={{ textAlign: 'right' }}>{formatStockForProduct(r.openingBalance, product, { showBaseInParens: false, decimals: 2, allowNegative: true, preferDefaultUnit: true })}</td>
+                      <td style={{ textAlign: 'right', color: r.input > 0 ? '#2563eb' : '#9ca3af' }}>{formatStockForProduct(r.input, product, { showBaseInParens: false, decimals: 2, allowNegative: true, preferDefaultUnit: true })}</td>
+                      <td style={{ textAlign: 'right', fontWeight: 600 }}>{formatStockForProduct(r.totalStock, product, { showBaseInParens: false, decimals: 2, allowNegative: true, preferDefaultUnit: true })}</td>
+                      <td style={{ textAlign: 'right', color: r.totalSales > 0 ? '#dc2626' : '#9ca3af' }}>{formatStockForProduct(r.totalSales, product, { showBaseInParens: false, decimals: 2, allowNegative: true, preferDefaultUnit: true })}</td>
+                      <td style={{ textAlign: 'right', color: r.salesReturns > 0 ? '#d97706' : '#9ca3af' }}>{r.salesReturns > 0 ? formatStockForProduct(r.salesReturns, product, { showBaseInParens: false, decimals: 2, allowNegative: true, preferDefaultUnit: true }) : '—'}</td>
+                      <td style={{ textAlign: 'right', fontWeight: 600 }}>{formatStockForProduct(r.salesBalance, product, { showBaseInParens: false, decimals: 2, allowNegative: true, preferDefaultUnit: true })}</td>
 
                       {/* v1.8.30 — Actual Balance / Difference / Reason
                           columns removed per user request. */}

@@ -27,15 +27,30 @@ router.get('/', auth, readOnlyGuard, (req, res) => {
 router.get('/stats', auth, readOnlyGuard, (req, res) => {
   try {
     const tenantId = req.user.tenantId;
-    const today = db.prepare("SELECT COALESCE(SUM(amount),0) AS total FROM cash_receipts WHERE deleted_at IS NULL AND tenant_id = ? AND date = DATE('now')").get(tenantId);
-    const month = db.prepare("SELECT COALESCE(SUM(amount),0) AS total FROM cash_receipts WHERE deleted_at IS NULL AND tenant_id = ? AND date >= date('now', 'start of month')").get(tenantId);
+    // v1.8.31 — per-currency totals. Same CASE-WHEN pattern as PV stats
+    // (v1.8.25): prefer new usd/fra/k columns, fall back to legacy
+    // cash/bank/momo on rows where new columns are 0.
+    const usdExpr = `COALESCE(SUM(CASE WHEN COALESCE(usd_amount,0) > 0 THEN usd_amount ELSE COALESCE(cash_amount,0) END), 0)`;
+    const fraExpr = `COALESCE(SUM(CASE WHEN COALESCE(fra_amount,0) > 0 THEN fra_amount ELSE COALESCE(bank_amount,0) END), 0)`;
+    const kExpr   = `COALESCE(SUM(CASE WHEN COALESCE(k_amount,  0) > 0 THEN k_amount   ELSE COALESCE(momo_amount,0) END), 0)`;
+    const totalsRow = (whereExtra, params) => db.prepare(
+      `SELECT ${usdExpr} AS usd, ${fraExpr} AS fra, ${kExpr} AS k
+       FROM cash_receipts WHERE deleted_at IS NULL AND tenant_id = ?${whereExtra}`
+    ).get(...params);
+    const today = totalsRow(" AND date = DATE('now')", [tenantId]);
+    const month = totalsRow(" AND date >= date('now', 'start of month')", [tenantId]);
+    const all   = totalsRow('', [tenantId]);
     const count = db.prepare('SELECT COUNT(*) AS cnt FROM cash_receipts WHERE deleted_at IS NULL AND tenant_id = ?').get(tenantId);
-    const avg = db.prepare('SELECT COALESCE(AVG(amount),0) AS avg FROM cash_receipts WHERE deleted_at IS NULL AND tenant_id = ?').get(tenantId);
     res.json({
-      todayReceipts: parseFloat(today.total),
-      thisMonth: parseFloat(month.total),
+      // Legacy USD-only fields kept for any caller still reading them.
+      todayReceipts: parseFloat(today.usd) || 0,
+      thisMonth:     parseFloat(month.usd) || 0,
       totalReceipts: count.cnt,
-      avgReceipt: Math.round(parseFloat(avg.avg))
+      avgReceipt:    count.cnt > 0 ? Math.round((parseFloat(all.usd) || 0) / count.cnt) : 0,
+      // v1.8.31 — per-currency breakdowns.
+      today: { usd: parseFloat(today.usd) || 0, fra: parseFloat(today.fra) || 0, k: parseFloat(today.k) || 0 },
+      month: { usd: parseFloat(month.usd) || 0, fra: parseFloat(month.fra) || 0, k: parseFloat(month.k) || 0 },
+      total: { usd: parseFloat(all.usd)   || 0, fra: parseFloat(all.fra)   || 0, k: parseFloat(all.k)   || 0 },
     });
   } catch (error) {
     res.status(500).json({ error: error.message });
