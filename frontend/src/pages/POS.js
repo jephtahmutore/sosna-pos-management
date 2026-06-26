@@ -988,6 +988,11 @@ const POS = () => {
         k_received: kReceived,
         selling_rate_k_used: hasK ? SELL_RATE_K : null,
         buying_rate_k_used:  hasK ? BUY_RATE_K  : null,
+        // v1.8.68 — which drawer holds the over-payment (when cashier didn't
+        // physically hand back the full change). Backend defaults to the
+        // currency the customer paid in when this is blank. Credit-sale
+        // overrides never carry a keptCcy, so the OR fallback is harmless.
+        overpaid_kept_ccy: (override && override.keptCcy) || null,
         // Only sent when an Administrator picked a non-today date in the Pay modal.
         // Backend re-validates the role before honouring it.
         sale_date: (isAdmin && saleDate && saleDate !== todayStr()) ? saleDate : null,
@@ -1943,6 +1948,35 @@ const POS = () => {
                           <span style={{ fontWeight: 700, color: '#dc2626' }}>{money(netRemaining)}</span>
                         </div>
                       )}
+                      {/* v1.8.68 — when cashier keeps over-payment, ask which drawer holds it */}
+                      {netRemaining > 0.001 && (() => {
+                        const defaultCcy = payModal.keptCcy
+                          || (cashFRANow > 0 && cashNow <= 0 ? 'FRA' : 'USD');
+                        return (
+                          <div style={{ marginTop: 8, padding: '8px 10px', background: '#fffbeb', border: '1px solid #fcd34d', borderRadius: 6 }}>
+                            <div style={{ fontSize: 11, color: '#92400e', fontWeight: 700, marginBottom: 6 }}>
+                              Over-payment kept in drawer:
+                            </div>
+                            <div style={{ display: 'flex', gap: 6 }}>
+                              {['USD', 'FRA'].map(c => {
+                                const active = defaultCcy === c;
+                                return (
+                                  <button key={c} type="button"
+                                    onClick={() => setPayModal({ ...payModal, keptCcy: c })}
+                                    style={{
+                                      flex: 1, padding: '6px 8px', borderRadius: 5,
+                                      border: active ? '2px solid #d97706' : '1px solid #fcd34d',
+                                      background: active ? '#fef3c7' : '#fff',
+                                      color: '#78350f', fontWeight: 700, fontSize: 11, cursor: 'pointer',
+                                    }}>
+                                    {c}
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        );
+                      })()}
                     </div>
                   )}
                 </div>
@@ -1955,7 +1989,14 @@ const POS = () => {
                 </button>
                 <button
                   onClick={() => {
-                    const breakdown = { cash: cashNow, momo: momoNow, bank: bankNow };
+                    // v1.8.68 — propagate keptCcy default (if no explicit pick) so
+                    // backend can fall back correctly even when the picker wasn't touched.
+                    const inferredKeptCcy = payModal.keptCcy
+                      || (cashFRANow > 0 && cashNow <= 0 ? 'FRA' : 'USD');
+                    const breakdown = {
+                      cash: cashNow, momo: momoNow, bank: bankNow,
+                      keptCcy: netRemaining > 0.001 ? inferredKeptCcy : null,
+                    };
                     setPayModal(null);
                     handleCheckout(breakdown);
                   }}

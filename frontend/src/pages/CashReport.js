@@ -76,6 +76,9 @@ const CashReport = () => {
   // received per currency (net of change), independent of what the cashier
   // typed into the form. Difference per currency = counted − expected.
   const [expectedByCcy, setExpectedByCcy] = useState({ usd: 0, fra: 0, k: 0 });
+  // v1.8.68 — over-collections kept by cashier (per source currency + per-order rows)
+  const [overpaidByCcy, setOverpaidByCcy] = useState({ usd: 0, fra: 0, k: 0 });
+  const [overpaidRows, setOverpaidRows] = useState([]);
   // v1.8.14 — per-currency expenses paid out of the cash drawer today.
   // Subtracted from each currency's Expected so the diff stays accurate
   // (USD expenses don't deplete FRA drawer, etc.).
@@ -194,6 +197,23 @@ const CashReport = () => {
     const cid = cashierId !== undefined ? cashierId : selectedCashier;
     const daily = await fetchDaily(d, cid);
     if (!isLatest()) return; // stale: a newer loadDate has already started
+
+    // v1.8.68 — per-order over-collection rows for the panel.
+    try {
+      const startLocal = `${d} 00:00:00`;
+      const endLocal   = `${d} 23:59:59`;
+      const fromUtcS = toSqliteUTC(startLocal);
+      const toUtcS   = toSqliteUTC(endLocal);
+      const opqs = `date=${d}&cashier_id=${cid || 0}&from_utc=${encodeURIComponent(fromUtcS)}&to_utc=${encodeURIComponent(toUtcS)}`;
+      const opRes = await fetch(`${API_BASE}/cash-reports/overpaid?${opqs}`, {
+        headers: { 'Authorization': `Bearer ${getToken()}` }
+      });
+      if (isLatest()) {
+        const list = opRes.ok ? await opRes.json() : [];
+        setOverpaidRows(Array.isArray(list) ? list : []);
+      }
+    } catch { if (isLatest()) setOverpaidRows([]); }
+
     if (daily) {
       setDailyRevenue(parseFloat(daily.total_revenue || 0));
       // v1.8.11 — snapshot per-currency expected from POS (orders).
@@ -207,6 +227,12 @@ const CashReport = () => {
         usd: parseFloat(daily.usd_expenses || 0) || 0,
         fra: parseFloat(daily.fra_expenses || 0) || 0,
         k:   parseFloat(daily.k_expenses   || 0) || 0,
+      });
+      // v1.8.68 — over-collections snapshot for the "Over-Collections" panel.
+      setOverpaidByCcy({
+        usd: parseFloat(daily.usd_overpaid_kept || 0) || 0,
+        fra: parseFloat(daily.fra_overpaid_kept || 0) || 0,
+        k:   parseFloat(daily.k_overpaid_kept   || 0) || 0,
       });
       // v1.8.20 — POS snapshot of credit issued today (so the card can show
       // Counted vs Expected the same way the cash cards do).
@@ -1040,6 +1066,58 @@ const CashReport = () => {
           </div>
         </div>
       </div>
+
+      {/* v1.8.68 — Customer Over-Collections. Shows over-payments the cashier
+          kept in the drawer (no change physically returned). Each row sits in
+          its own currency bucket so no drawer Diff line is polluted. */}
+      {(overpaidRows.length > 0 || overpaidByCcy.usd > 0 || overpaidByCcy.fra > 0 || overpaidByCcy.k > 0) && (
+        <div style={{ marginTop: 16, padding: '14px 18px', background: '#fffbeb', border: '1px solid #fcd34d', borderRadius: 10 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
+            <div style={{ fontSize: 13, fontWeight: 700, color: '#92400e' }}>
+              💰 Customer Over-Collections (kept in drawer)
+            </div>
+            <div style={{ fontSize: 12, color: '#78350f' }}>
+              USD <strong>+${parseFloat(overpaidByCcy.usd).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</strong>
+              {' · '}
+              FRA <strong>+{parseFloat(overpaidByCcy.fra).toLocaleString(undefined, { maximumFractionDigits: 0 })}</strong>
+              {' · '}
+              K <strong>+{parseFloat(overpaidByCcy.k).toLocaleString(undefined, { maximumFractionDigits: 0 })}</strong>
+            </div>
+          </div>
+          {overpaidRows.length > 0 && (
+            <div style={{ overflow: 'auto' }}>
+              <table style={{ width: '100%', fontSize: 12, borderCollapse: 'collapse' }}>
+                <thead>
+                  <tr style={{ background: '#fef3c7', color: '#78350f' }}>
+                    <th style={{ padding: '6px 8px', textAlign: 'left' }}>Order</th>
+                    <th style={{ padding: '6px 8px', textAlign: 'left' }}>Customer</th>
+                    <th style={{ padding: '6px 8px', textAlign: 'left' }}>Cashier</th>
+                    <th style={{ padding: '6px 8px', textAlign: 'right' }}>Sale</th>
+                    <th style={{ padding: '6px 8px', textAlign: 'right' }}>Kept</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {overpaidRows.map(r => {
+                    const amt = parseFloat(r.amt || 0);
+                    const ccy = r.ccy || '—';
+                    const sym = ccy === 'USD' ? '$' : '';
+                    const dec = ccy === 'USD' ? 2 : 0;
+                    return (
+                      <tr key={r.id} style={{ borderTop: '1px solid #fde68a' }}>
+                        <td style={{ padding: '6px 8px', color: '#374151' }}>{r.order_number}</td>
+                        <td style={{ padding: '6px 8px', color: '#374151' }}>{r.customer_name || '—'}</td>
+                        <td style={{ padding: '6px 8px', color: '#374151' }}>{r.cashier_name || '—'}</td>
+                        <td style={{ padding: '6px 8px', textAlign: 'right', color: '#6b7280' }}>${parseFloat(r.total_amount || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+                        <td style={{ padding: '6px 8px', textAlign: 'right', fontWeight: 700, color: '#92400e' }}>{ccy} +{sym}{amt.toLocaleString(undefined, { minimumFractionDigits: dec, maximumFractionDigits: dec })}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* v1.8.6 — Currency Exchanges for this date+cashier (drawer scope).
           Append-only ledger; reverse a mistake by recording the opposite.

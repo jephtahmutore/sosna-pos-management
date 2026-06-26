@@ -56,6 +56,9 @@ export default function Cashier() {
   const [changeGivenUSD, setChangeGivenUSD] = useState('');
   const [changeGivenFRA, setChangeGivenFRA] = useState('');
   const [changeGivenK,   setChangeGivenK]   = useState('');
+  // v1.8.68 — which drawer holds the over-payment the cashier KEPT (no change
+  // physically returned). Defaulted from the currency the customer paid most in.
+  const [keptCcy, setKeptCcy] = useState('');
   const [confirm, setConfirm] = useState(null);   // { ...calc }
   const [submitting, setSubmitting] = useState(false);
   const [toast, setToast] = useState(null);
@@ -116,7 +119,7 @@ export default function Cashier() {
   const openOrder = async (id) => {
     setLoadingDetail(true);
     setAmountPaidUSD(''); setAmountPaidFRA(''); setAmountPaidK('');
-    setChangeGivenUSD(''); setChangeGivenFRA(''); setChangeGivenK('');
+    setChangeGivenUSD(''); setChangeGivenFRA(''); setChangeGivenK(''); setKeptCcy('');
     refreshFxRate();
     try {
       const res = await getOrder(id);
@@ -186,6 +189,10 @@ export default function Cashier() {
         sell_rate:    SELL_RATE,
         buy_rate_k:   BUY_RATE_K,
         sell_rate_k:  SELL_RATE_K,
+        // v1.8.68 — which drawer the over-payment was kept in (when cashier
+        // didn't physically return the change). Backend defaults to the
+        // currency the customer paid in if this is blank.
+        overpaid_kept_ccy: confirm.netRemaining > 0.005 ? (keptCcy || '') : '',
       });
 
       // Snapshot for the printed receipt BEFORE we clear state.
@@ -513,6 +520,36 @@ export default function Cashier() {
                       </div>
                       )}
                     </div>
+                    {/* v1.8.68 — when cashier overpaid and is keeping some change, ask which drawer */}
+                    {calc.netRemaining > 0.005 && (() => {
+                      const defaultCcy = keptCcy
+                        || (calc.paidFRA > 0 && calc.paidUSD <= 0 && calc.paidK <= 0 ? 'FRA'
+                           : calc.paidK   > 0 && calc.paidUSD <= 0 && calc.paidFRA <= 0 ? 'K'
+                           : 'USD');
+                      return (
+                        <div style={{ marginTop: 10, padding: '10px 12px', background: '#fffbeb', border: '1px solid #fcd34d', borderRadius: 8 }}>
+                          <div style={{ fontSize: 11, color: '#92400e', fontWeight: 600, marginBottom: 6 }}>
+                            Customer over-paid by {fmtUSD(calc.netRemaining)} — kept in drawer:
+                          </div>
+                          <div style={{ display: 'flex', gap: 8 }}>
+                            {['USD', 'FRA', 'K'].map(c => {
+                              const active = defaultCcy === c;
+                              return (
+                                <button key={c} type="button" onClick={() => setKeptCcy(c)}
+                                  style={{
+                                    flex: 1, padding: '8px 10px', borderRadius: 6,
+                                    border: active ? '2px solid #d97706' : '1px solid #fcd34d',
+                                    background: active ? '#fef3c7' : '#fff',
+                                    color: '#78350f', fontWeight: 700, fontSize: 12, cursor: 'pointer',
+                                  }}>
+                                  {c}
+                                </button>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      );
+                    })()}
                     {(calc.givenUSD > 0 || calc.givenFRA > 0 || calc.givenK > 0) && (() => {
                       const exact     = Math.abs(calc.netRemaining) < 0.01;
                       const overpaid  = calc.netRemaining < -0.01;

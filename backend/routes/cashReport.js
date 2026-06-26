@@ -95,7 +95,10 @@ router.get('/daily', auth, readOnlyGuard, (req, res) => {
 
     // v1.8.1 — Sosna is cash-only across 3 currencies (USD / FRA / K).
     // Each bucket is NET of change given out in that same currency.
-    //   USD = cash_received - change_amount (USD change)
+    //   USD = cash_received - usd_change_given (v1.8.68: was change_amount,
+    //         which mixed currencies and made FRA-overpaid orders show a
+    //         phantom USD surplus. usd_change_given holds ONLY physical USD
+    //         the cashier handed back.)
     //   FRA = fra_received  - fra_change_given
     //   K   = k_received    - k_change_given
     // No more cash/momo/bank split — those columns are legacy and kept at 0.
@@ -106,9 +109,22 @@ router.get('/daily', auth, readOnlyGuard, (req, res) => {
     ).get(...baseParams).total;
     // v1.8.67 — Pure POS net. Deposits don't touch the till in Sosna's
     // operational model (cashier → manager → HQ).
-    const usdNet = parseFloat(sumOrders('cash_received')) - parseFloat(sumOrders('change_amount'));
+    const usdNet = parseFloat(sumOrders('cash_received')) - parseFloat(sumOrders('usd_change_given'));
     const fraNet = parseFloat(sumOrders('fra_received'))  - parseFloat(sumOrders('fra_change_given'));
     const kNet   = parseFloat(sumOrders('k_received'))    - parseFloat(sumOrders('k_change_given'));
+
+    // v1.8.68 — over-collections breakdown. When customer overpays and cashier
+    // keeps the surplus, the over-payment lives in the drawer of the currency
+    // it was paid in. Reported here so it's visible without polluting any
+    // drawer's Diff line.
+    const overpaidByCcy = db.prepare(
+      `SELECT
+         COALESCE(SUM(CASE WHEN overpaid_kept_ccy = 'USD' THEN overpaid_kept_amt ELSE 0 END), 0) AS usd,
+         COALESCE(SUM(CASE WHEN overpaid_kept_ccy = 'FRA' THEN overpaid_kept_amt ELSE 0 END), 0) AS fra,
+         COALESCE(SUM(CASE WHEN overpaid_kept_ccy = 'K'   THEN overpaid_kept_amt ELSE 0 END), 0) AS k
+       FROM orders WHERE ${orderDateClause} AND deleted_at IS NULL AND tenant_id = ?
+       AND (status IS NULL OR status != 'Reversed')${userFilter}`
+    ).get(...baseParams);
 
     // CREDIT SALES ISSUED bucket = today's new receivables (unpaid portion of today's sales).
     // This is informational — represents money owed, NOT cash received.
@@ -163,11 +179,52 @@ router.get('/daily', auth, readOnlyGuard, (req, res) => {
       usd_expenses: parseFloat(expensesByCcy.usd) || 0,
       fra_expenses: parseFloat(expensesByCcy.fra) || 0,
       k_expenses:   parseFloat(expensesByCcy.k)   || 0,
+      // v1.8.68 — over-collections kept by cashier (per source currency).
+      usd_overpaid_kept: parseFloat(overpaidByCcy.usd) || 0,
+      fra_overpaid_kept: parseFloat(overpaidByCcy.fra) || 0,
+      k_overpaid_kept:   parseFloat(overpaidByCcy.k)   || 0,
       pending: parseFloat(pendingSales.total),
       credit_sales: parseFloat(creditSales.total),
       expenses: parseFloat(expenses.total),
       total_revenue: parseFloat(totalRevenue.total),
     });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// v1.8.68 — per-order over-collections for the day. Returns one row per
+// order where the cashier kept an over-payment in the drawer (overpaid_kept_amt > 0).
+router.get('/overpaid', auth, readOnlyGuard, (req, res) => {
+  try {
+    const date = req.query.date || new Date().toISOString().split('T')[0];
+    const cashierId = req.query.cashier_id ? parseInt(req.query.cashier_id) : 0;
+    const fromUtc = req.query.from_utc;
+    const toUtc   = req.query.to_utc;
+    const useRange = !!(fromUtc && toUtc);
+    const dateClause = useRange
+      ? 'o.created_at >= ? AND o.created_at <= ?'
+      : 'DATE(o.created_at) = ?';
+    const dateParams = useRange ? [fromUtc, toUtc] : [date];
+    const userFilter = cashierId > 0 ? ' AND o.created_by = ?' : '';
+    const params = cashierId > 0
+      ? [...dateParams, req.user.tenantId, cashierId]
+      : [...dateParams, req.user.tenantId];
+    const rows = db.prepare(
+      `SELECT o.id, o.order_number, o.customer_name, o.total_amount,
+              o.overpaid_kept_ccy AS ccy, o.overpaid_kept_amt AS amt,
+              o.selling_rate_used, o.selling_rate_k_used,
+              o.created_at,
+              u.first_name || ' ' || u.last_name AS cashier_name
+         FROM orders o
+         LEFT JOIN users u ON o.created_by = u.id
+        WHERE ${dateClause} AND o.deleted_at IS NULL AND o.tenant_id = ?
+          AND (o.status IS NULL OR o.status != 'Reversed')
+          AND COALESCE(o.overpaid_kept_amt, 0) > 0
+          ${userFilter}
+        ORDER BY o.created_at DESC`
+    ).all(...params);
+    res.json(rows);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }

@@ -185,6 +185,9 @@ router.post('/', auth, (req, res) => {
       currency, fra_received, fra_change_given, selling_rate_used, buying_rate_used,
       // Triple-currency K bucket (Sosna). POS Credit Sale modal now sends these.
       k_received, k_change_given, selling_rate_k_used, buying_rate_k_used,
+      // v1.8.68 — per-currency change tracking. Optional from frontend; if
+      // not sent, derived below from change_amount minus fra/k change-given.
+      usd_change_given, overpaid_kept_ccy, overpaid_kept_amt,
       // 3-station workflow (kassumbalesa1): when the Sales station confirms an
       // order, status='PENDING_PAYMENT' is sent. We then skip credit checks,
       // skip stock movements (stock decrements at Dispatch), and skip profit
@@ -207,6 +210,35 @@ router.post('/', auth, (req, res) => {
       ? parseFloat(selling_rate_k_used) || null : null;
     const buyingRateKUsed  = buying_rate_k_used  !== undefined && buying_rate_k_used  !== null
       ? parseFloat(buying_rate_k_used)  || null : null;
+
+    // v1.8.68 — per-currency change tracking. Three fields are accepted
+    // explicitly from the client; when missing we derive them so the bookkeeping
+    // is correct even for older POS clients that haven't been updated yet.
+    const _changeOwedUSD = parseFloat(change_amount || 0) || 0;
+    const _fraGivenAsUSD = (sellingRateUsed  || 0) > 0 ? fraChangeGiven / sellingRateUsed  : 0;
+    const _kGivenAsUSD   = (sellingRateKUsed || 0) > 0 ? kChangeGiven   / sellingRateKUsed : 0;
+    let overpaidKeptCcy = (overpaid_kept_ccy || '').toUpperCase();
+    if (!['USD', 'FRA', 'K'].includes(overpaidKeptCcy)) overpaidKeptCcy = null;
+    let overpaidKeptAmt = parseFloat(overpaid_kept_amt || 0) || 0;
+    // When the client tells us a kept-currency but no amount, derive from the
+    // shortfall: change_amount MINUS what was physically given in any currency.
+    // This is the common path for POS.js which only sends keptCcy.
+    let usdChangeGiven;
+    if (usd_change_given !== undefined && usd_change_given !== null) {
+      usdChangeGiven = parseFloat(usd_change_given) || 0;
+    } else if (overpaidKeptCcy) {
+      // Cashier kept the over-payment → no USD was returned for that portion.
+      usdChangeGiven = 0;
+    } else {
+      usdChangeGiven = Math.max(0, _changeOwedUSD - _fraGivenAsUSD - _kGivenAsUSD);
+    }
+    if (overpaidKeptCcy && overpaidKeptAmt < 0.005) {
+      const keptUSD = Math.max(0, _changeOwedUSD - _fraGivenAsUSD - _kGivenAsUSD - usdChangeGiven);
+      if (overpaidKeptCcy === 'USD')      overpaidKeptAmt = keptUSD;
+      else if (overpaidKeptCcy === 'FRA') overpaidKeptAmt = (sellingRateUsed  || 0) > 0 ? keptUSD * sellingRateUsed  : 0;
+      else if (overpaidKeptCcy === 'K')   overpaidKeptAmt = (sellingRateKUsed || 0) > 0 ? keptUSD * sellingRateKUsed : 0;
+    }
+    if (overpaidKeptAmt < 0.005) { overpaidKeptCcy = null; overpaidKeptAmt = 0; }
     // Administrator-only back-dating: when the POS Pay modal sends an explicit
     // sale_date (YYYY-MM-DD), an Administrator can override the server clock.
     // For any other role we silently ignore it.
@@ -303,16 +335,18 @@ router.post('/', auth, (req, res) => {
       // Cashier inbox can show who created it and when.
       const ordSql = `INSERT INTO orders (order_number, customer_name, customer_id, customer_sync_id, subtotal, tax_amount, total_amount, discount,
           amount_received, cash_received, momo_received, bank_received,
-          change_amount, payment_method, created_by,
+          change_amount, usd_change_given, overpaid_kept_ccy, overpaid_kept_amt,
+          payment_method, created_by,
           currency, fra_received, fra_change_given, selling_rate_used, buying_rate_used,
           k_received, k_change_given, selling_rate_k_used, buying_rate_k_used,
           status, sales_user_id, sales_at,
           sync_id, tenant_id, branch_id, device_id, synced, created_at, updated_at)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,${tsExpr},?,?,?,?,0,${tsExpr},${tsExpr})`;
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,${tsExpr},?,?,?,?,0,${tsExpr},${tsExpr})`;
       const ordArgs = [orderNum, customer_name, customer_id || null, customer_sync_id || null,
             subtotal, tax_amount, total_amount, discount || 0,
             finalAmountReceived, cashIn, momoIn, bankIn,
-            change_amount || 0, payment_method || 'Cash', req.user.id,
+            change_amount || 0, usdChangeGiven, overpaidKeptCcy, overpaidKeptAmt,
+            payment_method || 'Cash', req.user.id,
             orderCurrency, fraReceived, fraChangeGiven, sellingRateUsed, buyingRateUsed,
             kReceived, kChangeGiven, sellingRateKUsed, buyingRateKUsed,
             orderStatus,
@@ -484,6 +518,10 @@ router.put('/:id/collect-payment', auth, requirePagePerm('Cashier'), (req, res) 
       // v1.7.0 — third currency (K). Optional; cashier sends 0 / null when
       // not using K. Math: same Sirak pattern as FRA, just adds a 3rd term.
       paid_k, given_k, sell_rate_k, buy_rate_k,
+      // v1.8.68 — over-payment kept by cashier (no change handed back).
+      // Cashier picks which drawer holds the surplus so Cash Report doesn't
+      // bleed it into the wrong currency.
+      overpaid_kept_ccy,
     } = req.body;
     const paidUSD = parseFloat(paid_usd || 0) || 0;
     const paidFRA = parseFloat(paid_fra || 0) || 0;
@@ -514,6 +552,29 @@ router.put('/:id/collect-payment', auth, requirePagePerm('Cashier'), (req, res) 
       const totalDue = parseFloat(order.total_amount || 0);
       const change   = Math.max(0, totalAmountPaid - totalDue);
       const unpaid   = Math.max(0, totalDue - totalAmountPaid);
+
+      // v1.8.68 — figure out the over-payment kept in the drawer (USD-equivalent
+      // returned-as-change MINUS what cashier physically returned). What's left
+      // is "kept" — by default in the currency the over-payment came from.
+      const givenUSDasUSD = givenUSD;
+      const givenFRAasUSD = sellRate  > 0 ? givenFRA / sellRate  : 0;
+      const givenKasUSD   = sellRateK > 0 ? givenK   / sellRateK : 0;
+      const totalGivenAsUSD = givenUSDasUSD + givenFRAasUSD + givenKasUSD;
+      const overpaidKeptUSD = Math.max(0, change - totalGivenAsUSD);
+      // Pick currency: explicit param wins; else the currency the customer
+      // paid the most in (FRA-only → FRA, K-only → K, USD-only → USD).
+      let keptCcy = (overpaid_kept_ccy || '').toUpperCase();
+      if (overpaidKeptUSD < 0.005) {
+        keptCcy = null;
+      } else if (!['USD', 'FRA', 'K'].includes(keptCcy)) {
+        if      (paidFRA > 0 && paidUSD <= 0 && paidK   <= 0) keptCcy = 'FRA';
+        else if (paidK   > 0 && paidUSD <= 0 && paidFRA <= 0) keptCcy = 'K';
+        else                                                   keptCcy = 'USD';
+      }
+      let keptAmt = 0;
+      if (keptCcy === 'FRA')      keptAmt = sellRate  > 0 ? overpaidKeptUSD * sellRate  : 0;
+      else if (keptCcy === 'K')   keptAmt = sellRateK > 0 ? overpaidKeptUSD * sellRateK : 0;
+      else if (keptCcy === 'USD') keptAmt = overpaidKeptUSD;
 
       // v1.8.49 — credit-at-Cashier. When the order has a registered
       // customer attached (set on the Sales/Reception screen), the Cashier
@@ -577,6 +638,9 @@ router.put('/:id/collect-payment', auth, requirePagePerm('Cashier'), (req, res) 
                momo_received       = 0,
                bank_received       = 0,
                change_amount       = ?,
+               usd_change_given    = ?,
+               overpaid_kept_ccy   = ?,
+               overpaid_kept_amt   = ?,
                fra_received        = ?,
                fra_change_given    = ?,
                selling_rate_used   = ?,
@@ -596,6 +660,9 @@ router.put('/:id/collect-payment', auth, requirePagePerm('Cashier'), (req, res) 
         totalAmountPaid,
         paidUSD,
         change,
+        givenUSD,
+        keptCcy,
+        keptAmt,
         paidFRA, givenFRA, sellRate || null, buyRate || null,
         paidK,   givenK,   sellRateK || null, buyRateK || null,
         paymentMethod,

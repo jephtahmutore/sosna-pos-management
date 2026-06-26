@@ -1554,6 +1554,30 @@ function initTenantDb(db) {
   addCol('orders',   'selling_rate_k_used','REAL');
   addCol('orders',   'buying_rate_k_used', 'REAL');
 
+  // v1.8.68 — split phantom-debt change_amount into per-currency tracking.
+  // BEFORE: change_amount stored USD-equivalent of every over-payment, even
+  // when the over-payment was paid in FRA/K. Cash Report subtracted it from
+  // the USD drawer → phantom surplus on USD when customer overpaid in FRA.
+  // AFTER: usd_change_given holds ONLY physical USD returned. overpaid_kept_*
+  // captures over-payments the cashier kept in the original currency.
+  addCol('orders',   'usd_change_given',   'REAL NOT NULL DEFAULT 0');
+  addCol('orders',   'overpaid_kept_ccy',  'TEXT');   // 'USD' | 'FRA' | 'K' | NULL
+  addCol('orders',   'overpaid_kept_amt',  'REAL NOT NULL DEFAULT 0'); // in source ccy
+
+  // Backfill historical rows: pre-v1.8.68 change_amount stored the
+  // USD-equivalent of cashier-returned change, so seed usd_change_given
+  // with it (preserves existing Cash Report numbers). The new code paths
+  // write to usd_change_given directly going forward.
+  try {
+    db.prepare(`
+      UPDATE orders
+         SET usd_change_given = COALESCE(change_amount, 0)
+       WHERE usd_change_given = 0
+         AND COALESCE(change_amount, 0) > 0
+         AND deleted_at IS NULL
+    `).run();
+  } catch { /* fresh DB */ }
+
   // ── v1.8.58 — SELF-HEALING cash_received cleanup (was one-time in v1.8.53) ──
   // Foreign-currency-only payments stored the dollar-VALUE in cash_received,
   // double-counting against the FRA/K bucket. The original v1.8.53 backfill

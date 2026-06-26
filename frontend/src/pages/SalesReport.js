@@ -141,12 +141,31 @@ const SalesReport = () => {
   // Each in its own currency: USD net of USD change, FRA net of FRA change,
   // K net of K change. Sosna is cash-only across 3 currencies (no card / MoMo
   // / bank); these three buckets sum to the cash drawer in each currency.
+  // v1.8.68 — switched USD subtraction from change_amount (USD-equivalent of
+  // ALL change owed) to usd_change_given (physical USD returned only). Fixes
+  // the phantom negative-USD when customer overpaid in FRA.
   const totalUsdReceived = activeOrders.reduce((s, o) =>
-    s + parseFloat(o.cash_received || 0) - parseFloat(o.change_amount || 0), 0);
+    s + parseFloat(o.cash_received || 0) - parseFloat(o.usd_change_given ?? o.change_amount ?? 0), 0);
   const totalFraReceived = activeOrders.reduce((s, o) =>
     s + parseFloat(o.fra_received || 0) - parseFloat(o.fra_change_given || 0), 0);
   const totalKReceived = activeOrders.reduce((s, o) =>
     s + parseFloat(o.k_received || 0) - parseFloat(o.k_change_given || 0), 0);
+
+  // v1.8.68 — over-collections kept by cashier, summed per source currency.
+  const totalOverpaidUSD = activeOrders.reduce((s, o) =>
+    s + (o.overpaid_kept_ccy === 'USD' ? parseFloat(o.overpaid_kept_amt || 0) : 0), 0);
+  const totalOverpaidFRA = activeOrders.reduce((s, o) =>
+    s + (o.overpaid_kept_ccy === 'FRA' ? parseFloat(o.overpaid_kept_amt || 0) : 0), 0);
+  const totalOverpaidK = activeOrders.reduce((s, o) =>
+    s + (o.overpaid_kept_ccy === 'K' ? parseFloat(o.overpaid_kept_amt || 0) : 0), 0);
+  const totalOverpaidAsUSD = activeOrders.reduce((s, o) => {
+    const amt = parseFloat(o.overpaid_kept_amt || 0);
+    if (amt <= 0) return s;
+    if (o.overpaid_kept_ccy === 'USD') return s + amt;
+    if (o.overpaid_kept_ccy === 'FRA' && parseFloat(o.selling_rate_used   || 0) > 0) return s + amt / parseFloat(o.selling_rate_used);
+    if (o.overpaid_kept_ccy === 'K'   && parseFloat(o.selling_rate_k_used || 0) > 0) return s + amt / parseFloat(o.selling_rate_k_used);
+    return s;
+  }, 0);
 
   const handleView = async (orderId) => {
     setViewLoading(true);
@@ -741,6 +760,17 @@ const SalesReport = () => {
           <div>
             <div style={{ fontSize: 12, fontWeight: 600, opacity: 0.85, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 4 }}>{t('totalRevenue')}</div>
             <div style={{ fontSize: 24, fontWeight: 800, lineHeight: 1 }}>{curSym}{(parseFloat(totalRevenue)||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</div>
+            {totalOverpaidAsUSD > 0.005 && (
+              <div style={{ fontSize: 11, opacity: 0.9, marginTop: 3, color: '#fef3c7' }}>
+                + Over-collected ≈ {curSym}{totalOverpaidAsUSD.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}
+                {' '}
+                <span style={{ opacity: 0.8 }}>
+                  ({totalOverpaidUSD > 0 ? `USD ${totalOverpaidUSD.toFixed(2)}` : ''}
+                  {totalOverpaidFRA > 0 ? `${totalOverpaidUSD > 0 ? ' · ' : ''}FRA ${totalOverpaidFRA.toFixed(0)}` : ''}
+                  {totalOverpaidK   > 0 ? `${(totalOverpaidUSD > 0 || totalOverpaidFRA > 0) ? ' · ' : ''}K ${totalOverpaidK.toFixed(0)}` : ''})
+                </span>
+              </div>
+            )}
             <div style={{ fontSize: 11, opacity: 0.7, marginTop: 3 }}>{activeOrders.length} order(s){filtered.length > activeOrders.length ? ` · ${filtered.length - activeOrders.length} reversed` : ''}</div>
           </div>
         </div>
