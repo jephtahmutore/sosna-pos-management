@@ -495,4 +495,124 @@ router.get('/cash-position', hqAuth, (req, res) => {
   }
 });
 
+// ─── v1.8.65 — HQ Transit Variances ─────────────────────────────────────────
+// Unified list of variance rows from BOTH:
+//   - master.db.transfer_variances (Inter-Branch Transfers)
+//   - master.db.hq_purchase_items WHERE received_qty < dispatched_qty OR
+//     reason IN ('Damaged','Lost') (HQ Purchases dropshipped to branches)
+// Each row carries: source ('TRANSFER' | 'HQ_PURCHASE'), branch slugs,
+// product, sent/received/variance qty, reason, notes, status (OPEN | RESOLVED).
+// Filters: ?source=, ?reason=, ?status=, ?slug= (matches either from/to).
+router.get('/variances', hqAuth, (req, res) => {
+  try {
+    const { source, reason, status, slug } = req.query || {};
+    // Transfer variances
+    let transferRows = [];
+    if (!source || source === 'TRANSFER') {
+      const where = ['1=1'];
+      const params = [];
+      if (reason) { where.push('reason = ?'); params.push(reason); }
+      if (slug)   { where.push('(from_slug = ? OR to_slug = ?)'); params.push(slug, slug); }
+      if (status === 'OPEN')     where.push('resolved_at IS NULL');
+      if (status === 'RESOLVED') where.push('resolved_at IS NOT NULL');
+      transferRows = masterDb.prepare(`
+        SELECT
+          'TRANSFER'        AS source,
+          id, sync_id, transfer_sync_id, transfer_number,
+          from_slug, to_slug,
+          product_sync_id, product_name, unit,
+          sent_qty, received_qty, variance_qty,
+          reason, notes,
+          received_by, received_by_name,
+          created_at,
+          resolved_at, resolution
+        FROM transfer_variances
+        WHERE ${where.join(' AND ')}
+        ORDER BY created_at DESC
+      `).all(...params);
+    }
+
+    // HQ purchase variances — items where the count doesn't match.
+    let purchaseRows = [];
+    if (!source || source === 'HQ_PURCHASE') {
+      const where = [
+        "(COALESCE(received_qty, dispatched_qty) < dispatched_qty OR reason IN ('Damaged','Lost'))",
+        "status IN ('GRN_SUBMITTED','CONFIRMED')",
+      ];
+      const params = [];
+      if (reason) { where.push('reason = ?'); params.push(reason); }
+      if (slug)   { where.push('destination_slug = ?'); params.push(slug); }
+      // No resolved-tracking on purchase items yet — treat all as OPEN.
+      if (status === 'RESOLVED') where.push('1=0');
+      purchaseRows = masterDb.prepare(`
+        SELECT
+          'HQ_PURCHASE'        AS source,
+          pi.id,
+          NULL                 AS sync_id,
+          NULL                 AS transfer_sync_id,
+          p.purchase_number    AS transfer_number,
+          'hq'                 AS from_slug,
+          pi.destination_slug  AS to_slug,
+          pi.product_sync_id, pi.product_name, pi.unit,
+          pi.dispatched_qty    AS sent_qty,
+          COALESCE(pi.received_qty, pi.dispatched_qty) AS received_qty,
+          (pi.dispatched_qty - COALESCE(pi.received_qty, pi.dispatched_qty)) AS variance_qty,
+          COALESCE(pi.reason,
+            CASE WHEN COALESCE(pi.received_qty, pi.dispatched_qty) < pi.dispatched_qty THEN 'Short' ELSE 'OK' END
+          ) AS reason,
+          pi.variance_notes    AS notes,
+          pi.received_by, pi.received_by_name,
+          pi.received_at       AS created_at,
+          NULL                 AS resolved_at,
+          NULL                 AS resolution
+        FROM hq_purchase_items pi
+        LEFT JOIN hq_purchases p ON p.id = pi.purchase_id
+        WHERE ${where.join(' AND ')}
+        ORDER BY pi.received_at DESC
+      `).all(...params);
+    }
+
+    const all = [...transferRows, ...purchaseRows]
+      .sort((a, b) => String(b.created_at || '').localeCompare(String(a.created_at || '')));
+
+    res.json({
+      variances: all,
+      stats: {
+        total: all.length,
+        open:  all.filter(v => !v.resolved_at).length,
+        short:    all.filter(v => v.reason === 'Short').length,
+        damaged:  all.filter(v => v.reason === 'Damaged').length,
+        lost:     all.filter(v => v.reason === 'Lost').length,
+      },
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// PUT /api/hq/variances/transfer/:syncId/resolve
+// Marks a transfer_variance row as resolved with a resolution code.
+router.put('/variances/transfer/:syncId/resolve', hqAuth, (req, res) => {
+  try {
+    const { resolution, notes } = req.body || {};
+    const allowed = new Set(['WRITE_OFF', 'RECOVERED']);
+    if (!allowed.has(resolution)) {
+      return res.status(400).json({ error: 'resolution must be WRITE_OFF or RECOVERED' });
+    }
+    const row = masterDb.prepare('SELECT * FROM transfer_variances WHERE sync_id = ?').get(req.params.syncId);
+    if (!row) return res.status(404).json({ error: 'Variance not found' });
+    if (row.resolved_at) return res.status(400).json({ error: 'Already resolved' });
+    masterDb.prepare(`
+      UPDATE transfer_variances
+         SET resolved_at = datetime('now'),
+             resolution = ?,
+             notes = COALESCE(?, notes)
+       WHERE sync_id = ?
+    `).run(resolution, notes || null, req.params.syncId);
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 module.exports = router;

@@ -202,6 +202,10 @@ export const getOutgoingTransfers = (params) => api.get('/transfers/outgoing', {
 export const getIncomingTransfers = (params) => api.get('/transfers/incoming', { params });
 export const createTransfer = (data) => api.post('/transfers', data);
 export const receiveTransfer = (id, data) => api.put(`/transfers/${id}/receive`, data || {});
+
+// v1.8.65 — HQ Transit Variances (cross-source: Inter-Branch Transfers + HQ Purchases).
+export const getHqVariances = (params) => api.get('/hq/variances', { params });
+export const resolveTransferVariance = (syncId, data) => api.put(`/hq/variances/transfer/${syncId}/resolve`, data || {});
 export const cancelTransfer = (id) => api.put(`/transfers/${id}/cancel`);
 
 // v1.8.57 — Branch → HQ Cash Deposit workflow.

@@ -285,6 +285,7 @@ const Layout = () => {
       '/hq/products': 'HQ Products',
       '/hq/purchases': 'HQ Purchases',
       '/hq/confirm-grn': 'Confirm GRN',
+      '/hq/variances':   'Transit Variances',
       '/hq/confirm-damages': 'Confirm Damages',
       '/hq/suppliers': 'HQ Suppliers',
       '/stock/incoming': 'Incoming Stock',
@@ -404,6 +405,15 @@ const Layout = () => {
               <FiCheckCircle className="nav-icon" />
               {!collapsed && <span>Confirm GRN</span>}
               {!collapsed && badges.hq_pending_grn > 0 && <SidebarBadge n={badges.hq_pending_grn} />}
+            </div>
+          )}
+          {/* v1.8.65 — Transit Variances dashboard (HQ only). Unified view
+              of shortages / damages / losses from both Inter-Branch Transfers
+              and HQ Purchases. */}
+          {hq && (
+            <div className={`nav-item ${isActive('/hq/variances') ? 'active' : ''}`} onClick={() => navigate('/hq/variances')}>
+              <FiAlertTriangle className="nav-icon" />
+              {!collapsed && <span>Transit Variances</span>}
             </div>
           )}
           {hq && (

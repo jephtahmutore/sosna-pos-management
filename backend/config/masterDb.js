@@ -358,6 +358,9 @@ try {
     addCol('confirmed_by_name', 'TEXT');
     addCol('confirmed_at',      'TEXT');
     addCol('confirm_notes',     'TEXT');
+    // v1.8.65 — reason vocabulary aligned with transfer_variances:
+    // OK / Short / Damaged / Lost. Existing rows default to OK on read.
+    addCol('reason',            'TEXT');
     // Status rename — only on rows that still carry the legacy labels.
     masterDb.prepare(`
       UPDATE hq_purchase_items SET status = 'AWAITING_GRN'

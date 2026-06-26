@@ -57,6 +57,7 @@ export default function IncomingStock() {
   const openReceive = (it) => setReceiving({
     item: it,
     received_qty: String(it.dispatched_qty || ''),
+    reason: 'OK',
     notes: '',
     submitting: false,
   });
@@ -69,6 +70,7 @@ export default function IncomingStock() {
     try {
       await submitHqPurchaseGrn(receiving.item.id, {
         received_qty: qty,
+        reason: receiving.reason || 'OK',
         variance_notes: receiving.notes || null,
       });
       flash('GRN submitted — waiting for HQ to confirm before stock is sellable.', 'success');
@@ -182,11 +184,33 @@ export default function IncomingStock() {
   );
 }
 
+// v1.8.65 — reason vocabulary aligned with transfer_variances.
+const RECEIVE_REASONS = [
+  { value: 'OK',      label: 'OK (qty matches)' },
+  { value: 'Short',   label: 'Short (fewer arrived)' },
+  { value: 'Damaged', label: 'Damaged' },
+  { value: 'Lost',    label: 'Lost in transit' },
+];
+
 function ReceiveModal({ state, setState, onCancel, onSubmit }) {
-  const { item, received_qty, notes, submitting } = state;
+  const { item, received_qty, reason, notes, submitting } = state;
   const dispatched = parseFloat(item.dispatched_qty || 0);
   const received   = parseFloat(received_qty) || 0;
   const variance   = received - dispatched;
+  const isOk       = Math.abs(variance) < 0.0001;
+
+  // Auto-bump reason when qty changes, but preserve explicit Damaged/Lost.
+  const onQtyChange = (val) => {
+    setState(s => {
+      const recv = parseFloat(val || 0);
+      const matchOk = !isNaN(recv) && Math.abs(recv - dispatched) < 0.0001;
+      const next = { ...s, received_qty: val };
+      if (s.reason === 'OK' || s.reason === 'Short') {
+        next.reason = matchOk ? 'OK' : 'Short';
+      }
+      return next;
+    });
+  };
   return (
     <div style={overlay}>
       <div style={{ background: '#fff', borderRadius: 12, width: 'min(520px, 92vw)', padding: 22 }}>
@@ -208,14 +232,28 @@ function ReceiveModal({ state, setState, onCancel, onSubmit }) {
         <div style={{ marginTop: 12 }}>
           <label style={lbl}>Actual received qty (your count)</label>
           <input type="number" min="0" step="any" value={received_qty}
-            onChange={e => setState(s => ({ ...s, received_qty: e.target.value }))}
+            onChange={e => onQtyChange(e.target.value)}
             style={{ ...inp, fontSize: 18, fontWeight: 700 }}
             autoFocus />
         </div>
 
-        {Math.abs(variance) > 0.0001 && (
-          <div style={{ marginTop: 8, padding: '8px 12px', background: variance < 0 ? '#fef2f2' : '#fef3c7', border: `1px solid ${variance < 0 ? '#fecaca' : '#fde68a'}`, borderRadius: 6, fontSize: 12 }}>
-            <strong>{variance > 0 ? `+${fmtQty(variance)} over` : `${fmtQty(variance)} short`}</strong> vs dispatched — add a note below.
+        {/* v1.8.65 — reason dropdown matches Inter-Branch Transfer pattern. */}
+        <div style={{ marginTop: 12 }}>
+          <label style={lbl}>Reason</label>
+          <select value={reason || 'OK'}
+            onChange={e => setState(s => ({ ...s, reason: e.target.value }))}
+            style={{ ...inp, fontSize: 14 }}>
+            {RECEIVE_REASONS.map(r => <option key={r.value} value={r.value}>{r.label}</option>)}
+          </select>
+        </div>
+
+        {(!isOk || reason === 'Damaged' || reason === 'Lost') && (
+          <div style={{ marginTop: 8, padding: '8px 12px', background: variance < 0 || reason !== 'OK' ? '#fef2f2' : '#fef3c7', border: `1px solid ${variance < 0 || reason !== 'OK' ? '#fecaca' : '#fde68a'}`, borderRadius: 6, fontSize: 12 }}>
+            <strong>
+              {variance > 0.0001 ? `+${fmtQty(variance)} over`
+                : variance < -0.0001 ? `${fmtQty(variance)} short`
+                : reason}
+            </strong> vs dispatched — the variance will be recorded for HQ to review. Add a note below.
           </div>
         )}
 

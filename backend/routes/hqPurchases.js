@@ -276,7 +276,10 @@ function maybeCompleteHeader(purchaseId) {
 // (HQ rejected), the same endpoint accepts it again from AWAITING_GRN.
 router.put('/items/:itemId/submit-grn', hqAuth, (req, res) => {
   try {
-    const { received_qty, variance_notes } = req.body || {};
+    // v1.8.65 — reason field aligned with transfer_variances vocabulary.
+    // Accepts 'OK' | 'Short' | 'Damaged' | 'Lost'. Defaults to derived
+    // value based on received vs dispatched if absent (back-compat).
+    const { received_qty, variance_notes, reason } = req.body || {};
     const receivedQty = parseFloat(received_qty);
     if (!(receivedQty >= 0)) return res.status(400).json({ error: 'received_qty must be >= 0' });
 
@@ -287,17 +290,23 @@ router.put('/items/:itemId/submit-grn', hqAuth, (req, res) => {
 
     const receivedBy = req.user.id || null;
     const receivedByName = req.user.firstName || req.user.email || 'Branch';
+    const dispatched = parseFloat(item.dispatched_qty || 0);
+    const allowed = new Set(['OK', 'Short', 'Damaged', 'Lost']);
+    const resolvedReason = allowed.has(reason)
+      ? reason
+      : (Math.abs(receivedQty - dispatched) < 0.0001 ? 'OK' : (receivedQty < dispatched ? 'Short' : 'OK'));
 
     masterDb.prepare(`
       UPDATE hq_purchase_items
          SET status = 'GRN_SUBMITTED',
              received_qty = ?,
              variance_notes = ?,
+             reason = ?,
              received_by = ?,
              received_by_name = ?,
              received_at = datetime('now')
        WHERE id = ?
-    `).run(receivedQty, variance_notes || null, receivedBy, receivedByName, req.params.itemId);
+    `).run(receivedQty, variance_notes || null, resolvedReason, receivedBy, receivedByName, req.params.itemId);
 
     res.json({
       item: masterDb.prepare(`SELECT * FROM hq_purchase_items WHERE id = ?`).get(req.params.itemId),
