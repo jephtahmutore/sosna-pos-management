@@ -1948,8 +1948,11 @@ const POS = () => {
                           <span style={{ fontWeight: 700, color: '#dc2626' }}>{money(netRemaining)}</span>
                         </div>
                       )}
-                      {/* v1.8.68 — when cashier keeps over-payment, ask which drawer holds it */}
+                      {/* v1.8.68 — when cashier keeps over-payment, ask which drawer holds it.
+                          v1.8.69 — show buttons for the currencies the branch actually uses
+                          (USD always on if isDual; FRA on if isDual; K on if hasK). */}
                       {netRemaining > 0.001 && (() => {
+                        const currencies = ['USD', ...(isDual ? ['FRA'] : []), ...(hasK ? ['K'] : [])];
                         const defaultCcy = payModal.keptCcy
                           || (cashFRANow > 0 && cashNow <= 0 ? 'FRA' : 'USD');
                         return (
@@ -1958,7 +1961,7 @@ const POS = () => {
                               Over-payment kept in drawer:
                             </div>
                             <div style={{ display: 'flex', gap: 6 }}>
-                              {['USD', 'FRA'].map(c => {
+                              {currencies.map(c => {
                                 const active = defaultCcy === c;
                                 return (
                                   <button key={c} type="button"

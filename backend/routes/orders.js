@@ -341,7 +341,7 @@ router.post('/', auth, (req, res) => {
           k_received, k_change_given, selling_rate_k_used, buying_rate_k_used,
           status, sales_user_id, sales_at,
           sync_id, tenant_id, branch_id, device_id, synced, created_at, updated_at)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,${tsExpr},?,?,?,?,0,${tsExpr},${tsExpr})`;
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,${tsExpr},?,?,?,?,0,${tsExpr},${tsExpr})`;
       const ordArgs = [orderNum, customer_name, customer_id || null, customer_sync_id || null,
             subtotal, tax_amount, total_amount, discount || 0,
             finalAmountReceived, cashIn, momoIn, bankIn,
