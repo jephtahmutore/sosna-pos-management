@@ -211,6 +211,7 @@ export const getCashDeposits   = (params) => api.get('/cash-deposits', { params 
 export const createCashDeposit = (data)   => api.post('/cash-deposits', data);
 export const confirmCashDeposit = (id)    => api.put(`/cash-deposits/${id}/confirm`);
 export const rejectCashDeposit  = (id, reason) => api.put(`/cash-deposits/${id}/reject`, { reason });
+export const deleteCashDeposit  = (id) => api.delete(`/cash-deposits/${id}`);
 
 // HQ Purchases — Phase C v2: supplier purchases logged at HQ with
 // per-line destination branch. HQ has no warehouse / no source stock.

@@ -121,13 +121,15 @@ router.get('/daily', auth, readOnlyGuard, (req, res) => {
     if (masterDb && slug) {
       const dateOnly = useRange ? String(toUtc).slice(0, 10) : date;
       try {
-        // Outgoing — money leaving this branch on `date`.
+        // Outgoing — money leaving this branch on `date`. Prefer the
+        // user-picked deposit_date (when set) so backdated entries
+        // bucket into the correct day.
         const out = masterDb.prepare(`
           SELECT currency, COALESCE(SUM(amount), 0) AS total
             FROM cash_deposits
            WHERE status = 'CONFIRMED'
              AND from_slug = ?
-             AND date(COALESCE(confirmed_at, created_at)) = ?
+             AND date(COALESCE(deposit_date, confirmed_at, created_at)) = ?
            GROUP BY currency
         `).all(slug, dateOnly);
         for (const r of out) {
@@ -144,7 +146,7 @@ router.get('/daily', auth, readOnlyGuard, (req, res) => {
             SELECT currency, COALESCE(SUM(amount), 0) AS total
               FROM cash_deposits
              WHERE status = 'CONFIRMED'
-               AND date(COALESCE(confirmed_at, created_at)) = ?
+               AND date(COALESCE(deposit_date, confirmed_at, created_at)) = ?
              GROUP BY currency
           `).all(dateOnly);
           for (const r of incoming) {

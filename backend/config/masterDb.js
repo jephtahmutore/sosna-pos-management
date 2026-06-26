@@ -114,6 +114,24 @@ try {
     );
     CREATE INDEX IF NOT EXISTS idx_cash_deposits_status   ON cash_deposits (status);
     CREATE INDEX IF NOT EXISTS idx_cash_deposits_from     ON cash_deposits (from_slug, status);
+  `);
+
+  // v1.8.60 — additional fields on cash_deposits: user-pickable deposit
+  // date (so we can record cash that left earlier but arrived later)
+  // and an attachment (deposit slip photo / bank receipt PDF).
+  // Added via ALTER so existing master.db's don't error on re-create.
+  const addMasterCol = (table, col, def) => {
+    try {
+      const cols = masterDb.prepare(`PRAGMA table_info(${table})`).all().map(c => c.name);
+      if (!cols.includes(col)) {
+        masterDb.prepare(`ALTER TABLE ${table} ADD COLUMN ${col} ${def}`).run();
+      }
+    } catch (_) { /* table doesn't exist yet — schema CREATE above will include it next boot */ }
+  };
+  addMasterCol('cash_deposits', 'deposit_date', 'TEXT');
+  addMasterCol('cash_deposits', 'attachment',   'TEXT');
+
+  masterDb.exec(`
 
     -- ── Phase C: HQ Purchase Receipts (no warehouse, drop-ship to branch) ──
     -- HQ has no physical stock — every supplier purchase is logged here

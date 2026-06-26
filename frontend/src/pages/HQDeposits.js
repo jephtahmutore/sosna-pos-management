@@ -14,15 +14,18 @@
 // hitting profit.
 import React, { useEffect, useState } from 'react';
 import {
-  FiSend, FiCheck, FiX, FiRefreshCw, FiInbox, FiArrowUpRight, FiArrowDownLeft,
+  FiSend, FiCheck, FiX, FiRefreshCw, FiInbox, FiArrowUpRight, FiArrowDownLeft, FiTrash2,
 } from 'react-icons/fi';
 import {
-  getCashDeposits, createCashDeposit, confirmCashDeposit, rejectCashDeposit,
+  getCashDeposits, createCashDeposit, confirmCashDeposit, rejectCashDeposit, deleteCashDeposit,
   isHqHost, getBranchSlug,
 } from '../services/api';
 import { useCurrency } from '../context/CurrencyContext';
 import Portal from '../utils/Portal';
 import useModalScrollLock from '../utils/useModalScrollLock';
+import InvoiceAttachment from '../components/InvoiceAttachment';
+
+const todayStr = () => new Date().toISOString().slice(0, 10);
 
 const HQDeposits = () => {
   const { symbol: curSym, currencyMode } = useCurrency();
@@ -35,7 +38,7 @@ const HQDeposits = () => {
 
   // Send Deposit modal (branch only)
   const [showSend, setShowSend] = useState(false);
-  const [sendForm, setSendForm] = useState({ currency: 'USD', amount: '', notes: '' });
+  const [sendForm, setSendForm] = useState({ currency: 'USD', amount: '', notes: '', deposit_date: todayStr(), attachment: null });
   const [sending, setSending]   = useState(false);
   const [sendError, setSendError] = useState('');
 
@@ -67,7 +70,7 @@ const HQDeposits = () => {
 
   const openSendModal = () => {
     setSendError('');
-    setSendForm({ currency: 'USD', amount: '', notes: '' });
+    setSendForm({ currency: 'USD', amount: '', notes: '', deposit_date: todayStr(), attachment: null });
     setShowSend(true);
   };
 
@@ -80,10 +83,12 @@ const HQDeposits = () => {
     setSending(true);
     try {
       await createCashDeposit({
-        from_slug: slug,
-        currency:  sendForm.currency,
-        amount:    amt,
-        notes:     sendForm.notes || null,
+        from_slug:    slug,
+        currency:     sendForm.currency,
+        amount:       amt,
+        notes:        sendForm.notes || null,
+        deposit_date: sendForm.deposit_date,
+        attachment:   sendForm.attachment || null,
       });
       setShowSend(false);
       await fetchDeposits();
@@ -112,6 +117,20 @@ const HQDeposits = () => {
       await fetchDeposits();
     } catch (err) {
       alert(err?.response?.data?.error || 'Failed to reject deposit');
+    }
+  };
+
+  const handleDelete = async (d) => {
+    const label = `${d.deposit_number} — ${d.currency} ${parseFloat(d.amount).toLocaleString()}`;
+    const extra = d.status === 'CONFIRMED'
+      ? '\n\nThis deposit was already CONFIRMED. Deleting it removes it from Cash Report reconciliation.'
+      : '';
+    if (!window.confirm(`Delete this deposit?\n\n${label}${extra}`)) return;
+    try {
+      await deleteCashDeposit(d.id);
+      await fetchDeposits();
+    } catch (err) {
+      alert(err?.response?.data?.error || 'Failed to delete deposit');
     }
   };
 
@@ -202,7 +221,9 @@ const HQDeposits = () => {
                   <th style={th}>Currency</th>
                   <th style={{ ...th, textAlign: 'right' }}>Amount</th>
                   <th style={th}>Notes</th>
+                  <th style={th}>Attachment</th>
                   <th style={th}>Status</th>
+                  <th style={th}>Deposit Date</th>
                   <th style={th}>Created</th>
                   <th style={th}>Confirmed</th>
                   <th style={{ ...th, textAlign: 'right' }}></th>
@@ -227,6 +248,15 @@ const HQDeposits = () => {
                       </td>
                       <td style={{ ...td, color: '#6b7280', maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={d.notes}>{d.notes || '—'}</td>
                       <td style={td}>
+                        {d.attachment ? (
+                          <a href={`${(process.env.REACT_APP_API_URL || '/api').replace(/\/api\/?$/, '')}/uploads/${d.attachment}`}
+                             target="_blank" rel="noopener noreferrer"
+                             style={{ color: '#2563eb', fontSize: 11, textDecoration: 'none', fontWeight: 600 }}>
+                            View
+                          </a>
+                        ) : <span style={{ color: '#cbd5e1', fontSize: 11 }}>—</span>}
+                      </td>
+                      <td style={td}>
                         <span style={{ padding: '2px 10px', background: statusBg, color: statusColor, borderRadius: 999, fontSize: 10, fontWeight: 700 }}>
                           {d.status}
                         </span>
@@ -235,6 +265,9 @@ const HQDeposits = () => {
                             {d.reject_reason.length > 30 ? d.reject_reason.slice(0, 30) + '…' : d.reject_reason}
                           </div>
                         )}
+                      </td>
+                      <td style={{ ...td, color: '#374151', fontSize: 11, fontWeight: 600 }}>
+                        {d.deposit_date || (d.created_at ? new Date(d.created_at).toLocaleDateString() : '—')}
                       </td>
                       <td style={{ ...td, color: '#6b7280', fontSize: 11 }}>
                         <div>{d.created_at ? new Date(d.created_at).toLocaleString() : '—'}</div>
@@ -249,18 +282,28 @@ const HQDeposits = () => {
                         ) : '—'}
                       </td>
                       <td style={{ ...td, textAlign: 'right' }}>
-                        {onHq && d.status === 'PENDING' && (
-                          <div style={{ display: 'inline-flex', gap: 6 }}>
-                            <button onClick={() => handleConfirm(d.id)}
-                              style={{ padding: '5px 12px', background: '#16a34a', color: '#fff', border: 'none', borderRadius: 4, cursor: 'pointer', fontSize: 11, fontWeight: 700, display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-                              <FiCheck size={11} /> Confirm
+                        <div style={{ display: 'inline-flex', gap: 6 }}>
+                          {onHq && d.status === 'PENDING' && (
+                            <>
+                              <button onClick={() => handleConfirm(d.id)}
+                                style={{ padding: '5px 12px', background: '#16a34a', color: '#fff', border: 'none', borderRadius: 4, cursor: 'pointer', fontSize: 11, fontWeight: 700, display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                                <FiCheck size={11} /> Confirm
+                              </button>
+                              <button onClick={() => { setRejectingId(d.id); setRejectReason(''); }}
+                                style={{ padding: '5px 12px', background: '#fff', color: '#b91c1c', border: '1px solid #fecaca', borderRadius: 4, cursor: 'pointer', fontSize: 11, fontWeight: 700, display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                                <FiX size={11} /> Reject
+                              </button>
+                            </>
+                          )}
+                          {/* Delete: branch can delete its own PENDING rows;
+                              HQ can delete anything (mistakes, duplicates). */}
+                          {(onHq || d.status === 'PENDING') && (
+                            <button onClick={() => handleDelete(d)} title="Delete deposit"
+                              style={{ padding: '5px 10px', background: '#fff', color: '#dc2626', border: '1px solid #fecaca', borderRadius: 4, cursor: 'pointer', fontSize: 11, fontWeight: 700, display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                              <FiTrash2 size={11} />
                             </button>
-                            <button onClick={() => { setRejectingId(d.id); setRejectReason(''); }}
-                              style={{ padding: '5px 12px', background: '#fff', color: '#b91c1c', border: '1px solid #fecaca', borderRadius: 4, cursor: 'pointer', fontSize: 11, fontWeight: 700, display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-                              <FiX size={11} /> Reject
-                            </button>
-                          </div>
-                        )}
+                          )}
+                        </div>
                       </td>
                     </tr>
                   );
@@ -304,10 +347,24 @@ const HQDeposits = () => {
                 </div>
               </div>
               <div className="form-group">
+                <label>Deposit Date</label>
+                <input type="date" value={sendForm.deposit_date}
+                  max={todayStr()}
+                  onChange={e => setSendForm({ ...sendForm, deposit_date: e.target.value || todayStr() })} />
+              </div>
+              <div className="form-group">
                 <label>Notes (optional)</label>
                 <input value={sendForm.notes}
                   onChange={e => setSendForm({ ...sendForm, notes: e.target.value })}
                   placeholder="Courier / driver / reference" />
+              </div>
+              <div className="form-group">
+                <label>Attach Deposit Slip (optional) — picture or PDF</label>
+                <InvoiceAttachment
+                  value={sendForm.attachment}
+                  onChange={(p) => setSendForm({ ...sendForm, attachment: p })}
+                  kind="deposit"
+                />
               </div>
               {sendError && (
                 <div style={{ padding: '8px 12px', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 6, color: '#991b1b', fontSize: 12, fontWeight: 600 }}>

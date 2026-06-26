@@ -67,7 +67,7 @@ function nextDepositNumber() {
 // ─── POST /cash-deposits — branch records a new deposit being sent ──────────
 router.post('/', hqAuth, (req, res) => {
   try {
-    const { from_slug, currency, amount, notes } = req.body;
+    const { from_slug, currency, amount, notes, deposit_date, attachment } = req.body;
     if (!from_slug || !isRegistered(from_slug)) return res.status(400).json({ error: 'Unknown source branch' });
     const ccy = String(currency || '').toUpperCase();
     if (!['USD', 'FRA', 'K'].includes(ccy)) return res.status(400).json({ error: 'currency must be USD, FRA, or K' });
@@ -76,8 +76,10 @@ router.post('/', hqAuth, (req, res) => {
 
     // v1.8.59 — no FX rate stored. Physical deposit is just raw currency;
     // any conversion at HQ is a separate Currency Exchange concern.
-    // amount_usd / sell_rate columns kept on schema for backwards compat
-    // but no longer populated.
+    // v1.8.60 — accept optional deposit_date (defaults to today) and
+    // attachment path (uploaded separately via /api/attachments).
+    const looksLikeDate = typeof deposit_date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(deposit_date);
+    const depDate = looksLikeDate ? deposit_date : new Date().toISOString().slice(0, 10);
     const syncId = randomUUID();
     const depositNumber = nextDepositNumber();
     const fromName = branchName(from_slug);
@@ -85,11 +87,13 @@ router.post('/', hqAuth, (req, res) => {
     masterDb.prepare(`
       INSERT INTO cash_deposits (deposit_number, sync_id, from_slug, from_name,
                                  currency, amount, amount_usd, sell_rate, notes,
+                                 deposit_date, attachment,
                                  status, created_by, created_by_name)
-      VALUES (?,?,?,?,?,?,?,?,?, 'PENDING', ?, ?)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?, 'PENDING', ?, ?)
     `).run(
       depositNumber, syncId, from_slug, fromName,
       ccy, amt, 0, null, notes || null,
+      depDate, attachment || null,
       req.user.id, [req.user.first_name, req.user.last_name].filter(Boolean).join(' ') || null
     );
     const row = masterDb.prepare('SELECT * FROM cash_deposits WHERE sync_id = ?').get(syncId);
@@ -165,6 +169,22 @@ router.put('/:id/reject', hqAuth, (req, res) => {
     `).run(req.user.id, confirmedByName, req.body?.reason || null, req.params.id);
     const updated = masterDb.prepare('SELECT * FROM cash_deposits WHERE id = ?').get(req.params.id);
     res.json(updated);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ─── DELETE /cash-deposits/:id — remove a deposit ───────────────────────────
+// v1.8.60 — allow deleting deposits to clean up mistakes / cancelled records.
+// Branch can delete its own PENDING deposits; HQ can delete anything.
+// CONFIRMED deposits should NOT be silently deleted by branches because
+// HQ may have already balanced its drawer against them — gate behind HQ.
+router.delete('/:id', hqAuth, (req, res) => {
+  try {
+    const row = masterDb.prepare('SELECT * FROM cash_deposits WHERE id = ?').get(req.params.id);
+    if (!row) return res.status(404).json({ error: 'Deposit not found' });
+    masterDb.prepare('DELETE FROM cash_deposits WHERE id = ?').run(req.params.id);
+    res.json({ message: 'Deposit deleted' });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
