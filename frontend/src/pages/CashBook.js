@@ -4,7 +4,7 @@ import { useAuth } from '../context/AuthContext';
 import CurrencyExchangePanel from '../components/CurrencyExchangePanel';
 import { useCurrency } from '../context/CurrencyContext';
 import { useLanguage } from '../context/LanguageContext';
-import { FiTrendingUp, FiTrendingDown, FiDollarSign, FiEdit2, FiSave, FiX, FiPrinter, FiFilter, FiRefreshCw } from 'react-icons/fi';
+import { FiTrendingUp, FiTrendingDown, FiDollarSign, FiEdit2, FiSave, FiX, FiPrinter, FiFilter, FiRefreshCw, FiRepeat } from 'react-icons/fi';
 import Portal from '../utils/Portal';
 import useModalScrollLock from '../utils/useModalScrollLock';
 const CashBook = () => {
@@ -29,6 +29,10 @@ const CashBook = () => {
   // Clicking a currency card sets this; ledger filters rows that touch that
   // currency and the Balance column switches to that currency's running total.
   const [activeCcy, setActiveCcy] = useState('all');
+  // v1.8.63 — Add Exchange trigger. Increment to ask the hidden
+  // CurrencyExchangePanel (scope='book') to pop its modal without
+  // switching to the Exchanges tab.
+  const [exchangeOpenSignal, setExchangeOpenSignal] = useState(0);
   const [savingOB, setSavingOB] = useState(false);
   const todayStr = new Date().toISOString().split('T')[0];
   const [from, setFrom] = useState(todayStr);
@@ -315,6 +319,14 @@ const CashBook = () => {
           >
             <FiRefreshCw size={15} /> {t('transfer')}
           </button>
+          {/* v1.8.63 — Add Exchange shortcut. Opens the same modal used by
+              the Exchanges tab without forcing a tab switch. */}
+          <button
+            onClick={() => setExchangeOpenSignal(s => s + 1)}
+            style={{ display: 'inline-flex', alignItems: 'center', gap: 7, padding: '10px 20px', borderRadius: 10, border: 'none', backgroundColor: '#7c3aed', color: '#fff', cursor: 'pointer', fontSize: 13, fontWeight: 700 }}
+          >
+            <FiRepeat size={15} /> Exchange
+          </button>
           <button
             onClick={handlePrint}
             style={{ display: 'inline-flex', alignItems: 'center', gap: 7, padding: '10px 20px', borderRadius: 10, border: 'none', backgroundColor: '#16a34a', color: '#fff', cursor: 'pointer', fontSize: 13, fontWeight: 700 }}
@@ -350,6 +362,21 @@ const CashBook = () => {
           to={to}
           user={authUser}
           title="Currency Exchanges (Cash Book)"
+        />
+      )}
+
+      {/* v1.8.63 — hidden panel: provides the Add Exchange modal even when
+          the user is still on the Ledger tab. exchangeOpenSignal increments
+          when the header "Exchange" button is clicked. */}
+      {activeTab === 'ledger' && (
+        <CurrencyExchangePanel
+          scope="book"
+          from={from}
+          to={to}
+          user={authUser}
+          openSignal={exchangeOpenSignal}
+          hideHeader
+          onChanged={() => fetchData(from, to)}
         />
       )}
 

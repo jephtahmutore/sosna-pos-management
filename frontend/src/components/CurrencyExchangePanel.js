@@ -30,11 +30,23 @@ export default function CurrencyExchangePanel({
   drawerBalance,     // v1.8.8: optional { USD, FRA, K } — when supplied,
                      //   modal shows live drawer balance + soft warns
                      //   if FROM amount exceeds available. Save still allowed.
+  openSignal,        // v1.8.63: increment this from the parent to open the
+                     //   Add Exchange modal externally (e.g. Cash Book header
+                     //   button while the user is still on the Ledger tab).
+  hideHeader,        // v1.8.63: when true, render only the modal logic and
+                     //   the list — skip the built-in title + Add button.
+                     //   Parent supplies its own trigger UI.
 }) {
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(false);
   const [showAdd, setShowAdd] = useState(false);
   const [error, setError] = useState('');
+
+  // v1.8.63 — open the modal whenever openSignal changes to a non-zero value.
+  useEffect(() => {
+    if (openSignal && canRecord) { setShowAdd(true); setError(''); }
+  // eslint-disable-next-line
+  }, [openSignal]);
 
   const role = String(user?.role || '').toLowerCase();
   const canRecord = role === 'administrator' || role === 'admin' || role === 'manager';
@@ -57,6 +69,26 @@ export default function CurrencyExchangePanel({
   };
 
   useEffect(() => { refresh(); /* eslint-disable-next-line */ }, [scope, date, from, to, cashierId]);
+
+  // v1.8.63 — `hideHeader` mode skips visible panel chrome (header + list)
+  // and renders only the modal. Used when the parent wants just the
+  // "Add Exchange" workflow without the inline ledger.
+  if (hideHeader) {
+    return (
+      <>
+        {showAdd && (
+          <AddExchangeModal
+            scope={scope}
+            defaultDate={date || from || new Date().toISOString().slice(0, 10)}
+            cashierId={cashierId}
+            drawerBalance={drawerBalance}
+            onClose={() => setShowAdd(false)}
+            onSaved={() => { setShowAdd(false); refresh(); if (onChanged) onChanged(); }}
+          />
+        )}
+      </>
+    );
+  }
 
   return (
     <div style={{ background: '#fff', border: '1px solid #e5e7eb', borderRadius: 12, marginTop: 18 }}>
