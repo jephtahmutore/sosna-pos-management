@@ -6,7 +6,7 @@ import { FiSave, FiCalendar, FiEdit2, FiPlus, FiPrinter, FiEye, FiX } from 'reac
 import Portal from '../utils/Portal';
 import useModalScrollLock from '../utils/useModalScrollLock';
 import PaymentVoucherFormModal from '../components/PaymentVoucherFormModal';
-import { getPaymentVouchers, getSettings, createCashReceipt, updateCashReceipt, checkSalesCashReceipt, getSalesCashiers, getCurrencyExchangesNet, getCurrentFxRate, getBranchSlug, isHqHost } from '../services/api';
+import { getPaymentVouchers, getSettings, createCashReceipt, updateCashReceipt, checkSalesCashReceipt, getSalesCashiers, getCurrencyExchangesNet, getCurrentFxRate } from '../services/api';
 import CurrencyExchangePanel from '../components/CurrencyExchangePanel';
 
 const API_BASE = process.env.REACT_APP_API_URL || 'http://localhost:5300/api';
@@ -153,12 +153,10 @@ const CashReport = () => {
       const endLocal   = new Date(`${d}T23:59:59`);
       const fromUtc = toSqliteUTC(startLocal);
       const toUtc   = toSqliteUTC(endLocal);
-      // v1.8.59 — pass the tenant slug so backend can subtract today's
-      // confirmed HQ deposits from the per-currency Expected (and add
-      // incoming deposits for HQ). On HQ, infer 'hq' so the inbox total
-      // aggregates correctly.
-      const slugForDeposits = isHqHost() ? 'hq' : (getBranchSlug() || (typeof window !== 'undefined' ? window.location.hostname.split('.')[0] : ''));
-      const qs = `date=${d}&cashier_id=${cid}&from_utc=${encodeURIComponent(fromUtc)}&to_utc=${encodeURIComponent(toUtc)}${slugForDeposits ? `&slug=${encodeURIComponent(slugForDeposits)}` : ''}`;
+      // v1.8.67 — HQ Deposit math removed from Cash Report (cashier till)
+      // because deposits flow cashier → manager → HQ in real ops. Cash
+      // Book still surfaces deposit movements at the accounting level.
+      const qs = `date=${d}&cashier_id=${cid}&from_utc=${encodeURIComponent(fromUtc)}&to_utc=${encodeURIComponent(toUtc)}`;
       const res = await fetch(`${API_BASE}/cash-reports/daily?${qs}`, {
         headers: { 'Authorization': `Bearer ${getToken()}` }
       });
