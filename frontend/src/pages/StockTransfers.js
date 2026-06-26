@@ -340,6 +340,12 @@ function CreateTransferModal({ sourceSlug, branches, onClose, onCreated, onError
           unit:            x.product.unit,
           quantity:        x.qty * (x.unitConv || 1),
           cost_price:      x.product.cost_price || 0,
+          // v1.8.66 — carry the product's default-unit metadata so the
+          // View / Receive modal can render qty + cost in the configured
+          // default unit (e.g. Box) instead of the raw base unit (Bottle).
+          // Stored verbatim in items_json; backend math is unchanged.
+          display_unit:    x.unitName || x.product.unit,
+          display_conv:    x.unitConv || 1,
         })),
       });
       onCreated();
@@ -505,17 +511,30 @@ function TransferDetailModal({ transfer, mode, onClose, onSubmit }) {
   }, [transfer]);
 
   // Per-line edit state — receive mode only.
+  // v1.8.66 — qty + cost displayed in the product's default unit (Box)
+  // when items_json carries display_unit / display_conv. Legacy rows
+  // without those fields fall back to the raw base unit (Bottle) — same
+  // behavior as before the upgrade.
   const [lines, setLines] = useState(() =>
-    items.map(it => ({
-      product_sync_id: it.product_sync_id,
-      product_name:    it.product_name,
-      unit:            it.unit,
-      cost_price:      parseFloat(it.cost_price || 0),
-      sent_qty:        parseFloat(it.quantity || 0),
-      received_qty:    String(parseFloat(it.quantity || 0)),
-      reason:          'OK',
-      notes:           '',
-    }))
+    items.map(it => {
+      const dispUnit = it.display_unit || it.unit;
+      const dispConv = parseFloat(it.display_conv || 1) || 1;
+      const sentBase = parseFloat(it.quantity || 0);
+      const sentDisp = sentBase / dispConv;
+      return {
+        product_sync_id: it.product_sync_id,
+        product_name:    it.product_name,
+        unit:            it.unit,          // base unit (Bottle)
+        display_unit:    dispUnit,         // friendly unit (Box)
+        display_conv:    dispConv,         // 1 Box = N Bottle
+        cost_price:      parseFloat(it.cost_price || 0),    // per BASE unit
+        cost_display:    parseFloat(it.cost_price || 0) * dispConv, // per Box
+        sent_qty:        sentDisp,         // shown in display unit
+        received_qty:    String(sentDisp), // shown in display unit
+        reason:          'OK',
+        notes:           '',
+      };
+    })
   );
   const [submitting, setSubmitting] = useState(false);
 
@@ -550,10 +569,12 @@ function TransferDetailModal({ transfer, mode, onClose, onSubmit }) {
   const submit = async () => {
     setSubmitting(true);
     try {
+      // v1.8.66 — received_qty is in display unit (Box); backend expects
+      // base units (Bottle). Multiply by display_conv before sending.
       const payload = {
         received_lines: lines.map(l => ({
           product_sync_id: l.product_sync_id,
-          received_qty:    Math.max(0, parseFloat(l.received_qty) || 0),
+          received_qty:    Math.max(0, (parseFloat(l.received_qty) || 0) * (parseFloat(l.display_conv) || 1)),
           reason:          l.reason || 'OK',
           notes:           l.notes || null,
         })),
@@ -607,19 +628,27 @@ function TransferDetailModal({ transfer, mode, onClose, onSubmit }) {
                 {lines.map((l, idx) => {
                   const recvNum = parseFloat(l.received_qty) || 0;
                   const variance = (parseFloat(l.sent_qty) || 0) - recvNum;
-                  const lineDollar = recvNum * (parseFloat(l.cost_price) || 0);
+                  // v1.8.66 — cost shown is per-display-unit (per Box) so
+                  // the line total = received_qty (in Box) × cost_per_Box.
+                  // Numerically identical to received_base × cost_per_base
+                  // — just easier to read.
+                  const dispUnit = l.display_unit || l.unit;
+                  const lineDollar = recvNum * (parseFloat(l.cost_display || l.cost_price) || 0);
                   const hasIssue = variance > 0.0001 || l.reason === 'Damaged' || l.reason === 'Lost';
                   return (
                     <tr key={idx} style={{ borderTop: '1px solid #f1f5f9', background: hasIssue ? '#fffbeb' : '#fff' }}>
                       <td style={td}><strong>{l.product_name}</strong> <span style={{ color: '#94a3b8', fontSize: 11 }}>{l.unit}</span></td>
-                      <td style={{ ...td, textAlign: 'right', fontWeight: 600 }}>{fmtQ(l.sent_qty)} {l.unit}</td>
+                      <td style={{ ...td, textAlign: 'right', fontWeight: 600 }}>{fmtQ(l.sent_qty)} {dispUnit}</td>
                       <td style={{ ...td, textAlign: 'right' }}>
                         {isReceive ? (
-                          <input type="number" min="0" step="any" value={l.received_qty}
-                            onChange={e => onReceivedChange(idx, e.target.value)}
-                            style={{ width: 90, padding: '4px 6px', border: `1px solid ${hasIssue ? '#fbbf24' : '#d1d5db'}`, borderRadius: 4, fontSize: 13, textAlign: 'right' }} />
+                          <div style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                            <input type="number" min="0" step="any" value={l.received_qty}
+                              onChange={e => onReceivedChange(idx, e.target.value)}
+                              style={{ width: 80, padding: '4px 6px', border: `1px solid ${hasIssue ? '#fbbf24' : '#d1d5db'}`, borderRadius: 4, fontSize: 13, textAlign: 'right' }} />
+                            <span style={{ fontSize: 11, color: '#94a3b8' }}>{dispUnit}</span>
+                          </div>
                         ) : (
-                          <span style={{ fontWeight: 600 }}>{fmtQ(l.received_qty)} {l.unit}</span>
+                          <span style={{ fontWeight: 600 }}>{fmtQ(l.received_qty)} {dispUnit}</span>
                         )}
                       </td>
                       <td style={td}>
@@ -641,7 +670,10 @@ function TransferDetailModal({ transfer, mode, onClose, onSubmit }) {
                           <span style={{ fontSize: 12, color: '#475569' }}>{l.notes || '—'}</span>
                         )}
                       </td>
-                      <td style={{ ...td, textAlign: 'right', color: '#64748b' }}>{fmtMoney(l.cost_price)}</td>
+                      <td style={{ ...td, textAlign: 'right', color: '#64748b' }}>
+                        {fmtMoney(l.cost_display || l.cost_price)}
+                        <div style={{ fontSize: 10, color: '#cbd5e1' }}>/ {dispUnit}</div>
+                      </td>
                       <td style={{ ...td, textAlign: 'right', fontWeight: 700 }}>{fmtMoney(lineDollar)}</td>
                     </tr>
                   );
