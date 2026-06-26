@@ -522,6 +522,10 @@ router.put('/:id/collect-payment', auth, requirePagePerm('Cashier'), (req, res) 
       // Cashier picks which drawer holds the surplus so Cash Report doesn't
       // bleed it into the wrong currency.
       overpaid_kept_ccy,
+      // v1.8.72 — frontend now sends the NATIVE source-currency amount
+      // (e.g. FRA 250 instead of $0.108 → 246 FRA round-trip). When
+      // present > 0, backend uses it verbatim instead of recomputing.
+      overpaid_kept_amt,
     } = req.body;
     const paidUSD = parseFloat(paid_usd || 0) || 0;
     const paidFRA = parseFloat(paid_fra || 0) || 0;
@@ -571,10 +575,20 @@ router.put('/:id/collect-payment', auth, requirePagePerm('Cashier'), (req, res) 
         else if (paidK   > 0 && paidUSD <= 0 && paidFRA <= 0) keptCcy = 'K';
         else                                                   keptCcy = 'USD';
       }
+      // v1.8.72 — prefer the NATIVE amount sent by the frontend (it computed
+      // it directly from `paidFRA − fraNeeded`, no FX round-trip). Fall back
+      // to USD-equivalent × rate only when the client didn't send it.
+      const explicitKeptAmt = parseFloat(overpaid_kept_amt || 0) || 0;
       let keptAmt = 0;
-      if (keptCcy === 'FRA')      keptAmt = sellRate  > 0 ? overpaidKeptUSD * sellRate  : 0;
-      else if (keptCcy === 'K')   keptAmt = sellRateK > 0 ? overpaidKeptUSD * sellRateK : 0;
-      else if (keptCcy === 'USD') keptAmt = overpaidKeptUSD;
+      if (keptCcy && explicitKeptAmt > 0.005) {
+        keptAmt = explicitKeptAmt;
+      } else if (keptCcy === 'FRA') {
+        keptAmt = sellRate  > 0 ? overpaidKeptUSD * sellRate  : 0;
+      } else if (keptCcy === 'K') {
+        keptAmt = sellRateK > 0 ? overpaidKeptUSD * sellRateK : 0;
+      } else if (keptCcy === 'USD') {
+        keptAmt = overpaidKeptUSD;
+      }
 
       // v1.8.49 — credit-at-Cashier. When the order has a registered
       // customer attached (set on the Sales/Reception screen), the Cashier

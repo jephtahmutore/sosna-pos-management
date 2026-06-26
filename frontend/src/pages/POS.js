@@ -992,7 +992,10 @@ const POS = () => {
         // physically hand back the full change). Backend defaults to the
         // currency the customer paid in when this is blank. Credit-sale
         // overrides never carry a keptCcy, so the OR fallback is harmless.
+        // v1.8.72 — also send NATIVE amount so backend stores exact source
+        // value (no FX spread loss on the round-trip).
         overpaid_kept_ccy: (override && override.keptCcy) || null,
+        overpaid_kept_amt: (override && override.keptAmt) || 0,
         // Only sent when an Administrator picked a non-today date in the Pay modal.
         // Backend re-validates the role before honouring it.
         sale_date: (isAdmin && saleDate && saleDate !== todayStr()) ? saleDate : null,
@@ -1779,6 +1782,19 @@ const POS = () => {
         const changeFRAasUSD  = isDual && BUY_RATE > 0 ? changeFRAgiven / BUY_RATE              : 0;
         const totalChangeGiven= changeUSDgiven + changeFRAasUSD;
         const netRemaining    = Math.max(0, changeNow - totalChangeGiven);
+        // v1.8.72 — attribute over-payment to source currency (USD first, FRA next).
+        // No K in POS modal yet. Native amounts = 1:1 with what customer handed over.
+        let _remPos = total;
+        const _usdUsedPos = Math.min(cashNow + momoNow + bankNow, _remPos);
+        const overUSDpos  = (cashNow + momoNow + bankNow) - _usdUsedPos;
+        _remPos -= _usdUsedPos;
+        let overFRApos = 0;
+        if (_remPos > 0 && cashFRANow > 0 && SELL_RATE > 0) {
+          const fraNeededPos = _remPos * SELL_RATE;
+          if (cashFRANow >= fraNeededPos) overFRApos = cashFRANow - fraNeededPos;
+        } else if (cashFRANow > 0) {
+          overFRApos = cashFRANow;
+        }
         const enoughPaid = payNow >= total - 0.001;
         return (
           <Portal>
@@ -1949,12 +1965,12 @@ const POS = () => {
                         </div>
                       )}
                       {/* v1.8.68 — when cashier keeps over-payment, ask which drawer holds it.
-                          v1.8.69 — show buttons for the currencies the branch actually uses
-                          (USD always on if isDual; FRA on if isDual; K on if hasK). */}
+                          v1.8.69 — show buttons for the currencies the branch actually uses.
+                          v1.8.72 — default to the actual source currency of the over-payment. */}
                       {netRemaining > 0.001 && (() => {
                         const currencies = ['USD', ...(isDual ? ['FRA'] : []), ...(hasK ? ['K'] : [])];
                         const defaultCcy = payModal.keptCcy
-                          || (cashFRANow > 0 && cashNow <= 0 ? 'FRA' : 'USD');
+                          || (overFRApos > 0.5 ? 'FRA' : 'USD');
                         return (
                           <div style={{ marginTop: 8, padding: '8px 10px', background: '#fffbeb', border: '1px solid #fcd34d', borderRadius: 6 }}>
                             <div style={{ fontSize: 11, color: '#92400e', fontWeight: 700, marginBottom: 6 }}>
@@ -1994,11 +2010,16 @@ const POS = () => {
                   onClick={() => {
                     // v1.8.68 — propagate keptCcy default (if no explicit pick) so
                     // backend can fall back correctly even when the picker wasn't touched.
+                    // v1.8.72 — also pass native keptAmt so backend doesn't round-trip via USD.
                     const inferredKeptCcy = payModal.keptCcy
-                      || (cashFRANow > 0 && cashNow <= 0 ? 'FRA' : 'USD');
+                      || (overFRApos > 0.5 ? 'FRA' : 'USD');
+                    const keptAmtNative = inferredKeptCcy === 'FRA' ? overFRApos
+                                        : inferredKeptCcy === 'USD' ? overUSDpos
+                                        : 0;
                     const breakdown = {
                       cash: cashNow, momo: momoNow, bank: bankNow,
                       keptCcy: netRemaining > 0.001 ? inferredKeptCcy : null,
+                      keptAmt: netRemaining > 0.001 ? keptAmtNative : 0,
                     };
                     setPayModal(null);
                     handleCheckout(breakdown);
