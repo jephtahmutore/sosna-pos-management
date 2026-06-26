@@ -84,6 +84,34 @@ try {
     CREATE INDEX IF NOT EXISTS idx_transfers_to_status   ON stock_transfers (to_slug, status);
     CREATE INDEX IF NOT EXISTS idx_transfers_from_status ON stock_transfers (from_slug, status);
 
+    -- v1.8.64 — per-line variance on inter-branch transfer RECEIVE.
+    -- When the receiving branch counts a shortage / damage / loss vs what
+    -- the sender shipped, we record one variance row per affected line so
+    -- HQ can investigate. The receiver's stock movement only counts the
+    -- good qty; the gap lives here (a "Transit Variance" bucket).
+    CREATE TABLE IF NOT EXISTS transfer_variances (
+      id                INTEGER PRIMARY KEY AUTOINCREMENT,
+      sync_id           TEXT NOT NULL UNIQUE,
+      transfer_sync_id  TEXT NOT NULL,
+      transfer_number   TEXT,
+      from_slug         TEXT,
+      to_slug           TEXT,
+      product_sync_id   TEXT,
+      product_name      TEXT,
+      unit              TEXT,
+      sent_qty          REAL NOT NULL DEFAULT 0,
+      received_qty      REAL NOT NULL DEFAULT 0,
+      variance_qty      REAL NOT NULL DEFAULT 0,
+      reason            TEXT NOT NULL DEFAULT 'Short',  -- 'Short' | 'Damaged' | 'Lost'
+      notes             TEXT,
+      received_by       INTEGER,
+      received_by_name  TEXT,
+      created_at        TEXT NOT NULL DEFAULT (datetime('now')),
+      resolved_at       TEXT,
+      resolution        TEXT   -- 'WRITE_OFF' | 'RECOVERED' | NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_transfer_variances_xfer ON transfer_variances (transfer_sync_id);
+
     -- ── v1.8.57 — Branch → HQ Cash Deposits ─────────────────────────────
     -- Branch records a physical cash deposit being sent to HQ. HQ
     -- inbox sees PENDING rows and confirms when the cash arrives.

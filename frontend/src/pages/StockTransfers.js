@@ -13,7 +13,7 @@
 //              received (increments destination stock).
 import React, { useEffect, useState, useMemo } from 'react';
 import {
-  FiRefreshCw, FiPlus, FiTruck, FiInbox, FiCheckCircle, FiXCircle, FiTrash2,
+  FiRefreshCw, FiPlus, FiTruck, FiInbox, FiCheckCircle, FiXCircle, FiTrash2, FiEye, FiAlertTriangle,
 } from 'react-icons/fi';
 import {
   isHqHost, getHqBranch, getHqBranches, getBranchSlug,
@@ -49,6 +49,10 @@ export default function StockTransfers() {
   const [loading, setLoading] = useState(false);
   const [showCreate, setShowCreate] = useState(false);
   const [toast, setToast] = useState(null);
+  // v1.8.64 — View/Receive modal. `viewing` carries the transfer row to show.
+  // `mode='view'` is read-only; `mode='receive'` exposes the per-line received
+  // qty + reason inputs and a Confirm Receive button (only for PENDING incoming).
+  const [viewing, setViewing] = useState(null); // { transfer, mode }
 
   const refresh = async () => {
     if (!slug) return;
@@ -80,11 +84,22 @@ export default function StockTransfers() {
     setTimeout(() => setToast(null), type === 'error' ? 4500 : 2500);
   };
 
-  const doReceive = async (id) => {
-    if (!window.confirm('Receive this transfer? Stock will be added to this branch.')) return;
+  // v1.8.64 — Open the View/Receive modal instead of accepting blindly.
+  // For incoming + PENDING, the modal exposes per-line received qty +
+  // reason so the receiver can record shortages / damage / loss before
+  // confirming. Anything else opens read-only.
+  const doReceive = (transfer) => {
+    setViewing({ transfer, mode: transfer.status === 'PENDING' ? 'receive' : 'view' });
+  };
+  const doView = (transfer) => {
+    setViewing({ transfer, mode: 'view' });
+  };
+  const submitReceive = async (id, payload) => {
     try {
-      await receiveTransfer(id);
-      flash('Stock received.', 'success');
+      const res = await receiveTransfer(id, payload);
+      const hadVariance = res?.data?.status === 'RECEIVED_WITH_VARIANCE';
+      flash(hadVariance ? 'Stock received with variance — HQ notified.' : 'Stock received.', 'success');
+      setViewing(null);
       refresh();
     } catch (err) {
       flash(err?.response?.data?.error || 'Receive failed', 'error');
@@ -150,11 +165,20 @@ export default function StockTransfers() {
 
       <div style={{ background: '#fff', border: '1px solid #e5e7eb', borderRadius: 10, padding: 14 }}>
         {tab === 'outgoing' ? (
-          <TransferTable rows={out} loading={loading} direction="out" onCancel={doCancel} />
+          <TransferTable rows={out} loading={loading} direction="out" onCancel={doCancel} onView={doView} />
         ) : (
-          <TransferTable rows={inc} loading={loading} direction="in" onReceive={doReceive} />
+          <TransferTable rows={inc} loading={loading} direction="in" onReceive={doReceive} onView={doView} />
         )}
       </div>
+
+      {viewing && (
+        <TransferDetailModal
+          transfer={viewing.transfer}
+          mode={viewing.mode}
+          onClose={() => setViewing(null)}
+          onSubmit={(payload) => submitReceive(viewing.transfer.id, payload)}
+        />
+      )}
 
       {showCreate && (
         <CreateTransferModal
@@ -182,7 +206,7 @@ function TabButton({ active, onClick, children }) {
   );
 }
 
-function TransferTable({ rows, loading, direction, onReceive, onCancel }) {
+function TransferTable({ rows, loading, direction, onReceive, onCancel, onView }) {
   if (loading && rows.length === 0) return <p style={{ color: '#64748b' }}>Loading…</p>;
   if (rows.length === 0) return <p style={{ color: '#94a3b8', fontStyle: 'italic' }}>No transfers.</p>;
 
@@ -215,18 +239,27 @@ function TransferTable({ rows, loading, direction, onReceive, onCancel }) {
               <td style={td}>{t.created_at ? new Date(t.created_at).toLocaleString() : '—'}</td>
               <td style={td}>{t.created_by_name || '—'}</td>
               <td style={{ ...td, whiteSpace: 'nowrap' }}>
-                {direction === 'in' && t.status === 'PENDING' && (
-                  <button onClick={() => onReceive(t.id)}
-                    style={{ padding: '5px 12px', background: '#16a34a', color: '#fff', border: 'none', borderRadius: 4, cursor: 'pointer', fontSize: 12, fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-                    <FiCheckCircle size={12} /> Receive
+                <div style={{ display: 'inline-flex', gap: 6 }}>
+                  {/* v1.8.64 — View always visible. Receive routes through
+                      the same modal so the user can verify items + record
+                      shortages/damage before confirming. */}
+                  <button onClick={() => onView(t)}
+                    style={{ padding: '5px 12px', background: '#fff', color: '#0369a1', border: '1px solid #bae6fd', borderRadius: 4, cursor: 'pointer', fontSize: 12, fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                    <FiEye size={12} /> View
                   </button>
-                )}
-                {direction === 'out' && t.status === 'PENDING' && (
-                  <button onClick={() => onCancel(t.id)}
-                    style={{ padding: '5px 12px', background: '#fff', color: '#b91c1c', border: '1px solid #fecaca', borderRadius: 4, cursor: 'pointer', fontSize: 12, fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-                    <FiXCircle size={12} /> Cancel
-                  </button>
-                )}
+                  {direction === 'in' && t.status === 'PENDING' && (
+                    <button onClick={() => onReceive(t)}
+                      style={{ padding: '5px 12px', background: '#16a34a', color: '#fff', border: 'none', borderRadius: 4, cursor: 'pointer', fontSize: 12, fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                      <FiCheckCircle size={12} /> Receive
+                    </button>
+                  )}
+                  {direction === 'out' && t.status === 'PENDING' && (
+                    <button onClick={() => onCancel(t.id)}
+                      style={{ padding: '5px 12px', background: '#fff', color: '#b91c1c', border: '1px solid #fecaca', borderRadius: 4, cursor: 'pointer', fontSize: 12, fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                      <FiXCircle size={12} /> Cancel
+                    </button>
+                  )}
+                </div>
               </td>
             </tr>
           ))}
@@ -445,9 +478,214 @@ function statusBadge(s) {
     'PENDING':   ['#fef3c7', '#92400e', 'Pending'],
     'RECEIVED':  ['#dcfce7', '#166534', 'Received'],
     'CANCELLED': ['#fee2e2', '#991b1b', 'Cancelled'],
+    'RECEIVED_WITH_VARIANCE': ['#fef3c7', '#92400e', 'Received · Variance'],
   };
   const [bg, fg, label] = map[s] || ['#e2e8f0', '#0f172a', s];
   return <span style={{ background: bg, color: fg, fontSize: 11, fontWeight: 700, padding: '2px 8px', borderRadius: 10, textTransform: 'uppercase', letterSpacing: 0.4 }}>{label}</span>;
+}
+
+// v1.8.64 — Transfer detail modal. Two modes:
+//   'view'    — read-only summary (any transfer, any status)
+//   'receive' — receiver's confirmation flow. Per-line inputs for
+//               received_qty + reason (OK/Short/Damaged/Lost) + notes,
+//               with a live variance preview. Submits to /receive.
+const REASON_OPTIONS = [
+  { value: 'OK',      label: 'OK (qty matches)' },
+  { value: 'Short',   label: 'Short (fewer arrived)' },
+  { value: 'Damaged', label: 'Damaged' },
+  { value: 'Lost',    label: 'Lost in transit' },
+];
+
+function TransferDetailModal({ transfer, mode, onClose, onSubmit }) {
+  const items = useMemo(() => {
+    try {
+      const raw = transfer.items_json ? JSON.parse(transfer.items_json) : (Array.isArray(transfer.items) ? transfer.items : []);
+      return Array.isArray(raw) ? raw : [];
+    } catch { return []; }
+  }, [transfer]);
+
+  // Per-line edit state — receive mode only.
+  const [lines, setLines] = useState(() =>
+    items.map(it => ({
+      product_sync_id: it.product_sync_id,
+      product_name:    it.product_name,
+      unit:            it.unit,
+      cost_price:      parseFloat(it.cost_price || 0),
+      sent_qty:        parseFloat(it.quantity || 0),
+      received_qty:    String(parseFloat(it.quantity || 0)),
+      reason:          'OK',
+      notes:           '',
+    }))
+  );
+  const [submitting, setSubmitting] = useState(false);
+
+  const setLine = (idx, field, value) => {
+    setLines(prev => prev.map((l, i) => i === idx ? { ...l, [field]: value } : l));
+  };
+
+  // Auto-bump the reason when received_qty changes vs sent_qty.
+  const onReceivedChange = (idx, value) => {
+    setLines(prev => prev.map((l, i) => {
+      if (i !== idx) return l;
+      const recv = parseFloat(value || 0);
+      const isOk = !isNaN(recv) && Math.abs(recv - l.sent_qty) < 0.0001;
+      const next = { ...l, received_qty: value };
+      // Only auto-flip the reason if the user hasn't manually set something
+      // more specific (Damaged / Lost) — preserve their explicit choice.
+      if (l.reason === 'OK' || l.reason === 'Short') {
+        next.reason = isOk ? 'OK' : 'Short';
+      }
+      return next;
+    }));
+  };
+
+  const totalSent = lines.reduce((s, l) => s + (parseFloat(l.sent_qty) || 0), 0);
+  const totalRecv = lines.reduce((s, l) => s + (parseFloat(l.received_qty) || 0), 0);
+  const totalVar  = totalSent - totalRecv;
+  const anyVariance = lines.some(l => {
+    const v = (parseFloat(l.sent_qty) || 0) - (parseFloat(l.received_qty) || 0);
+    return v > 0.0001 || l.reason === 'Damaged' || l.reason === 'Lost';
+  });
+
+  const submit = async () => {
+    setSubmitting(true);
+    try {
+      const payload = {
+        received_lines: lines.map(l => ({
+          product_sync_id: l.product_sync_id,
+          received_qty:    Math.max(0, parseFloat(l.received_qty) || 0),
+          reason:          l.reason || 'OK',
+          notes:           l.notes || null,
+        })),
+      };
+      await onSubmit(payload);
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const isReceive = mode === 'receive';
+  const fmtQ = (n) => parseFloat(n || 0).toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 });
+
+  return (
+    <div style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,0.6)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 200, padding: 16 }} onClick={onClose}>
+      <div onClick={e => e.stopPropagation()}
+        style={{ background: '#fff', borderRadius: 12, width: 'min(900px, 96vw)', maxHeight: '92vh', display: 'flex', flexDirection: 'column' }}>
+        <div style={{ padding: '14px 20px', borderBottom: '1px solid #e5e7eb', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <div>
+            <h3 style={{ margin: 0 }}>{isReceive ? 'Receive Transfer' : 'Transfer Detail'} · {transfer.transfer_number}</h3>
+            <div style={{ fontSize: 12, color: '#64748b', marginTop: 4 }}>
+              From <strong>{transfer.from_name || transfer.from_slug}</strong> → To <strong>{transfer.to_name || transfer.to_slug}</strong>
+              {transfer.created_by_name && <> · Sent by {transfer.created_by_name}</>}
+              {transfer.created_at && <> · {new Date(transfer.created_at).toLocaleString()}</>}
+            </div>
+            {transfer.notes && (
+              <div style={{ fontSize: 12, color: '#475569', marginTop: 4 }}>Notes: <em>{transfer.notes}</em></div>
+            )}
+          </div>
+          <button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 22, color: '#64748b' }}>×</button>
+        </div>
+
+        <div style={{ padding: 16, overflowY: 'auto', flex: 1 }}>
+          {items.length === 0 && (
+            <p style={{ color: '#94a3b8', fontStyle: 'italic' }}>This transfer has no items.</p>
+          )}
+          {items.length > 0 && (
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+              <thead style={{ background: '#f8fafc' }}>
+                <tr>
+                  <th style={th}>Item</th>
+                  <th style={{ ...th, textAlign: 'right' }}>Sent</th>
+                  <th style={{ ...th, textAlign: 'right' }}>{isReceive ? 'Received' : 'Received'}</th>
+                  <th style={th}>Reason</th>
+                  <th style={th}>Notes</th>
+                  <th style={{ ...th, textAlign: 'right' }}>Cost / unit</th>
+                  <th style={{ ...th, textAlign: 'right' }}>Line $</th>
+                </tr>
+              </thead>
+              <tbody>
+                {lines.map((l, idx) => {
+                  const recvNum = parseFloat(l.received_qty) || 0;
+                  const variance = (parseFloat(l.sent_qty) || 0) - recvNum;
+                  const lineDollar = recvNum * (parseFloat(l.cost_price) || 0);
+                  const hasIssue = variance > 0.0001 || l.reason === 'Damaged' || l.reason === 'Lost';
+                  return (
+                    <tr key={idx} style={{ borderTop: '1px solid #f1f5f9', background: hasIssue ? '#fffbeb' : '#fff' }}>
+                      <td style={td}><strong>{l.product_name}</strong> <span style={{ color: '#94a3b8', fontSize: 11 }}>{l.unit}</span></td>
+                      <td style={{ ...td, textAlign: 'right', fontWeight: 600 }}>{fmtQ(l.sent_qty)} {l.unit}</td>
+                      <td style={{ ...td, textAlign: 'right' }}>
+                        {isReceive ? (
+                          <input type="number" min="0" step="any" value={l.received_qty}
+                            onChange={e => onReceivedChange(idx, e.target.value)}
+                            style={{ width: 90, padding: '4px 6px', border: `1px solid ${hasIssue ? '#fbbf24' : '#d1d5db'}`, borderRadius: 4, fontSize: 13, textAlign: 'right' }} />
+                        ) : (
+                          <span style={{ fontWeight: 600 }}>{fmtQ(l.received_qty)} {l.unit}</span>
+                        )}
+                      </td>
+                      <td style={td}>
+                        {isReceive ? (
+                          <select value={l.reason} onChange={e => setLine(idx, 'reason', e.target.value)}
+                            style={{ padding: '4px 6px', border: '1px solid #d1d5db', borderRadius: 4, fontSize: 12, background: '#fff' }}>
+                            {REASON_OPTIONS.map(r => <option key={r.value} value={r.value}>{r.label}</option>)}
+                          </select>
+                        ) : (
+                          <span style={{ fontSize: 12, color: hasIssue ? '#b45309' : '#16a34a' }}>{l.reason}</span>
+                        )}
+                      </td>
+                      <td style={td}>
+                        {isReceive ? (
+                          <input value={l.notes} onChange={e => setLine(idx, 'notes', e.target.value)}
+                            placeholder={hasIssue ? 'e.g. crate broken on arrival' : ''}
+                            style={{ width: '100%', padding: '4px 6px', border: '1px solid #d1d5db', borderRadius: 4, fontSize: 12 }} />
+                        ) : (
+                          <span style={{ fontSize: 12, color: '#475569' }}>{l.notes || '—'}</span>
+                        )}
+                      </td>
+                      <td style={{ ...td, textAlign: 'right', color: '#64748b' }}>{fmtMoney(l.cost_price)}</td>
+                      <td style={{ ...td, textAlign: 'right', fontWeight: 700 }}>{fmtMoney(lineDollar)}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+              <tfoot>
+                <tr style={{ borderTop: '2px solid #e5e7eb', fontWeight: 700 }}>
+                  <td style={td}>Totals</td>
+                  <td style={{ ...td, textAlign: 'right' }}>{fmtQ(totalSent)}</td>
+                  <td style={{ ...td, textAlign: 'right' }}>{fmtQ(totalRecv)}</td>
+                  <td colSpan={2} style={{ ...td, color: totalVar > 0.001 ? '#b45309' : '#475569' }}>
+                    {totalVar > 0.001 ? `Variance: ${fmtQ(totalVar)}` : ''}
+                  </td>
+                  <td colSpan={2} style={{ ...td, textAlign: 'right' }}>{fmtMoney(transfer.total_value)}</td>
+                </tr>
+              </tfoot>
+            </table>
+          )}
+
+          {isReceive && anyVariance && (
+            <div style={{ marginTop: 14, padding: '10px 14px', background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 8, fontSize: 12, color: '#92400e', display: 'flex', alignItems: 'flex-start', gap: 8 }}>
+              <FiAlertTriangle size={16} style={{ flexShrink: 0, marginTop: 1 }} />
+              <div>
+                <strong>Variance detected.</strong> Confirming will book only the received qty into your stock. The shortfall will be recorded in Transit Variance for HQ to investigate. Make sure the reason + notes are accurate before you confirm.
+              </div>
+            </div>
+          )}
+        </div>
+
+        <div style={{ padding: '14px 20px', borderTop: '1px solid #e5e7eb', display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+          <button onClick={onClose}
+            style={{ padding: '8px 18px', background: '#fff', color: '#374151', border: '1px solid #e5e7eb', borderRadius: 6, cursor: 'pointer', fontWeight: 600 }}>
+            {isReceive ? 'Cancel' : 'Close'}
+          </button>
+          {isReceive && (
+            <button onClick={submit} disabled={submitting || items.length === 0}
+              style={{ padding: '8px 22px', background: submitting ? '#94a3b8' : '#16a34a', color: '#fff', border: 'none', borderRadius: 6, cursor: submitting ? 'not-allowed' : 'pointer', fontWeight: 700, display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+              <FiCheckCircle size={14} /> {submitting ? 'Receiving…' : (anyVariance ? 'Confirm Receive with Variance' : 'Confirm Receive')}
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
 }
 
 const lbl = { display: 'block', fontSize: 11, color: '#64748b', fontWeight: 600, marginBottom: 4 };

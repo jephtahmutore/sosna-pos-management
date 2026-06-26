@@ -201,7 +201,7 @@ export const getTransferSourceProducts = (slug) => api.get('/transfers/source-pr
 export const getOutgoingTransfers = (params) => api.get('/transfers/outgoing', { params });
 export const getIncomingTransfers = (params) => api.get('/transfers/incoming', { params });
 export const createTransfer = (data) => api.post('/transfers', data);
-export const receiveTransfer = (id) => api.put(`/transfers/${id}/receive`);
+export const receiveTransfer = (id, data) => api.put(`/transfers/${id}/receive`, data || {});
 export const cancelTransfer = (id) => api.put(`/transfers/${id}/cancel`);
 
 // v1.8.57 — Branch → HQ Cash Deposit workflow.

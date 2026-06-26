@@ -233,8 +233,18 @@ router.post('/', hqAuth, (req, res) => {
 // PUT /api/transfers/:id/receive
 // Destination confirms arrival. For each item, find the product at the
 // destination by sync_id (or auto-create using the snapshot from the
-// transfer), increment current_stock, and log a transfer_in movement.
-// Master row flips to RECEIVED + stamps received_by / received_at.
+// transfer), increment current_stock by RECEIVED qty (not sent qty),
+// and log a transfer_in movement.
+//
+// v1.8.64 — Per-line receive: body.received_lines = [{
+//   product_sync_id, received_qty, reason ('OK'|'Short'|'Damaged'|'Lost'), notes
+// }]. When received_qty < sent_qty (or reason != 'OK'), a
+// transfer_variance row is recorded in master.db. The sender's stock
+// is NOT touched (it was already decremented at send time) — the gap
+// lives in the variance table for HQ to investigate.
+//
+// Backwards-compat: if received_lines is absent, fall back to receiving
+// every item at the sent qty (the old behavior).
 router.put('/:id/receive', hqAuth, (req, res) => {
   try {
     const row = masterDb.prepare('SELECT * FROM stock_transfers WHERE id = ?').get(req.params.id);
@@ -251,9 +261,18 @@ router.put('/:id/receive', hqAuth, (req, res) => {
       return res.status(400).json({ error: 'Transfer has no items' });
     }
 
+    // Build a lookup of per-line receive overrides, keyed by product_sync_id.
+    const recvLines = Array.isArray(req.body?.received_lines) ? req.body.received_lines : [];
+    const recvByPsid = new Map();
+    for (const r of recvLines) {
+      if (r && r.product_sync_id) recvByPsid.set(r.product_sync_id, r);
+    }
+
     const toDb = getTenantDb(toSlug);
     const receivedBy = req.user.id || null;
     const receivedByName = req.user.firstName || req.user.email || 'Branch';
+    let anyVariance = false;
+    const varianceInserts = []; // { sync_id, ...row } — pushed to master.db after the tenant tx
 
     toDb.transaction(() => {
       const movStmt = toDb.prepare(`
@@ -277,8 +296,6 @@ router.put('/:id/receive', hqAuth, (req, res) => {
            WHERE sync_id = ? AND deleted_at IS NULL
         `).get(it.product_sync_id);
 
-        // Auto-create the product at the destination if it doesn't exist
-        // yet. Carries the source's sync_id so future transfers match.
         if (!prod) {
           const baseUnit = it.unit || 'pcs';
           const cost     = parseFloat(it.cost_price || 0) || 0;
@@ -297,31 +314,99 @@ router.put('/:id/receive', hqAuth, (req, res) => {
           ).get(info.lastInsertRowid);
         }
 
-        const baseQty = parseFloat(it.quantity) * conversionToBase(prod, it.unit);
-        movStmt.run(
-          prod.id, prod.sync_id, 'sales', 'transfer_in',
-          baseQty, 'transfer', row.sync_id,
-          `Transfer ${row.transfer_number} ← ${row.from_name || fromSlug}`,
-          receivedBy,
-          randomUUID(), null, null, null
-        );
-        upd.run(baseQty, prod.sync_id);
+        const sentQty = parseFloat(it.quantity) || 0;
+        const recvOverride = recvByPsid.get(it.product_sync_id);
+        const recvQty = recvOverride && recvOverride.received_qty !== undefined
+          ? Math.max(0, parseFloat(recvOverride.received_qty) || 0)
+          : sentQty;  // fallback: receive full
+        const reason  = recvOverride?.reason || (recvQty === sentQty ? 'OK' : 'Short');
+        const notes   = recvOverride?.notes || null;
+        const variance = sentQty - recvQty;
+
+        // Only stock-increment for the RECEIVED quantity (not the sent).
+        if (recvQty > 0) {
+          const baseQty = recvQty * conversionToBase(prod, it.unit);
+          movStmt.run(
+            prod.id, prod.sync_id, 'sales', 'transfer_in',
+            baseQty, 'transfer', row.sync_id,
+            `Transfer ${row.transfer_number} ← ${row.from_name || fromSlug}` +
+              (variance > 0 ? ` · short ${variance} ${it.unit || ''} (${reason})` : ''),
+            receivedBy,
+            randomUUID(), null, null, null
+          );
+          upd.run(baseQty, prod.sync_id);
+        }
+
+        // Record the variance for HQ to investigate.
+        if (variance > 0.0001 || reason === 'Damaged' || reason === 'Lost') {
+          anyVariance = true;
+          varianceInserts.push({
+            sync_id: randomUUID(),
+            transfer_sync_id: row.sync_id,
+            transfer_number:  row.transfer_number,
+            from_slug:        row.from_slug,
+            to_slug:          row.to_slug,
+            product_sync_id:  it.product_sync_id,
+            product_name:     it.product_name,
+            unit:             it.unit,
+            sent_qty:         sentQty,
+            received_qty:     recvQty,
+            variance_qty:     variance,
+            reason,
+            notes,
+          });
+        }
       }
     })();
 
+    // Persist variances in master.db (outside the tenant transaction).
+    if (varianceInserts.length > 0) {
+      const vStmt = masterDb.prepare(`
+        INSERT INTO transfer_variances (sync_id, transfer_sync_id, transfer_number,
+                                         from_slug, to_slug, product_sync_id, product_name, unit,
+                                         sent_qty, received_qty, variance_qty,
+                                         reason, notes, received_by, received_by_name)
+        VALUES (?,?,?, ?,?,?,?,?, ?,?,?, ?,?,?,?)
+      `);
+      const tx = masterDb.transaction(() => {
+        for (const v of varianceInserts) {
+          vStmt.run(v.sync_id, v.transfer_sync_id, v.transfer_number,
+                    v.from_slug, v.to_slug, v.product_sync_id, v.product_name, v.unit,
+                    v.sent_qty, v.received_qty, v.variance_qty,
+                    v.reason, v.notes, receivedBy, receivedByName);
+        }
+      });
+      tx();
+    }
+
     masterDb.prepare(`
       UPDATE stock_transfers
-         SET status = 'RECEIVED',
+         SET status = ?,
              received_by = ?,
              received_by_name = ?,
              received_at = datetime('now')
        WHERE id = ?
-    `).run(receivedBy, receivedByName, req.params.id);
+    `).run(anyVariance ? 'RECEIVED_WITH_VARIANCE' : 'RECEIVED',
+           receivedBy, receivedByName, req.params.id);
 
     const out = parseItems(masterDb.prepare('SELECT * FROM stock_transfers WHERE id = ?').get(req.params.id));
     res.json(out);
   } catch (error) {
     res.status(error.status || 500).json({ error: error.message });
+  }
+});
+
+// GET /api/transfers/:id/variances — list variance lines for one transfer
+router.get('/:id/variances', hqAuth, (req, res) => {
+  try {
+    const t = masterDb.prepare('SELECT sync_id FROM stock_transfers WHERE id = ?').get(req.params.id);
+    if (!t) return res.status(404).json({ error: 'Transfer not found' });
+    const rows = masterDb.prepare(
+      'SELECT * FROM transfer_variances WHERE transfer_sync_id = ? ORDER BY id ASC'
+    ).all(t.sync_id);
+    res.json({ variances: rows });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
   }
 });
 
