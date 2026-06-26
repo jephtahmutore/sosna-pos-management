@@ -28,6 +28,25 @@ function getOpeningByMethod(tenantId) {
   return out;
 }
 
+// v1.8.62 — per-currency opening balance for Sosna (USD / FRA / K).
+// New references: 'OB-USD', 'OB-FRA', 'OB-K'. Legacy 'OB' / 'OB-CASH' rows
+// fall through as USD so existing tenants don't lose their opening cash.
+// 'OB-BANK' and 'OB-MOMO' (Liquor/Butchery) are ignored here — Sosna's
+// drawers are physical USD/FRA/K, not method buckets.
+function getOpeningByCurrency(tenantId) {
+  const rows = db.prepare(
+    "SELECT reference, COALESCE(receipt_amount, 0) AS amount FROM cash_book WHERE type = 'opening' AND deleted_at IS NULL AND tenant_id = ?"
+  ).all(tenantId);
+  const out = { usd: 0, fra: 0, k: 0 };
+  for (const r of rows) {
+    const ref = (r.reference || '').toUpperCase();
+    if      (ref === 'OB-USD' || ref === 'OB-CASH' || ref === 'OB') out.usd += parseFloat(r.amount);
+    else if (ref === 'OB-FRA') out.fra += parseFloat(r.amount);
+    else if (ref === 'OB-K')   out.k   += parseFloat(r.amount);
+  }
+  return out;
+}
+
 // Sum a money column across all inflow/outflow tables with optional date filter.
 // Capital Injection + Loan Disbursement → inflow (like CR).
 // Capital Drawing + Dividend + Loan Principal + Loan Interest → outflow (like PV).
@@ -248,13 +267,28 @@ router.get('/', auth, readOnlyGuard, (req, res) => {
       return String(a.reference || '').localeCompare(String(b.reference || ''));
     });
 
+    // v1.8.62 — per-currency running balance. Each row carries its
+    // closing USD / FRA / K balance after the row applied. The legacy
+    // single-$ `balance` field stays for backwards compat (sums the
+    // USD-equivalent legacy receipt/payment columns).
+    const openingByCcy = getOpeningByCurrency(req.user.tenantId);
     let balance = openingBalance;
+    let bUsd = openingByCcy.usd;
+    let bFra = openingByCcy.fra;
+    let bK   = openingByCcy.k;
     const rows = merged.map((e, i) => {
       balance = balance + parseFloat(e.receipt_amount) - parseFloat(e.payment_amount);
-      return { ...e, id: i + 1, balance };
+      bUsd = bUsd + parseFloat(e.usd_in || 0) - parseFloat(e.usd_out || 0);
+      bFra = bFra + parseFloat(e.fra_in || 0) - parseFloat(e.fra_out || 0);
+      bK   = bK   + parseFloat(e.k_in   || 0) - parseFloat(e.k_out   || 0);
+      return { ...e, id: i + 1, balance, balance_usd: bUsd, balance_fra: bFra, balance_k: bK };
     });
 
-    res.json({ openingBalance, openingByMethod, entries: rows });
+    res.json({
+      openingBalance, openingByMethod, openingByCcy,
+      closingByCcy: { usd: bUsd, fra: bFra, k: bK },
+      entries: rows,
+    });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -305,14 +339,93 @@ router.get('/stats', auth, readOnlyGuard, (req, res) => {
     const openingBalance = openingByMethod.cash + openingByMethod.bank + openingByMethod.momo;
     const currentBalance = currentByMethod.cash + currentByMethod.bank + currentByMethod.momo;
 
+    // v1.8.62 — per-currency stats (USD/FRA/K) for the dashboard cards.
+    // Reads usd_amount / fra_amount / k_amount with fallback to legacy
+    // cash_amount (= USD) so single-currency tenants still total correctly.
+    // Also pulls today's confirmed HQ Deposits from master.db (subtract
+    // outgoing from branch / add incoming for HQ) so the cards stay in
+    // sync with the ledger entries endpoint.
+    const slug = String(req.query.slug || '').toLowerCase();
+    const sumCcy = (table, dateCol, col) => {
+      const usdExpr = `CASE WHEN COALESCE(${col === 'cash_amount' ? 'usd_amount' : col + '_TODO'},0) > 0 THEN ${col === 'cash_amount' ? 'usd_amount' : col} ELSE COALESCE(${col === 'cash_amount' ? 'cash_amount' : col},0) END`;
+      // Simpler: always pick the USD value via COALESCE.
+      const usd = db.prepare(`SELECT COALESCE(SUM(CASE WHEN COALESCE(usd_amount,0)>0 THEN usd_amount ELSE COALESCE(cash_amount,0) END), 0) AS t FROM ${table} WHERE deleted_at IS NULL AND tenant_id = ?${df.replace(/date/g, dateCol)}`).get(tenantId, ...dp).t;
+      const fra = db.prepare(`SELECT COALESCE(SUM(fra_amount), 0) AS t FROM ${table} WHERE deleted_at IS NULL AND tenant_id = ?${df.replace(/date/g, dateCol)}`).get(tenantId, ...dp).t;
+      const kAmt= db.prepare(`SELECT COALESCE(SUM(k_amount), 0) AS t FROM ${table} WHERE deleted_at IS NULL AND tenant_id = ?${df.replace(/date/g, dateCol)}`).get(tenantId, ...dp).t;
+      return { usd: parseFloat(usd), fra: parseFloat(fra), k: parseFloat(kAmt) };
+    };
+    const crByCcy = sumCcy('cash_receipts',    'date');
+    const pvByCcy = sumCcy('payment_vouchers', 'date');
+    const apUsd   = db.prepare(`SELECT COALESCE(SUM(amount), 0) AS t FROM ap_payments WHERE deleted_at IS NULL AND tenant_id = ?${df}`).get(tenantId, ...dp).t;
+    // POS sales — orders.cash_received / fra_received / k_received.
+    const ordersUsd = db.prepare(`SELECT COALESCE(SUM(cash_received), 0) AS t FROM orders WHERE deleted_at IS NULL AND tenant_id = ? AND (status IS NULL OR status IN ('PAID','DISPATCHED'))${df.replace(/date/g, 'paid_at')}`).get(tenantId, ...dp).t;
+    const ordersFra = db.prepare(`SELECT COALESCE(SUM(fra_received), 0) AS t FROM orders WHERE deleted_at IS NULL AND tenant_id = ? AND (status IS NULL OR status IN ('PAID','DISPATCHED'))${df.replace(/date/g, 'paid_at')}`).get(tenantId, ...dp).t;
+    const ordersK   = db.prepare(`SELECT COALESCE(SUM(k_received), 0)   AS t FROM orders WHERE deleted_at IS NULL AND tenant_id = ? AND (status IS NULL OR status IN ('PAID','DISPATCHED'))${df.replace(/date/g, 'paid_at')}`).get(tenantId, ...dp).t;
+
+    // HQ Deposits from master.db.
+    let depInByCcy  = { usd: 0, fra: 0, k: 0 };
+    let depOutByCcy = { usd: 0, fra: 0, k: 0 };
+    if (masterDb && slug) {
+      try {
+        const datePred = `date(COALESCE(deposit_date, confirmed_at, created_at))`;
+        const depDf = (from && to) ? ` AND ${datePred} BETWEEN ? AND ?`
+                    : from         ? ` AND ${datePred} >= ?`
+                    : to           ? ` AND ${datePred} <= ?` : '';
+        const depParams = (from && to) ? [from, to] : from ? [from] : to ? [to] : [];
+        const outRows = masterDb.prepare(`
+          SELECT currency, COALESCE(SUM(amount), 0) AS t
+            FROM cash_deposits
+           WHERE status = 'CONFIRMED' AND from_slug = ?${depDf}
+           GROUP BY currency
+        `).all(slug, ...depParams);
+        for (const r of outRows) {
+          const key = r.currency === 'USD' ? 'usd' : r.currency === 'FRA' ? 'fra' : 'k';
+          depOutByCcy[key] += parseFloat(r.t);
+        }
+        if (HQ_INBOX_SLUGS.has(slug)) {
+          const inRows = masterDb.prepare(`
+            SELECT currency, COALESCE(SUM(amount), 0) AS t
+              FROM cash_deposits
+             WHERE status = 'CONFIRMED'${depDf}
+             GROUP BY currency
+          `).all(...depParams);
+          for (const r of inRows) {
+            const key = r.currency === 'USD' ? 'usd' : r.currency === 'FRA' ? 'fra' : 'k';
+            depInByCcy[key] += parseFloat(r.t);
+          }
+        }
+      } catch (_) { /* non-fatal */ }
+    }
+
+    // Per-currency receipts / payments roll-up.
+    const receiptsByCcy = {
+      usd: ordersUsd + crByCcy.usd + depInByCcy.usd,
+      fra: ordersFra + crByCcy.fra + depInByCcy.fra,
+      k:   ordersK   + crByCcy.k   + depInByCcy.k,
+    };
+    const paymentsByCcy = {
+      usd: pvByCcy.usd + apUsd + depOutByCcy.usd,
+      fra: pvByCcy.fra            + depOutByCcy.fra,
+      k:   pvByCcy.k              + depOutByCcy.k,
+    };
+    // Per-currency closing balance = opening + receipts − payments.
+    const openingByCcy = getOpeningByCurrency(tenantId);
+    const currentByCcy = {
+      usd: openingByCcy.usd + receiptsByCcy.usd - paymentsByCcy.usd,
+      fra: openingByCcy.fra + receiptsByCcy.fra - paymentsByCcy.fra,
+      k:   openingByCcy.k   + receiptsByCcy.k   - paymentsByCcy.k,
+    };
+
     res.json({
       openingBalance, openingByMethod,
       totalReceipts, totalPV, totalAP, totalPayments,
       totalCapIn, totalCapOut, totalDividend,
       totalLoanIn, totalLoanPrin, totalLoanInt,
       currentBalance, currentByMethod,
-      // Per-method receipts/payments breakdown (for richer reporting later)
       methodFlows: { cash, bank, momo },
+      // v1.8.62 — per-currency cards for the Sosna Cash Book dashboard.
+      openingByCcy, receiptsByCcy, paymentsByCcy, currentByCcy,
+      depositsByCcy: { in: depInByCcy, out: depOutByCcy },
     });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -320,26 +433,36 @@ router.get('/stats', auth, readOnlyGuard, (req, res) => {
 });
 
 // Set opening balance(s).
-// Accepts either { amount } (legacy single Cash opening) or
-// { cash, bank, momo } (per-method). Stores up to 3 rows (one per non-zero method).
+// Accepts:
+//   { usd, fra, k }                — v1.8.62 per-currency (Sosna)
+//   { cash, bank, momo }           — legacy per-method
+//   { amount }                     — legacy single Cash opening
 router.post('/opening-balance', auth, (req, res) => {
   try {
-    const { amount, cash, bank, momo } = req.body;
+    const { amount, cash, bank, momo, usd, fra, k } = req.body;
     const tenantId = syncConfig.getTenantId(req);
     const { branchId, deviceId } = syncConfig.getConfig();
 
-    // Use per-method if any are provided, otherwise fall back to legacy single amount → cash
+    const usingCcy   = usd  !== undefined || fra  !== undefined || k    !== undefined;
     const usingSplit = cash !== undefined || bank !== undefined || momo !== undefined;
-    const buckets = usingSplit
-      ? [
-          { ref: 'OB-CASH', amount: parseFloat(cash || 0) || 0 },
-          { ref: 'OB-BANK', amount: parseFloat(bank || 0) || 0 },
-          { ref: 'OB-MOMO', amount: parseFloat(momo || 0) || 0 },
-        ]
-      : [{ ref: 'OB-CASH', amount: parseFloat(amount || 0) || 0 }];
+    let buckets;
+    if (usingCcy) {
+      buckets = [
+        { ref: 'OB-USD', amount: parseFloat(usd || 0) || 0 },
+        { ref: 'OB-FRA', amount: parseFloat(fra || 0) || 0 },
+        { ref: 'OB-K',   amount: parseFloat(k   || 0) || 0 },
+      ];
+    } else if (usingSplit) {
+      buckets = [
+        { ref: 'OB-CASH', amount: parseFloat(cash || 0) || 0 },
+        { ref: 'OB-BANK', amount: parseFloat(bank || 0) || 0 },
+        { ref: 'OB-MOMO', amount: parseFloat(momo || 0) || 0 },
+      ];
+    } else {
+      buckets = [{ ref: 'OB-CASH', amount: parseFloat(amount || 0) || 0 }];
+    }
 
     db.transaction(() => {
-      // Wipe any existing opening rows (legacy 'OB' included)
       db.prepare("DELETE FROM cash_book WHERE type = 'opening' AND tenant_id = ?").run(tenantId);
       const ins = db.prepare(`
         INSERT INTO cash_book (date, description, reference, receipt_amount, payment_amount, balance,
@@ -349,12 +472,19 @@ router.post('/opening-balance', auth, (req, res) => {
       for (const b of buckets) {
         const label = b.ref === 'OB-BANK' ? 'Opening Bank Balance'
                     : b.ref === 'OB-MOMO' ? 'Opening MoMo Balance'
+                    : b.ref === 'OB-USD'  ? 'Opening USD Balance'
+                    : b.ref === 'OB-FRA'  ? 'Opening FRA Balance'
+                    : b.ref === 'OB-K'    ? 'Opening K Balance'
                     : 'Opening Cash Balance';
         ins.run(label, b.ref, b.amount, b.amount, randomUUID(), tenantId, branchId, deviceId);
       }
     })();
 
-    res.json({ success: true, openingByMethod: getOpeningByMethod(tenantId) });
+    res.json({
+      success: true,
+      openingByMethod: getOpeningByMethod(tenantId),
+      openingByCcy:    getOpeningByCurrency(tenantId),
+    });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }

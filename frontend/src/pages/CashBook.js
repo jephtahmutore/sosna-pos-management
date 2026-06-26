@@ -22,9 +22,13 @@ const CashBook = () => {
   const [businessInfo, setBusinessInfo] = useState({});
   const [showListPrint, setShowListPrint] = useState(false);
   const [openingBal, setOpeningBal] = useState(0);
-  // Per-method opening balance editor — modal with three inputs
+  // v1.8.62 — per-currency opening balance editor (USD / FRA / K).
   const [editingOB, setEditingOB] = useState(false);
-  const [obInput, setObInput] = useState({ cash: '', bank: '', momo: '' });
+  const [obInput, setObInput] = useState({ usd: '', fra: '', k: '' });
+  // v1.8.62 — active currency filter for the ledger ('all' | 'usd' | 'fra' | 'k').
+  // Clicking a currency card sets this; ledger filters rows that touch that
+  // currency and the Balance column switches to that currency's running total.
+  const [activeCcy, setActiveCcy] = useState('all');
   const [savingOB, setSavingOB] = useState(false);
   const todayStr = new Date().toISOString().split('T')[0];
   const [from, setFrom] = useState(todayStr);
@@ -107,9 +111,9 @@ const CashBook = () => {
     setSavingOB(true);
     try {
       await setOpeningBalance({
-        cash: parseFloat(obInput.cash || 0) || 0,
-        bank: parseFloat(obInput.bank || 0) || 0,
-        momo: parseFloat(obInput.momo || 0) || 0,
+        usd: parseFloat(obInput.usd || 0) || 0,
+        fra: parseFloat(obInput.fra || 0) || 0,
+        k:   parseFloat(obInput.k   || 0) || 0,
       });
       setEditingOB(false);
       await fetchData(from, to);
@@ -120,9 +124,9 @@ const CashBook = () => {
   const openEditOB = () => {
     if (!window.confirm('Editing opening balances will affect all running balances in the Cash Book. Do you want to continue?')) return;
     setObInput({
-      cash: String(stats.openingByMethod?.cash || 0),
-      bank: String(stats.openingByMethod?.bank || 0),
-      momo: String(stats.openingByMethod?.momo || 0),
+      usd: String(stats.openingByCcy?.usd || 0),
+      fra: String(stats.openingByCcy?.fra || 0),
+      k:   String(stats.openingByCcy?.k   || 0),
     });
     setEditingOB(true);
   };
@@ -371,10 +375,15 @@ const CashBook = () => {
         )}
       </div>
 
-      {/* Four cards: Cash & Cash Equivalents (umbrella, read-only) + Cash on Hand, Mobile Money, Cash at Bank.
-          Per-method cards expose the opening-balance editor when no date filter is active. */}
+      {/* v1.8.62 — Four cards. Cash & Cash Equivalents is the umbrella
+          (clears filter); USD / FRA / K cards are clickable to filter the
+          ledger to that currency, with active-state highlight. */}
       <div className="stat-cards">
-        <div className="stat-card purple">
+        <div
+          className={`stat-card purple ${activeCcy === 'all' ? 'active-filter' : ''}`}
+          onClick={() => setActiveCcy('all')}
+          style={{ cursor: 'pointer', outline: activeCcy === 'all' ? '3px solid #fbbf24' : 'none' }}
+        >
           <div className="stat-icon"><FiDollarSign /></div>
           <div>
             <div className="stat-label">{t('cashAndEquivalents')}</div>
@@ -383,27 +392,35 @@ const CashBook = () => {
           </div>
         </div>
 
-        {/* v1.8.8 — per-currency balances (USD / FRA / K) for Sosna.
-            Backend still keys data on cash/bank/momo bucket names — we just
-            remap them to currencies: cash→USD, bank→FRA, momo→K. The
-            underlying balance math will be reworked to be truly per-currency
-            once PVs/CRs/APs all consistently write to the new usd/fra/k
-            columns added in v1.8.5. */}
+        {/* v1.8.62 — true per-currency cards. Each shows its own opening
+            balance + current balance, computed independently with no
+            cross-currency FX conversion. Clickable to filter the ledger. */}
         {[
-          { key: 'cash', label: 'USD ($)', defaultClass: 'green' },
-          { key: 'bank', label: 'FRA',     defaultClass: 'purple' },
-          { key: 'momo', label: 'K',       defaultClass: 'orange' },
+          { key: 'usd', label: 'USD ($)', defaultClass: 'green',  symbol: '$',  raw: false },
+          { key: 'fra', label: 'FRA',     defaultClass: 'purple', symbol: '',   raw: true  },
+          { key: 'k',   label: 'K',       defaultClass: 'orange', symbol: '',   raw: true  },
         ].map(m => {
-          const bal  = stats.currentByMethod?.[m.key] || 0;
-          const open = stats.openingByMethod?.[m.key] || 0;
+          const bal  = stats.currentByCcy?.[m.key] || 0;
+          const open = stats.openingByCcy?.[m.key] || 0;
           const isNegative = bal < -0.001;
+          const fmtBal = m.raw
+            ? `${Math.round(bal).toLocaleString()} ${m.label.replace(' ($)', '')}`
+            : `${m.symbol}${bal.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+          const fmtOpen = m.raw
+            ? `${Math.round(open).toLocaleString()} ${m.label.replace(' ($)', '')}`
+            : `${m.symbol}${open.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+          const isActive = activeCcy === m.key;
           return (
-            <div key={m.key} className={`stat-card ${isNegative ? 'red' : m.defaultClass}`}>
+            <div key={m.key}
+              className={`stat-card ${isNegative ? 'red' : m.defaultClass} ${isActive ? 'active-filter' : ''}`}
+              onClick={() => setActiveCcy(isActive ? 'all' : m.key)}
+              style={{ cursor: 'pointer', outline: isActive ? '3px solid #fbbf24' : 'none' }}
+            >
               <div className="stat-icon"><FiDollarSign /></div>
               <div>
-                <div className="stat-label">{m.label}</div>
-                <div className="stat-value">{hasPermission('CashBook:View') ? `${curSym}${bal.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : 'N/A'}</div>
-                <div style={{ fontSize: 11, opacity: 0.85, marginTop: 2 }}>{t('opening')} {curSym}{open.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
+                <div className="stat-label">{m.label}{isActive && <span style={{ fontSize: 10, marginLeft: 6, opacity: 0.85 }}>· active</span>}</div>
+                <div className="stat-value">{hasPermission('CashBook:View') ? fmtBal : 'N/A'}</div>
+                <div style={{ fontSize: 11, opacity: 0.85, marginTop: 2 }}>{t('opening')} {fmtOpen}</div>
               </div>
             </div>
           );
@@ -452,9 +469,9 @@ const CashBook = () => {
             </div>
             <div style={{ padding: 22, display: 'grid', gap: 12 }}>
               {[
-                { key: 'cash', label: 'USD ($)', color: '#16a34a' },
-                { key: 'bank', label: 'FRA',     color: '#7c3aed' },
-                { key: 'momo', label: 'K',       color: '#ea580c' },
+                { key: 'usd', label: 'USD ($)', color: '#16a34a' },
+                { key: 'fra', label: 'FRA',     color: '#7c3aed' },
+                { key: 'k',   label: 'K',       color: '#ea580c' },
               ].map(f => (
                 <div key={f.key}>
                   <label style={{ fontSize: 12, color: f.color, fontWeight: 700, textTransform: 'uppercase', marginBottom: 4, display: 'block' }}>{f.label}</label>
@@ -493,18 +510,38 @@ const CashBook = () => {
             </tr>
           </thead>
           <tbody>
-            {/* Opening Balance row */}
-            <tr style={{ background: '#f0f9ff' }}>
-              <td style={{ fontWeight: 500 }}>—</td>
-              <td style={{ fontWeight: 600 }}>{t('openingBalance')}</td>
-              <td style={{ color: '#9ca3af', fontSize: 12 }}>OB</td>
-              <td></td>
-              <td style={{ color: '#2563eb', fontWeight: 600, textAlign: 'right' }}>{curSym}{openingBal.toLocaleString()}</td>
-              <td></td>
-              <td></td>
-              <td style={{ fontWeight: 600, textAlign: 'right' }}>{curSym}{openingBal.toLocaleString()}</td>
-            </tr>
-            {entries.map(e => {
+            {/* Opening Balance row — shows per-currency openings if any. */}
+            {(() => {
+              const obUsd = stats.openingByCcy?.usd || 0;
+              const obFra = stats.openingByCcy?.fra || 0;
+              const obK   = stats.openingByCcy?.k   || 0;
+              const balForActive = activeCcy === 'usd' ? obUsd
+                                 : activeCcy === 'fra' ? obFra
+                                 : activeCcy === 'k'   ? obK
+                                 : openingBal;
+              const fmtBalActive = activeCcy === 'fra' ? `${Math.round(balForActive).toLocaleString()} FRA`
+                                 : activeCcy === 'k'   ? `${Math.round(balForActive).toLocaleString()} K`
+                                 : `${curSym}${balForActive.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}`;
+              return (
+                <tr style={{ background: '#f0f9ff' }}>
+                  <td style={{ fontWeight: 500 }}>—</td>
+                  <td style={{ fontWeight: 600 }}>{t('openingBalance')}</td>
+                  <td style={{ color: '#9ca3af', fontSize: 12 }}>OB</td>
+                  <td></td>
+                  <td style={{ color: obUsd ? '#16a34a' : '#cbd5e1', fontWeight: 600, textAlign: 'right' }}>{obUsd ? `${curSym}${obUsd.toLocaleString()}` : '—'}</td>
+                  <td style={{ color: obFra ? '#2563eb' : '#cbd5e1', fontWeight: 600, textAlign: 'right' }}>{obFra ? `${Math.round(obFra).toLocaleString()} FRA` : '—'}</td>
+                  <td style={{ color: obK ? '#7c3aed' : '#cbd5e1', fontWeight: 600, textAlign: 'right' }}>{obK ? `${Math.round(obK).toLocaleString()} K` : '—'}</td>
+                  <td style={{ fontWeight: 600, textAlign: 'right' }}>{fmtBalActive}</td>
+                </tr>
+              );
+            })()}
+            {entries.filter(e => {
+              // v1.8.62 — filter rows by active currency. 'all' = no filter.
+              if (activeCcy === 'all') return true;
+              const inAmt  = parseFloat(e[`${activeCcy}_in`]  || 0);
+              const outAmt = parseFloat(e[`${activeCcy}_out`] || 0);
+              return inAmt !== 0 || outAmt !== 0;
+            }).map(e => {
               const isAP = e.type === 'AP';
               const isCR = e.type === 'CR';
               const isDepIn  = e.type === 'DEP-IN';
@@ -538,7 +575,17 @@ const CashBook = () => {
                   <td style={{ textAlign: 'right', color: kNet > 0 ? '#7c3aed' : kNet < 0 ? '#dc2626' : '#cbd5e1', fontWeight: kNet !== 0 ? 600 : 400 }}>
                     {kNet !== 0 ? `${kNet > 0 ? '+' : '-'}${fmtRaw(Math.abs(kNet))} K` : '—'}
                   </td>
-                  <td style={{ fontWeight: 600, textAlign: 'right' }}>{curSym}{(parseFloat(parseFloat(e.balance))||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</td>
+                  <td style={{ fontWeight: 600, textAlign: 'right' }}>
+                    {(() => {
+                      // v1.8.62 — Balance column follows the active currency
+                      // filter. 'all' falls back to the legacy USD-equivalent
+                      // balance for the umbrella view.
+                      if (activeCcy === 'usd') return `${curSym}${(parseFloat(e.balance_usd)||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}`;
+                      if (activeCcy === 'fra') return `${Math.round(parseFloat(e.balance_fra)||0).toLocaleString()} FRA`;
+                      if (activeCcy === 'k')   return `${Math.round(parseFloat(e.balance_k)||0).toLocaleString()} K`;
+                      return `${curSym}${(parseFloat(parseFloat(e.balance))||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}`;
+                    })()}
+                  </td>
                 </tr>
               );
             })}
@@ -548,6 +595,10 @@ const CashBook = () => {
             {/* v1.8.61 — per-currency totals row. Sum in / out separately
                 across all entries, then display net per currency. */}
             {(() => {
+              // v1.8.62 — totals row. Closing balance per currency comes
+              // from stats.currentByCcy (true per-currency, no FX cross-
+              // conversion). Active-currency Balance cell uses the matching
+              // currentByCcy value; 'all' falls back to currentBalance.
               const t = entries.reduce((a, e) => {
                 a.usd += parseFloat(e.usd_in || 0) - parseFloat(e.usd_out || 0);
                 a.fra += parseFloat(e.fra_in || 0) - parseFloat(e.fra_out || 0);
@@ -556,13 +607,20 @@ const CashBook = () => {
               }, { usd: 0, fra: 0, k: 0 });
               const fmtUsd = (n) => `$${parseFloat(n||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}`;
               const fmtRaw = (n) => Math.round(parseFloat(n||0)).toLocaleString();
+              const closeBal = activeCcy === 'usd' ? (stats.currentByCcy?.usd || 0)
+                              : activeCcy === 'fra' ? (stats.currentByCcy?.fra || 0)
+                              : activeCcy === 'k'   ? (stats.currentByCcy?.k   || 0)
+                              : stats.currentBalance;
+              const fmtClose = activeCcy === 'fra' ? `${Math.round(closeBal).toLocaleString()} FRA`
+                              : activeCcy === 'k'   ? `${Math.round(closeBal).toLocaleString()} K`
+                              : `${curSym}${(closeBal||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}`;
               return (
                 <tr style={{ background: '#f9fafb', fontWeight: 700, borderTop: '2px solid #e5e7eb' }}>
                   <td colSpan="4" style={{ textAlign: 'right' }}>TOTALS:</td>
                   <td style={{ textAlign: 'right', color: t.usd >= 0 ? '#16a34a' : '#dc2626' }}>{t.usd >= 0 ? '+' : '-'}{fmtUsd(Math.abs(t.usd))}</td>
                   <td style={{ textAlign: 'right', color: t.fra >= 0 ? '#2563eb' : '#dc2626' }}>{t.fra >= 0 ? '+' : '-'}{fmtRaw(Math.abs(t.fra))} FRA</td>
                   <td style={{ textAlign: 'right', color: t.k   >= 0 ? '#7c3aed' : '#dc2626' }}>{t.k   >= 0 ? '+' : '-'}{fmtRaw(Math.abs(t.k))} K</td>
-                  <td style={{ textAlign: 'right', color: stats.currentBalance >= 0 ? '#16a34a' : '#dc2626' }}>{curSym}{stats.currentBalance.toLocaleString()}</td>
+                  <td style={{ textAlign: 'right', color: closeBal >= 0 ? '#16a34a' : '#dc2626' }}>{fmtClose}</td>
                 </tr>
               );
             })()}
