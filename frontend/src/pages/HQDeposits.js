@@ -12,20 +12,37 @@
 // on confirm; the per-currency Cash Report aggregation reads cash_deposits
 // directly so drawer Expected reflects today's outflow / inflow without
 // hitting profit.
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
 import {
   FiSend, FiCheck, FiX, FiRefreshCw, FiInbox, FiArrowUpRight, FiArrowDownLeft, FiTrash2,
+  FiPaperclip, FiCamera, FiUpload, FiEye, FiFileText, FiImage,
 } from 'react-icons/fi';
 import {
   getCashDeposits, createCashDeposit, confirmCashDeposit, rejectCashDeposit, deleteCashDeposit,
+  uploadInvoiceAttachment,
   isHqHost, getBranchSlug,
 } from '../services/api';
 import { useCurrency } from '../context/CurrencyContext';
 import Portal from '../utils/Portal';
 import useModalScrollLock from '../utils/useModalScrollLock';
-import InvoiceAttachment from '../components/InvoiceAttachment';
 
 const todayStr = () => new Date().toISOString().slice(0, 10);
+
+// v1.8.61 — parse attachment column (string or JSON-array string) into
+// an array of paths. Tolerates legacy single-string entries.
+const parseAttachments = (raw) => {
+  if (!raw) return [];
+  if (Array.isArray(raw)) return raw;
+  if (typeof raw !== 'string') return [];
+  const s = raw.trim();
+  if (s.startsWith('[')) {
+    try {
+      const arr = JSON.parse(s);
+      return Array.isArray(arr) ? arr.filter(Boolean) : [];
+    } catch { /* fall through */ }
+  }
+  return [s]; // legacy single-path
+};
 
 const HQDeposits = () => {
   const { symbol: curSym, currencyMode } = useCurrency();
@@ -38,9 +55,14 @@ const HQDeposits = () => {
 
   // Send Deposit modal (branch only)
   const [showSend, setShowSend] = useState(false);
-  const [sendForm, setSendForm] = useState({ currency: 'USD', amount: '', notes: '', deposit_date: todayStr(), attachment: null });
+  const [sendForm, setSendForm] = useState({ currency: 'USD', amount: '', notes: '', deposit_date: todayStr(), attachments: [] });
   const [sending, setSending]   = useState(false);
   const [sendError, setSendError] = useState('');
+  // v1.8.61 — multi-file upload state for the deposit slips.
+  const fileInputRef = useRef(null);
+  const camInputRef  = useRef(null);
+  const [uploadingAtt, setUploadingAtt] = useState(false);
+  const [attError, setAttError] = useState('');
 
   // Reject reason modal (HQ only)
   const [rejectingId, setRejectingId]   = useState(null);
@@ -70,8 +92,36 @@ const HQDeposits = () => {
 
   const openSendModal = () => {
     setSendError('');
-    setSendForm({ currency: 'USD', amount: '', notes: '', deposit_date: todayStr(), attachment: null });
+    setAttError('');
+    setSendForm({ currency: 'USD', amount: '', notes: '', deposit_date: todayStr(), attachments: [] });
     setShowSend(true);
+  };
+
+  // v1.8.61 — upload one or more files (file picker is multi-select).
+  const handleFilesPicked = async (filesList) => {
+    if (!filesList || filesList.length === 0) return;
+    setAttError('');
+    setUploadingAtt(true);
+    const newPaths = [];
+    try {
+      for (const f of Array.from(filesList)) {
+        const res = await uploadInvoiceAttachment(f, 'deposit');
+        if (res?.data?.path) newPaths.push(res.data.path);
+      }
+      setSendForm(f => ({ ...f, attachments: [...(f.attachments || []), ...newPaths] }));
+    } catch (e) {
+      const status = e.response?.status;
+      const reason = e.response?.data?.error
+        || (status === 413 ? 'File too large (max 10 MB)'
+        :   status === 400 ? 'Invalid file type (PDF or image only)'
+        :   `Upload failed${status ? ` (${status})` : ''}`);
+      setAttError(reason);
+    }
+    setUploadingAtt(false);
+  };
+
+  const removeAttachment = (idx) => {
+    setSendForm(f => ({ ...f, attachments: (f.attachments || []).filter((_, i) => i !== idx) }));
   };
 
   const handleSend = async () => {
@@ -82,13 +132,20 @@ const HQDeposits = () => {
     if (!slug) { setSendError('Branch not detected — cannot send deposit'); return; }
     setSending(true);
     try {
+      // Multi-attachment serialised as JSON array. Backend stores the
+      // string verbatim in the legacy `attachment` column — parseAttachments()
+      // on read tolerates both shapes (single string or JSON array).
+      const atts = sendForm.attachments || [];
+      const attachmentPayload = atts.length === 0 ? null
+        : atts.length === 1 ? atts[0]
+        : JSON.stringify(atts);
       await createCashDeposit({
         from_slug:    slug,
         currency:     sendForm.currency,
         amount:       amt,
         notes:        sendForm.notes || null,
         deposit_date: sendForm.deposit_date,
-        attachment:   sendForm.attachment || null,
+        attachment:   attachmentPayload,
       });
       setShowSend(false);
       await fetchDeposits();
@@ -248,13 +305,21 @@ const HQDeposits = () => {
                       </td>
                       <td style={{ ...td, color: '#6b7280', maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={d.notes}>{d.notes || '—'}</td>
                       <td style={td}>
-                        {d.attachment ? (
-                          <a href={`${(process.env.REACT_APP_API_URL || '/api').replace(/\/api\/?$/, '')}/uploads/${d.attachment}`}
-                             target="_blank" rel="noopener noreferrer"
-                             style={{ color: '#2563eb', fontSize: 11, textDecoration: 'none', fontWeight: 600 }}>
-                            View
-                          </a>
-                        ) : <span style={{ color: '#cbd5e1', fontSize: 11 }}>—</span>}
+                        {(() => {
+                          const atts = parseAttachments(d.attachment);
+                          if (atts.length === 0) return <span style={{ color: '#cbd5e1', fontSize: 11 }}>—</span>;
+                          const apiBase = (process.env.REACT_APP_API_URL || '/api').replace(/\/api\/?$/, '');
+                          return (
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                              {atts.map((p, i) => (
+                                <a key={i} href={`${apiBase}/uploads/${p}`} target="_blank" rel="noopener noreferrer"
+                                   style={{ color: '#2563eb', fontSize: 11, textDecoration: 'none', fontWeight: 600 }}>
+                                  View {atts.length > 1 ? `#${i + 1}` : ''}
+                                </a>
+                              ))}
+                            </div>
+                          );
+                        })()}
                       </td>
                       <td style={td}>
                         <span style={{ padding: '2px 10px', background: statusBg, color: statusColor, borderRadius: 999, fontSize: 10, fontWeight: 700 }}>
@@ -359,12 +424,57 @@ const HQDeposits = () => {
                   placeholder="Courier / driver / reference" />
               </div>
               <div className="form-group">
-                <label>Attach Deposit Slip (optional) — picture or PDF</label>
-                <InvoiceAttachment
-                  value={sendForm.attachment}
-                  onChange={(p) => setSendForm({ ...sendForm, attachment: p })}
-                  kind="deposit"
-                />
+                <label>Attach Deposit Slips (optional) — picture or PDF, multiple allowed</label>
+                <div style={{ border: '1px dashed #d1d5db', borderRadius: 8, padding: 10, background: '#fafafa' }}>
+                  {/* List of already-uploaded attachments with Remove */}
+                  {(sendForm.attachments || []).length > 0 && (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 8 }}>
+                      {sendForm.attachments.map((path, idx) => {
+                        const isPdf = (path || '').toLowerCase().endsWith('.pdf');
+                        const apiBase = (process.env.REACT_APP_API_URL || '/api').replace(/\/api\/?$/, '');
+                        const url = `${apiBase}/uploads/${path}`;
+                        const shortName = path.length > 36 ? `…${path.slice(-34)}` : path;
+                        return (
+                          <div key={idx} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 10px', background: '#fff', border: '1px solid #e5e7eb', borderRadius: 6 }}>
+                            {isPdf ? <FiFileText size={14} color="#dc2626" /> : <FiImage size={14} color="#16a34a" />}
+                            <span style={{ flex: 1, fontSize: 11, fontFamily: 'monospace', color: '#374151', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{shortName}</span>
+                            <a href={url} target="_blank" rel="noopener noreferrer"
+                               style={{ display: 'inline-flex', alignItems: 'center', gap: 3, padding: '3px 8px', background: '#dcfce7', color: '#166534', borderRadius: 4, fontSize: 11, fontWeight: 600, textDecoration: 'none' }}>
+                              <FiEye size={11} /> View
+                            </a>
+                            <button type="button" onClick={() => removeAttachment(idx)}
+                              style={{ display: 'inline-flex', alignItems: 'center', gap: 3, padding: '3px 8px', background: '#fee2e2', color: '#b91c1c', border: 'none', borderRadius: 4, fontSize: 11, fontWeight: 600, cursor: 'pointer' }}>
+                              <FiX size={11} /> Remove
+                            </button>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                  {/* Add buttons */}
+                  <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                    <input ref={fileInputRef} type="file" accept="image/*,application/pdf" multiple
+                      style={{ display: 'none' }}
+                      onChange={e => { handleFilesPicked(e.target.files); e.target.value = ''; }} />
+                    <input ref={camInputRef} type="file" accept="image/*" capture="environment"
+                      style={{ display: 'none' }}
+                      onChange={e => { handleFilesPicked(e.target.files); e.target.value = ''; }} />
+                    <button type="button" onClick={() => fileInputRef.current?.click()} disabled={uploadingAtt}
+                      style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '6px 12px', background: '#fff', color: '#2563eb', border: '1px solid #bfdbfe', borderRadius: 6, cursor: uploadingAtt ? 'not-allowed' : 'pointer', fontSize: 12, fontWeight: 600 }}>
+                      <FiPaperclip size={12} /> {uploadingAtt ? 'Uploading…' : 'Choose files'}
+                    </button>
+                    <button type="button" onClick={() => camInputRef.current?.click()} disabled={uploadingAtt}
+                      style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '6px 12px', background: '#fff', color: '#16a34a', border: '1px solid #bbf7d0', borderRadius: 6, cursor: uploadingAtt ? 'not-allowed' : 'pointer', fontSize: 12, fontWeight: 600 }}>
+                      <FiCamera size={12} /> Camera
+                    </button>
+                    <span style={{ fontSize: 11, color: '#9ca3af', alignSelf: 'center' }}>
+                      {(sendForm.attachments || []).length} attached
+                    </span>
+                  </div>
+                  {attError && (
+                    <div style={{ marginTop: 6, fontSize: 11, color: '#b91c1c', fontWeight: 600 }}>{attError}</div>
+                  )}
+                </div>
               </div>
               {sendError && (
                 <div style={{ padding: '8px 12px', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 6, color: '#991b1b', fontSize: 12, fontWeight: 600 }}>

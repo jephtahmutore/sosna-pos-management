@@ -378,52 +378,50 @@ router.get('/cash-position', hqAuth, (req, res) => {
     const monthPrefix = todayPrefix.slice(0, 7);
     const tenants = listTenants();
 
+    // v1.8.61 — Sosna is cash-only across 3 currencies (USD / FRA / K).
+    // Switch the buckets from Cash / Bank / MoMo to USD / FRA / K and
+    // read the per-currency columns. usd_amount / fra_amount / k_amount
+    // on cash_receipts / payment_vouchers / customer_payments are the
+    // post-v1.7.0 columns; cash_amount / bank_amount / momo_amount stay
+    // populated on legacy rows. Use a COALESCE fallback so single-currency
+    // tenants (lusaka1, mansa1 — bank/momo never enter the picture) still
+    // total correctly via the legacy column.
     const sumIn = (db, datePrefix, span) => {
       const wherePref = span === 'today' ? `= ?` : `LIKE ? || '%'`;
-      const dateArg   = span === 'today' ? datePrefix : datePrefix;
+      const dateArg   = datePrefix;
       const param     = (col) => `substr(COALESCE(${col}, ''), 1, ${span === 'today' ? 10 : 7}) ${wherePref}`;
-      // Each subquery filters by its own date column then sums the per-method splits.
       const row = tryGet(db, `
         SELECT
           (SELECT COALESCE(SUM(cash_received), 0)
-             FROM orders
-            WHERE deleted_at IS NULL
-              AND (status IS NULL OR status IN ('PAID','DISPATCHED'))
-              AND ${param('paid_at')}) AS sales_cash,
-          (SELECT COALESCE(SUM(momo_received), 0)
-             FROM orders
-            WHERE deleted_at IS NULL
-              AND (status IS NULL OR status IN ('PAID','DISPATCHED'))
-              AND ${param('paid_at')}) AS sales_momo,
-          (SELECT COALESCE(SUM(bank_received), 0)
-             FROM orders
-            WHERE deleted_at IS NULL
-              AND (status IS NULL OR status IN ('PAID','DISPATCHED'))
-              AND ${param('paid_at')}) AS sales_bank,
-          (SELECT COALESCE(SUM(cash_amount), 0)
-             FROM cash_receipts
-            WHERE deleted_at IS NULL AND ${param('date')}) AS cr_cash,
-          (SELECT COALESCE(SUM(bank_amount), 0)
-             FROM cash_receipts
-            WHERE deleted_at IS NULL AND ${param('date')}) AS cr_bank,
-          (SELECT COALESCE(SUM(momo_amount), 0)
-             FROM cash_receipts
-            WHERE deleted_at IS NULL AND ${param('date')}) AS cr_momo,
-          (SELECT COALESCE(SUM(cash_amount), 0)
-             FROM customer_payments
-            WHERE deleted_at IS NULL AND ${param('payment_date')}) AS cp_cash,
-          (SELECT COALESCE(SUM(bank_amount), 0)
-             FROM customer_payments
-            WHERE deleted_at IS NULL AND ${param('payment_date')}) AS cp_bank,
-          (SELECT COALESCE(SUM(momo_amount), 0)
-             FROM customer_payments
-            WHERE deleted_at IS NULL AND ${param('payment_date')}) AS cp_momo
+             FROM orders WHERE deleted_at IS NULL
+               AND (status IS NULL OR status IN ('PAID','DISPATCHED'))
+               AND ${param('paid_at')}) AS sales_usd,
+          (SELECT COALESCE(SUM(fra_received), 0)
+             FROM orders WHERE deleted_at IS NULL
+               AND (status IS NULL OR status IN ('PAID','DISPATCHED'))
+               AND ${param('paid_at')}) AS sales_fra,
+          (SELECT COALESCE(SUM(k_received), 0)
+             FROM orders WHERE deleted_at IS NULL
+               AND (status IS NULL OR status IN ('PAID','DISPATCHED'))
+               AND ${param('paid_at')}) AS sales_k,
+          (SELECT COALESCE(SUM(CASE WHEN COALESCE(usd_amount,0) > 0 THEN usd_amount ELSE COALESCE(cash_amount,0) END), 0)
+             FROM cash_receipts WHERE deleted_at IS NULL AND ${param('date')}) AS cr_usd,
+          (SELECT COALESCE(SUM(fra_amount), 0)
+             FROM cash_receipts WHERE deleted_at IS NULL AND ${param('date')}) AS cr_fra,
+          (SELECT COALESCE(SUM(k_amount), 0)
+             FROM cash_receipts WHERE deleted_at IS NULL AND ${param('date')}) AS cr_k,
+          (SELECT COALESCE(SUM(CASE WHEN COALESCE(usd_amount,0) > 0 THEN usd_amount ELSE COALESCE(cash_amount,0) END), 0)
+             FROM customer_payments WHERE deleted_at IS NULL AND ${param('payment_date')}) AS cp_usd,
+          (SELECT COALESCE(SUM(fra_amount), 0)
+             FROM customer_payments WHERE deleted_at IS NULL AND ${param('payment_date')}) AS cp_fra,
+          (SELECT COALESCE(SUM(k_amount), 0)
+             FROM customer_payments WHERE deleted_at IS NULL AND ${param('payment_date')}) AS cp_k
       `, [dateArg, dateArg, dateArg, dateArg, dateArg, dateArg, dateArg, dateArg, dateArg]);
       const r = row || {};
       return {
-        cash: (r.sales_cash || 0) + (r.cr_cash || 0) + (r.cp_cash || 0),
-        bank: (r.sales_bank || 0) + (r.cr_bank || 0) + (r.cp_bank || 0),
-        momo: (r.sales_momo || 0) + (r.cr_momo || 0) + (r.cp_momo || 0),
+        usd: (r.sales_usd || 0) + (r.cr_usd || 0) + (r.cp_usd || 0),
+        fra: (r.sales_fra || 0) + (r.cr_fra || 0) + (r.cp_fra || 0),
+        k:   (r.sales_k   || 0) + (r.cr_k   || 0) + (r.cp_k   || 0),
       };
     };
 
@@ -431,18 +429,19 @@ router.get('/cash-position', hqAuth, (req, res) => {
       const param = (col) => `substr(COALESCE(${col}, ''), 1, ${span === 'today' ? 10 : 7}) = ?`;
       const row = tryGet(db, `
         SELECT
-          (SELECT COALESCE(SUM(cash_amount), 0) FROM payment_vouchers WHERE deleted_at IS NULL AND ${param('date')}) AS pv_cash,
-          (SELECT COALESCE(SUM(bank_amount), 0) FROM payment_vouchers WHERE deleted_at IS NULL AND ${param('date')}) AS pv_bank,
-          (SELECT COALESCE(SUM(momo_amount), 0) FROM payment_vouchers WHERE deleted_at IS NULL AND ${param('date')}) AS pv_momo,
-          (SELECT COALESCE(SUM(cash_amount), 0) FROM ap_payments WHERE deleted_at IS NULL AND ${param('date')}) AS ap_cash,
-          (SELECT COALESCE(SUM(bank_amount), 0) FROM ap_payments WHERE deleted_at IS NULL AND ${param('date')}) AS ap_bank,
-          (SELECT COALESCE(SUM(momo_amount), 0) FROM ap_payments WHERE deleted_at IS NULL AND ${param('date')}) AS ap_momo
-      `, [datePrefix, datePrefix, datePrefix, datePrefix, datePrefix, datePrefix]);
+          (SELECT COALESCE(SUM(CASE WHEN COALESCE(usd_amount,0) > 0 THEN usd_amount ELSE COALESCE(cash_amount,0) END), 0)
+             FROM payment_vouchers WHERE deleted_at IS NULL AND ${param('date')}) AS pv_usd,
+          (SELECT COALESCE(SUM(fra_amount), 0)
+             FROM payment_vouchers WHERE deleted_at IS NULL AND ${param('date')}) AS pv_fra,
+          (SELECT COALESCE(SUM(k_amount), 0)
+             FROM payment_vouchers WHERE deleted_at IS NULL AND ${param('date')}) AS pv_k,
+          (SELECT COALESCE(SUM(cash_amount), 0) FROM ap_payments WHERE deleted_at IS NULL AND ${param('date')}) AS ap_usd
+      `, [datePrefix, datePrefix, datePrefix, datePrefix]);
       const r = row || {};
       return {
-        cash: (r.pv_cash || 0) + (r.ap_cash || 0),
-        bank: (r.pv_bank || 0) + (r.ap_bank || 0),
-        momo: (r.pv_momo || 0) + (r.ap_momo || 0),
+        usd: (r.pv_usd || 0) + (r.ap_usd || 0),
+        fra: (r.pv_fra || 0),
+        k:   (r.pv_k   || 0),
       };
     };
 
@@ -461,12 +460,12 @@ router.get('/cash-position', hqAuth, (req, res) => {
           today: {
             in:  todayIn,
             out: todayOut,
-            net: { cash: todayIn.cash - todayOut.cash, bank: todayIn.bank - todayOut.bank, momo: todayIn.momo - todayOut.momo },
+            net: { usd: todayIn.usd - todayOut.usd, fra: todayIn.fra - todayOut.fra, k: todayIn.k - todayOut.k },
           },
           mtd: {
             in:  mtdIn,
             out: mtdOut,
-            net: { cash: mtdIn.cash - mtdOut.cash, bank: mtdIn.bank - mtdOut.bank, momo: mtdIn.momo - mtdOut.momo },
+            net: { usd: mtdIn.usd - mtdOut.usd, fra: mtdIn.fra - mtdOut.fra, k: mtdIn.k - mtdOut.k },
           },
         });
       } catch (e) {
@@ -479,15 +478,15 @@ router.get('/cash-position', hqAuth, (req, res) => {
       if (b.error) return acc;
       for (const period of ['today', 'mtd']) {
         for (const dir of ['in', 'out', 'net']) {
-          for (const method of ['cash', 'bank', 'momo']) {
-            acc[period][dir][method] += b[period][dir][method];
+          for (const ccy of ['usd', 'fra', 'k']) {
+            acc[period][dir][ccy] += b[period][dir][ccy];
           }
         }
       }
       return acc;
     }, {
-      today: { in: { cash:0, bank:0, momo:0 }, out: { cash:0, bank:0, momo:0 }, net: { cash:0, bank:0, momo:0 } },
-      mtd:   { in: { cash:0, bank:0, momo:0 }, out: { cash:0, bank:0, momo:0 }, net: { cash:0, bank:0, momo:0 } },
+      today: { in: { usd:0, fra:0, k:0 }, out: { usd:0, fra:0, k:0 }, net: { usd:0, fra:0, k:0 } },
+      mtd:   { in: { usd:0, fra:0, k:0 }, out: { usd:0, fra:0, k:0 }, net: { usd:0, fra:0, k:0 } },
     });
 
     res.json({ as_of: new Date().toISOString(), branches, rollup });

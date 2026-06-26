@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { getCashBook, getCashBookStats, setOpeningBalance, getSettings, getSalesRangeSummary, createCashTransfer } from '../services/api';
+import { getCashBook, getCashBookStats, setOpeningBalance, getSettings, getSalesRangeSummary, createCashTransfer, isHqHost, getBranchSlug } from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import CurrencyExchangePanel from '../components/CurrencyExchangePanel';
 import { useCurrency } from '../context/CurrencyContext';
@@ -50,6 +50,10 @@ const CashBook = () => {
       const params = {};
       if (f) params.from = f;
       if (t) params.to = t;
+      // v1.8.61 — slug so backend can include HQ Deposits from master.db
+      // (out for branch, in for HQ).
+      const slug = isHqHost() ? 'hq' : (getBranchSlug() || (typeof window !== 'undefined' ? window.location.hostname.split('.')[0] : ''));
+      if (slug) params.slug = slug;
       const [statsRes, entriesRes, rangeRes] = await Promise.all([
         getCashBookStats(params),
         getCashBook(params),
@@ -479,8 +483,13 @@ const CashBook = () => {
           <thead>
             <tr>
               <th>{t('date')}</th><th>{t('description')}</th><th>{t('reference')}</th><th>{t('type')}</th>
-              <th style={{ color: '#16a34a' }}>{t('receipts')}</th>
-              <th style={{ color: '#dc2626' }}>{t('payments')}</th><th>{t('balance')}</th>
+              {/* v1.8.61 — per-currency columns. Positive = inflow (green),
+                  negative = outflow (red). FRA + K columns hidden when no
+                  entry in the current date range touches them. */}
+              <th style={{ textAlign: 'right' }}>USD ($)</th>
+              <th style={{ textAlign: 'right' }}>FRA</th>
+              <th style={{ textAlign: 'right' }}>K</th>
+              <th style={{ textAlign: 'right' }}>{t('balance')}</th>
             </tr>
           </thead>
           <tbody>
@@ -490,46 +499,73 @@ const CashBook = () => {
               <td style={{ fontWeight: 600 }}>{t('openingBalance')}</td>
               <td style={{ color: '#9ca3af', fontSize: 12 }}>OB</td>
               <td></td>
-              <td style={{ color: '#2563eb', fontWeight: 600 }}>{curSym}{openingBal.toLocaleString()}</td>
+              <td style={{ color: '#2563eb', fontWeight: 600, textAlign: 'right' }}>{curSym}{openingBal.toLocaleString()}</td>
               <td></td>
-              <td style={{ fontWeight: 600 }}>{curSym}{openingBal.toLocaleString()}</td>
+              <td></td>
+              <td style={{ fontWeight: 600, textAlign: 'right' }}>{curSym}{openingBal.toLocaleString()}</td>
             </tr>
             {entries.map(e => {
               const isAP = e.type === 'AP';
               const isCR = e.type === 'CR';
+              const isDepIn  = e.type === 'DEP-IN';
+              const isDepOut = e.type === 'DEP-OUT';
+              const rowBg = isAP ? '#faf5ff' : isCR ? '#f0fdf4' : isDepIn ? '#ecfeff' : isDepOut ? '#fffbeb' : {};
+              const fmtUsd = (n) => `$${parseFloat(n||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}`;
+              const fmtRaw = (n) => Math.round(parseFloat(n||0)).toLocaleString();
+              const usdNet = parseFloat(e.usd_in || 0) - parseFloat(e.usd_out || 0);
+              const fraNet = parseFloat(e.fra_in || 0) - parseFloat(e.fra_out || 0);
+              const kNet   = parseFloat(e.k_in   || 0) - parseFloat(e.k_out   || 0);
               return (
-                <tr key={e.id} style={isAP ? { background: '#faf5ff' } : isCR ? { background: '#f0fdf4' } : {}}>
+                <tr key={e.id} style={typeof rowBg === 'string' ? { background: rowBg } : rowBg}>
                   <td>{formatDate(e.date)}</td>
                   <td style={{ fontWeight: 500 }}>{e.description}</td>
                   <td style={{ color: '#9ca3af', fontSize: 12 }}>{e.reference}</td>
                   <td>
                     <span style={{
                       display: 'inline-block', padding: '2px 7px', borderRadius: 10, fontSize: 11, fontWeight: 700,
-                      background: isAP ? '#ede9fe' : isCR ? '#dcfce7' : '#fee2e2',
-                      color: isAP ? '#7c3aed' : isCR ? '#16a34a' : '#dc2626'
+                      background: isAP ? '#ede9fe' : isCR ? '#dcfce7' : (isDepIn || isDepOut) ? '#fef3c7' : '#fee2e2',
+                      color: isAP ? '#7c3aed' : isCR ? '#16a34a' : (isDepIn || isDepOut) ? '#92400e' : '#dc2626'
                     }}>
                       {e.type}
                     </span>
                   </td>
-                  <td style={{ color: '#16a34a', fontWeight: e.receipt_amount > 0 ? 500 : 400 }}>
-                    {e.receipt_amount > 0 ? `${curSym}${parseFloat(e.receipt_amount).toLocaleString()}` : ''}
+                  <td style={{ textAlign: 'right', color: usdNet > 0 ? '#16a34a' : usdNet < 0 ? '#dc2626' : '#cbd5e1', fontWeight: usdNet !== 0 ? 600 : 400 }}>
+                    {usdNet !== 0 ? `${usdNet > 0 ? '+' : '-'}${fmtUsd(Math.abs(usdNet))}` : '—'}
                   </td>
-                  <td style={{ color: isAP ? '#7c3aed' : '#dc2626', fontWeight: e.payment_amount > 0 ? 500 : 400 }}>
-                    {e.payment_amount > 0 ? `${curSym}${parseFloat(e.payment_amount).toLocaleString()}` : ''}
+                  <td style={{ textAlign: 'right', color: fraNet > 0 ? '#2563eb' : fraNet < 0 ? '#dc2626' : '#cbd5e1', fontWeight: fraNet !== 0 ? 600 : 400 }}>
+                    {fraNet !== 0 ? `${fraNet > 0 ? '+' : '-'}${fmtRaw(Math.abs(fraNet))} FRA` : '—'}
                   </td>
-                  <td style={{ fontWeight: 600 }}>{curSym}{(parseFloat(parseFloat(e.balance))||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</td>
+                  <td style={{ textAlign: 'right', color: kNet > 0 ? '#7c3aed' : kNet < 0 ? '#dc2626' : '#cbd5e1', fontWeight: kNet !== 0 ? 600 : 400 }}>
+                    {kNet !== 0 ? `${kNet > 0 ? '+' : '-'}${fmtRaw(Math.abs(kNet))} K` : '—'}
+                  </td>
+                  <td style={{ fontWeight: 600, textAlign: 'right' }}>{curSym}{(parseFloat(parseFloat(e.balance))||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</td>
                 </tr>
               );
             })}
             {entries.length === 0 && (
-              <tr><td colSpan="7" style={{ textAlign: 'center', color: '#9ca3af', padding: 24 }}>No transactions yet. Create Cash Receipts, Payment Vouchers, or AP Payments.</td></tr>
+              <tr><td colSpan="8" style={{ textAlign: 'center', color: '#9ca3af', padding: 24 }}>No transactions yet. Create Cash Receipts, Payment Vouchers, or AP Payments.</td></tr>
             )}
-            <tr style={{ background: '#f9fafb', fontWeight: 700, borderTop: '2px solid #e5e7eb' }}>
-              <td colSpan="4" style={{ textAlign: 'right' }}>TOTALS:</td>
-              <td style={{ color: '#16a34a' }}>{curSym}{totals.receipts.toLocaleString()}</td>
-              <td style={{ color: '#dc2626' }}>{curSym}{totals.payments.toLocaleString()}</td>
-              <td style={{ color: stats.currentBalance >= 0 ? '#16a34a' : '#dc2626' }}>{curSym}{stats.currentBalance.toLocaleString()}</td>
-            </tr>
+            {/* v1.8.61 — per-currency totals row. Sum in / out separately
+                across all entries, then display net per currency. */}
+            {(() => {
+              const t = entries.reduce((a, e) => {
+                a.usd += parseFloat(e.usd_in || 0) - parseFloat(e.usd_out || 0);
+                a.fra += parseFloat(e.fra_in || 0) - parseFloat(e.fra_out || 0);
+                a.k   += parseFloat(e.k_in   || 0) - parseFloat(e.k_out   || 0);
+                return a;
+              }, { usd: 0, fra: 0, k: 0 });
+              const fmtUsd = (n) => `$${parseFloat(n||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}`;
+              const fmtRaw = (n) => Math.round(parseFloat(n||0)).toLocaleString();
+              return (
+                <tr style={{ background: '#f9fafb', fontWeight: 700, borderTop: '2px solid #e5e7eb' }}>
+                  <td colSpan="4" style={{ textAlign: 'right' }}>TOTALS:</td>
+                  <td style={{ textAlign: 'right', color: t.usd >= 0 ? '#16a34a' : '#dc2626' }}>{t.usd >= 0 ? '+' : '-'}{fmtUsd(Math.abs(t.usd))}</td>
+                  <td style={{ textAlign: 'right', color: t.fra >= 0 ? '#2563eb' : '#dc2626' }}>{t.fra >= 0 ? '+' : '-'}{fmtRaw(Math.abs(t.fra))} FRA</td>
+                  <td style={{ textAlign: 'right', color: t.k   >= 0 ? '#7c3aed' : '#dc2626' }}>{t.k   >= 0 ? '+' : '-'}{fmtRaw(Math.abs(t.k))} K</td>
+                  <td style={{ textAlign: 'right', color: stats.currentBalance >= 0 ? '#16a34a' : '#dc2626' }}>{curSym}{stats.currentBalance.toLocaleString()}</td>
+                </tr>
+              );
+            })()}
           </tbody>
         </table>
       </div>

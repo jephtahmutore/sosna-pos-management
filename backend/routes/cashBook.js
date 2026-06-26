@@ -3,6 +3,13 @@ const db = require('../config/database');
 const { auth, readOnlyGuard } = require('../middleware/auth');
 const syncConfig = require('../config/syncConfig');
 const { randomUUID } = require('crypto');
+// v1.8.61 — Cash Book also surfaces HQ Deposits (master.db) so the
+// branch's ledger reflects cash leaving its drawer, and HQ's ledger
+// reflects cash arriving. Neutral entries — no P&L impact.
+let masterDb = null;
+try { masterDb = require('../config/masterDb').masterDb; } catch (_) { /* offline mode */ }
+
+const HQ_INBOX_SLUGS = new Set(['hq', 'sosna', 'sosnazm']);
 
 // Opening balances are stored as up to 3 rows in cash_book with type='opening':
 //   reference='OB-CASH' / 'OB-BANK' / 'OB-MOMO'
@@ -74,58 +81,72 @@ router.get('/', auth, readOnlyGuard, (req, res) => {
       openingBalance = openingByMethod.cash + openingByMethod.bank + openingByMethod.momo;
     }
 
+    // v1.8.61 — per-currency in/out columns alongside the legacy
+    // receipt_amount/payment_amount (USD-equivalent for running balance).
+    // CR / PV / customer_payments tables have usd_amount/fra_amount/k_amount;
+    // legacy cash_amount falls back to USD. Sources without per-currency
+    // columns (AP / capital / dividend / loan) bucket their amount into USD.
     const entries = db.prepare(`
       SELECT date, 'CR' AS type, receipt_number AS reference,
         COALESCE(received_from, '') || ' - ' || COALESCE(description, '') AS description,
-        amount AS receipt_amount, 0 AS payment_amount
+        amount AS receipt_amount, 0 AS payment_amount,
+        CASE WHEN COALESCE(usd_amount,0) > 0 THEN usd_amount ELSE COALESCE(cash_amount,0) END AS usd_in,
+        COALESCE(fra_amount, 0) AS fra_in,
+        COALESCE(k_amount,   0) AS k_in,
+        0 AS usd_out, 0 AS fra_out, 0 AS k_out
       FROM cash_receipts
       WHERE deleted_at IS NULL AND tenant_id = ?${dateFilter}
       UNION ALL
       SELECT date, 'PV' AS type, voucher_number AS reference,
         COALESCE(paid_to, '') || ' - ' || COALESCE(description, '') AS description,
-        0 AS receipt_amount, amount AS payment_amount
+        0 AS receipt_amount, amount AS payment_amount,
+        0 AS usd_in, 0 AS fra_in, 0 AS k_in,
+        CASE WHEN COALESCE(usd_amount,0) > 0 THEN usd_amount ELSE COALESCE(cash_amount,0) END AS usd_out,
+        COALESCE(fra_amount, 0) AS fra_out,
+        COALESCE(k_amount,   0) AS k_out
       FROM payment_vouchers
       WHERE deleted_at IS NULL AND tenant_id = ?${dateFilter}
       UNION ALL
       SELECT date, 'AP' AS type, payment_number AS reference,
         COALESCE(supplier_name, '') || ' - ' || COALESCE(description, 'Supplier Payment') AS description,
-        0 AS receipt_amount, amount AS payment_amount
+        0 AS receipt_amount, amount AS payment_amount,
+        0 AS usd_in, 0 AS fra_in, 0 AS k_in,
+        amount AS usd_out, 0 AS fra_out, 0 AS k_out
       FROM ap_payments
       WHERE deleted_at IS NULL AND tenant_id = ?${dateFilter}
-        -- Empty return credits don't move cash — they live in AP only.
-        -- Belt-and-braces match: either paid_from tag OR the description prefix.
         AND COALESCE(paid_from, '') != 'Empty Return'
         AND COALESCE(description, '') NOT LIKE 'Empty container deposit credit%'
       UNION ALL
-      -- Cash transfers — shown with BOTH receipt and payment populated so running balance
-      -- stays flat (money moved between methods, total unchanged). Per-method stats
-      -- handle the actual redistribution.
       SELECT date, 'TRF' AS type, transfer_number AS reference,
         'Transfer: ' || from_method || ' -> ' || to_method ||
           CASE WHEN description IS NOT NULL AND description != '' THEN ' (' || description || ')' ELSE '' END AS description,
-        amount AS receipt_amount, amount AS payment_amount
+        amount AS receipt_amount, amount AS payment_amount,
+        amount AS usd_in, 0 AS fra_in, 0 AS k_in,
+        amount AS usd_out, 0 AS fra_out, 0 AS k_out
       FROM cash_transfers
       WHERE deleted_at IS NULL AND tenant_id = ?${dateFilter}
       UNION ALL
-      -- Capital injections → inflows (like CR). Drawings → outflows (like PV).
       SELECT date,
         CASE WHEN type='Injection' THEN 'CAP-IN' ELSE 'CAP-OUT' END AS type,
         entry_number AS reference,
         COALESCE(owner_name, '') || ' - ' || COALESCE(description, type) AS description,
         CASE WHEN type='Injection' THEN amount ELSE 0 END AS receipt_amount,
-        CASE WHEN type='Drawing'   THEN amount ELSE 0 END AS payment_amount
+        CASE WHEN type='Drawing'   THEN amount ELSE 0 END AS payment_amount,
+        CASE WHEN type='Injection' THEN amount ELSE 0 END AS usd_in,
+        0 AS fra_in, 0 AS k_in,
+        CASE WHEN type='Drawing' THEN amount ELSE 0 END AS usd_out,
+        0 AS fra_out, 0 AS k_out
       FROM capital_account
       WHERE deleted_at IS NULL AND tenant_id = ?${dateFilter}
       UNION ALL
-      -- Dividend payouts → outflows. Profit distribution to owner(s).
       SELECT date, 'DIV' AS type, entry_number AS reference,
         COALESCE(recipient, '') || ' - ' || COALESCE(description, 'Dividend') AS description,
-        0 AS receipt_amount, amount AS payment_amount
+        0 AS receipt_amount, amount AS payment_amount,
+        0 AS usd_in, 0 AS fra_in, 0 AS k_in,
+        amount AS usd_out, 0 AS fra_out, 0 AS k_out
       FROM dividend_account
       WHERE deleted_at IS NULL AND tenant_id = ?${dateFilter}
       UNION ALL
-      -- Loan transactions: Disbursement is inflow, Principal + Interest are outflow.
-      -- LOAN-IN tagged for inflow; LOAN-PRIN / LOAN-INT distinguish outflow types.
       SELECT lt.date,
         CASE lt.type
           WHEN 'Disbursement' THEN 'LOAN-IN'
@@ -135,15 +156,100 @@ router.get('/', auth, readOnlyGuard, (req, res) => {
         lt.transaction_number AS reference,
         COALESCE(l.lender_name, '') || ' - ' || lt.type || COALESCE(' (' || lt.description || ')', '') AS description,
         CASE WHEN lt.type='Disbursement' THEN lt.amount ELSE 0 END AS receipt_amount,
-        CASE WHEN lt.type IN ('Principal','Interest') THEN lt.amount ELSE 0 END AS payment_amount
+        CASE WHEN lt.type IN ('Principal','Interest') THEN lt.amount ELSE 0 END AS payment_amount,
+        CASE WHEN lt.type='Disbursement' THEN lt.amount ELSE 0 END AS usd_in,
+        0 AS fra_in, 0 AS k_in,
+        CASE WHEN lt.type IN ('Principal','Interest') THEN lt.amount ELSE 0 END AS usd_out,
+        0 AS fra_out, 0 AS k_out
       FROM loan_transactions lt
       LEFT JOIN loans l ON l.sync_id = lt.loan_sync_id
       WHERE lt.deleted_at IS NULL AND lt.tenant_id = ?${dateFilter.replace(/date/g, 'lt.date')}
       ORDER BY date ASC, reference ASC
     `).all(tenantId, ...dParams, tenantId, ...dParams, tenantId, ...dParams, tenantId, ...dParams, tenantId, ...dParams, tenantId, ...dParams, tenantId, ...dParams);
 
+    // v1.8.61 — HQ Deposit entries from master.db (cross-tenant).
+    //   Branch ledger (from_slug = caller's slug)  → cash OUT  (payment_amount = amount)
+    //   HQ ledger     (caller is HQ_INBOX_SLUGS)   → cash IN   (receipt_amount = amount)
+    // Date uses COALESCE(deposit_date, confirmed_at, created_at) so
+    // backdated entries land on the right line in the ledger.
+    let depEntries = [];
+    const slug = String(req.query.slug || '').toLowerCase();
+    if (masterDb && slug) {
+      try {
+        const datePred = `date(COALESCE(deposit_date, confirmed_at, created_at))`;
+        const depDateFilter = (from && to) ? ` AND ${datePred} BETWEEN ? AND ?`
+                            : from         ? ` AND ${datePred} >= ?`
+                            : to           ? ` AND ${datePred} <= ?` : '';
+        const depParams = (from && to) ? [from, to]
+                        : from         ? [from]
+                        : to           ? [to] : [];
+        // Outgoing — this branch's own deposits.
+        const out = masterDb.prepare(`
+          SELECT deposit_number, currency, amount,
+                 COALESCE(deposit_date, date(COALESCE(confirmed_at, created_at))) AS date,
+                 from_name, notes
+            FROM cash_deposits
+           WHERE status = 'CONFIRMED' AND from_slug = ?${depDateFilter}
+        `).all(slug, ...depParams);
+        for (const r of out) {
+          const amt = parseFloat(r.amount);
+          depEntries.push({
+            date: r.date,
+            type: 'DEP-OUT',
+            reference: r.deposit_number,
+            description: `Deposit to HQ — ${r.currency} ${Math.round(amt).toLocaleString()}${r.notes ? ` (${r.notes})` : ''}`,
+            // Legacy fields kept for backwards-compat (USD-equivalent
+            // not computed — only the native currency moves).
+            receipt_amount: 0,
+            payment_amount: r.currency === 'USD' ? amt : 0,
+            currency: r.currency,
+            // Per-currency split — populates the right column on the
+            // new Cash Book table.
+            usd_in: 0, fra_in: 0, k_in: 0,
+            usd_out: r.currency === 'USD' ? amt : 0,
+            fra_out: r.currency === 'FRA' ? amt : 0,
+            k_out:   r.currency === 'K'   ? amt : 0,
+          });
+        }
+        // Incoming — HQ only.
+        if (HQ_INBOX_SLUGS.has(slug)) {
+          const incoming = masterDb.prepare(`
+            SELECT deposit_number, currency, amount,
+                   COALESCE(deposit_date, date(COALESCE(confirmed_at, created_at))) AS date,
+                   from_name, notes
+              FROM cash_deposits
+             WHERE status = 'CONFIRMED'${depDateFilter}
+          `).all(...depParams);
+          for (const r of incoming) {
+            const amt = parseFloat(r.amount);
+            depEntries.push({
+              date: r.date,
+              type: 'DEP-IN',
+              reference: r.deposit_number,
+              description: `Deposit from ${r.from_name || 'branch'} — ${r.currency} ${Math.round(amt).toLocaleString()}${r.notes ? ` (${r.notes})` : ''}`,
+              receipt_amount: r.currency === 'USD' ? amt : 0,
+              payment_amount: 0,
+              currency: r.currency,
+              usd_in: r.currency === 'USD' ? amt : 0,
+              fra_in: r.currency === 'FRA' ? amt : 0,
+              k_in:   r.currency === 'K'   ? amt : 0,
+              usd_out: 0, fra_out: 0, k_out: 0,
+            });
+          }
+        }
+      } catch (e) { /* non-fatal */ }
+    }
+
+    // Merge + chronological sort.
+    const merged = [...entries, ...depEntries].sort((a, b) => {
+      const aDate = String(a.date || '');
+      const bDate = String(b.date || '');
+      if (aDate !== bDate) return aDate < bDate ? -1 : 1;
+      return String(a.reference || '').localeCompare(String(b.reference || ''));
+    });
+
     let balance = openingBalance;
-    const rows = entries.map((e, i) => {
+    const rows = merged.map((e, i) => {
       balance = balance + parseFloat(e.receipt_amount) - parseFloat(e.payment_amount);
       return { ...e, id: i + 1, balance };
     });

@@ -1,15 +1,28 @@
-// HqCashPosition — per-branch cash IN / OUT / Net per payment method
-// (Cash / Bank / MoMo) for today and month-to-date. Aggregated across
+// HqCashPosition — per-branch cash IN / OUT / Net per currency
+// (USD / FRA / K) for today and month-to-date. Aggregated across
 // every registered tenant by /api/hq/cash-position.
+// v1.8.61 — switched buckets from legacy Cash/Bank/MoMo to USD/FRA/K
+// to match Sosna's cash-only triple-currency model.
 import React, { useEffect, useState } from 'react';
 import { FiRefreshCw, FiAlertTriangle, FiTrendingUp, FiTrendingDown } from 'react-icons/fi';
 import { getHqCashPosition, setHqBranch } from '../services/api';
 
-const fmtMoney = (n) => {
+// Per-currency formatter — USD uses $, FRA/K just show the raw number
+// with the suffix label (no $ sign on foreign currency).
+const fmtCcy = (n, ccy) => {
   const v = parseFloat(n || 0);
-  const s = `$${Math.abs(v).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-  return v < 0 ? `-${s}` : s;
+  if (ccy === 'usd') {
+    const s = `$${Math.abs(v).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+    return v < 0 ? `-${s}` : s;
+  }
+  // FRA + K are whole-number currencies
+  const sign = v < 0 ? '-' : '';
+  const label = ccy === 'fra' ? 'FRA' : 'K';
+  return `${sign}${Math.abs(Math.round(v)).toLocaleString()} ${label}`;
 };
+
+const CCY_LIST = ['usd', 'fra', 'k'];
+const CCY_LABEL = { usd: 'USD', fra: 'FRA', k: 'K' };
 
 export default function HqCashPosition() {
   const [data, setData] = useState(null);
@@ -121,20 +134,20 @@ function PeriodButton({ active, onClick, children }) {
 function RollupRow({ rollup }) {
   return (
     <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 16 }}>
-      {['cash', 'bank', 'momo'].map(method => (
-        <div key={method} style={{ background: '#f8fafc', border: '1px solid #f1f5f9', borderRadius: 10, padding: 12 }}>
-          <div style={{ fontSize: 11, color: '#64748b', fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.6, marginBottom: 8 }}>{method}</div>
+      {CCY_LIST.map(ccy => (
+        <div key={ccy} style={{ background: '#f8fafc', border: '1px solid #f1f5f9', borderRadius: 10, padding: 12 }}>
+          <div style={{ fontSize: 11, color: '#64748b', fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.6, marginBottom: 8 }}>{CCY_LABEL[ccy]}</div>
           <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, color: '#475569', marginBottom: 3 }}>
             <span><FiTrendingUp style={{ verticalAlign: 'middle' }} /> In</span>
-            <span style={{ fontWeight: 700, color: '#047857' }}>{fmtMoney(rollup.in[method])}</span>
+            <span style={{ fontWeight: 700, color: '#047857' }}>{fmtCcy(rollup.in[ccy], ccy)}</span>
           </div>
           <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, color: '#475569', marginBottom: 3 }}>
             <span><FiTrendingDown style={{ verticalAlign: 'middle' }} /> Out</span>
-            <span style={{ fontWeight: 700, color: '#b91c1c' }}>{fmtMoney(rollup.out[method])}</span>
+            <span style={{ fontWeight: 700, color: '#b91c1c' }}>{fmtCcy(rollup.out[ccy], ccy)}</span>
           </div>
           <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 14, borderTop: '1px solid #e2e8f0', marginTop: 6, paddingTop: 6 }}>
             <span style={{ fontWeight: 700, color: '#0f172a' }}>Net</span>
-            <span style={{ fontWeight: 800, color: rollup.net[method] >= 0 ? '#0f172a' : '#b91c1c' }}>{fmtMoney(rollup.net[method])}</span>
+            <span style={{ fontWeight: 800, color: rollup.net[ccy] >= 0 ? '#0f172a' : '#b91c1c' }}>{fmtCcy(rollup.net[ccy], ccy)}</span>
           </div>
         </div>
       ))}
@@ -147,19 +160,19 @@ function BranchTable({ data }) {
     <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
       <thead>
         <tr style={{ background: '#f8fafc' }}>
-          <th style={th}>Method</th>
+          <th style={th}>Currency</th>
           <th style={{ ...th, textAlign: 'right' }}>In</th>
           <th style={{ ...th, textAlign: 'right' }}>Out</th>
           <th style={{ ...th, textAlign: 'right' }}>Net</th>
         </tr>
       </thead>
       <tbody>
-        {['cash', 'bank', 'momo'].map(method => (
-          <tr key={method} style={{ borderTop: '1px solid #f1f5f9' }}>
-            <td style={{ ...td, fontWeight: 700, textTransform: 'uppercase' }}>{method}</td>
-            <td style={{ ...td, textAlign: 'right', color: '#047857' }}>{fmtMoney(data.in[method])}</td>
-            <td style={{ ...td, textAlign: 'right', color: '#b91c1c' }}>{fmtMoney(data.out[method])}</td>
-            <td style={{ ...td, textAlign: 'right', fontWeight: 800, color: data.net[method] >= 0 ? '#0f172a' : '#b91c1c' }}>{fmtMoney(data.net[method])}</td>
+        {CCY_LIST.map(ccy => (
+          <tr key={ccy} style={{ borderTop: '1px solid #f1f5f9' }}>
+            <td style={{ ...td, fontWeight: 700 }}>{CCY_LABEL[ccy]}</td>
+            <td style={{ ...td, textAlign: 'right', color: '#047857' }}>{fmtCcy(data.in[ccy], ccy)}</td>
+            <td style={{ ...td, textAlign: 'right', color: '#b91c1c' }}>{fmtCcy(data.out[ccy], ccy)}</td>
+            <td style={{ ...td, textAlign: 'right', fontWeight: 800, color: data.net[ccy] >= 0 ? '#0f172a' : '#b91c1c' }}>{fmtCcy(data.net[ccy], ccy)}</td>
           </tr>
         ))}
       </tbody>

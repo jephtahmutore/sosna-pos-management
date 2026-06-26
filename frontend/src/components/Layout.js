@@ -609,9 +609,13 @@ const Layout = () => {
             </>
           )}
 
-          {/* Accounting Group — hidden at HQ (v1.8.9). HQ has no per-tenant
-              till, no AR/AP, no FX rates of its own. */}
-          {!hq && !collapsed && hasPageAccess('CashReceipt', 'PaymentVoucher', 'CashBook', 'FxRates', 'AccountPayables', 'AccountReceivables', 'ProfitReport') && (
+          {/* Accounting Group.
+              v1.8.9 — Originally hidden on HQ (no per-tenant till).
+              v1.8.61 — HQ now needs Cash Book + HQ Deposits inbox, so the
+              group renders on HQ too. Per-item visibility flags below keep
+              HQ from seeing branch-only entries (Cash Receipt / PV /
+              Receivables / Profit Report). */}
+          {!collapsed && hasPageAccess('CashReceipt', 'PaymentVoucher', 'CashBook', 'FxRates', 'AccountPayables', 'AccountReceivables', 'ProfitReport') && (
             <>
               <div className={`nav-group-header ${isGroupActive(['/accounting']) ? 'active' : ''}`} onClick={() => toggleGroup('accounting')}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
@@ -622,12 +626,15 @@ const Layout = () => {
               </div>
               {openGroups.accounting && (
                 <div className="nav-children">
-                  {hasPageAccess('CashReceipt') && (
+                  {/* Cash Receipt / Payment Voucher / AR / Profit Report
+                      are branch-only (HQ has no per-tenant till of its own
+                      besides the Cash Book mirror). */}
+                  {!hq && hasPageAccess('CashReceipt') && (
                     <div className={`nav-item ${isActive('/accounting/cash-receipts') ? 'active' : ''}`} onClick={() => navigate('/accounting/cash-receipts')}>
                       <FiBook className="nav-icon" /> <span>{t('cashReceipt')}</span>
                     </div>
                   )}
-                  {hasPageAccess('PaymentVoucher') && (
+                  {!hq && hasPageAccess('PaymentVoucher') && (
                     <div className={`nav-item ${isActive('/accounting/payment-vouchers') ? 'active' : ''}`} onClick={() => navigate('/accounting/payment-vouchers')}>
                       <FiCreditCard className="nav-icon" /> <span>{t('paymentVoucher')}</span>
                     </div>
@@ -644,7 +651,7 @@ const Layout = () => {
                       <FiSend className="nav-icon" /> <span>HQ Deposits</span>
                     </div>
                   )}
-                  {isDualCurrency && hasPageAccess('FxRates') && (
+                  {!hq && isDualCurrency && hasPageAccess('FxRates') && (
                     <div className={`nav-item ${isActive('/accounting/fx-rates') ? 'active' : ''}`} onClick={() => navigate('/accounting/fx-rates')}>
                       <FiDollarSign className="nav-icon" /> <span>Currency Rates</span>
                     </div>
@@ -656,7 +663,7 @@ const Layout = () => {
                       <FiFileText className="nav-icon" /> <span>{t('accountPayables')}</span>
                     </div>
                   )}
-                  {hasPageAccess('AccountReceivables') && (
+                  {!hq && hasPageAccess('AccountReceivables') && (
                     <div className={`nav-item ${isActive('/accounting/account-receivables') ? 'active' : ''}`} onClick={() => navigate('/accounting/account-receivables')}>
                       <FiFileText className="nav-icon" /> <span>Account Receivables</span>
                     </div>
@@ -686,7 +693,7 @@ const Layout = () => {
                       <FiTrendingDown className="nav-icon" /> <span>Loan Account</span>
                     </div>
                   )}
-                  {hasPageAccess('ProfitReport') && (
+                  {!hq && hasPageAccess('ProfitReport') && (
                     <div className={`nav-item ${isActive('/accounting/profit-report') ? 'active' : ''}`} onClick={() => navigate('/accounting/profit-report')}>
                       <FiTrendingUp className="nav-icon" /> <span>Profit Report</span>
                     </div>
