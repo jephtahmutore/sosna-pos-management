@@ -1092,7 +1092,16 @@ const ItemDetails = () => {
               {tab === 'pricing' && (<>
               <div className="form-row">
                 <div className="form-group">
-                  <label>Opening Order Price ({curSym} / {form.unit || 'unit'})</label>
+                  <label>
+                    Opening Order Price ({curSym} / {form.unit || 'unit'})
+                    {(() => {
+                      const baseName = (form.unit || 'pcs').trim();
+                      const dflt = (form.default_unit || '').trim();
+                      return (dflt && dflt !== baseName)
+                        ? <span style={{ marginLeft: 6, fontSize: 10, color: '#7c3aed', fontWeight: 600 }}>(auto from {dflt})</span>
+                        : null;
+                    })()}
+                  </label>
                   <input type="number" min="0" step="0.01" value={form.cost_price}
                     onChange={e => setForm({ ...form, cost_price: e.target.value })}
                     onBlur={e => { if (e.target.value !== '' && parseFloat(e.target.value) < 0) setForm(f => ({ ...f, cost_price: '0' })); }} />
@@ -1106,7 +1115,16 @@ const ItemDetails = () => {
                   )}
                 </div>
                 <div className="form-group">
-                  <label>Selling Price ({curSym} / {form.unit || 'unit'})</label>
+                  <label>
+                    Selling Price ({curSym} / {form.unit || 'unit'})
+                    {(() => {
+                      const baseName = (form.unit || 'pcs').trim();
+                      const dflt = (form.default_unit || '').trim();
+                      return (dflt && dflt !== baseName)
+                        ? <span style={{ marginLeft: 6, fontSize: 10, color: '#7c3aed', fontWeight: 600 }}>(auto from {dflt})</span>
+                        : null;
+                    })()}
+                  </label>
                   <input type="number" min="0" step="0.01" value={form.selling_price}
                     onChange={e => {
                       const v = e.target.value;
@@ -1351,8 +1369,20 @@ const ItemDetails = () => {
                           </span>
                         </div>
                         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8, alignItems: 'end' }}>
+                          {/* v1.8.71 — when this packaging is the DEFAULT unit (Box, Crate, etc.),
+                              editing its price drives the base unit price + cascades to siblings.
+                              Non-default packagings still allow per-packaging override. */}
                           <div className="form-group" style={{ margin: 0 }}>
-                            <label style={{ fontSize: 11 }}>Cost ({curSym} / {p.name || 'unit'})</label>
+                            <label style={{ fontSize: 11 }}>
+                              Cost ({curSym} / {p.name || 'unit'})
+                              {(() => {
+                                const baseName = (form.unit || 'pcs').trim();
+                                const dflt = (form.default_unit || '').trim() || baseName;
+                                return (p.name || '').trim() === dflt
+                                  ? <span style={{ marginLeft: 6, fontSize: 9, color: '#7c3aed', fontWeight: 700 }}>(drives base)</span>
+                                  : null;
+                              })()}
+                            </label>
                             <input type="number" min="0" step="0.01"
                               value={(() => {
                                 const conv = parseFloat(p.conv) || 0;
@@ -1371,7 +1401,16 @@ const ItemDetails = () => {
                               placeholder="0.00" />
                           </div>
                           <div className="form-group" style={{ margin: 0 }}>
-                            <label style={{ fontSize: 11 }}>Selling ({curSym} / {p.name || 'unit'})</label>
+                            <label style={{ fontSize: 11 }}>
+                              Selling ({curSym} / {p.name || 'unit'})
+                              {(() => {
+                                const baseName = (form.unit || 'pcs').trim();
+                                const dflt = (form.default_unit || '').trim() || baseName;
+                                return (p.name || '').trim() === dflt
+                                  ? <span style={{ marginLeft: 6, fontSize: 9, color: '#7c3aed', fontWeight: 700 }}>(drives base)</span>
+                                  : null;
+                              })()}
+                            </label>
                             <input type="number" min="0" step="0.01"
                               value={(() => {
                                 // v1.7.7: if user hasn't set a per-packaging price yet,
@@ -1387,10 +1426,29 @@ const ItemDetails = () => {
                                 return (base * conv).toFixed(2);
                               })()}
                               onChange={e => {
-                                setForm(f => ({
-                                  ...f,
-                                  packagings: f.packagings.map((q, i) => i === idx ? { ...q, price: e.target.value } : q),
-                                }));
+                                // v1.8.71 — when editing the DEFAULT packaging's selling price,
+                                // derive base selling_price = entered/conv AND cascade to all
+                                // other packagings (clearing their per-row override). For non-
+                                // default packagings, keep the existing override behavior.
+                                const baseName = (form.unit || 'pcs').trim();
+                                const dflt = (form.default_unit || '').trim() || baseName;
+                                const isDefault = (p.name || '').trim() === dflt;
+                                const conv = parseFloat(p.conv) || 0;
+                                if (isDefault && conv > 0) {
+                                  const entered = parseFloat(e.target.value);
+                                  const base = isNaN(entered) ? '' : (entered / conv);
+                                  setForm(f => ({
+                                    ...f,
+                                    selling_price: base === '' ? '' : base.toFixed(4),
+                                    // Clear stored overrides — siblings now derive from base × conv.
+                                    packagings: f.packagings.map((q, i) => ({ ...q, price: i === idx ? e.target.value : '' })),
+                                  }));
+                                } else {
+                                  setForm(f => ({
+                                    ...f,
+                                    packagings: f.packagings.map((q, i) => i === idx ? { ...q, price: e.target.value } : q),
+                                  }));
+                                }
                               }}
                               placeholder="0.00" />
                           </div>
