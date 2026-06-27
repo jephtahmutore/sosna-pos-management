@@ -169,14 +169,20 @@ async function push() {
 }
 
 // ─── Pull VPS records → local DB (merge by sync_id) ──────────────────────────
-async function pull() {
+// v1.8.90 — added `opts.force`. When true:
+//   • since=0 (full history pull, not just incremental)
+//   • PROTECT rule is BYPASSED — incoming rows overwrite local even if local
+//     synced=0. Used by Force Resync to unstick a diverged client.
+async function pull(opts = {}) {
   const { tenantId, lastPullTime, deviceId } = _syncConfig.getConfig();
-  if (!tenantId || tenantId === 'local-only') return;
+  if (!tenantId || tenantId === 'local-only') return { ok: false, reason: 'local-only' };
+
+  const since = opts.force ? '' : lastPullTime;
 
   // Send our own deviceId so the server excludes records we originated
   // (prevents "echo" loop where each push triggers a pull-back of the same record).
   const result = await request(
-    `${getSyncTargetUrl()}/api/sync/pull?tenantId=${encodeURIComponent(tenantId)}&since=${encodeURIComponent(lastPullTime)}&deviceId=${encodeURIComponent(deviceId || '')}`
+    `${getSyncTargetUrl()}/api/sync/pull?tenantId=${encodeURIComponent(tenantId)}&since=${encodeURIComponent(since)}&deviceId=${encodeURIComponent(deviceId || '')}`
   );
 
   slog('pull: since=' + lastPullTime + ' status=' + result.status);
@@ -211,17 +217,22 @@ async function pull() {
             ).run(...insertCols.map(c => row[c]));
             if (ins.changes === 0) slog(`pull: IGNORED [${table}] sync_id=${row.sync_id} cols=${insertCols.join(',')}`);
             _db.prepare(`UPDATE ${table} SET synced = 1 WHERE sync_id = ?`).run(row.sync_id);
-          } else if (existing.synced === 0) {
+          } else if (existing.synced === 0 && !opts.force) {
             // Local record has unsaved changes — skip to protect local edits.
+            // v1.8.90 — opts.force bypasses this (Force Resync is user-acknowledged
+            // intent to overwrite local with VPS state).
             slog(`pull: PROTECT [${table}] sync_id=${row.sync_id} — local has pending changes, skipping overwrite`);
           } else {
-            // Existing record is clean — overwrite with incoming version
+            // Existing record is clean (or force=true) — overwrite with incoming version
             const updateCols = cols.filter(c => c !== 'id' && c !== 'sync_id' && row[c] !== undefined);
             if (updateCols.length === 0) continue;
             const setClause = [...updateCols.map(c => `${c} = ?`), 'synced = 1'].join(', ');
             _db.prepare(`UPDATE ${table} SET ${setClause} WHERE sync_id = ?`).run(
               ...updateCols.map(c => row[c]), row.sync_id
             );
+            if (opts.force && existing.synced === 0) {
+              slog(`pull: FORCE OVERWRITE [${table}] sync_id=${row.sync_id} — local synced=0 was discarded`);
+            }
           }
         } catch (rowErr) { slog(`pull: row error [${table}] ${rowErr.message}`); }
       }
@@ -250,6 +261,9 @@ async function pull() {
   if (result.body.serverTime) {
     _syncConfig.updateLastPullTime(result.body.serverTime);
   }
+  // v1.8.90 — return a summary so the Force Resync endpoint can show counts.
+  const totalRows = Object.values(result.body.records).reduce((s, r) => s + r.length, 0);
+  return { ok: true, tables: pulled, total: totalRows };
 }
 
 // ─── One full sync cycle ──────────────────────────────────────────────────────
@@ -337,4 +351,4 @@ function getStatus() {
   return { ..._status, target: getSyncTargetUrl(), intervalMs: _currentIntervalMs };
 }
 
-module.exports = { start, stop, reload, getStatus };
+module.exports = { start, stop, reload, getStatus, pull };

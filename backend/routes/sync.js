@@ -626,20 +626,36 @@ router.post('/configure', (req, res) => {
 });
 
 // ─── POST /api/sync/force-resync ─────────────────────────────────────────────
-// Marks all records as unsynced so they get pushed to VPS on next cycle
-router.post('/force-resync', (req, res) => {
+// v1.8.90 — REWRITTEN. Was: marked all local rows synced=0 → pushed them up.
+// That destroyed VPS state when local was stale (ORD-0055 incident: client
+// pushed stale PENDING_PAYMENT, overwrote VPS 'Reversed').
+//
+// Now: PULL from VPS first with PROTECT bypassed (opts.force=true), then any
+// genuinely-newer local edits will still get pushed on the next normal cycle.
+// Semantically this is "I trust the VPS — overwrite my local copy where they
+// differ." Use this when a client is stuck on stale data.
+router.post('/force-resync', async (req, res) => {
   try {
-    const tables = SYNC_TABLES;
-    let total = 0;
-    for (const table of tables) {
-      const cols = db.prepare(`PRAGMA table_info(${table})`).all().map(c => c.name);
-      if (cols.includes('synced')) {
-        const info = db.prepare(`UPDATE ${table} SET synced = 0`).run();
-        total += info.changes;
-      }
-    }
+    // Step 1: Clear last_pull_time so the next pull replays from epoch (full history)
     db.prepare("DELETE FROM sync_config WHERE key = 'last_pull_time'").run();
-    res.json({ success: true, recordsMarked: total });
+
+    // Step 2: Pull from VPS immediately with PROTECT bypassed.
+    // Loaded lazily — syncService starts on app boot and the require() chain
+    // here would create a circular dep if loaded at module top.
+    const syncService = require('../services/syncService');
+    let pullResult;
+    try {
+      pullResult = await syncService.pull({ force: true });
+    } catch (pullErr) {
+      return res.status(500).json({ error: 'pull failed: ' + pullErr.message });
+    }
+
+    res.json({
+      success: true,
+      mode: 'pull-first',
+      pull: pullResult || { ok: false, reason: 'no-result' },
+      message: 'Local DB overwritten with VPS state. Stuck rows are now unstuck.',
+    });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
