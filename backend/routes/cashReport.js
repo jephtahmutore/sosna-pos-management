@@ -245,10 +245,15 @@ router.get('/daily', auth, readOnlyGuard, (req, res) => {
        AND payment_method NOT IN ('Cash', 'Transfer', 'Mobile Money', 'Credit', 'Partial-Credit')${userFilter}`
     ).get(...baseParams);
 
-    const expensesParams = [tenantId, date, cashierId];
+    // v1.8.85 — match the orders pattern: cashier_id=0 means "all cashiers"
+    // (no filter), not "PVs tagged to cashier 0 only". Without this, the top
+    // KPI bar's Total cash in undercounts by the PV total (e.g. shows 500K
+    // instead of 550K when 50K in expenses exist).
+    const expensesCashierClause = cashierId > 0 ? ' AND cashier_id = ?' : '';
+    const expensesParams = cashierId > 0 ? [tenantId, date, cashierId] : [tenantId, date];
     const expenses = db.prepare(
       `SELECT COALESCE(SUM(amount), 0) AS total FROM payment_vouchers
-       WHERE deleted_at IS NULL AND tenant_id = ? AND date = ? AND paid_from = 'Cash Drawer' AND cashier_id = ?`
+       WHERE deleted_at IS NULL AND tenant_id = ? AND date = ? AND paid_from = 'Cash Drawer'${expensesCashierClause}`
     ).get(...expensesParams);
     // v1.8.14 + v1.8.17 — per-currency expenses. A PV recorded in FRA
     // reduces FRA drawer (not USD). Prefer the new usd_amount column when
@@ -261,7 +266,7 @@ router.get('/daily', auth, readOnlyGuard, (req, res) => {
          COALESCE(SUM(CASE WHEN COALESCE(fra_amount, 0) > 0 THEN fra_amount ELSE COALESCE(bank_amount, 0) END), 0) AS fra,
          COALESCE(SUM(CASE WHEN COALESCE(k_amount,   0) > 0 THEN k_amount   ELSE COALESCE(momo_amount, 0) END), 0) AS k
        FROM payment_vouchers
-       WHERE deleted_at IS NULL AND tenant_id = ? AND date = ? AND paid_from = 'Cash Drawer' AND cashier_id = ?`
+       WHERE deleted_at IS NULL AND tenant_id = ? AND date = ? AND paid_from = 'Cash Drawer'${expensesCashierClause}`
     ).get(...expensesParams);
 
     const totalRevenue = db.prepare(

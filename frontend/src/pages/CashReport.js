@@ -831,7 +831,7 @@ const CashReport = () => {
           instead of a single $ figure. Drives off daySummaryByCcy which
           aggregates POS net (expected) + sum of saved cash report counted
           per currency. */}
-      <div className="no-print" style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12, marginBottom: 16 }}>
+      <div className="no-print" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 12, marginBottom: 16 }}>
         {[
           { ccy: 'USD', symbol: '$', dec: 2, label: 'USD', color: '#16a34a', bg: 'linear-gradient(135deg,#16a34a,#15803d)' },
           { ccy: 'FRA', symbol: '',  dec: 0, label: 'FRA', color: '#7c3aed', bg: 'linear-gradient(135deg,#7c3aed,#6d28d9)' },
@@ -858,11 +858,11 @@ const CashReport = () => {
               <div style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 13 }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
                   <span style={{ opacity: 0.9, fontSize: 11 }}>Total cash in</span>
-                  <strong style={{ fontSize: 18 }}>{fmt(totalIn)}</strong>
+                  <strong style={{ fontSize: 18, whiteSpace: 'nowrap' }}>{fmt(totalIn)}</strong>
                 </div>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', opacity: 0.75 }}>
                   <span style={{ fontSize: 11 }}>Expected sales</span>
-                  <span style={{ fontSize: 12, fontWeight: 500 }}>{fmt(expected)}</span>
+                  <span style={{ fontSize: 12, fontWeight: 500, whiteSpace: 'nowrap' }}>{fmt(expected)}</span>
                 </div>
                 <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 4 }}>
                   <strong style={{ background: 'rgba(255,255,255,0.22)', padding: '3px 10px', borderRadius: 6, fontSize: 12 }}>
@@ -928,7 +928,7 @@ const CashReport = () => {
           </div>
         )}
 
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: 16, marginBottom: 16 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: 16, marginBottom: 16 }}>
           {/* v1.8.18 — per-currency reconciliation cards with view/+ icons
               for that currency's expenses inside the card. No more shared
               'Expenses Paid From Drawer' row below — each card owns its
@@ -1016,11 +1016,11 @@ const CashReport = () => {
                     </div>
                     <div style={{ display: 'flex', justifyContent: 'space-between', borderTop: '1px solid #e5e7eb', paddingTop: 8, marginTop: 2 }}>
                       <span style={{ fontWeight: 700, fontSize: 13, color: '#111827' }}>= Total cash in</span>
-                      <span style={{ fontWeight: 800, fontSize: 17, color: c.color }}>{fmt(totalCashIn)}</span>
+                      <span style={{ fontWeight: 800, fontSize: 17, color: c.color, whiteSpace: 'nowrap' }}>{fmt(totalCashIn)}</span>
                     </div>
                     <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 4 }}>
                       <span style={{ color: '#9ca3af', fontSize: 11 }}>Expected sales (POS)</span>
-                      <span style={{ color: '#9ca3af', fontWeight: 500, fontSize: 12 }}>{fmt(c.posExp)}</span>
+                      <span style={{ color: '#9ca3af', fontWeight: 500, fontSize: 12, whiteSpace: 'nowrap' }}>{fmt(c.posExp)}</span>
                     </div>
                   </div>
                 </div>
@@ -1035,7 +1035,7 @@ const CashReport = () => {
                   <span style={{ fontSize: 11, color: footerColor, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5 }}>
                     {isOk ? '✓ Balanced' : status}
                   </span>
-                  <span style={{ color: footerColor, fontWeight: 800, fontSize: 14 }}>
+                  <span style={{ color: footerColor, fontWeight: 800, fontSize: 14, whiteSpace: 'nowrap' }}>
                     {diff > 0 ? '+' : ''}{fmt(diff)}
                   </span>
                 </div>
@@ -1047,64 +1047,77 @@ const CashReport = () => {
               now lives INSIDE the per-currency card above for clearer linkage
               (USD card → USD expenses, FRA card → FRA expenses, etc.). */}
 
-          {/* v1.8.20 — Credit Sales card. Styled like the cash cards but in
-              red (money owed). No expenses subtraction (credit doesn't come
-              out of any drawer). No view/+ buttons. */}
+          {/* v1.8.85 — Credit Sales card, redesigned to match the cash-card
+              template. Read-only mirror of POS credit issued today; no diff
+              (always balances by definition); no expenses/exchanges (not
+              physical cash). Red across the board to signal "owed, not held". */}
           {(() => {
-            // v1.8.54 — credit isn't physical cash so there's nothing to
-            // count. Counted always = Expected, diff always 0.
             const counted = creditExpected;
-            const diff    = 0;
-            const isOk    = Math.abs(diff) < 0.01;
-            const status  = isOk ? 'OK'
-                          : diff > 0 ? (diff < 10 ? 'Slight Surplus' : 'Surplus')
-                          : (diff > -10 ? 'Slight Short' : 'Short');
             const fmt     = (n) => `$${parseFloat(n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
             return (
               <div style={{
-                background: '#fef2f2',
-                border: '1.5px solid #fecaca',
-                borderLeft: '5px solid #dc2626',
-                borderRadius: 10,
-                padding: 14,
+                background: '#fff',
+                border: '1px solid #fecaca',
+                borderRadius: 12,
+                overflow: 'hidden',
                 display: 'flex',
                 flexDirection: 'column',
-                gap: 10,
+                boxShadow: '0 2px 8px rgba(0,0,0,0.04)',
               }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                  <span style={{ color: '#dc2626', fontWeight: 800, fontSize: 14, textTransform: 'uppercase', letterSpacing: 0.4 }}>Credit Sales ($)</span>
-                </div>
-
-                <div>
-                  <label style={{ fontSize: 10, color: '#6b7280', fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.4 }}>Counted <span style={{ fontWeight: 500, textTransform: 'none', color: '#94a3b8' }}>· auto from POS (read-only)</span></label>
-                  {/* v1.8.54 — Credit isn't physical cash, nothing to count.
-                      Always show creditExpected, never editable. The form
-                      still stores form.pending so the saved snapshot stays
-                      consistent with what the user sees. */}
-                  <input type="number" value={creditExpected.toFixed(2)}
-                    disabled readOnly placeholder="0.00" step="0.01"
-                    style={{ ...inputStyle(false), marginTop: 4, fontSize: 16, fontWeight: 600 }} />
-                </div>
-
-                <div style={{ fontSize: 12, color: '#475569', display: 'flex', flexDirection: 'column', gap: 2, padding: '8px 10px', background: '#fff', borderRadius: 6, border: '1px solid #e5e7eb' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                    <span>POS net</span><strong>{fmt(creditExpected)}</strong>
-                  </div>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', borderTop: '1px dashed #e5e7eb', paddingTop: 3, marginTop: 2 }}>
-                    <span style={{ fontWeight: 700 }}>= Expected</span><strong style={{ color: '#dc2626' }}>{fmt(creditExpected)}</strong>
-                  </div>
-                </div>
-
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '6px 10px', background: isOk ? '#dcfce7' : diff > 0 ? '#fef3c7' : '#fee2e2', border: `1px solid ${isOk ? '#86efac' : diff > 0 ? '#fde68a' : '#fecaca'}`, borderRadius: 6 }}>
-                  <span style={{ fontSize: 11, color: '#475569', fontWeight: 600 }}>Diff</span>
-                  <span style={{ color: isOk ? '#16a34a' : diff > 0 ? '#d97706' : '#dc2626', fontWeight: 800, fontSize: 13 }}>
-                    {diff > 0 ? '+' : ''}{fmt(diff)} · {status}
+                {/* Header strip — red */}
+                <div style={{
+                  background: '#dc2626', color: '#fff',
+                  padding: '10px 14px',
+                  display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                }}>
+                  <span style={{ fontWeight: 800, fontSize: 13, textTransform: 'uppercase', letterSpacing: 0.5 }}>
+                    Credit Sales ($)
+                  </span>
+                  <span style={{ fontSize: 9, opacity: 0.95, background: 'rgba(255,255,255,0.2)', padding: '3px 8px', borderRadius: 4, fontWeight: 700, letterSpacing: 0.4 }}>
+                    AUTO · READ-ONLY
                   </span>
                 </div>
 
-                <small style={{ color: '#7c2d12', fontSize: 10, lineHeight: 1.4 }}>
-                  Today's unpaid balance issued on credit (becomes receivable). Not paid from any drawer.
-                </small>
+                {/* Body */}
+                <div style={{ padding: 16, display: 'flex', flexDirection: 'column', gap: 14 }}>
+                  <div>
+                    <label style={{ fontSize: 10, color: '#6b7280', fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5 }}>From POS orders</label>
+                    <div style={{
+                      marginTop: 4, padding: '8px 12px',
+                      border: '1px solid #e5e7eb',
+                      borderRadius: 6,
+                      background: '#f9fafb',
+                      fontSize: 18, fontWeight: 700, color: '#111827',
+                    }}>
+                      {fmt(counted)}
+                    </div>
+                  </div>
+
+                  <div style={{ fontSize: 12, color: '#475569', display: 'flex', flexDirection: 'column', gap: 6 }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', borderTop: '1px solid #e5e7eb', paddingTop: 8 }}>
+                      <span style={{ fontWeight: 700, fontSize: 13, color: '#111827' }}>= Becomes receivable</span>
+                      <span style={{ fontWeight: 800, fontSize: 17, color: '#dc2626' }}>{fmt(counted)}</span>
+                    </div>
+                    <div style={{ marginTop: 4, fontSize: 11, color: '#9ca3af', lineHeight: 1.45 }}>
+                      Credit owed by customers from today's sales. Not cash — does not affect any drawer.
+                    </div>
+                  </div>
+                </div>
+
+                {/* Footer — red strip, mirrors cash card structure */}
+                <div style={{
+                  background: '#fef2f2',
+                  borderTop: '1px solid #fecaca',
+                  padding: '10px 16px',
+                  display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                }}>
+                  <span style={{ fontSize: 11, color: '#991b1b', fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5 }}>
+                    📋 Receivable (AR)
+                  </span>
+                  <span style={{ color: '#991b1b', fontWeight: 800, fontSize: 14 }}>
+                    {fmt(counted)}
+                  </span>
+                </div>
               </div>
             );
           })()}
