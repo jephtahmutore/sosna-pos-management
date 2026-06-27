@@ -68,6 +68,9 @@ const CashReport = () => {
   // Bump exchangeRefreshKey to force the CurrencyExchangePanel to re-load
   // (after every save) without remounting the whole report.
   const [exchangeNet, setExchangeNet] = useState({ usd_net: 0, fra_net: 0, k_net: 0 });
+  // v1.8.84 — all-cashier exchange net for the day, used by the top KPI bar
+  // (Total cash in needs to subtract exchange inflow across the whole team).
+  const [exchangeNetAll, setExchangeNetAll] = useState({ usd_net: 0, fra_net: 0, k_net: 0 });
   const [exchangeRefreshKey, setExchangeRefreshKey] = useState(0);
   // v1.8.10 — current FX rates so Total can convert FRA/K into USD before
   // comparing against Expected (which is the order total_amount sum in USD).
@@ -332,6 +335,13 @@ const CashReport = () => {
       .then(r => setExchangeNet(r.data || { usd_net: 0, fra_net: 0, k_net: 0 }))
       .catch(() => setExchangeNet({ usd_net: 0, fra_net: 0, k_net: 0 }));
   }, [date, selectedCashier, exchangeRefreshKey]);
+  // v1.8.84 — all-cashier exchange net for the top KPI bar (no cashier_id filter).
+  useEffect(() => {
+    if (!date) return;
+    getCurrencyExchangesNet({ scope: 'drawer', date })
+      .then(r => setExchangeNetAll(r.data || { usd_net: 0, fra_net: 0, k_net: 0 }))
+      .catch(() => setExchangeNetAll({ usd_net: 0, fra_net: 0, k_net: 0 }));
+  }, [date, exchangeRefreshKey]);
   // v1.8.18 — re-run loadDate whenever the auto-selected cashier resolves.
   // fetchSalesCashiers(today) is async; on first mount it eventually fires
   // setSelectedCashier(firstId). Before that, loadDate would run with cid=''
@@ -356,10 +366,12 @@ const CashReport = () => {
       // per-currency counted values for this date.
       const reportsForDay = reports.filter(r => r.date && r.date.split('T')[0] === date);
       const sumCol = (col) => reportsForDay.reduce((s, r) => s + (parseFloat(r[col] || 0) || 0), 0);
+      // v1.8.84 — also surface counted + expenses per currency so the top KPI
+      // bar can compute Total cash in = counted + expenses − exchange_net.
       setDaySummaryByCcy({
-        usd: { expected: parseFloat(all?.usd_received || 0) || 0, received: sumCol('usd_received') },
-        fra: { expected: parseFloat(all?.fra_received || 0) || 0, received: sumCol('fra_received') },
-        k:   { expected: parseFloat(all?.k_received   || 0) || 0, received: sumCol('k_received') },
+        usd: { expected: parseFloat(all?.usd_received || 0) || 0, counted: sumCol('usd_received'), expenses: parseFloat(all?.usd_expenses || 0) || 0 },
+        fra: { expected: parseFloat(all?.fra_received || 0) || 0, counted: sumCol('fra_received'), expenses: parseFloat(all?.fra_expenses || 0) || 0 },
+        k:   { expected: parseFloat(all?.k_received   || 0) || 0, counted: sumCol('k_received'),   expenses: parseFloat(all?.k_expenses   || 0) || 0 },
       });
     }).catch(() => {});
   }, [date, reports]); // eslint-disable-line
@@ -440,12 +452,18 @@ const CashReport = () => {
         setEditMode(false);
         await fetchReports();
 
-        // Sosna is cash-only across 3 currencies. The CR books each currency
-        // in its own column (usd_amount / fra_amount / k_amount). amount stays
-        // in USD-equivalent so legacy USD-only readers still work.
-        const usdAmt = parseFloat(form.usd_received) || 0;
-        const fraAmt = parseFloat(form.fra_received) || 0;
-        const kAmt2  = parseFloat(form.k_received)   || 0;
+        // v1.8.84 — CR books "Total cash in" per currency, not "Counted".
+        //   Total cash in = Counted + Expenses − exch_net   (sales-only inflow)
+        // Counted is after expenses have left the drawer, so booking Counted
+        // would double-deduct the PVs when Cash Book later subtracts them.
+        // The Difference (Total cash in − Expected sales) stays on the Cash
+        // Report only — never written to any ledger.
+        const usdCounted = parseFloat(form.usd_received) || 0;
+        const fraCounted = parseFloat(form.fra_received) || 0;
+        const kCounted   = parseFloat(form.k_received)   || 0;
+        const usdAmt = usdCounted + (parseFloat(expensesByCcy.usd) || 0) - (parseFloat(exchangeNet.usd_net) || 0);
+        const fraAmt = fraCounted + (parseFloat(expensesByCcy.fra) || 0) - (parseFloat(exchangeNet.fra_net) || 0);
+        const kAmt2  = kCounted   + (parseFloat(expensesByCcy.k)   || 0) - (parseFloat(exchangeNet.k_net)   || 0);
         const paymentMethod = 'Cash';
         const status = form.status || computedStatus;
         const cashier = selectedCashier !== '0' ? allUsers.find(u => String(u.id) === String(selectedCashier)) : null;
@@ -819,30 +837,36 @@ const CashReport = () => {
           { ccy: 'FRA', symbol: '',  dec: 0, label: 'FRA', color: '#7c3aed', bg: 'linear-gradient(135deg,#7c3aed,#6d28d9)' },
           { ccy: 'K',   symbol: '',  dec: 0, label: 'K',   color: '#ea580c', bg: 'linear-gradient(135deg,#ea580c,#c2410c)' },
         ].map(c => {
-          const key = c.ccy.toLowerCase();
-          const exp = parseFloat(daySummaryByCcy[key]?.expected || 0) || 0;
-          const got = parseFloat(daySummaryByCcy[key]?.received || 0) || 0;
-          const diff = got - exp;
-          const eps = c.dec === 2 ? 0.01 : 1;
-          const isOk = Math.abs(diff) < eps;
-          const fmt = (n) => `${c.symbol}${parseFloat(n || 0).toLocaleString(undefined, { minimumFractionDigits: c.dec, maximumFractionDigits: c.dec })}`;
+          const key      = c.ccy.toLowerCase();
+          const expected = parseFloat(daySummaryByCcy[key]?.expected || 0) || 0;
+          const counted  = parseFloat(daySummaryByCcy[key]?.counted  || 0) || 0;
+          const expenses = parseFloat(daySummaryByCcy[key]?.expenses || 0) || 0;
+          const exch     = parseFloat(exchangeNetAll[`${key}_net`] || 0) || 0;
+          // v1.8.84 — Total cash in = Counted + Expenses − exch_net (sales-only inflow).
+          const totalIn  = counted + expenses - exch;
+          const diff     = totalIn - expected;
+          const eps      = c.dec === 2 ? 0.01 : 1;
+          const isOk     = Math.abs(diff) < eps;
+          const status   = isOk ? '✓ Balanced' : diff > 0 ? 'Over' : 'Short';
+          const fmt      = (n) => `${c.symbol}${parseFloat(n || 0).toLocaleString(undefined, { minimumFractionDigits: c.dec, maximumFractionDigits: c.dec })}`;
           return (
             <div key={c.ccy} style={{ borderRadius: 12, padding: '14px 18px', background: c.bg, color: '#fff', boxShadow: `0 4px 16px ${c.color}40`, position: 'relative', overflow: 'hidden' }}>
               <div style={{ position: 'absolute', right: -10, top: -10, width: 60, height: 60, borderRadius: '50%', background: 'rgba(255,255,255,0.1)' }} />
-              <div style={{ fontSize: 11, fontWeight: 700, opacity: 0.85, textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 6 }}>
+              <div style={{ fontSize: 11, fontWeight: 700, opacity: 0.85, textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 8 }}>
                 {c.label} — All Cashiers
               </div>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 3, fontSize: 12 }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                  <span style={{ opacity: 0.85 }}>Expected</span><strong>{fmt(exp)}</strong>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 13 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
+                  <span style={{ opacity: 0.9, fontSize: 11 }}>Total cash in</span>
+                  <strong style={{ fontSize: 18 }}>{fmt(totalIn)}</strong>
                 </div>
-                <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                  <span style={{ opacity: 0.85 }}>Received</span><strong>{fmt(got)}</strong>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', opacity: 0.75 }}>
+                  <span style={{ fontSize: 11 }}>Expected sales</span>
+                  <span style={{ fontSize: 12, fontWeight: 500 }}>{fmt(expected)}</span>
                 </div>
-                <div style={{ display: 'flex', justifyContent: 'space-between', borderTop: '1px solid rgba(255,255,255,0.25)', paddingTop: 4, marginTop: 2 }}>
-                  <span style={{ fontWeight: 700 }}>Diff</span>
-                  <strong style={{ background: 'rgba(255,255,255,0.18)', padding: '2px 8px', borderRadius: 5 }}>
-                    {diff > 0 ? '+' : ''}{fmt(diff)} {isOk ? '· OK' : ''}
+                <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 4 }}>
+                  <strong style={{ background: 'rgba(255,255,255,0.22)', padding: '3px 10px', borderRadius: 6, fontSize: 12 }}>
+                    {status} {!isOk ? ` ${diff > 0 ? '+' : ''}${fmt(diff)}` : ''}
                   </strong>
                 </div>
               </div>
@@ -916,79 +940,103 @@ const CashReport = () => {
           ].map(c => {
             const counted     = parseFloat(form[c.key] || 0) || 0;
             const exch        = parseFloat(c.exch || 0) || 0;
-            // v1.8.21 — Expected = POS net − expenses + exchange net.
-            // Exchange in (+) ADDS to drawer, exchange out (−) SUBTRACTS.
-            const netExpected = c.posExp - c.exp + exch;
-            const diff        = counted - netExpected;
+            // v1.8.84 — new model: Total cash in = Counted + Expenses − exch_net.
+            // (Reverses the drawer-side exchange to recover sales-only inflow.)
+            // Diff = Total cash in − Expected sales (POS net). Same numerical
+            // diff as before, just framed as "what we reconstructed from cash"
+            // vs "what POS says we sold".
+            const totalCashIn = counted + c.exp - exch;
+            const diff        = totalCashIn - c.posExp;
             const eps         = c.dec === 2 ? 0.01 : 1;
-            const status      = Math.abs(diff) < eps ? 'OK'
-                              : diff > 0 ? (diff < 10 ? 'Slight Surplus' : 'Surplus')
-                              : (diff > -10 ? 'Slight Short' : 'Short');
-            const isOk        = status === 'OK';
+            const isOk        = Math.abs(diff) < eps;
+            const status      = isOk ? 'OK' : diff > 0 ? 'Over' : 'Short';
             const fmt         = (n) => `${c.symbol}${parseFloat(n || 0).toLocaleString(undefined, { minimumFractionDigits: c.dec, maximumFractionDigits: c.dec })}`;
+            const exchAdj     = -exch; // sign flipped for display: drawer +exch → −exchAdj on sales side
+            const footerBg    = isOk ? '#dcfce7' : diff > 0 ? '#fef3c7' : '#fee2e2';
+            const footerBorder= isOk ? '#86efac' : diff > 0 ? '#fde68a' : '#fecaca';
+            const footerColor = isOk ? '#15803d' : diff > 0 ? '#a16207' : '#991b1b';
             return (
               <div key={c.key} style={{
-                background: c.bg,
-                border: `1.5px solid ${c.color}40`,
-                borderLeft: `5px solid ${c.color}`,
-                borderRadius: 10,
-                padding: 14,
+                background: '#fff',
+                border: `1px solid ${c.color}30`,
+                borderRadius: 12,
+                overflow: 'hidden',
                 display: 'flex',
                 flexDirection: 'column',
-                gap: 10,
+                boxShadow: '0 2px 8px rgba(0,0,0,0.04)',
               }}>
-                {/* Header: currency label + action buttons */}
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                  <span style={{ color: c.color, fontWeight: 800, fontSize: 14, textTransform: 'uppercase', letterSpacing: 0.4 }}>{c.label}</span>
-                  <div className="no-print" style={{ display: 'flex', gap: 4 }}>
+                {/* Header strip — solid currency color */}
+                <div style={{
+                  background: c.color, color: '#fff',
+                  padding: '10px 14px',
+                  display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                }}>
+                  <span style={{ fontWeight: 800, fontSize: 13, textTransform: 'uppercase', letterSpacing: 0.5 }}>
+                    {c.label}
+                  </span>
+                  <div className="no-print" style={{ display: 'flex', gap: 6 }}>
                     <button
                       onClick={() => openExpensesList(c.ccy)}
                       title={`View ${c.ccy} expenses`}
-                      style={{ width: 28, height: 28, borderRadius: 6, border: `1px solid ${c.color}40`, background: '#fff', color: c.color, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                      style={{ width: 26, height: 26, borderRadius: 6, border: '1px solid rgba(255,255,255,0.5)', background: 'rgba(255,255,255,0.15)', color: '#fff', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                       <FiEye size={13} />
                     </button>
                     <button
                       onClick={() => openVoucherForm(c.ccy)}
                       disabled={!selectedCashier}
                       title={!selectedCashier ? 'Select a cashier first' : `Add ${c.ccy} expense voucher`}
-                      style={{ width: 28, height: 28, borderRadius: 6, border: 'none', background: selectedCashier ? c.color : '#d1d5db', color: '#fff', cursor: selectedCashier ? 'pointer' : 'not-allowed', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                      style={{ width: 26, height: 26, borderRadius: 6, border: '1px solid rgba(255,255,255,0.5)', background: selectedCashier ? 'rgba(255,255,255,0.95)' : 'rgba(255,255,255,0.3)', color: selectedCashier ? c.color : '#fff', cursor: selectedCashier ? 'pointer' : 'not-allowed', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 700 }}>
                       <FiPlus size={14} />
                     </button>
                   </div>
                 </div>
 
-                {/* Counted input */}
-                <div>
-                  <label style={{ fontSize: 10, color: '#6b7280', fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.4 }}>Counted</label>
-                  <input type="number" value={form[c.key]}
-                    onChange={e => setForm({ ...form, [c.key]: e.target.value })}
-                    disabled={!editMode} placeholder={c.dec === 2 ? '0.00' : '0'} step={c.step}
-                    style={{ ...inputStyle(editMode), marginTop: 4, fontSize: 16, fontWeight: 600 }} />
+                {/* Body */}
+                <div style={{ padding: 16, display: 'flex', flexDirection: 'column', gap: 14 }}>
+                  {/* Counted input — the only editable field */}
+                  <div>
+                    <label style={{ fontSize: 10, color: '#6b7280', fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5 }}>Cashier counted</label>
+                    <input type="number" value={form[c.key]}
+                      onChange={e => setForm({ ...form, [c.key]: e.target.value })}
+                      disabled={!editMode} placeholder={c.dec === 2 ? '0.00' : '0'} step={c.step}
+                      style={{ ...inputStyle(editMode), marginTop: 4, fontSize: 18, fontWeight: 700, color: '#111827' }} />
+                  </div>
+
+                  {/* Breakdown → Total cash in (bookable to CR) */}
+                  <div style={{ fontSize: 12, color: '#475569', display: 'flex', flexDirection: 'column', gap: 6 }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                      <span>+ Expenses paid</span>
+                      <span style={{ color: c.exp > 0 ? '#374151' : '#9ca3af', fontWeight: 600 }}>{fmt(c.exp)}</span>
+                    </div>
+                    <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                      <span>± Drawer exchanges</span>
+                      <span style={{ color: exch !== 0 ? '#7c3aed' : '#9ca3af', fontWeight: 600 }}>
+                        {exchAdj > 0 ? '+' : ''}{fmt(exchAdj)}
+                      </span>
+                    </div>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', borderTop: '1px solid #e5e7eb', paddingTop: 8, marginTop: 2 }}>
+                      <span style={{ fontWeight: 700, fontSize: 13, color: '#111827' }}>= Total cash in</span>
+                      <span style={{ fontWeight: 800, fontSize: 17, color: c.color }}>{fmt(totalCashIn)}</span>
+                    </div>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 4 }}>
+                      <span style={{ color: '#9ca3af', fontSize: 11 }}>Expected sales (POS)</span>
+                      <span style={{ color: '#9ca3af', fontWeight: 500, fontSize: 12 }}>{fmt(c.posExp)}</span>
+                    </div>
+                  </div>
                 </div>
 
-                {/* Reconciliation lines */}
-                <div style={{ fontSize: 12, color: '#475569', display: 'flex', flexDirection: 'column', gap: 2, padding: '8px 10px', background: '#fff', borderRadius: 6, border: '1px solid #e5e7eb' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                    <span>POS net</span><strong>{fmt(c.posExp)}</strong>
-                  </div>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', color: c.exp > 0 ? '#dc2626' : '#9ca3af' }}>
-                    <span>− Expenses</span><strong>{c.exp > 0 ? fmt(c.exp) : fmt(0)}</strong>
-                  </div>
-                  {/* v1.8.21 — Exchange impact (in/out via currency exchanges). */}
-                  <div style={{ display: 'flex', justifyContent: 'space-between', color: exch !== 0 ? '#7c3aed' : '#9ca3af' }}>
-                    <span>± Exchanges</span>
-                    <strong>{exch > 0 ? '+' : ''}{fmt(exch)}</strong>
-                  </div>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', borderTop: '1px dashed #e5e7eb', paddingTop: 3, marginTop: 2 }}>
-                    <span style={{ fontWeight: 700 }}>= Expected</span><strong style={{ color: c.color }}>{fmt(netExpected)}</strong>
-                  </div>
-                </div>
-
-                {/* Diff + status */}
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '6px 10px', background: isOk ? '#dcfce7' : diff > 0 ? '#fef3c7' : '#fee2e2', border: `1px solid ${isOk ? '#86efac' : diff > 0 ? '#fde68a' : '#fecaca'}`, borderRadius: 6 }}>
-                  <span style={{ fontSize: 11, color: '#475569', fontWeight: 600 }}>Diff</span>
-                  <span style={{ color: isOk ? '#16a34a' : diff > 0 ? '#d97706' : '#dc2626', fontWeight: 800, fontSize: 13 }}>
-                    {diff > 0 ? '+' : ''}{fmt(diff)} · {status}
+                {/* Footer Diff strip — full-width rounded bottom */}
+                <div style={{
+                  background: footerBg,
+                  borderTop: `1px solid ${footerBorder}`,
+                  padding: '10px 16px',
+                  display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                }}>
+                  <span style={{ fontSize: 11, color: footerColor, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5 }}>
+                    {isOk ? '✓ Balanced' : status}
+                  </span>
+                  <span style={{ color: footerColor, fontWeight: 800, fontSize: 14 }}>
+                    {diff > 0 ? '+' : ''}{fmt(diff)}
                   </span>
                 </div>
               </div>
