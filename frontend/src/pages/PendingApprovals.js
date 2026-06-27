@@ -172,34 +172,69 @@ const PendingApprovals = () => {
             const isCart    = r.target === 'cart';
             const qty       = parseFloat(r.quantity)        || 0;
             const unitPx    = parseFloat(r.unit_price)      || 0;
-            const perUnitD  = parseFloat(r.discount_amount) || 0; // cart: flat off; line: per-unit
-            const netUnitPx = Math.max(0, unitPx - perUnitD);
+            const perUnitD  = parseFloat(r.discount_amount) || 0; // cart: flat off; line: per-unit (signed)
+            // v1.8.98 — Line price-change requests carry new_price. When present,
+            // we render as a price-change (red if discount, green if surcharge)
+            // instead of the discount card style. Cart requests + legacy line
+            // discount requests render the original way.
+            const isPriceChange = !isCart && r.new_price !== null && r.new_price !== undefined;
+            const newPrice  = isPriceChange ? parseFloat(r.new_price) || 0 : null;
+            const isMarkup  = isPriceChange && newPrice > unitPx;
+            const netUnitPx = isPriceChange ? newPrice : Math.max(0, unitPx - perUnitD);
             const subtotal  = isCart ? (parseFloat(r.subtotal) || 0) : qty * unitPx;
-            const discount  = isCart ? perUnitD                       : qty * perUnitD;
-            const net       = Math.max(0, subtotal - discount);
+            const discount  = isCart ? perUnitD                       : qty * perUnitD; // signed for price-change
+            const net       = isPriceChange ? qty * newPrice : Math.max(0, subtotal - discount);
             const row = (label, value, opts = {}) => (
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', fontSize: 12, padding: '4px 0', ...(opts.divider ? { borderTop: '1px dashed #e5e7eb', marginTop: 4, paddingTop: 8 } : {}) }}>
                 <span style={{ color: opts.muted ? '#6b7280' : '#374151', fontWeight: opts.bold ? 700 : 500 }}>{label}</span>
                 <span style={{ color: opts.color || '#111827', fontWeight: opts.bold ? 800 : 600, fontSize: opts.big ? 14 : 12 }}>{value}</span>
               </div>
             );
+            // Header pill colour: cart blue / line-discount red / line-markup green
+            const pillBg = isCart ? '#eff6ff'
+                         : isPriceChange ? (isMarkup ? '#dcfce7' : '#fef2f2')
+                         : '#fef2f2';
+            const pillFg = isCart ? '#1e40af'
+                         : isPriceChange ? (isMarkup ? '#15803d' : '#991b1b')
+                         : '#991b1b';
+            const pillLabel = isCart ? 'Cart Discount'
+                            : isPriceChange ? (isMarkup ? 'Price Change · Surcharge' : 'Price Change · Discount')
+                            : 'Line Discount';
             return (
               <div key={r.id} style={{ background: '#fff', border: '1px solid #e5e7eb', borderRadius: 12, padding: 16, boxShadow: '0 1px 2px rgba(0,0,0,0.04)' }}>
 
                 {/* Header — tag pill + title */}
-                <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '3px 10px', background: isCart ? '#eff6ff' : '#fef2f2', color: isCart ? '#1e40af' : '#991b1b', borderRadius: 999, fontSize: 11, fontWeight: 700 }}>
-                  {isCart ? <FiShoppingCart size={11} /> : <FiTag size={11} />} {isCart ? 'Cart Discount' : 'Line Discount'}
+                <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '3px 10px', background: pillBg, color: pillFg, borderRadius: 999, fontSize: 11, fontWeight: 700 }}>
+                  {isCart ? <FiShoppingCart size={11} /> : <FiTag size={11} />} {pillLabel}
                 </div>
                 <div style={{ marginTop: 8, fontWeight: 800, color: '#111827', fontSize: 15 }}>
                   {isCart ? 'Whole sale' : (r.product_name || 'Item')}
                 </div>
 
-                {/* Per-unit price math — only for line discounts */}
+                {/* Per-unit price math — only for line targets */}
                 {!isCart && (
                   <div style={{ marginTop: 10, padding: '10px 12px', background: '#f9fafb', border: '1px solid #f3f4f6', borderRadius: 8 }}>
-                    {row('Original price',  `${curSym}${unitPx.toFixed(2)} / ${r.unit || ''}`,    { muted: true })}
-                    {row('Discount',        `−${curSym}${perUnitD.toFixed(2)} / ${r.unit || ''}`, { color: '#dc2626' })}
-                    {row('Net price',       `${curSym}${netUnitPx.toFixed(2)} / ${r.unit || ''}`, { color: '#16a34a', bold: true, divider: true })}
+                    {row('Original price', `${curSym}${unitPx.toFixed(2)} / ${r.unit || ''}`, { muted: true })}
+                    {isPriceChange ? (
+                      <>
+                        {row('New price', `${curSym}${newPrice.toFixed(2)} / ${r.unit || ''}`, { color: isMarkup ? '#15803d' : '#dc2626', bold: true })}
+                        {row(isMarkup ? 'Surcharge' : 'Discount',
+                          `${isMarkup ? '+' : '−'}${curSym}${Math.abs(unitPx - newPrice).toFixed(2)} / ${r.unit || ''}`,
+                          { color: isMarkup ? '#15803d' : '#dc2626', divider: true })}
+                      </>
+                    ) : (
+                      <>
+                        {row('Discount',  `−${curSym}${perUnitD.toFixed(2)} / ${r.unit || ''}`, { color: '#dc2626' })}
+                        {row('Net price', `${curSym}${netUnitPx.toFixed(2)} / ${r.unit || ''}`, { color: '#16a34a', bold: true, divider: true })}
+                      </>
+                    )}
+                  </div>
+                )}
+
+                {/* Reason (price-change only) */}
+                {isPriceChange && r.change_reason && (
+                  <div style={{ marginTop: 10, padding: '8px 10px', background: '#fefce8', border: '1px solid #fde68a', borderRadius: 8, fontSize: 12, color: '#78350f' }}>
+                    <strong>Reason:</strong> {r.change_reason}
                   </div>
                 )}
 
@@ -207,8 +242,15 @@ const PendingApprovals = () => {
                 <div style={{ marginTop: 10, padding: '10px 12px', background: '#f9fafb', border: '1px solid #f3f4f6', borderRadius: 8 }}>
                   {!isCart && row('Quantity', `${qty.toFixed(2)} ${r.unit || ''}`, { muted: true })}
                   {row(isCart ? 'Cart subtotal' : 'Line total (gross)', money(subtotal), { muted: true })}
-                  {row('Total discount', `−${money(discount)}`,                                    { color: '#dc2626' })}
-                  {row(isCart ? 'Cart total (net)' : 'Line total (net)', money(net),               { color: '#16a34a', bold: true, big: true, divider: true })}
+                  {isPriceChange ? (
+                    row(isMarkup ? 'Surcharge total' : 'Discount total',
+                      `${isMarkup ? '+' : '−'}${money(Math.abs(qty * (unitPx - newPrice)))}`,
+                      { color: isMarkup ? '#15803d' : '#dc2626' })
+                  ) : (
+                    row('Total discount', `−${money(discount)}`, { color: '#dc2626' })
+                  )}
+                  {row(isCart ? 'Cart total (net)' : 'Line total (net)', money(net),
+                    { color: isPriceChange && isMarkup ? '#15803d' : '#16a34a', bold: true, big: true, divider: true })}
                 </div>
 
                 {/* Requester */}

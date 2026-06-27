@@ -28,10 +28,32 @@ router.post('/', auth, (req, res) => {
     const {
       target, product_name, product_sync_id, unit,
       quantity, unit_price, subtotal, discount_amount,
+      // v1.8.98 — Change Price flow: when new_price is set, this is a price-
+      // change request (not a discount). discount_amount becomes derived from
+      // (unit_price - new_price) * quantity (signed: + when shop loses,
+      // − when shop gains from a surcharge). change_reason is required.
+      new_price, change_reason,
     } = req.body;
     if (!['line', 'cart'].includes(target)) return res.status(400).json({ error: 'target must be "line" or "cart".' });
-    const amt = parseFloat(discount_amount) || 0;
-    if (!(amt > 0)) return res.status(400).json({ error: 'discount_amount must be > 0.' });
+
+    const hasNewPrice = new_price !== undefined && new_price !== null && new_price !== '';
+    let amt;
+    if (hasNewPrice) {
+      // Price-change request (target must be 'line' — cart-level price change isn't supported)
+      if (target !== 'line') return res.status(400).json({ error: 'Price change is only valid for line items.' });
+      const np = parseFloat(new_price);
+      if (!isFinite(np) || np <= 0) return res.status(400).json({ error: 'new_price must be > 0.' });
+      const up = parseFloat(unit_price) || 0;
+      const qty = parseFloat(quantity) || 0;
+      if (Math.abs(np - up) < 0.0001) return res.status(400).json({ error: 'new_price equals original price — nothing to approve.' });
+      const reason = (change_reason || '').trim();
+      if (reason.length < 3) return res.status(400).json({ error: 'Reason must be at least 3 characters.' });
+      amt = (up - np) * qty; // signed; can be negative for surcharges
+    } else {
+      // Legacy discount request
+      amt = parseFloat(discount_amount) || 0;
+      if (!(amt > 0)) return res.status(400).json({ error: 'discount_amount must be > 0.' });
+    }
 
     const tenantId = syncConfig.getTenantId(req);
     const { branchId, deviceId } = syncConfig.getConfig();
@@ -41,9 +63,10 @@ router.post('/', auth, (req, res) => {
     const info = db.prepare(`
       INSERT INTO discount_requests
       (requested_by, requester_name, target, product_name, product_sync_id, unit,
-       quantity, unit_price, subtotal, discount_amount, status,
+       quantity, unit_price, subtotal, discount_amount,
+       new_price, change_reason, status,
        sync_id, tenant_id, branch_id, device_id, synced)
-      VALUES (?,?,?,?,?,?, ?,?,?,?, 'pending', ?,?,?,?, 0)
+      VALUES (?,?,?,?,?,?, ?,?,?,?, ?,?, 'pending', ?,?,?,?, 0)
     `).run(
       req.user.id, requesterName, target,
       target === 'cart' ? null : (product_name || null),
@@ -53,6 +76,8 @@ router.post('/', auth, (req, res) => {
       target === 'cart' ? 0 : (parseFloat(unit_price) || 0),
       target === 'cart' ? (parseFloat(subtotal) || 0) : 0,
       amt,
+      hasNewPrice ? parseFloat(new_price) : null,
+      hasNewPrice ? (change_reason || '').trim() : null,
       syncId, tenantId, branchId, deviceId
     );
     const row = db.prepare('SELECT * FROM discount_requests WHERE id = ?').get(info.lastInsertRowid);

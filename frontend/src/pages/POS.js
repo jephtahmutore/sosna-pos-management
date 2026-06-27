@@ -596,7 +596,16 @@ const POS = () => {
           if (discountModal.target === 'cart') {
             setDiscount(parseFloat(discountModal.draft) || 0);
           } else {
-            setLineDiscount(discountModal.cartIdx, discountModal.draft);
+            // v1.8.98 — draft is the NEW PRICE for line target. Convert to
+            // discount delta = original unit_price − new_price so the cart's
+            // existing total math (unit_price − discount) produces the right
+            // figure. Read the original from the cart at apply-time (not from
+            // res.data) so we don't apply against stale state.
+            const line = cart[discountModal.cartIdx];
+            if (line) {
+              const newPrice = parseFloat(discountModal.draft) || 0;
+              setLineDiscount(discountModal.cartIdx, line.unit_price - newPrice);
+            }
           }
           setDiscountModal(null);
         } else if (st === 'rejected') {
@@ -1522,26 +1531,33 @@ const POS = () => {
                         <span style={{ marginLeft: 4, fontSize: 10, color: '#dc2626', fontWeight: 600 }}>(not default — usually {item.default_unit_name})</span>
                       )}
                     </p>
-                    {/* Per-unit discount — opens a dedicated modal so the cart line stays compact. */}
+                    {/* v1.8.98 — Change Price flow. Seeds draft with the current
+                        effective unit price (unit_price - discount) so the modal
+                        shows what the line currently sells at; user types a NEW
+                        price (not a discount amount). */}
                     <div style={{ marginTop: 4 }}>
-                      {parseFloat(item.discount || 0) > 0 ? (
+                      {parseFloat(item.discount || 0) !== 0 ? (
                         <button
                           type="button"
-                          onClick={e => { e.stopPropagation(); setDiscountModal({ cartIdx, draft: String(item.discount) }); }}
+                          onClick={e => { e.stopPropagation(); setDiscountModal({ cartIdx, draft: String((item.unit_price - (item.discount || 0)).toFixed(2)), reason: '' }); }}
                           style={{
                             display: 'inline-flex', alignItems: 'center', gap: 5,
                             padding: '3px 9px', borderRadius: 14,
-                            background: '#fef2f2', border: '1px solid #fecaca',
-                            color: '#dc2626', fontSize: 11, fontWeight: 700, cursor: 'pointer',
+                            background: item.discount > 0 ? '#fef2f2' : '#eff6ff',
+                            border: `1px solid ${item.discount > 0 ? '#fecaca' : '#bfdbfe'}`,
+                            color: item.discount > 0 ? '#dc2626' : '#1d4ed8',
+                            fontSize: 11, fontWeight: 700, cursor: 'pointer',
                           }}
                         >
-                          <FiTag size={11} /> {curSym}{parseFloat(item.discount).toFixed(2)} / {item.unit}
-                          <span style={{ color: '#9b1c1c', fontWeight: 600 }}>(−{money(item.quantity * item.discount)})</span>
+                          <FiTag size={11} /> {curSym}{(item.unit_price - item.discount).toFixed(2)} / {item.unit}
+                          <span style={{ color: item.discount > 0 ? '#9b1c1c' : '#1e40af', fontWeight: 600 }}>
+                            ({item.discount > 0 ? '−' : '+'}{money(item.quantity * Math.abs(item.discount))})
+                          </span>
                         </button>
                       ) : (
                         <button
                           type="button"
-                          onClick={e => { e.stopPropagation(); setDiscountModal({ cartIdx, draft: '' }); }}
+                          onClick={e => { e.stopPropagation(); setDiscountModal({ cartIdx, draft: String(item.unit_price.toFixed(2)), reason: '' }); }}
                           style={{
                             display: 'inline-flex', alignItems: 'center', gap: 5,
                             padding: '3px 9px', borderRadius: 14,
@@ -1549,7 +1565,7 @@ const POS = () => {
                             color: '#6b7280', fontSize: 11, fontWeight: 600, cursor: 'pointer',
                           }}
                         >
-                          <FiTag size={11} /> Add discount
+                          <FiTag size={11} /> Change price
                         </button>
                       )}
                     </div>
@@ -2679,37 +2695,58 @@ const POS = () => {
         const isCart = discountModal.target === 'cart';
         const item = isCart ? null : cart[discountModal.cartIdx];
         if (!isCart && !item) return null;
+        // v1.8.98 — Line target: draft is the NEW PRICE (not discount).
+        //           Cart target: draft is the discount amount (legacy).
         const draftNum = parseFloat(discountModal.draft || 0) || 0;
-        // v1.8.57 — "Change price" supports both directions:
-        //   positive = discount (reduce price), negative = markup (increase price)
-        // Over-validation only applies to discounts that exceed the unit/cart amount.
-        const overUnitPrice = !isCart && draftNum > parseFloat(item.unit_price || 0);
-        const overSubtotal  = isCart && draftNum > subtotal;
-        const totalOff = isCart ? draftNum : parseFloat(item.quantity || 0) * draftNum;
+        const origUnitPrice = !isCart ? parseFloat(item.unit_price || 0) : 0;
+        const lineDelta = !isCart ? (origUnitPrice - draftNum) : 0; // + = discount, − = markup
+        // Validation
+        const lineZero       = !isCart && draftNum <= 0;
+        const lineUnchanged  = !isCart && Math.abs(draftNum - origUnitPrice) < 0.0001;
+        const overSubtotal   = isCart && draftNum > subtotal;
+        const reasonInvalid  = !isCart && !isAdmin && (discountModal.reason || '').trim().length < 3;
+        const totalOff = isCart ? draftNum : parseFloat(item.quantity || 0) * lineDelta;
 
         const applyNow = () => {
           if (isCart) setDiscount(parseFloat(discountModal.draft) || 0);
-          else        setLineDiscount(discountModal.cartIdx, discountModal.draft);
+          else        setLineDiscount(discountModal.cartIdx, lineDelta); // convert new price → discount delta
           setDiscountModal(null);
         };
         // Non-admin → create a pending discount_request; the polling useEffect
         // above watches its sync_id and applies once an admin approves.
+        // v1.8.98: line target sends new_price + change_reason; cart unchanged.
         const requestApply = async () => {
-          if (draftNum === 0) { applyNow(); return; } // zero/clear doesn't need approval
-          if (isAdmin) { applyNow(); return; }
-          // Non-admin: both discount AND markup need admin approval.
+          if (isCart) {
+            if (draftNum === 0) { applyNow(); return; }
+            if (isAdmin)        { applyNow(); return; }
+          } else {
+            if (lineUnchanged)  { setDiscountModal(null); return; } // no real change
+            if (lineZero)       return; // blocked, button disabled anyway
+            if (isAdmin)        { applyNow(); return; }
+            if (reasonInvalid)  return; // blocked
+          }
           setDiscountModal({ ...discountModal, submitting: true, error: '' });
           try {
-            const res = await createDiscountRequest({
-              target: isCart ? 'cart' : 'line',
-              product_name:    isCart ? null : item.product_name,
-              product_sync_id: isCart ? null : item.product_sync_id,
-              unit:            isCart ? null : (item.unit || ''),
-              quantity:        isCart ? 0 : parseFloat(item.quantity) || 0,
-              unit_price:      isCart ? 0 : parseFloat(item.unit_price) || 0,
-              subtotal:        isCart ? subtotal : 0,
-              discount_amount: draftNum,
-            });
+            const payload = isCart
+              ? {
+                  target: 'cart',
+                  product_name: null, product_sync_id: null, unit: null,
+                  quantity: 0, unit_price: 0,
+                  subtotal,
+                  discount_amount: draftNum,
+                }
+              : {
+                  target: 'line',
+                  product_name:    item.product_name,
+                  product_sync_id: item.product_sync_id,
+                  unit:            item.unit || '',
+                  quantity:        parseFloat(item.quantity) || 0,
+                  unit_price:      origUnitPrice,
+                  subtotal:        0,
+                  new_price:       draftNum,
+                  change_reason:   (discountModal.reason || '').trim(),
+                };
+            const res = await createDiscountRequest(payload);
             setDiscountModal(d => d ? { ...d, submitting: false, pendingSyncId: res.data?.sync_id, verdict: null, rejectionReason: '' } : d);
           } catch (err) {
             setDiscountModal(d => d ? { ...d, submitting: false, error: err.response?.data?.error || 'Could not send request.' } : d);
@@ -2765,10 +2802,12 @@ const POS = () => {
                     </div>
 
                     <label style={{ fontSize: 12, fontWeight: 700, color: '#374151', textTransform: 'uppercase', letterSpacing: 0.4, display: 'block', marginBottom: 6 }}>
-                      {isCart ? `Change off total (${curSym}) — + discount / − markup` : `Change per ${item.unit} (${curSym}) — + discount / − markup`}
+                      {isCart
+                        ? `Change off total (${curSym}) — + discount / − markup`
+                        : `New price per ${item.unit} (${curSym})`}
                     </label>
                     <input
-                      type="number" step="0.01"
+                      type="number" step="0.01" min={isCart ? undefined : 0.01}
                       autoFocus
                       value={discountModal.draft}
                       onChange={e => setDiscountModal({ ...discountModal, draft: e.target.value })}
@@ -2776,13 +2815,32 @@ const POS = () => {
                         if (e.key === 'Enter') requestApply();
                         else if (e.key === 'Escape') setDiscountModal(null);
                       }}
-                      placeholder="0.00"
-                      title="Positive = discount (reduces price). Negative = markup (increases price)."
-                      style={{ width: '100%', padding: '12px 14px', border: `2px solid ${(overUnitPrice || overSubtotal) ? '#dc2626' : '#d1d5db'}`, borderRadius: 10, fontSize: 18, fontWeight: 700, textAlign: 'right', boxSizing: 'border-box', outline: 'none', color: draftNum > 0 ? '#dc2626' : draftNum < 0 ? '#2563eb' : '#111827' }}
+                      placeholder={isCart ? '0.00' : `was ${curSym}${origUnitPrice.toFixed(2)}`}
+                      title={isCart
+                        ? 'Positive = discount. Negative = markup.'
+                        : 'Type the new final price. Zero blocked. Above original = green (markup), below = red (discount).'}
+                      style={{
+                        width: '100%', padding: '12px 14px',
+                        border: `2px solid ${(overSubtotal || lineZero) ? '#dc2626' : '#d1d5db'}`,
+                        borderRadius: 10, fontSize: 18, fontWeight: 700, textAlign: 'right',
+                        boxSizing: 'border-box', outline: 'none',
+                        color: isCart
+                          ? (draftNum > 0 ? '#dc2626' : draftNum < 0 ? '#2563eb' : '#111827')
+                          : (lineZero ? '#dc2626'
+                              : lineUnchanged ? '#111827'
+                              : lineDelta > 0 ? '#dc2626'  // new < original (discount)
+                              : '#16a34a'),               // new > original (markup)
+                      }}
                     />
-                    {overUnitPrice && (
+                    {/* Line: zero / unchanged / over-cart warnings */}
+                    {!isCart && lineZero && (
                       <div style={{ marginTop: 8, fontSize: 12, color: '#dc2626', fontWeight: 600 }}>
-                        Discount is greater than the unit price ({curSym}{item.unit_price}). The line would go negative.
+                        New price must be greater than 0.
+                      </div>
+                    )}
+                    {!isCart && !lineZero && (
+                      <div style={{ marginTop: 6, fontSize: 11, color: '#6b7280' }}>
+                        Original: {curSym}{origUnitPrice.toFixed(2)} / {item.unit}
                       </div>
                     )}
                     {overSubtotal && (
@@ -2790,18 +2848,42 @@ const POS = () => {
                         Discount is greater than the cart subtotal ({money(subtotal)}). The sale would go negative.
                       </div>
                     )}
-                    {draftNum !== 0 && !overUnitPrice && !overSubtotal && (
+                    {/* Cart: delta strip (existing) */}
+                    {isCart && draftNum !== 0 && !overSubtotal && (
                       <div style={{ marginTop: 10, padding: '8px 12px', background: draftNum > 0 ? '#fef2f2' : '#eff6ff', border: `1px solid ${draftNum > 0 ? '#fecaca' : '#bfdbfe'}`, borderRadius: 8, fontSize: 12, color: draftNum > 0 ? '#991b1b' : '#1d4ed8', display: 'flex', justifyContent: 'space-between' }}>
-                        <span>{isCart
-                          ? (draftNum > 0 ? 'Discount off this sale:' : 'Markup on this sale:')
-                          : (draftNum > 0 ? 'Discount off this line:' : 'Markup on this line:')}</span>
+                        <span>{draftNum > 0 ? 'Discount off this sale:' : 'Markup on this sale:'}</span>
                         <strong>{draftNum > 0 ? '−' : '+'}{money(Math.abs(totalOff))}</strong>
                       </div>
                     )}
-                    {!isAdmin && draftNum !== 0 && (
-                      <div style={{ marginTop: 10, fontSize: 11, color: '#92400e', background: '#fef3c7', border: '1px solid #fde68a', borderRadius: 8, padding: '8px 12px' }}>
-                        An administrator must approve any price change. Tap Send Request and wait for the verdict.
+                    {/* Line: change-vs-original strip */}
+                    {!isCart && !lineZero && !lineUnchanged && (
+                      <div style={{ marginTop: 10, padding: '8px 12px', background: lineDelta > 0 ? '#fef2f2' : '#dcfce7', border: `1px solid ${lineDelta > 0 ? '#fecaca' : '#86efac'}`, borderRadius: 8, fontSize: 12, color: lineDelta > 0 ? '#991b1b' : '#15803d', display: 'flex', justifyContent: 'space-between' }}>
+                        <span>{lineDelta > 0 ? 'Discount on this line:' : 'Surcharge on this line:'}</span>
+                        <strong>{lineDelta > 0 ? '−' : '+'}{money(Math.abs(totalOff))}</strong>
                       </div>
+                    )}
+                    {/* Line: Reason field — required for non-admin */}
+                    {!isCart && !isAdmin && !lineZero && !lineUnchanged && (
+                      <div style={{ marginTop: 12 }}>
+                        <label style={{ fontSize: 12, fontWeight: 700, color: '#374151', display: 'block', marginBottom: 6 }}>
+                          Reason <span style={{ color: '#dc2626' }}>*</span>{' '}
+                          <span style={{ fontWeight: 400, color: '#9ca3af' }}>(min 3 chars)</span>
+                        </label>
+                        <input
+                          type="text" maxLength={200}
+                          value={discountModal.reason || ''}
+                          onChange={e => setDiscountModal({ ...discountModal, reason: e.target.value })}
+                          placeholder="e.g. VIP customer, damaged label, bulk discount"
+                          style={{ width: '100%', padding: '10px 12px', border: `1px solid ${reasonInvalid ? '#dc2626' : '#d1d5db'}`, borderRadius: 8, fontSize: 13, boxSizing: 'border-box', outline: 'none' }}
+                        />
+                      </div>
+                    )}
+                    {!isAdmin && (
+                      (isCart ? draftNum !== 0 : (!lineZero && !lineUnchanged)) && (
+                        <div style={{ marginTop: 10, fontSize: 11, color: '#92400e', background: '#fef3c7', border: '1px solid #fde68a', borderRadius: 8, padding: '8px 12px' }}>
+                          An administrator must approve any price change. Tap Send Request and wait for the verdict.
+                        </div>
+                      )
                     )}
                     {discountModal.error && (
                       <div style={{ marginTop: 10, padding: '8px 12px', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 8, fontSize: 12, color: '#991b1b', fontWeight: 600 }}>
@@ -2824,11 +2906,22 @@ const POS = () => {
                         onClick={() => setDiscountModal(null)}
                         style={{ padding: '10px 18px', background: '#fff', color: '#374151', border: '1px solid #e5e7eb', borderRadius: 8, cursor: 'pointer', fontSize: 13, fontWeight: 600 }}
                       >Cancel</button>
-                      <button
-                        onClick={requestApply}
-                        disabled={discountModal.submitting}
-                        style={{ padding: '10px 22px', background: discountModal.submitting ? '#9ca3af' : '#dc2626', color: '#fff', border: 'none', borderRadius: 8, cursor: discountModal.submitting ? 'not-allowed' : 'pointer', fontSize: 13, fontWeight: 700 }}
-                      >{discountModal.submitting ? 'Sending…' : (isAdmin || draftNum === 0 ? 'Apply' : 'Send Request')}</button>
+                      {(() => {
+                        // v1.8.98 — disable logic: line target blocks zero, unchanged,
+                        // or (for non-admin) missing reason.
+                        const disabled = discountModal.submitting
+                          || overSubtotal
+                          || (!isCart && (lineZero || lineUnchanged))
+                          || (!isCart && !isAdmin && reasonInvalid);
+                        const isInstantApply = isAdmin || (isCart && draftNum === 0);
+                        return (
+                          <button
+                            onClick={requestApply}
+                            disabled={disabled}
+                            style={{ padding: '10px 22px', background: disabled ? '#9ca3af' : '#dc2626', color: '#fff', border: 'none', borderRadius: 8, cursor: disabled ? 'not-allowed' : 'pointer', fontSize: 13, fontWeight: 700 }}
+                          >{discountModal.submitting ? 'Sending…' : (isInstantApply ? 'Apply' : 'Send Request')}</button>
+                        );
+                      })()}
                     </div>
                   </div>
                 </>

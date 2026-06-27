@@ -663,6 +663,13 @@ function initTenantDb(db) {
       unit_price        REAL NOT NULL DEFAULT 0,
       subtotal          REAL NOT NULL DEFAULT 0,
       discount_amount   REAL NOT NULL DEFAULT 0,
+      -- v1.8.98 — Change Price feature. When set, this is the new final
+      -- unit price the cashier wants to apply (replaces unit_price on approval).
+      -- discount_amount is auto-computed as (unit_price - new_price) * quantity
+      -- for back-compat with reports — can be negative for surcharges.
+      -- change_reason captures the cashier's text (required, min 3 chars).
+      new_price         REAL,
+      change_reason     TEXT,
       status            TEXT NOT NULL DEFAULT 'pending', -- 'pending' | 'approved' | 'rejected'
       approver_id       INTEGER REFERENCES users(id),
       approver_name     TEXT,
@@ -765,6 +772,10 @@ function initTenantDb(db) {
       addCol(t, 'updated_at', 'TEXT');
     }
   }
+
+  // v1.8.98 — Change Price feature on existing DBs.
+  addCol('discount_requests',  'new_price',         'REAL');
+  addCol('discount_requests',  'change_reason',     'TEXT');
 
   addCol('stock_movements',    'reference_sync_id', 'TEXT');
   addCol('stock_movements',    'product_sync_id',   'TEXT');
