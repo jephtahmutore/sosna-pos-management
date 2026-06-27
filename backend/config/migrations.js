@@ -1578,6 +1578,83 @@ function initTenantDb(db) {
     `).run();
   } catch { /* fresh DB */ }
 
+  // v1.8.77 — SELF-HEALING fix for orders confirmed before v1.8.74 when the
+  // backend defaulted overpaid_kept_ccy='USD' any time the customer paid some
+  // USD, even though the actual over-payment was in FRA/K. Symptom: Cash
+  // Report Over-Collections shows "USD +$0.11" but Sales Report USD column
+  // is $199.89 instead of $200 because usd_change_given got backfilled with
+  // the FRA-overpayment USD-equivalent.
+  //
+  // Heals only the orders that match the bug fingerprint:
+  //   • overpaid_kept_ccy = 'USD'
+  //   • cash_received > 0 (USD was paid)
+  //   • fra_received > 0 OR k_received > 0 (foreign currency also paid)
+  //   • usd_change_given > 0 (USD supposedly returned, but it shouldn't have been)
+  //   • fra_change_given = 0 AND k_change_given = 0 (cashier kept the change)
+  // Re-attributes overpaid_kept_ccy/amt using source-currency priority
+  // (USD pays first → FRA → K, surplus lives in the LAST currency used),
+  // and zeroes usd_change_given since no USD was actually returned.
+  try {
+    const sus = db.prepare(`
+      SELECT id, total_amount, cash_received, fra_received, k_received,
+             selling_rate_used, selling_rate_k_used, usd_change_given,
+             overpaid_kept_amt
+        FROM orders
+       WHERE deleted_at IS NULL
+         AND COALESCE(overpaid_kept_ccy, '') = 'USD'
+         AND COALESCE(cash_received, 0) > 0
+         AND (COALESCE(fra_received, 0) > 0 OR COALESCE(k_received, 0) > 0)
+         AND COALESCE(usd_change_given, 0) > 0
+         AND COALESCE(fra_change_given, 0) = 0
+         AND COALESCE(k_change_given, 0)   = 0
+    `).all();
+    if (sus.length > 0) {
+      const upd = db.prepare(`
+        UPDATE orders
+           SET overpaid_kept_ccy = ?,
+               overpaid_kept_amt = ?,
+               usd_change_given  = 0,
+               synced            = 0,
+               updated_at        = datetime('now')
+         WHERE id = ?
+      `);
+      let healed = 0;
+      for (const r of sus) {
+        const totalDue = parseFloat(r.total_amount)  || 0;
+        const paidUSD  = parseFloat(r.cash_received) || 0;
+        const paidFRA  = parseFloat(r.fra_received   || 0) || 0;
+        const paidK    = parseFloat(r.k_received     || 0) || 0;
+        const sellR    = parseFloat(r.selling_rate_used   || 0) || 0;
+        const sellRK   = parseFloat(r.selling_rate_k_used || 0) || 0;
+        // Source-currency over-payment chain (USD → FRA → K)
+        let rem = totalDue - Math.min(paidUSD, totalDue);
+        let overUSD  = paidUSD - Math.min(paidUSD, totalDue);
+        let overFRA = 0, overK = 0;
+        if (rem > 0 && paidFRA > 0 && sellR > 0) {
+          const fraNeeded = rem * sellR;
+          if (paidFRA >= fraNeeded) { overFRA = paidFRA - fraNeeded; rem = 0; }
+          else                      { rem -= paidFRA / sellR; }
+        } else if (paidFRA > 0) {
+          overFRA = paidFRA;
+        }
+        if (rem > 0 && paidK > 0 && sellRK > 0) {
+          const kNeeded = rem * sellRK;
+          if (paidK >= kNeeded) { overK = paidK - kNeeded; rem = 0; }
+        } else if (paidK > 0) {
+          overK = paidK;
+        }
+        let newCcy = 'USD', newAmt = overUSD;
+        if      (overFRA > 0.5)   { newCcy = 'FRA'; newAmt = overFRA; }
+        else if (overK   > 0.5)   { newCcy = 'K';   newAmt = overK; }
+        else if (overUSD > 0.001) { newCcy = 'USD'; newAmt = overUSD; }
+        else continue; // nothing to attribute
+        upd.run(newCcy, newAmt, r.id);
+        healed++;
+      }
+      if (healed > 0) console.log(`[self-heal overpaid_kept] re-attributed ${healed} order(s) from USD default → source currency`);
+    }
+  } catch (e) { /* table may not yet have all columns on a fresh DB */ }
+
   // ── v1.8.58 — SELF-HEALING cash_received cleanup (was one-time in v1.8.53) ──
   // Foreign-currency-only payments stored the dollar-VALUE in cash_received,
   // double-counting against the FRA/K bucket. The original v1.8.53 backfill

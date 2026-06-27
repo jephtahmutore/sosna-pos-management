@@ -78,9 +78,9 @@ const CashReport = () => {
   const [expectedByCcy, setExpectedByCcy] = useState({ usd: 0, fra: 0, k: 0 });
   // v1.8.68 — over-collections kept by cashier (per source currency + per-order rows).
   // v1.8.76 — also tracks under-payments (walk-in tolerance shortages, USD-equivalent).
-  const [overpaidByCcy, setOverpaidByCcy] = useState({ usd: 0, fra: 0, k: 0 });
-  const [underpaidUSD, setUnderpaidUSD]   = useState(0);
-  const [overpaidRows, setOverpaidRows]   = useState([]); // mixed OVER + UNDER rows
+  const [overpaidByCcy,  setOverpaidByCcy]  = useState({ usd: 0, fra: 0, k: 0 });
+  const [underpaidByCcy, setUnderpaidByCcy] = useState({ usd: 0, fra: 0, k: 0 });
+  const [overpaidRows,   setOverpaidRows]   = useState([]); // mixed OVER + UNDER rows
   // v1.8.14 — per-currency expenses paid out of the cash drawer today.
   // Subtracted from each currency's Expected so the diff stays accurate
   // (USD expenses don't deplete FRA drawer, etc.).
@@ -236,8 +236,13 @@ const CashReport = () => {
         fra: parseFloat(daily.fra_overpaid_kept || 0) || 0,
         k:   parseFloat(daily.k_overpaid_kept   || 0) || 0,
       });
-      // v1.8.76 — under-payments (walk-in tolerance shortages, USD-equivalent).
-      setUnderpaidUSD(parseFloat(daily.usd_underpaid || 0) || 0);
+      // v1.8.76 — under-payments (walk-in tolerance shortages).
+      // v1.8.77 — per-currency attribution (source-currency, same as over-payments).
+      setUnderpaidByCcy({
+        usd: parseFloat(daily.usd_underpaid || 0) || 0,
+        fra: parseFloat(daily.fra_underpaid || 0) || 0,
+        k:   parseFloat(daily.k_underpaid   || 0) || 0,
+      });
       // v1.8.20 — POS snapshot of credit issued today (so the card can show
       // Counted vs Expected the same way the cash cards do).
       setCreditExpected(parseFloat(daily.credit_sales || 0) + parseFloat(daily.pending || 0));
@@ -1075,11 +1080,14 @@ const CashReport = () => {
           • Over-Collections kept in drawer (per source currency, native amount)
           • Under-Payments silently absorbed (walk-in tolerance shortages, USD-attributed)
           Shows NET drift per currency so the shop sees daily gain/loss explicitly. */}
-      {(overpaidRows.length > 0 || overpaidByCcy.usd > 0 || overpaidByCcy.fra > 0 || overpaidByCcy.k > 0 || underpaidUSD > 0) && (() => {
-        // Net per currency = over − under (under is USD only)
-        const netUSD = (overpaidByCcy.usd || 0) - (underpaidUSD || 0);
-        const netFRA = (overpaidByCcy.fra || 0);
-        const netK   = (overpaidByCcy.k   || 0);
+      {(overpaidRows.length > 0
+        || overpaidByCcy.usd > 0 || overpaidByCcy.fra > 0 || overpaidByCcy.k > 0
+        || underpaidByCcy.usd > 0 || underpaidByCcy.fra > 0 || underpaidByCcy.k > 0
+       ) && (() => {
+        // v1.8.77 — net per currency = over − under (both per source currency)
+        const netUSD = (overpaidByCcy.usd || 0) - (underpaidByCcy.usd || 0);
+        const netFRA = (overpaidByCcy.fra || 0) - (underpaidByCcy.fra || 0);
+        const netK   = (overpaidByCcy.k   || 0) - (underpaidByCcy.k   || 0);
         // ≈ USD equivalent of net drift (FRA/K converted at sell rate from the latest row that has one)
         const sampleRow = overpaidRows.find(r => parseFloat(r.selling_rate_used) > 0);
         const sampleK   = overpaidRows.find(r => parseFloat(r.selling_rate_k_used) > 0);
@@ -1112,8 +1120,9 @@ const CashReport = () => {
               <div style={{ display: 'flex', justifyContent: 'space-between' }}>
                 <span>Under-Payments (absorbed):</span>
                 <span>
-                  USD <strong style={{ color: underpaidUSD > 0 ? '#dc2626' : '#78350f' }}>−${(underpaidUSD || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</strong>
-                  {' · '}FRA <strong>−0</strong>{' · '}K <strong>−0</strong>
+                  USD <strong style={{ color: underpaidByCcy.usd > 0 ? '#dc2626' : '#78350f' }}>−${(underpaidByCcy.usd || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</strong>
+                  {' · '}FRA <strong style={{ color: underpaidByCcy.fra > 0.5 ? '#dc2626' : '#78350f' }}>−{(underpaidByCcy.fra || 0).toLocaleString(undefined, { maximumFractionDigits: 0 })}</strong>
+                  {' · '}K <strong style={{ color: underpaidByCcy.k > 0.5 ? '#dc2626' : '#78350f' }}>−{(underpaidByCcy.k || 0).toLocaleString(undefined, { maximumFractionDigits: 0 })}</strong>
                 </span>
               </div>
               <div style={{ display: 'flex', justifyContent: 'space-between', fontWeight: 700, paddingTop: 4, borderTop: '1px dashed #fde68a' }}>

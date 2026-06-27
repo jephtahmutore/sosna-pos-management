@@ -128,17 +128,37 @@ router.get('/daily', auth, readOnlyGuard, (req, res) => {
 
     // v1.8.76 — under-payments (silently absorbed). Walk-in shortages within
     // the $0.10 tolerance keep payment_method='Cash' but have total > received.
-    // These represent silent shop LOSS. Attributed to USD column (the shortfall
-    // is always computed in USD-equivalent; we don't know which currency the
-    // customer was "short in"). Excludes Credit / Partial-Credit (those are
-    // tracked separately as customer receivables).
-    const underpaidUSD = db.prepare(
-      `SELECT COALESCE(SUM(total_amount - amount_received), 0) AS total
+    // These represent silent shop LOSS.
+    // v1.8.77 — attribute the shortfall to its SOURCE currency (same priority
+    // chain as over-payments: USD pays first, FRA next, K last → shortage lives
+    // in the LAST currency the customer used). So if customer paid USD + FRA
+    // and was short, the shortage is in FRA, not USD-equivalent.
+    const underRowsRaw = db.prepare(
+      `SELECT total_amount, amount_received, cash_received, fra_received, k_received,
+              selling_rate_used, selling_rate_k_used
        FROM orders WHERE ${orderDateClause} AND deleted_at IS NULL AND tenant_id = ?
        AND (status IS NULL OR status != 'Reversed')
        AND total_amount > amount_received
        AND payment_method = 'Cash'${userFilter}`
-    ).get(...baseParams).total;
+    ).all(...baseParams);
+    let underpaidUSD = 0, underpaidFRA = 0, underpaidK = 0;
+    for (const r of underRowsRaw) {
+      const shortUSD = parseFloat(r.total_amount) - parseFloat(r.amount_received);
+      if (shortUSD < 0.005) continue;
+      const paidFRA = parseFloat(r.fra_received || 0) || 0;
+      const paidK   = parseFloat(r.k_received   || 0) || 0;
+      const sellR   = parseFloat(r.selling_rate_used   || 0) || 0;
+      const sellRK  = parseFloat(r.selling_rate_k_used || 0) || 0;
+      // Source-currency attribution: shortage in the LAST currency used
+      // (highest in priority chain USD → FRA → K).
+      if (paidK > 0 && sellRK > 0) {
+        underpaidK += shortUSD * sellRK;
+      } else if (paidFRA > 0 && sellR > 0) {
+        underpaidFRA += shortUSD * sellR;
+      } else {
+        underpaidUSD += shortUSD;
+      }
+    }
 
     // CREDIT SALES ISSUED bucket = today's new receivables (unpaid portion of today's sales).
     // This is informational — represents money owed, NOT cash received.
@@ -203,8 +223,10 @@ router.get('/daily', auth, readOnlyGuard, (req, res) => {
       fra_overpaid_kept: parseFloat(overpaidByCcy.fra) || 0,
       k_overpaid_kept:   parseFloat(overpaidByCcy.k)   || 0,
       // v1.8.76 — under-payments silently absorbed (walk-in tolerance shortages).
-      // Always USD-attributed since shortfall is computed in USD-equivalent.
+      // v1.8.77 — per-currency attribution (source-currency, same as over-payments).
       usd_underpaid:     parseFloat(underpaidUSD) || 0,
+      fra_underpaid:     parseFloat(underpaidFRA) || 0,
+      k_underpaid:       parseFloat(underpaidK)   || 0,
       pending: parseFloat(pendingSales.total),
       credit_sales: parseFloat(creditSales.total),
       expenses: parseFloat(expenses.total),
@@ -252,10 +274,10 @@ router.get('/overpaid', auth, readOnlyGuard, (req, res) => {
     ).all(...params);
 
     // Under-payments silently absorbed (walk-in tolerance shortages)
-    const underRows = db.prepare(
-      `SELECT o.id, o.order_number, o.customer_name, o.total_amount,
-              'UNDER' AS direction,
-              'USD'  AS ccy, (o.total_amount - o.amount_received) AS amt,
+    // v1.8.77 — attribute shortage to source currency (last currency used).
+    const underRowsRawDetail = db.prepare(
+      `SELECT o.id, o.order_number, o.customer_name, o.total_amount, o.amount_received,
+              o.cash_received, o.fra_received, o.k_received,
               o.selling_rate_used, o.selling_rate_k_used,
               o.created_at,
               u.first_name || ' ' || u.last_name AS cashier_name
@@ -267,6 +289,22 @@ router.get('/overpaid', auth, readOnlyGuard, (req, res) => {
           AND o.payment_method = 'Cash'
           ${userFilter}`
     ).all(...params);
+    const underRows = underRowsRawDetail.map(r => {
+      const shortUSD = parseFloat(r.total_amount) - parseFloat(r.amount_received);
+      const paidFRA = parseFloat(r.fra_received || 0) || 0;
+      const paidK   = parseFloat(r.k_received   || 0) || 0;
+      const sellR   = parseFloat(r.selling_rate_used   || 0) || 0;
+      const sellRK  = parseFloat(r.selling_rate_k_used || 0) || 0;
+      let ccy = 'USD', amt = shortUSD;
+      if (paidK > 0 && sellRK > 0)        { ccy = 'K';   amt = shortUSD * sellRK; }
+      else if (paidFRA > 0 && sellR > 0)  { ccy = 'FRA'; amt = shortUSD * sellR; }
+      return {
+        id: r.id, order_number: r.order_number, customer_name: r.customer_name,
+        total_amount: r.total_amount, direction: 'UNDER', ccy, amt,
+        selling_rate_used: r.selling_rate_used, selling_rate_k_used: r.selling_rate_k_used,
+        created_at: r.created_at, cashier_name: r.cashier_name,
+      };
+    });
 
     const rows = [...overRows, ...underRows].sort((a, b) =>
       (b.created_at || '').localeCompare(a.created_at || ''));
