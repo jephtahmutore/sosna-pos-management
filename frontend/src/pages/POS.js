@@ -1975,11 +1975,12 @@ const POS = () => {
                       )}
                       {/* v1.8.68 — when cashier keeps over-payment, ask which drawer holds it.
                           v1.8.69 — show buttons for the currencies the branch actually uses.
-                          v1.8.72 — default to the actual source currency of the over-payment. */}
+                          v1.8.78 — always default FRA (most common at Sosna); cashier can
+                          click USD or K to override. Fallback if branch has no FRA. */}
                       {netRemaining > 0.001 && (() => {
                         const currencies = ['USD', ...(isDual ? ['FRA'] : []), ...(hasK ? ['K'] : [])];
                         const defaultCcy = payModal.keptCcy
-                          || (overFRApos > 0.5 ? 'FRA' : 'USD');
+                          || (isDual ? 'FRA' : hasK ? 'K' : 'USD');
                         return (
                           <div style={{ marginTop: 8, padding: '8px 10px', background: '#fffbeb', border: '1px solid #fcd34d', borderRadius: 6 }}>
                             <div style={{ fontSize: 11, color: '#92400e', fontWeight: 700, marginBottom: 6 }}>
@@ -2020,11 +2021,13 @@ const POS = () => {
                     // v1.8.68 — propagate keptCcy default (if no explicit pick) so
                     // backend can fall back correctly even when the picker wasn't touched.
                     // v1.8.72 — also pass native keptAmt so backend doesn't round-trip via USD.
+                    // v1.8.78 — default to FRA (most common at Sosna) regardless of source.
                     const inferredKeptCcy = payModal.keptCcy
-                      || (overFRApos > 0.5 ? 'FRA' : 'USD');
-                    const keptAmtNative = inferredKeptCcy === 'FRA' ? overFRApos
-                                        : inferredKeptCcy === 'USD' ? overUSDpos
-                                        : 0;
+                      || (isDual ? 'FRA' : 'USD');
+                    const keptAmtNative = inferredKeptCcy === 'FRA'
+                      ? (overFRApos > 0.5 ? overFRApos : (SELL_RATE > 0 ? changeNow * SELL_RATE : 0))
+                      : inferredKeptCcy === 'USD' ? (overUSDpos > 0.001 ? overUSDpos : changeNow)
+                      : 0;
                     const breakdown = {
                       cash: cashNow, momo: momoNow, bank: bankNow,
                       keptCcy: netRemaining > 0.001 ? inferredKeptCcy : null,

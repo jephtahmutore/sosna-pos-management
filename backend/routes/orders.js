@@ -215,8 +215,10 @@ router.post('/', auth, (req, res) => {
     // explicitly from the client; when missing we derive them so the bookkeeping
     // is correct even for older POS clients that haven't been updated yet.
     const _changeOwedUSD = parseFloat(change_amount || 0) || 0;
-    const _fraGivenAsUSD = (sellingRateUsed  || 0) > 0 ? fraChangeGiven / sellingRateUsed  : 0;
-    const _kGivenAsUSD   = (sellingRateKUsed || 0) > 0 ? kChangeGiven   / sellingRateKUsed : 0;
+    // v1.8.78 — change handed back is a real currency exchange, BUY rate applies
+    // (matches the frontend's totalChangeGiven formula in Cashier.js / POS.js).
+    const _fraGivenAsUSD = (buyingRateUsed  || 0) > 0 ? fraChangeGiven / buyingRateUsed  : 0;
+    const _kGivenAsUSD   = (buyingRateKUsed || 0) > 0 ? kChangeGiven   / buyingRateKUsed : 0;
     // v1.8.74 — compute per-currency over-payment using source-currency
     // priority (USD pays first, then FRA, then K). Mirrors the collect-payment
     // endpoint + frontend logic so the default keptCcy lands on the currency
@@ -614,9 +616,14 @@ router.put('/:id/collect-payment', auth, requirePagePerm('Cashier'), (req, res) 
       // v1.8.68 — figure out the over-payment kept in the drawer (USD-equivalent
       // returned-as-change MINUS what cashier physically returned). What's left
       // is "kept" — by default in the currency the over-payment came from.
+      // v1.8.78 — change handed back to customer in foreign currency is a real
+      // exchange (we're "buying" USD back with FRA/K). Use BUY rate, matching the
+      // frontend's totalChangeGiven formula. Previous SELL-rate use caused
+      // frontend ($0.09 short) and backend ($1.07 short) to disagree, leading to
+      // wildly inflated overpaid_kept_amt (2,475 FRA instead of ~200 FRA).
       const givenUSDasUSD = givenUSD;
-      const givenFRAasUSD = sellRate  > 0 ? givenFRA / sellRate  : 0;
-      const givenKasUSD   = sellRateK > 0 ? givenK   / sellRateK : 0;
+      const givenFRAasUSD = buyRate   > 0 ? givenFRA / buyRate   : 0;
+      const givenKasUSD   = buyRateK  > 0 ? givenK   / buyRateK  : 0;
       const totalGivenAsUSD = givenUSDasUSD + givenFRAasUSD + givenKasUSD;
       const overpaidKeptUSD = Math.max(0, change - totalGivenAsUSD);
       // v1.8.74 — attribute the over-payment to its SOURCE currency using

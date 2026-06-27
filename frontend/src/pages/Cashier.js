@@ -222,24 +222,31 @@ export default function Cashier() {
         // currency the customer paid in if this is blank.
         // v1.8.72 — send the NATIVE amount so backend doesn't round-trip
         // through USD (which loses 4 FRA per $0.11 to the sell/buy spread).
-        // v1.8.74 — use EFFECTIVE ccy (clicked OR default-highlighted) so
-        // backend stores the same currency the cashier saw highlighted on
-        // the picker, not the legacy backend fallback.
+        // v1.8.74 — use EFFECTIVE ccy (clicked OR default-highlighted).
+        // v1.8.78 — default always FRA (most common at Sosna) unless cashier
+        // explicitly clicked USD or K. Native amount comes from per-currency
+        // attribution so FRA over/under always lands native (no FX loss).
         overpaid_kept_ccy: confirm.netRemaining > 0.005
-          ? (keptCcy
-             || (confirm.overFRA > 0.5 ? 'FRA'
-                : confirm.overK   > 0.5 ? 'K'
-                : 'USD'))
+          ? (keptCcy || (hasFra ? 'FRA' : hasK ? 'K' : 'USD'))
           : '',
         overpaid_kept_amt: (() => {
           if (confirm.netRemaining <= 0.005) return 0;
-          const ccy = keptCcy
-            || (confirm.overFRA > 0.5 ? 'FRA'
-               : confirm.overK   > 0.5 ? 'K'
-               : 'USD');
-          if (ccy === 'FRA') return confirm.overFRA;
-          if (ccy === 'K')   return confirm.overK;
-          if (ccy === 'USD') return confirm.overUSD;
+          const ccy = keptCcy || (hasFra ? 'FRA' : hasK ? 'K' : 'USD');
+          // Prefer the native source-currency amount when available; otherwise
+          // convert the USD-equivalent netRemaining via the bill's sell rate
+          // (so e.g. defaulting to FRA when over-payment was actually USD still
+          // stores a sensible FRA amount = USD-overpayment × sell rate).
+          if (ccy === 'FRA') {
+            return confirm.overFRA > 0.5 ? confirm.overFRA
+                 : (SELL_RATE > 0 ? confirm.netRemaining * SELL_RATE : 0);
+          }
+          if (ccy === 'K') {
+            return confirm.overK > 0.5 ? confirm.overK
+                 : (SELL_RATE_K > 0 ? confirm.netRemaining * SELL_RATE_K : 0);
+          }
+          if (ccy === 'USD') {
+            return confirm.overUSD > 0.001 ? confirm.overUSD : confirm.netRemaining;
+          }
           return 0;
         })(),
       });
@@ -598,13 +605,11 @@ export default function Cashier() {
                       )}
                     </div>
                     {/* v1.8.68 — when cashier overpaid and is keeping some change, ask which drawer.
-                        v1.8.72 — default to the currency that holds the actual over-payment
-                        (so customer's over-paid FRA shows FRA selected, not USD). */}
+                        v1.8.78 — always default to FRA (most common at Sosna). User can
+                        still click USD or K to override. Falls back if branch has no FRA. */}
                     {calc.netRemaining > 0.005 && (() => {
                       const defaultCcy = keptCcy
-                        || (calc.overFRA > 0.5 ? 'FRA'
-                           : calc.overK   > 0.5 ? 'K'
-                           : 'USD');
+                        || (hasFra ? 'FRA' : hasK ? 'K' : 'USD');
                       return (
                         <div style={{ marginTop: 10, padding: '10px 12px', background: '#fffbeb', border: '1px solid #fcd34d', borderRadius: 8 }}>
                           <div style={{ fontSize: 11, color: '#92400e', fontWeight: 600, marginBottom: 6 }}>
@@ -632,11 +637,15 @@ export default function Cashier() {
                     {(calc.givenUSD > 0 || calc.givenFRA > 0 || calc.givenK > 0) && (() => {
                       const exact     = Math.abs(calc.netRemaining) < 0.01;
                       const overpaid  = calc.netRemaining < -0.01;
-                      const bg        = exact ? '#ecfdf5' : overpaid ? '#fef2f2' : '#fef3c7';
-                      const border    = exact ? '#a7f3d0' : overpaid ? '#fecaca' : '#fde68a';
-                      const labelClr  = exact ? '#047857' : overpaid ? '#b91c1c' : '#92400e';
-                      const amtClr    = overpaid ? '#991b1b' : '#78350f';
-                      const label     = exact ? 'Exact change given' : overpaid ? 'Overpaid to customer' : 'Still owed to customer';
+                      // v1.8.78 — the picker (above) already conveys "kept in [ccy] drawer"
+                      // when netRemaining > 0. So skip this redundant "Still owed" red box
+                      // for that case — only show for exact / overpaid-back outcomes.
+                      if (!exact && !overpaid) return null;
+                      const bg        = exact ? '#ecfdf5' : '#fef2f2';
+                      const border    = exact ? '#a7f3d0' : '#fecaca';
+                      const labelClr  = exact ? '#047857' : '#b91c1c';
+                      const amtClr    = '#991b1b';
+                      const label     = exact ? 'Exact change given' : 'Overpaid to customer';
                       const absAmt    = Math.abs(calc.netRemaining);
                       const absAmtFra = Math.abs(calc.netRemainingFRA);
                       const absAmtK   = Math.abs(calc.netRemainingK);
@@ -720,11 +729,9 @@ export default function Cashier() {
                   // v1.8.74 — use the EFFECTIVE picker selection (clicked OR default-
                   // highlighted) so the label is correct even when cashier accepts the
                   // default without clicking the button.
+                  // v1.8.78 — default to FRA (most common at Sosna) when no explicit pick.
                   const effectiveCcy = keptCcy
-                    || (confirm.overFRA > 0.5 ? 'FRA'
-                       : confirm.overK   > 0.5 ? 'K'
-                       : confirm.overUSD > 0.001 ? 'USD'
-                       : '');
+                    || (hasFra ? 'FRA' : hasK ? 'K' : 'USD');
                   const kept     = !exact && !overpaid && !!effectiveCcy;
                   const bg       = exact ? '#ecfdf5' : overpaid ? '#fef2f2' : kept ? '#fffbeb' : '#fef3c7';
                   const label    = exact ? 'Exact Change'
@@ -735,11 +742,23 @@ export default function Cashier() {
                   let amountText;
                   if (exact) amountText = fmtUSD(0);
                   else if (kept) {
-                    // v1.8.72 — use native per-currency over-payment (no FX round-trip).
-                    if (effectiveCcy === 'USD')      amountText = fmtUSD(confirm.overUSD || confirm.netRemaining);
-                    else if (effectiveCcy === 'FRA') amountText = `FRA ${fmtFRA(confirm.overFRA || confirm.netRemainingFRA)}`;
-                    else if (effectiveCcy === 'K')   amountText = `K ${fmtK(confirm.overK || confirm.netRemainingK)}`;
-                    else amountText = fmtUSD(confirm.netRemaining);
+                    // v1.8.72/78 — display matches what the payload stores: native
+                    // source-currency over-payment when present; otherwise convert
+                    // the USD-equivalent surplus via the bill's SELL rate (matches
+                    // the rate the bill was quoted in).
+                    if (effectiveCcy === 'USD') {
+                      amountText = fmtUSD(confirm.overUSD || confirm.netRemaining);
+                    } else if (effectiveCcy === 'FRA') {
+                      const fraAmt = confirm.overFRA > 0.5
+                        ? confirm.overFRA
+                        : (SELL_RATE > 0 ? confirm.netRemaining * SELL_RATE : 0);
+                      amountText = `FRA ${fmtFRA(fraAmt)}`;
+                    } else if (effectiveCcy === 'K') {
+                      const kAmt = confirm.overK > 0.5
+                        ? confirm.overK
+                        : (SELL_RATE_K > 0 ? confirm.netRemaining * SELL_RATE_K : 0);
+                      amountText = `K ${fmtK(kAmt)}`;
+                    } else amountText = fmtUSD(confirm.netRemaining);
                   } else amountText = fmtUSD(Math.abs(confirm.netRemaining));
                   return (
                     <div style={{ ...confirmRow, marginTop: 8, padding: '10px 12px', background: bg, borderRadius: 8 }}>
