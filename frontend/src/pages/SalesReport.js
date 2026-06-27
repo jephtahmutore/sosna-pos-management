@@ -135,7 +135,13 @@ const SalesReport = () => {
   // sale total — over-payments come back as change to the customer, so they're NOT revenue.
   // Credit portion = whatever wasn't paid at the till (becomes AR).
   const totalCashSales   = activeOrders.reduce((sum, o) => sum + Math.min(parseFloat(o.amount_received || 0), parseFloat(o.total_amount || 0)), 0);
-  const totalCreditSales = activeOrders.reduce((sum, o) => sum + Math.max(0, parseFloat(o.total_amount || 0) - parseFloat(o.amount_received || 0)), 0);
+  // v1.8.76 — only count actual credit sales (payment_method Credit / Partial-Credit).
+  // Walk-in shortages within tolerance have total > received but are 'Cash' — those
+  // are silent shop losses, NOT customer debt, so they shouldn't inflate Credit Sales.
+  const totalCreditSales = activeOrders.reduce((sum, o) => {
+    if (o.payment_method !== 'Credit' && o.payment_method !== 'Partial-Credit') return sum;
+    return sum + Math.max(0, parseFloat(o.total_amount || 0) - parseFloat(o.amount_received || 0));
+  }, 0);
 
   // v1.8.1 — triple-currency breakdown for Cash Sales card + By Payment tab.
   // Each in its own currency: USD net of USD change, FRA net of FRA change,
@@ -1049,16 +1055,43 @@ const SalesReport = () => {
         // Sosna is cash-only across 3 currencies. Per-order breakdown shows
         // what the customer paid IN each currency (net of change in that same
         // currency) plus any unpaid balance (Credit, always in USD).
-        const adjusted = (o) => ({
-          usd: parseFloat(o.cash_received || 0) - parseFloat(o.change_amount    || 0),
-          fra: parseFloat(o.fra_received  || 0) - parseFloat(o.fra_change_given || 0),
-          k:   parseFloat(o.k_received    || 0) - parseFloat(o.k_change_given   || 0),
-          credit: Math.max(0, parseFloat(o.total_amount || 0) - parseFloat(o.amount_received || 0)),
-        });
+        // v1.8.76 — full per-currency breakdown for each order: Paid, Change Given,
+        // Net (= Paid − Given), and ± (over-collection in that source currency).
+        // Uses usd_change_given (physical USD returned) instead of change_amount
+        // so over-payments kept in FRA/K don't bleed into the USD column.
+        const adjusted = (o) => {
+          const usdPaid  = parseFloat(o.cash_received || 0) || 0;
+          const usdGiven = parseFloat(o.usd_change_given ?? o.change_amount ?? 0) || 0;
+          const fraPaid  = parseFloat(o.fra_received || 0) || 0;
+          const fraGiven = parseFloat(o.fra_change_given || 0) || 0;
+          const kPaid    = parseFloat(o.k_received || 0) || 0;
+          const kGiven   = parseFloat(o.k_change_given || 0) || 0;
+          const keptCcy  = (o.overpaid_kept_ccy || '').toUpperCase();
+          const keptAmt  = parseFloat(o.overpaid_kept_amt || 0) || 0;
+          return {
+            usdPaid, usdGiven, usdNet: usdPaid - usdGiven,
+            fraPaid, fraGiven, fraNet: fraPaid - fraGiven,
+            kPaid,   kGiven,   kNet:   kPaid   - kGiven,
+            usdDiff: keptCcy === 'USD' ? keptAmt : 0,
+            fraDiff: keptCcy === 'FRA' ? keptAmt : 0,
+            kDiff:   keptCcy === 'K'   ? keptAmt : 0,
+            // v1.8.76 — only Credit / Partial-Credit rows contribute to credit.
+            credit:  (o.payment_method === 'Credit' || o.payment_method === 'Partial-Credit')
+              ? Math.max(0, parseFloat(o.total_amount || 0) - parseFloat(o.amount_received || 0))
+              : 0,
+          };
+        };
         const totals = activeOrders.reduce((acc, o) => {
           const r = adjusted(o);
-          return { usd: acc.usd + r.usd, fra: acc.fra + r.fra, k: acc.k + r.k, credit: acc.credit + r.credit };
-        }, { usd: 0, fra: 0, k: 0, credit: 0 });
+          return {
+            usdPaid: acc.usdPaid + r.usdPaid, usdGiven: acc.usdGiven + r.usdGiven, usdNet: acc.usdNet + r.usdNet, usdDiff: acc.usdDiff + r.usdDiff,
+            fraPaid: acc.fraPaid + r.fraPaid, fraGiven: acc.fraGiven + r.fraGiven, fraNet: acc.fraNet + r.fraNet, fraDiff: acc.fraDiff + r.fraDiff,
+            kPaid:   acc.kPaid   + r.kPaid,   kGiven:   acc.kGiven   + r.kGiven,   kNet:   acc.kNet   + r.kNet,   kDiff:   acc.kDiff   + r.kDiff,
+            credit:  acc.credit  + r.credit,
+            // Legacy aliases for the summary cards that already exist below.
+            usd: acc.usd + (r.usdNet), fra: acc.fra + r.fraNet, k: acc.k + r.kNet,
+          };
+        }, { usdPaid: 0, usdGiven: 0, usdNet: 0, usdDiff: 0, fraPaid: 0, fraGiven: 0, fraNet: 0, fraDiff: 0, kPaid: 0, kGiven: 0, kNet: 0, kDiff: 0, credit: 0, usd: 0, fra: 0, k: 0 });
 
         return (
           <div className="card">
@@ -1083,28 +1116,70 @@ const SalesReport = () => {
               ))}
             </div>
 
-            <table className="data-table" style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13, margin: '0 0 16px' }}>
+            {/* v1.8.76 — wide grouped table: per-currency Paid / Given / Net / ±.
+                Two header rows: top has merged ccy groups; bottom has sub-labels. */}
+            <div style={{ overflow: 'auto' }}>
+            <table className="data-table" style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12, margin: '0 0 16px', minWidth: 1100 }}>
               <thead>
                 <tr style={{ background: '#f9fafb' }}>
-                  {['Date', 'Receipt #', 'Customer', 'Total ($)', 'USD ($)', 'FRA', 'K', 'Credit ($)'].map((h, i) => (
-                    <th key={i} style={{ padding: '10px 12px', textAlign: i < 3 ? 'left' : 'right', fontSize: 11, fontWeight: 700, color: '#6b7280', textTransform: 'uppercase', borderBottom: '1px solid #e5e7eb' }}>{h}</th>
+                  <th rowSpan={2} style={{ padding: '10px 12px', textAlign: 'left',  fontSize: 11, fontWeight: 700, color: '#6b7280', textTransform: 'uppercase', borderBottom: '1px solid #e5e7eb', verticalAlign: 'middle' }}>Date</th>
+                  <th rowSpan={2} style={{ padding: '10px 12px', textAlign: 'left',  fontSize: 11, fontWeight: 700, color: '#6b7280', textTransform: 'uppercase', borderBottom: '1px solid #e5e7eb', verticalAlign: 'middle' }}>Receipt #</th>
+                  <th rowSpan={2} style={{ padding: '10px 12px', textAlign: 'left',  fontSize: 11, fontWeight: 700, color: '#6b7280', textTransform: 'uppercase', borderBottom: '1px solid #e5e7eb', verticalAlign: 'middle' }}>Customer</th>
+                  <th rowSpan={2} style={{ padding: '10px 12px', textAlign: 'right', fontSize: 11, fontWeight: 700, color: '#6b7280', textTransform: 'uppercase', borderBottom: '1px solid #e5e7eb', verticalAlign: 'middle' }}>Total ($)</th>
+                  <th colSpan={4} style={{ padding: '8px 12px',  textAlign: 'center', fontSize: 11, fontWeight: 700, color: '#16a34a', textTransform: 'uppercase', borderBottom: '1px solid #bbf7d0', background: '#f0fdf4' }}>USD ($)</th>
+                  <th colSpan={4} style={{ padding: '8px 12px',  textAlign: 'center', fontSize: 11, fontWeight: 700, color: '#7c3aed', textTransform: 'uppercase', borderBottom: '1px solid #ddd6fe', background: '#faf5ff' }}>FRA</th>
+                  <th colSpan={4} style={{ padding: '8px 12px',  textAlign: 'center', fontSize: 11, fontWeight: 700, color: '#ea580c', textTransform: 'uppercase', borderBottom: '1px solid #fed7aa', background: '#fff7ed' }}>K</th>
+                  <th rowSpan={2} style={{ padding: '10px 12px', textAlign: 'right', fontSize: 11, fontWeight: 700, color: '#6b7280', textTransform: 'uppercase', borderBottom: '1px solid #e5e7eb', verticalAlign: 'middle' }}>Credit ($)</th>
+                </tr>
+                <tr style={{ background: '#f9fafb' }}>
+                  {['Paid', 'Given', 'Net', '±'].map((h, i) => (
+                    <th key={`u${i}`} style={{ padding: '6px 8px', textAlign: 'right', fontSize: 10, fontWeight: 600, color: '#16a34a', borderBottom: '1px solid #e5e7eb', background: '#f0fdf4' }}>{h}</th>
+                  ))}
+                  {['Paid', 'Given', 'Net', '±'].map((h, i) => (
+                    <th key={`f${i}`} style={{ padding: '6px 8px', textAlign: 'right', fontSize: 10, fontWeight: 600, color: '#7c3aed', borderBottom: '1px solid #e5e7eb', background: '#faf5ff' }}>{h}</th>
+                  ))}
+                  {['Paid', 'Given', 'Net', '±'].map((h, i) => (
+                    <th key={`k${i}`} style={{ padding: '6px 8px', textAlign: 'right', fontSize: 10, fontWeight: 600, color: '#ea580c', borderBottom: '1px solid #e5e7eb', background: '#fff7ed' }}>{h}</th>
                   ))}
                 </tr>
               </thead>
               <tbody>
                 {activeOrders.length === 0 ? (
-                  <tr><td colSpan={8} style={{ padding: 40, textAlign: 'center', color: '#9ca3af' }}>No sales for the selected period.</td></tr>
+                  <tr><td colSpan={17} style={{ padding: 40, textAlign: 'center', color: '#9ca3af' }}>No sales for the selected period.</td></tr>
                 ) : activeOrders.map(o => {
                   const r = adjusted(o);
+                  const usdCol = '#16a34a', fraCol = '#7c3aed', kCol = '#ea580c';
+                  const cell = (val, dec, sym, color) => {
+                    const n = parseFloat(val) || 0;
+                    if (Math.abs(n) < (dec === 0 ? 0.5 : 0.005)) return <span style={{ color: '#d1d5db' }}>—</span>;
+                    return <span style={{ color }}>{sym}{n.toLocaleString(undefined, { minimumFractionDigits: dec, maximumFractionDigits: dec })}</span>;
+                  };
+                  const diffCell = (val, dec, sym, color) => {
+                    const n = parseFloat(val) || 0;
+                    if (Math.abs(n) < (dec === 0 ? 0.5 : 0.005)) return <span style={{ color: '#d1d5db' }}>—</span>;
+                    return <span style={{ color, fontWeight: 700 }}>+{sym}{n.toLocaleString(undefined, { minimumFractionDigits: dec, maximumFractionDigits: dec })}</span>;
+                  };
                   return (
                     <tr key={o.id} style={{ borderBottom: '1px solid #f3f4f6' }}>
                       <td style={{ padding: '8px 12px' }}>{new Date(o.created_at + 'Z').toLocaleDateString('en-GB')}</td>
-                      <td style={{ padding: '8px 12px', color: '#6b7280', fontSize: 12 }}>{o.order_number}</td>
+                      <td style={{ padding: '8px 12px', color: '#6b7280', fontSize: 11 }}>{o.order_number}</td>
                       <td style={{ padding: '8px 12px' }}>{o.customer_name || 'Walk-in'}</td>
                       <td style={{ padding: '8px 12px', textAlign: 'right', fontWeight: 700 }}>${(parseFloat(o.total_amount)||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</td>
-                      <td style={{ padding: '8px 12px', textAlign: 'right', color: r.usd > 0 ? '#16a34a' : '#9ca3af' }}>{r.usd > 0 ? `$${(parseFloat(r.usd)||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}` : '—'}</td>
-                      <td style={{ padding: '8px 12px', textAlign: 'right', color: r.fra > 0 ? '#7c3aed' : '#9ca3af' }}>{r.fra > 0 ? `${(parseFloat(r.fra)||0).toLocaleString(undefined,{maximumFractionDigits:0})}` : '—'}</td>
-                      <td style={{ padding: '8px 12px', textAlign: 'right', color: r.k > 0 ? '#ea580c' : '#9ca3af' }}>{r.k > 0 ? `${(parseFloat(r.k)||0).toLocaleString(undefined,{maximumFractionDigits:0})}` : '—'}</td>
+                      {/* USD group */}
+                      <td style={{ padding: '8px', textAlign: 'right', background: '#f0fdf41a' }}>{cell(r.usdPaid,  2, '$', usdCol)}</td>
+                      <td style={{ padding: '8px', textAlign: 'right', background: '#f0fdf41a' }}>{cell(r.usdGiven, 2, '$', usdCol)}</td>
+                      <td style={{ padding: '8px', textAlign: 'right', background: '#f0fdf41a', fontWeight: 600 }}>{cell(r.usdNet, 2, '$', usdCol)}</td>
+                      <td style={{ padding: '8px', textAlign: 'right', background: '#fffbeb' }}>{diffCell(r.usdDiff, 2, '$', '#92400e')}</td>
+                      {/* FRA group */}
+                      <td style={{ padding: '8px', textAlign: 'right', background: '#faf5ff1a' }}>{cell(r.fraPaid,  0, '', fraCol)}</td>
+                      <td style={{ padding: '8px', textAlign: 'right', background: '#faf5ff1a' }}>{cell(r.fraGiven, 0, '', fraCol)}</td>
+                      <td style={{ padding: '8px', textAlign: 'right', background: '#faf5ff1a', fontWeight: 600 }}>{cell(r.fraNet, 0, '', fraCol)}</td>
+                      <td style={{ padding: '8px', textAlign: 'right', background: '#fffbeb' }}>{diffCell(r.fraDiff, 0, '', '#92400e')}</td>
+                      {/* K group */}
+                      <td style={{ padding: '8px', textAlign: 'right', background: '#fff7ed1a' }}>{cell(r.kPaid,  0, '', kCol)}</td>
+                      <td style={{ padding: '8px', textAlign: 'right', background: '#fff7ed1a' }}>{cell(r.kGiven, 0, '', kCol)}</td>
+                      <td style={{ padding: '8px', textAlign: 'right', background: '#fff7ed1a', fontWeight: 600 }}>{cell(r.kNet, 0, '', kCol)}</td>
+                      <td style={{ padding: '8px', textAlign: 'right', background: '#fffbeb' }}>{diffCell(r.kDiff, 0, '', '#92400e')}</td>
                       <td style={{ padding: '8px 12px', textAlign: 'right', color: r.credit > 0 ? '#dc2626' : '#9ca3af', fontWeight: r.credit > 0 ? 700 : 400 }}>{r.credit > 0 ? `$${(parseFloat(r.credit)||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}` : '—'}</td>
                     </tr>
                   );
@@ -1115,14 +1190,24 @@ const SalesReport = () => {
                   <tr style={{ background: '#f9fafb', fontWeight: 700 }}>
                     <td colSpan={3} style={{ padding: '11px 12px' }}>TOTAL</td>
                     <td style={{ padding: '11px 12px', textAlign: 'right' }}>${(parseFloat(totalRevenue)||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</td>
-                    <td style={{ padding: '11px 12px', textAlign: 'right', color: '#16a34a' }}>${(parseFloat(totals.usd)||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</td>
-                    <td style={{ padding: '11px 12px', textAlign: 'right', color: '#7c3aed' }}>{(parseFloat(totals.fra)||0).toLocaleString(undefined,{maximumFractionDigits:0})}</td>
-                    <td style={{ padding: '11px 12px', textAlign: 'right', color: '#ea580c' }}>{(parseFloat(totals.k)||0).toLocaleString(undefined,{maximumFractionDigits:0})}</td>
+                    <td style={{ padding: '11px 8px', textAlign: 'right', color: '#16a34a' }}>${totals.usdPaid.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</td>
+                    <td style={{ padding: '11px 8px', textAlign: 'right', color: '#16a34a' }}>${totals.usdGiven.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</td>
+                    <td style={{ padding: '11px 8px', textAlign: 'right', color: '#16a34a' }}>${totals.usdNet.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</td>
+                    <td style={{ padding: '11px 8px', textAlign: 'right', color: '#92400e', background: '#fffbeb' }}>{totals.usdDiff > 0.005 ? `+$${totals.usdDiff.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}` : '—'}</td>
+                    <td style={{ padding: '11px 8px', textAlign: 'right', color: '#7c3aed' }}>{totals.fraPaid.toLocaleString(undefined,{maximumFractionDigits:0})}</td>
+                    <td style={{ padding: '11px 8px', textAlign: 'right', color: '#7c3aed' }}>{totals.fraGiven.toLocaleString(undefined,{maximumFractionDigits:0})}</td>
+                    <td style={{ padding: '11px 8px', textAlign: 'right', color: '#7c3aed' }}>{totals.fraNet.toLocaleString(undefined,{maximumFractionDigits:0})}</td>
+                    <td style={{ padding: '11px 8px', textAlign: 'right', color: '#92400e', background: '#fffbeb' }}>{totals.fraDiff > 0.5 ? `+${totals.fraDiff.toLocaleString(undefined,{maximumFractionDigits:0})}` : '—'}</td>
+                    <td style={{ padding: '11px 8px', textAlign: 'right', color: '#ea580c' }}>{totals.kPaid.toLocaleString(undefined,{maximumFractionDigits:0})}</td>
+                    <td style={{ padding: '11px 8px', textAlign: 'right', color: '#ea580c' }}>{totals.kGiven.toLocaleString(undefined,{maximumFractionDigits:0})}</td>
+                    <td style={{ padding: '11px 8px', textAlign: 'right', color: '#ea580c' }}>{totals.kNet.toLocaleString(undefined,{maximumFractionDigits:0})}</td>
+                    <td style={{ padding: '11px 8px', textAlign: 'right', color: '#92400e', background: '#fffbeb' }}>{totals.kDiff > 0.5 ? `+${totals.kDiff.toLocaleString(undefined,{maximumFractionDigits:0})}` : '—'}</td>
                     <td style={{ padding: '11px 12px', textAlign: 'right', color: '#dc2626' }}>${(parseFloat(totals.credit)||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</td>
                   </tr>
                 </tfoot>
               )}
             </table>
+            </div>
           </div>
         );
       })()}

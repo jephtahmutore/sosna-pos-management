@@ -126,13 +126,32 @@ router.get('/daily', auth, readOnlyGuard, (req, res) => {
        AND (status IS NULL OR status != 'Reversed')${userFilter}`
     ).get(...baseParams);
 
+    // v1.8.76 — under-payments (silently absorbed). Walk-in shortages within
+    // the $0.10 tolerance keep payment_method='Cash' but have total > received.
+    // These represent silent shop LOSS. Attributed to USD column (the shortfall
+    // is always computed in USD-equivalent; we don't know which currency the
+    // customer was "short in"). Excludes Credit / Partial-Credit (those are
+    // tracked separately as customer receivables).
+    const underpaidUSD = db.prepare(
+      `SELECT COALESCE(SUM(total_amount - amount_received), 0) AS total
+       FROM orders WHERE ${orderDateClause} AND deleted_at IS NULL AND tenant_id = ?
+       AND (status IS NULL OR status != 'Reversed')
+       AND total_amount > amount_received
+       AND payment_method = 'Cash'${userFilter}`
+    ).get(...baseParams).total;
+
     // CREDIT SALES ISSUED bucket = today's new receivables (unpaid portion of today's sales).
     // This is informational — represents money owed, NOT cash received.
+    // v1.8.76 — only count rows whose payment_method is actually Credit or
+    // Partial-Credit. Walk-in shortages within the $0.10 tolerance still have
+    // total_amount > amount_received but payment_method='Cash' (no customer to
+    // bill) — those should NOT bleed into the Credit Sales bucket.
     const creditSales = db.prepare(
       `SELECT COALESCE(SUM(total_amount - amount_received), 0) AS total
        FROM orders WHERE ${orderDateClause} AND deleted_at IS NULL AND tenant_id = ?
        AND (status IS NULL OR status != 'Reversed')
-       AND total_amount > amount_received${userFilter}`
+       AND total_amount > amount_received
+       AND payment_method IN ('Credit', 'Partial-Credit')${userFilter}`
     ).get(...baseParams);
 
     // PENDING bucket retained for "other" / unrecognised payment methods.
@@ -183,6 +202,9 @@ router.get('/daily', auth, readOnlyGuard, (req, res) => {
       usd_overpaid_kept: parseFloat(overpaidByCcy.usd) || 0,
       fra_overpaid_kept: parseFloat(overpaidByCcy.fra) || 0,
       k_overpaid_kept:   parseFloat(overpaidByCcy.k)   || 0,
+      // v1.8.76 — under-payments silently absorbed (walk-in tolerance shortages).
+      // Always USD-attributed since shortfall is computed in USD-equivalent.
+      usd_underpaid:     parseFloat(underpaidUSD) || 0,
       pending: parseFloat(pendingSales.total),
       credit_sales: parseFloat(creditSales.total),
       expenses: parseFloat(expenses.total),
@@ -195,6 +217,8 @@ router.get('/daily', auth, readOnlyGuard, (req, res) => {
 
 // v1.8.68 — per-order over-collections for the day. Returns one row per
 // order where the cashier kept an over-payment in the drawer (overpaid_kept_amt > 0).
+// v1.8.76 — also returns under-payment rows (walk-in shortages within tolerance).
+// Each row tagged with `direction`: 'OVER' (kept by cashier) or 'UNDER' (absorbed by shop).
 router.get('/overpaid', auth, readOnlyGuard, (req, res) => {
   try {
     const date = req.query.date || new Date().toISOString().split('T')[0];
@@ -210,8 +234,11 @@ router.get('/overpaid', auth, readOnlyGuard, (req, res) => {
     const params = cashierId > 0
       ? [...dateParams, req.user.tenantId, cashierId]
       : [...dateParams, req.user.tenantId];
-    const rows = db.prepare(
+
+    // Over-payments kept in drawer
+    const overRows = db.prepare(
       `SELECT o.id, o.order_number, o.customer_name, o.total_amount,
+              'OVER' AS direction,
               o.overpaid_kept_ccy AS ccy, o.overpaid_kept_amt AS amt,
               o.selling_rate_used, o.selling_rate_k_used,
               o.created_at,
@@ -221,9 +248,28 @@ router.get('/overpaid', auth, readOnlyGuard, (req, res) => {
         WHERE ${dateClause} AND o.deleted_at IS NULL AND o.tenant_id = ?
           AND (o.status IS NULL OR o.status != 'Reversed')
           AND COALESCE(o.overpaid_kept_amt, 0) > 0
-          ${userFilter}
-        ORDER BY o.created_at DESC`
+          ${userFilter}`
     ).all(...params);
+
+    // Under-payments silently absorbed (walk-in tolerance shortages)
+    const underRows = db.prepare(
+      `SELECT o.id, o.order_number, o.customer_name, o.total_amount,
+              'UNDER' AS direction,
+              'USD'  AS ccy, (o.total_amount - o.amount_received) AS amt,
+              o.selling_rate_used, o.selling_rate_k_used,
+              o.created_at,
+              u.first_name || ' ' || u.last_name AS cashier_name
+         FROM orders o
+         LEFT JOIN users u ON o.created_by = u.id
+        WHERE ${dateClause} AND o.deleted_at IS NULL AND o.tenant_id = ?
+          AND (o.status IS NULL OR o.status != 'Reversed')
+          AND o.total_amount > o.amount_received
+          AND o.payment_method = 'Cash'
+          ${userFilter}`
+    ).all(...params);
+
+    const rows = [...overRows, ...underRows].sort((a, b) =>
+      (b.created_at || '').localeCompare(a.created_at || ''));
     res.json(rows);
   } catch (error) {
     res.status(500).json({ error: error.message });

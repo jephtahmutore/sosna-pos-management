@@ -76,9 +76,11 @@ const CashReport = () => {
   // received per currency (net of change), independent of what the cashier
   // typed into the form. Difference per currency = counted − expected.
   const [expectedByCcy, setExpectedByCcy] = useState({ usd: 0, fra: 0, k: 0 });
-  // v1.8.68 — over-collections kept by cashier (per source currency + per-order rows)
+  // v1.8.68 — over-collections kept by cashier (per source currency + per-order rows).
+  // v1.8.76 — also tracks under-payments (walk-in tolerance shortages, USD-equivalent).
   const [overpaidByCcy, setOverpaidByCcy] = useState({ usd: 0, fra: 0, k: 0 });
-  const [overpaidRows, setOverpaidRows] = useState([]);
+  const [underpaidUSD, setUnderpaidUSD]   = useState(0);
+  const [overpaidRows, setOverpaidRows]   = useState([]); // mixed OVER + UNDER rows
   // v1.8.14 — per-currency expenses paid out of the cash drawer today.
   // Subtracted from each currency's Expected so the diff stays accurate
   // (USD expenses don't deplete FRA drawer, etc.).
@@ -234,6 +236,8 @@ const CashReport = () => {
         fra: parseFloat(daily.fra_overpaid_kept || 0) || 0,
         k:   parseFloat(daily.k_overpaid_kept   || 0) || 0,
       });
+      // v1.8.76 — under-payments (walk-in tolerance shortages, USD-equivalent).
+      setUnderpaidUSD(parseFloat(daily.usd_underpaid || 0) || 0);
       // v1.8.20 — POS snapshot of credit issued today (so the card can show
       // Counted vs Expected the same way the cash cards do).
       setCreditExpected(parseFloat(daily.credit_sales || 0) + parseFloat(daily.pending || 0));
@@ -1067,57 +1071,105 @@ const CashReport = () => {
         </div>
       </div>
 
-      {/* v1.8.68 — Customer Over-Collections. Shows over-payments the cashier
-          kept in the drawer (no change physically returned). Each row sits in
-          its own currency bucket so no drawer Diff line is polluted. */}
-      {(overpaidRows.length > 0 || overpaidByCcy.usd > 0 || overpaidByCcy.fra > 0 || overpaidByCcy.k > 0) && (
-        <div style={{ marginTop: 16, padding: '14px 18px', background: '#fffbeb', border: '1px solid #fcd34d', borderRadius: 10 }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
-            <div style={{ fontSize: 13, fontWeight: 700, color: '#92400e' }}>
-              💰 Customer Over-Collections (kept in drawer)
+      {/* v1.8.76 — Customer Over / Under Payments (drawer net). Combines:
+          • Over-Collections kept in drawer (per source currency, native amount)
+          • Under-Payments silently absorbed (walk-in tolerance shortages, USD-attributed)
+          Shows NET drift per currency so the shop sees daily gain/loss explicitly. */}
+      {(overpaidRows.length > 0 || overpaidByCcy.usd > 0 || overpaidByCcy.fra > 0 || overpaidByCcy.k > 0 || underpaidUSD > 0) && (() => {
+        // Net per currency = over − under (under is USD only)
+        const netUSD = (overpaidByCcy.usd || 0) - (underpaidUSD || 0);
+        const netFRA = (overpaidByCcy.fra || 0);
+        const netK   = (overpaidByCcy.k   || 0);
+        // ≈ USD equivalent of net drift (FRA/K converted at sell rate from the latest row that has one)
+        const sampleRow = overpaidRows.find(r => parseFloat(r.selling_rate_used) > 0);
+        const sampleK   = overpaidRows.find(r => parseFloat(r.selling_rate_k_used) > 0);
+        const sellRate  = sampleRow ? parseFloat(sampleRow.selling_rate_used)   : 0;
+        const sellRateK = sampleK   ? parseFloat(sampleK.selling_rate_k_used)   : 0;
+        const netUSDeq = netUSD
+                      + (sellRate  > 0 ? netFRA / sellRate  : 0)
+                      + (sellRateK > 0 ? netK   / sellRateK : 0);
+        const fmtN = (n, dec, sym) => {
+          const s = n >= 0 ? '+' : '−';
+          const a = Math.abs(n);
+          return `${s}${sym}${a.toLocaleString(undefined, { minimumFractionDigits: dec, maximumFractionDigits: dec })}`;
+        };
+        const colorFor = (n) => Math.abs(n) < 0.005 ? '#6b7280' : (n > 0 ? '#16a34a' : '#dc2626');
+        return (
+          <div style={{ marginTop: 16, padding: '14px 18px', background: '#fffbeb', border: '1px solid #fcd34d', borderRadius: 10 }}>
+            <div style={{ fontSize: 13, fontWeight: 700, color: '#92400e', marginBottom: 8 }}>
+              💰 Customer Over / Under Payments (drawer net)
             </div>
-            <div style={{ fontSize: 12, color: '#78350f' }}>
-              USD <strong>+${parseFloat(overpaidByCcy.usd).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</strong>
-              {' · '}
-              FRA <strong>+{parseFloat(overpaidByCcy.fra).toLocaleString(undefined, { maximumFractionDigits: 0 })}</strong>
-              {' · '}
-              K <strong>+{parseFloat(overpaidByCcy.k).toLocaleString(undefined, { maximumFractionDigits: 0 })}</strong>
+            {/* Summary lines */}
+            <div style={{ fontSize: 12, color: '#78350f', display: 'grid', gap: 4, marginBottom: 10, paddingBottom: 10, borderBottom: '1px solid #fde68a' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                <span>Over-Collections (kept in drawer):</span>
+                <span>
+                  USD <strong>+${(overpaidByCcy.usd || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</strong>
+                  {' · '}FRA <strong>+{(overpaidByCcy.fra || 0).toLocaleString(undefined, { maximumFractionDigits: 0 })}</strong>
+                  {' · '}K <strong>+{(overpaidByCcy.k || 0).toLocaleString(undefined, { maximumFractionDigits: 0 })}</strong>
+                </span>
+              </div>
+              <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                <span>Under-Payments (absorbed):</span>
+                <span>
+                  USD <strong style={{ color: underpaidUSD > 0 ? '#dc2626' : '#78350f' }}>−${(underpaidUSD || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</strong>
+                  {' · '}FRA <strong>−0</strong>{' · '}K <strong>−0</strong>
+                </span>
+              </div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', fontWeight: 700, paddingTop: 4, borderTop: '1px dashed #fde68a' }}>
+                <span>NET drift today:</span>
+                <span>
+                  USD <span style={{ color: colorFor(netUSD) }}>{fmtN(netUSD, 2, '$')}</span>
+                  {' · '}FRA <span style={{ color: colorFor(netFRA) }}>{fmtN(netFRA, 0, '')}</span>
+                  {' · '}K <span style={{ color: colorFor(netK) }}>{fmtN(netK, 0, '')}</span>
+                  {Math.abs(netUSDeq) > 0.005 && (
+                    <span style={{ marginLeft: 10, color: colorFor(netUSDeq), fontStyle: 'italic' }}>
+                      ≈ {fmtN(netUSDeq, 2, '$')} {netUSDeq > 0 ? 'shop gain' : 'shop loss'}
+                    </span>
+                  )}
+                </span>
+              </div>
             </div>
+            {/* Per-order rows */}
+            {overpaidRows.length > 0 && (
+              <div style={{ overflow: 'auto' }}>
+                <table style={{ width: '100%', fontSize: 12, borderCollapse: 'collapse' }}>
+                  <thead>
+                    <tr style={{ background: '#fef3c7', color: '#78350f' }}>
+                      <th style={{ padding: '6px 8px', textAlign: 'left' }}>Order</th>
+                      <th style={{ padding: '6px 8px', textAlign: 'left' }}>Customer</th>
+                      <th style={{ padding: '6px 8px', textAlign: 'left' }}>Cashier</th>
+                      <th style={{ padding: '6px 8px', textAlign: 'right' }}>Sale</th>
+                      <th style={{ padding: '6px 8px', textAlign: 'right' }}>Kept / Absorbed</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {overpaidRows.map(r => {
+                      const amt = parseFloat(r.amt || 0);
+                      const ccy = r.ccy || '—';
+                      const sym = ccy === 'USD' ? '$' : '';
+                      const dec = ccy === 'USD' ? 2 : 0;
+                      const isOver = r.direction === 'OVER';
+                      const sign  = isOver ? '+' : '−';
+                      const arrow = isOver ? '↑' : '↓';
+                      const colour = isOver ? '#16a34a' : '#dc2626';
+                      return (
+                        <tr key={`${r.direction}-${r.id}`} style={{ borderTop: '1px solid #fde68a' }}>
+                          <td style={{ padding: '6px 8px', color: '#374151' }}>{r.order_number}</td>
+                          <td style={{ padding: '6px 8px', color: '#374151' }}>{r.customer_name || '—'}</td>
+                          <td style={{ padding: '6px 8px', color: '#374151' }}>{r.cashier_name || '—'}</td>
+                          <td style={{ padding: '6px 8px', textAlign: 'right', color: '#6b7280' }}>${parseFloat(r.total_amount || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+                          <td style={{ padding: '6px 8px', textAlign: 'right', fontWeight: 700, color: colour }}>{ccy} {sign}{sym}{amt.toLocaleString(undefined, { minimumFractionDigits: dec, maximumFractionDigits: dec })} {arrow}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </div>
-          {overpaidRows.length > 0 && (
-            <div style={{ overflow: 'auto' }}>
-              <table style={{ width: '100%', fontSize: 12, borderCollapse: 'collapse' }}>
-                <thead>
-                  <tr style={{ background: '#fef3c7', color: '#78350f' }}>
-                    <th style={{ padding: '6px 8px', textAlign: 'left' }}>Order</th>
-                    <th style={{ padding: '6px 8px', textAlign: 'left' }}>Customer</th>
-                    <th style={{ padding: '6px 8px', textAlign: 'left' }}>Cashier</th>
-                    <th style={{ padding: '6px 8px', textAlign: 'right' }}>Sale</th>
-                    <th style={{ padding: '6px 8px', textAlign: 'right' }}>Kept</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {overpaidRows.map(r => {
-                    const amt = parseFloat(r.amt || 0);
-                    const ccy = r.ccy || '—';
-                    const sym = ccy === 'USD' ? '$' : '';
-                    const dec = ccy === 'USD' ? 2 : 0;
-                    return (
-                      <tr key={r.id} style={{ borderTop: '1px solid #fde68a' }}>
-                        <td style={{ padding: '6px 8px', color: '#374151' }}>{r.order_number}</td>
-                        <td style={{ padding: '6px 8px', color: '#374151' }}>{r.customer_name || '—'}</td>
-                        <td style={{ padding: '6px 8px', color: '#374151' }}>{r.cashier_name || '—'}</td>
-                        <td style={{ padding: '6px 8px', textAlign: 'right', color: '#6b7280' }}>${parseFloat(r.total_amount || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
-                        <td style={{ padding: '6px 8px', textAlign: 'right', fontWeight: 700, color: '#92400e' }}>{ccy} +{sym}{amt.toLocaleString(undefined, { minimumFractionDigits: dec, maximumFractionDigits: dec })}</td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </div>
-      )}
+        );
+      })()}
 
       {/* v1.8.6 — Currency Exchanges for this date+cashier (drawer scope).
           Append-only ledger; reverse a mistake by recording the opposite.
