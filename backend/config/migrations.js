@@ -1805,6 +1805,42 @@ function initTenantDb(db) {
   } catch (e) {
     console.warn('[self-heal cash_received] skipped:', e.message);
   }
+
+  // ── v1.8.95 — SELF-HEALING products.current_stock ────────────────────────
+  // current_stock is a cached/denormalized snapshot of total on-hand stock
+  // per product. Truth lives in stock_movements (sum of in/out moves).
+  // The cache gets out of sync because some legacy code paths bypass the
+  // movements log when editing it. Real incident: SAVANNA 330ML showed
+  // 300 Bottle on Inter-Branch Transfer page while Stock Reconciliation
+  // (which computes live from stock_movements) showed 22,398 Bottle — a
+  // 75x discrepancy that almost let a cashier under-transfer by 22,000.
+  //
+  // Strategy C heal: on every backend boot, rebuild current_stock for
+  // every product by summing its non-deleted stock_movements. Brings the
+  // cache back to truth so the 9 readers that still trust it (HQ
+  // Inventory, Branch Dashboard low-stock widget, Stock Count baseline,
+  // etc.) display correct numbers. Idempotent — running again gives
+  // identical results. ~50ms for 1000 products.
+  try {
+    const result = db.prepare(`
+      UPDATE products
+         SET current_stock = COALESCE((
+               SELECT SUM(sm.quantity)
+                 FROM stock_movements sm
+                WHERE sm.product_sync_id = products.sync_id
+                  AND sm.deleted_at IS NULL
+             ), 0),
+             synced = 0,
+             updated_at = datetime('now')
+       WHERE deleted_at IS NULL
+         AND sync_id IS NOT NULL
+    `).run();
+    if (result.changes > 0) {
+      console.log(`[self-heal current_stock] rebuilt cache for ${result.changes} product(s) from stock_movements`);
+    }
+  } catch (e) {
+    console.warn('[self-heal current_stock] skipped:', e.message);
+  }
 }
 
 module.exports = { initTenantDb };
