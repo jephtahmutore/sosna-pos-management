@@ -199,6 +199,16 @@ router.post('/', hqAuth, (req, res) => {
                             synced = 0
          WHERE sync_id = ?
       `);
+      // v1.8.94 — stock check now computes live from stock_movements instead
+      // of reading products.current_stock (a cached column that drifts).
+      // Matches the source-products endpoint fix in v1.8.92. Without this,
+      // the picker correctly shows 933 Box but the validator blocks the
+      // transfer with "have 300, need X" using the stale cache.
+      const liveStockStmt = fromDb.prepare(
+        `SELECT COALESCE(SUM(quantity), 0) AS balance
+           FROM stock_movements
+          WHERE product_sync_id = ? AND deleted_at IS NULL`
+      );
       for (const it of cleanItems) {
         const prod = fromDb.prepare(
           'SELECT id, sync_id, unit, alt_unit, conversion_factor, units_json, current_stock FROM products WHERE sync_id = ?'
@@ -207,8 +217,9 @@ router.post('/', hqAuth, (req, res) => {
           throw Object.assign(new Error(`Product not found at source: ${it.product_name}`), { status: 400 });
         }
         const baseQty = parseFloat(it.quantity) * conversionToBase(prod, it.unit);
-        if (parseFloat(prod.current_stock || 0) < baseQty - 0.0001) {
-          throw Object.assign(new Error(`Insufficient stock for ${it.product_name} (have ${prod.current_stock}, need ${baseQty})`), { status: 400 });
+        const liveStock = parseFloat(liveStockStmt.get(prod.sync_id).balance) || 0;
+        if (liveStock < baseQty - 0.0001) {
+          throw Object.assign(new Error(`Insufficient stock for ${it.product_name} (have ${liveStock}, need ${baseQty})`), { status: 400 });
         }
         movStmt.run(
           prod.id, prod.sync_id, 'sales', 'transfer_out',
