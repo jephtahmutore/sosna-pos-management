@@ -58,6 +58,153 @@ router.get('/payment-history', auth, readOnlyGuard, (req, res) => {
   }
 });
 
+// v1.8.87 — Admin-only post-payment edit (typos, wrong currency, wrong rate).
+// Mutates only the 12 payment/rate fields + recomputes amount_received from
+// (cash + fra/sellRate + k/sellRateK). Stock, items, customer credit limit,
+// order_number stay untouched. Writes an audit row to order_payment_edits.
+// Rules: Administrator role · order has paid_at · paid_at within 7 days ·
+// reason >= 3 chars. Response includes cr_exists flag so the frontend can
+// nudge the user to re-Save the day's Cash Report (no auto-fix).
+router.put('/:id/edit-payment', auth, (req, res) => {
+  try {
+    if (req.user.role !== 'Administrator') {
+      return res.status(403).json({ error: 'Only administrators can edit payments.' });
+    }
+    const reason = (req.body.reason || '').trim();
+    if (reason.length < 3) {
+      return res.status(400).json({ error: 'Reason must be at least 3 characters.' });
+    }
+    const order = db.prepare('SELECT * FROM orders WHERE id = ? AND deleted_at IS NULL AND tenant_id = ?')
+      .get(req.params.id, req.user.tenantId);
+    if (!order) return res.status(404).json({ error: 'Order not found' });
+    if (!order.paid_at) return res.status(400).json({ error: 'Order has no payment to edit.' });
+    const paidAtMs = new Date(order.paid_at + (order.paid_at.includes('T') ? '' : 'Z')).getTime();
+    const daysSince = (Date.now() - paidAtMs) / (1000 * 60 * 60 * 24);
+    if (daysSince > 7) {
+      return res.status(400).json({ error: `Order paid ${Math.floor(daysSince)} days ago — outside the 7-day edit window.` });
+    }
+
+    const oldPayload = {
+      cash_received:        order.cash_received,
+      fra_received:         order.fra_received,
+      k_received:           order.k_received,
+      usd_change_given:     order.usd_change_given,
+      fra_change_given:     order.fra_change_given,
+      k_change_given:       order.k_change_given,
+      overpaid_kept_ccy:    order.overpaid_kept_ccy,
+      overpaid_kept_amt:    order.overpaid_kept_amt,
+      selling_rate_used:    order.selling_rate_used,
+      buying_rate_used:     order.buying_rate_used,
+      selling_rate_k_used:  order.selling_rate_k_used,
+      buying_rate_k_used:   order.buying_rate_k_used,
+      amount_received:      order.amount_received,
+    };
+
+    const num = (v) => parseFloat(v) || 0;
+    const newPayload = {
+      cash_received:        num(req.body.cash_received),
+      fra_received:         num(req.body.fra_received),
+      k_received:           num(req.body.k_received),
+      usd_change_given:     num(req.body.usd_change_given),
+      fra_change_given:     num(req.body.fra_change_given),
+      k_change_given:       num(req.body.k_change_given),
+      overpaid_kept_ccy:    req.body.overpaid_kept_ccy || null,
+      overpaid_kept_amt:    num(req.body.overpaid_kept_amt),
+      selling_rate_used:    num(req.body.selling_rate_used),
+      buying_rate_used:     num(req.body.buying_rate_used),
+      selling_rate_k_used:  num(req.body.selling_rate_k_used),
+      buying_rate_k_used:   num(req.body.buying_rate_k_used),
+    };
+
+    // amount_received = USD-equivalent of cash + fra/sellFRA + k/sellK
+    const newAmountReceived =
+      newPayload.cash_received
+      + (newPayload.selling_rate_used   > 0 ? newPayload.fra_received / newPayload.selling_rate_used   : 0)
+      + (newPayload.selling_rate_k_used > 0 ? newPayload.k_received   / newPayload.selling_rate_k_used : 0);
+    newPayload.amount_received = newAmountReceived;
+
+    const tenantId = syncConfig.getTenantId(req);
+    const { branchId, deviceId } = syncConfig.getConfig();
+    const editorName = `${req.user.first_name || ''} ${req.user.last_name || ''}`.trim() || req.user.email || 'unknown';
+
+    db.transaction(() => {
+      db.prepare(`
+        UPDATE orders SET
+          cash_received       = ?,
+          fra_received        = ?,
+          k_received          = ?,
+          usd_change_given    = ?,
+          fra_change_given    = ?,
+          k_change_given      = ?,
+          overpaid_kept_ccy   = ?,
+          overpaid_kept_amt   = ?,
+          selling_rate_used   = ?,
+          buying_rate_used    = ?,
+          selling_rate_k_used = ?,
+          buying_rate_k_used  = ?,
+          amount_received     = ?,
+          synced              = 0,
+          updated_at          = datetime('now')
+        WHERE id = ?
+      `).run(
+        newPayload.cash_received, newPayload.fra_received, newPayload.k_received,
+        newPayload.usd_change_given, newPayload.fra_change_given, newPayload.k_change_given,
+        newPayload.overpaid_kept_ccy, newPayload.overpaid_kept_amt,
+        newPayload.selling_rate_used, newPayload.buying_rate_used,
+        newPayload.selling_rate_k_used, newPayload.buying_rate_k_used,
+        newAmountReceived,
+        req.params.id
+      );
+
+      db.prepare(`
+        INSERT INTO order_payment_edits
+          (order_id, order_sync_id, edited_by, edited_by_name, edited_at, reason,
+           old_payload, new_payload, sync_id, tenant_id, branch_id, device_id, synced,
+           created_at, updated_at)
+        VALUES (?, ?, ?, ?, datetime('now'), ?,
+                ?, ?, ?, ?, ?, ?, 0,
+                datetime('now'), datetime('now'))
+      `).run(
+        order.id, order.sync_id, req.user.id, editorName, reason,
+        JSON.stringify(oldPayload), JSON.stringify(newPayload),
+        randomUUID(), tenantId, branchId, deviceId
+      );
+    })();
+
+    // CR existence check — does a Sales CR row exist for this order's paid date + cashier?
+    // If yes, frontend will warn the user to re-Save the Cash Report.
+    const paidDate = (order.paid_at || '').slice(0, 10);
+    let crExists = false;
+    let crCashierName = null;
+    if (paidDate && order.cashier_user_id) {
+      const cashier = db.prepare(
+        `SELECT first_name, TRIM(COALESCE(first_name,'') || ' ' || COALESCE(last_name,'')) AS full_name
+           FROM users WHERE id = ?`
+      ).get(order.cashier_user_id);
+      crCashierName = cashier?.full_name || `User ${order.cashier_user_id}`;
+      const receivedFrom = cashier?.first_name ? `Sales / ${cashier.first_name}` : 'Sales';
+      const crRow = db.prepare(
+        `SELECT id FROM cash_receipts
+          WHERE deleted_at IS NULL AND tenant_id = ? AND received_from = ? AND date = ?`
+      ).get(tenantId, receivedFrom, paidDate);
+      crExists = !!crRow;
+    }
+
+    const updated = db.prepare(
+      `SELECT o.*,
+              TRIM(COALESCE(u.first_name,  '') || ' ' || COALESCE(u.last_name,  '')) AS created_by_name,
+              TRIM(COALESCE(uc.first_name, '') || ' ' || COALESCE(uc.last_name, '')) AS cashier_name
+         FROM orders o
+         LEFT JOIN users u  ON u.id  = o.created_by
+         LEFT JOIN users uc ON uc.id = o.cashier_user_id
+        WHERE o.id = ?`
+    ).get(req.params.id);
+    res.json({ order: updated, cr_exists: crExists, cr_date: paidDate, cr_cashier_name: crCashierName });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // Dispatch inbox — list orders that the Cashier has collected payment on
 // and that are now waiting to be physically released by the Dispatch
 // station. Same FIFO ordering as the Cashier inbox so the oldest order

@@ -179,6 +179,10 @@ export const getCashierInbox = () => api.get('/orders/cashier-inbox');
 // v1.8.86 — read-only history of paid orders for the Cashier History tab.
 export const getCashierPaymentHistory = (limit = 50) => api.get('/orders/payment-history', { params: { limit } });
 export const collectOrderPayment = (id, data) => api.put(`/orders/${id}/collect-payment`, data);
+// v1.8.87 — admin-only post-payment edit (typo/wrong-ccy/wrong-rate fix).
+// 7-day window enforced server-side. Response includes cr_exists + cr_date +
+// cr_cashier_name so the UI can nudge re-saving the day's Cash Report.
+export const editOrderPayment = (id, data) => api.put(`/orders/${id}/edit-payment`, data);
 export const getDispatchInbox = () => api.get('/orders/dispatch-inbox');
 export const confirmDispatch = (id) => api.put(`/orders/${id}/confirm-dispatch`);
 

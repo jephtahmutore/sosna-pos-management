@@ -24,6 +24,7 @@ import {
   getCashierPaymentHistory,
   getOrder,
   collectOrderPayment,
+  editOrderPayment,
   getSettings,
   getCurrentFxRate,
 } from '../services/api';
@@ -55,6 +56,13 @@ export default function Cashier() {
   const [mode, setMode] = useState('pending'); // 'pending' | 'history'
   const [history, setHistory] = useState([]);
   const [loadingHistory, setLoadingHistory] = useState(false);
+  // v1.8.87 — admin post-payment edit. editForm shadows the order's mutable
+  // payment fields while editing; cleared on Save/Cancel/order change.
+  const [editing, setEditing] = useState(false);
+  const [editForm, setEditForm] = useState(null);
+  const [editReason, setEditReason] = useState('');
+  const [editSaving, setEditSaving] = useState(false);
+  const [crWarning, setCRWarning] = useState(null); // { cr_date, cr_cashier_name }
   const [selected, setSelected] = useState(null);
   const [loadingDetail, setLoadingDetail] = useState(false);
   const [amountPaidUSD, setAmountPaidUSD] = useState('');
@@ -140,18 +148,81 @@ export default function Cashier() {
     } else {
       setSelected(null);
     }
+    // v1.8.87 — leaving History (or switching orders) drops any in-flight edit.
+    setEditing(false);
+    setEditForm(null);
+    setEditReason('');
   }, [mode]);
 
   const openOrder = async (id) => {
     setLoadingDetail(true);
     setAmountPaidUSD(''); setAmountPaidFRA(''); setAmountPaidK('');
     setChangeGivenUSD(''); setChangeGivenFRA(''); setChangeGivenK(''); setKeptCcy('');
+    // v1.8.87 — selecting a new order discards any in-flight edit on the previous one.
+    setEditing(false); setEditForm(null); setEditReason('');
     refreshFxRate();
     try {
       const res = await getOrder(id);
       setSelected(res.data);
     } catch { setSelected(null); }
     setLoadingDetail(false);
+  };
+
+  // v1.8.87 — Edit Payment handlers (admin-only, 7-day window enforced server-side).
+  const isAdmin = user?.role === 'Administrator';
+  const withinEditWindow = (() => {
+    if (!selected?.paid_at) return false;
+    const paidMs = new Date(selected.paid_at + (selected.paid_at.includes('T') ? '' : 'Z')).getTime();
+    return (Date.now() - paidMs) <= 7 * 24 * 60 * 60 * 1000;
+  })();
+  const canEdit = mode === 'history' && !!selected && isAdmin && withinEditWindow;
+
+  const startEdit = () => {
+    if (!selected) return;
+    setEditForm({
+      cash_received:        selected.cash_received        ?? 0,
+      fra_received:         selected.fra_received         ?? 0,
+      k_received:           selected.k_received           ?? 0,
+      usd_change_given:     selected.usd_change_given     ?? 0,
+      fra_change_given:     selected.fra_change_given     ?? 0,
+      k_change_given:       selected.k_change_given       ?? 0,
+      overpaid_kept_ccy:    selected.overpaid_kept_ccy    || '',
+      overpaid_kept_amt:    selected.overpaid_kept_amt    ?? 0,
+      selling_rate_used:    selected.selling_rate_used    ?? 0,
+      buying_rate_used:     selected.buying_rate_used     ?? 0,
+      selling_rate_k_used:  selected.selling_rate_k_used  ?? 0,
+      buying_rate_k_used:   selected.buying_rate_k_used   ?? 0,
+    });
+    setEditReason('');
+    setEditing(true);
+  };
+  const cancelEdit = () => { setEditing(false); setEditForm(null); setEditReason(''); };
+  const saveEdit = async () => {
+    if (!selected || !editForm) return;
+    if (editReason.trim().length < 3) {
+      setToast({ type: 'error', text: 'Reason must be at least 3 characters' });
+      setTimeout(() => setToast(null), 3000);
+      return;
+    }
+    setEditSaving(true);
+    try {
+      const res = await editOrderPayment(selected.id, { ...editForm, reason: editReason.trim() });
+      setSelected(res.data.order || selected);
+      setEditing(false);
+      setEditForm(null);
+      setEditReason('');
+      if (res.data.cr_exists) {
+        setCRWarning({ cr_date: res.data.cr_date, cr_cashier_name: res.data.cr_cashier_name });
+      } else {
+        setToast({ type: 'success', text: 'Payment updated' });
+        setTimeout(() => setToast(null), 3000);
+      }
+      refreshHistory();
+    } catch (err) {
+      setToast({ type: 'error', text: err.response?.data?.error || 'Save failed' });
+      setTimeout(() => setToast(null), 4000);
+    }
+    setEditSaving(false);
   };
 
   // Sirak math, extended with K (v1.7.0). Three foreign-cash buckets:
@@ -804,75 +875,154 @@ export default function Cashier() {
               // adds a Reconciliation box that shows the change owed / returned
               // / ± kept in drawer math behind the Sales Report ± column.
               <div>
-                <h3 style={{ margin: '0 0 10px 0', fontSize: 16, color: '#0f172a', display: 'flex', alignItems: 'center', gap: 8 }}>
-                  Payment
-                  <span style={{ fontSize: 10, background: '#e5e7eb', color: '#64748b', padding: '2px 8px', borderRadius: 4, fontWeight: 700, letterSpacing: 0.5 }}>READ-ONLY</span>
+                <h3 style={{ margin: '0 0 10px 0', fontSize: 16, color: '#0f172a', display: 'flex', alignItems: 'center', gap: 8, justifyContent: 'space-between' }}>
+                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+                    Payment
+                    <span style={{ fontSize: 10, background: editing ? '#fef3c7' : '#e5e7eb', color: editing ? '#92400e' : '#64748b', padding: '2px 8px', borderRadius: 4, fontWeight: 700, letterSpacing: 0.5 }}>
+                      {editing ? 'EDITING' : 'READ-ONLY'}
+                    </span>
+                  </span>
+                  {/* v1.8.87 — Edit Payment button (admin only, within 7-day window) */}
+                  {canEdit && !editing && (
+                    <button onClick={startEdit}
+                      style={{ padding: '4px 12px', background: '#fff', border: '1px solid #f59e0b', color: '#b45309', borderRadius: 6, fontSize: 11, fontWeight: 700, cursor: 'pointer' }}>
+                      ✎ Edit Payment
+                    </button>
+                  )}
                 </h3>
 
-                {/* Total Due */}
+                {/* Total Due — never editable (would require recomputing items) */}
                 <div style={{ background: '#f0f9ff', border: '1px solid #bae6fd', borderRadius: 8, padding: '12px 14px', marginBottom: 14 }}>
                   <div style={{ fontSize: 11, color: '#0369a1', fontWeight: 600 }}>Total Due</div>
                   <div style={{ fontSize: 26, fontWeight: 800, color: '#0c4a6e', lineHeight: 1.1 }}>{fmtUSD(selected.total_amount)}</div>
                 </div>
 
-                {/* FX Rate (stored) — only show if rates exist on order */}
-                {(parseFloat(selected.selling_rate_used) > 0 || parseFloat(selected.buying_rate_used) > 0) && (
+                {/* FX Rate — editable when editing */}
+                {(editing || parseFloat(selected.selling_rate_used) > 0 || parseFloat(selected.buying_rate_used) > 0) && (
                   <div style={{ background: '#fef3c7', border: '1px solid #fde68a', borderRadius: 8, padding: 10, marginBottom: 10 }}>
-                    <div style={{ fontSize: 11, color: '#92400e', fontWeight: 700, marginBottom: 6 }}>FX Rate (locked — stored on this order)</div>
+                    <div style={{ fontSize: 11, color: '#92400e', fontWeight: 700, marginBottom: 6 }}>
+                      FX Rate {editing ? '(editing)' : '(locked — stored on this order)'}
+                    </div>
                     <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, fontSize: 12, color: '#78350f' }}>
-                      <div>Sell FRA: <strong>{(parseFloat(selected.selling_rate_used) || 0).toLocaleString()}</strong></div>
-                      <div>Buy FRA: <strong>{(parseFloat(selected.buying_rate_used) || 0).toLocaleString()}</strong></div>
-                      {parseFloat(selected.selling_rate_k_used) > 0 && <div>Sell K: <strong>{(parseFloat(selected.selling_rate_k_used) || 0).toLocaleString()}</strong></div>}
-                      {parseFloat(selected.buying_rate_k_used)  > 0 && <div>Buy K: <strong>{(parseFloat(selected.buying_rate_k_used)  || 0).toLocaleString()}</strong></div>}
+                      {editing ? (
+                        <>
+                          <div><label style={{ ...lblStyle, color: '#92400e' }}>Sell FRA</label>
+                            <input type="number" min="0" step="0.01" value={editForm.selling_rate_used}
+                              onChange={e => setEditForm({ ...editForm, selling_rate_used: e.target.value })}
+                              style={inputStyle} /></div>
+                          <div><label style={{ ...lblStyle, color: '#92400e' }}>Buy FRA</label>
+                            <input type="number" min="0" step="0.01" value={editForm.buying_rate_used}
+                              onChange={e => setEditForm({ ...editForm, buying_rate_used: e.target.value })}
+                              style={inputStyle} /></div>
+                          {hasK && (
+                            <>
+                              <div><label style={{ ...lblStyle, color: '#92400e' }}>Sell K</label>
+                                <input type="number" min="0" step="0.01" value={editForm.selling_rate_k_used}
+                                  onChange={e => setEditForm({ ...editForm, selling_rate_k_used: e.target.value })}
+                                  style={inputStyle} /></div>
+                              <div><label style={{ ...lblStyle, color: '#92400e' }}>Buy K</label>
+                                <input type="number" min="0" step="0.01" value={editForm.buying_rate_k_used}
+                                  onChange={e => setEditForm({ ...editForm, buying_rate_k_used: e.target.value })}
+                                  style={inputStyle} /></div>
+                            </>
+                          )}
+                        </>
+                      ) : (
+                        <>
+                          <div>Sell FRA: <strong>{(parseFloat(selected.selling_rate_used) || 0).toLocaleString()}</strong></div>
+                          <div>Buy FRA: <strong>{(parseFloat(selected.buying_rate_used) || 0).toLocaleString()}</strong></div>
+                          {parseFloat(selected.selling_rate_k_used) > 0 && <div>Sell K: <strong>{(parseFloat(selected.selling_rate_k_used) || 0).toLocaleString()}</strong></div>}
+                          {parseFloat(selected.buying_rate_k_used)  > 0 && <div>Buy K: <strong>{(parseFloat(selected.buying_rate_k_used)  || 0).toLocaleString()}</strong></div>}
+                        </>
+                      )}
                     </div>
                   </div>
                 )}
 
-                {/* Amount Paid */}
+                {/* Amount Paid — editable when editing */}
                 <div style={{ marginBottom: 10 }}>
                   <div style={{ fontSize: 11, color: '#64748b', fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 6 }}>Amount Paid</div>
                   <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8 }}>
-                    <div style={roBox}><span style={roLbl}>USD</span><strong>{fmtUSD(selected.cash_received)}</strong></div>
-                    <div style={roBox}><span style={roLbl}>FRA</span><strong>{fmtFRA(selected.fra_received)}</strong></div>
-                    <div style={roBox}><span style={roLbl}>K</span><strong>{fmtK(selected.k_received)}</strong></div>
+                    {editing ? (
+                      <>
+                        <div><label style={roLbl}>USD</label>
+                          <input type="number" min="0" step="0.01" value={editForm.cash_received}
+                            onChange={e => setEditForm({ ...editForm, cash_received: e.target.value })}
+                            style={inputStyle} /></div>
+                        <div><label style={roLbl}>FRA</label>
+                          <input type="number" min="0" step="1" value={editForm.fra_received}
+                            onChange={e => setEditForm({ ...editForm, fra_received: e.target.value })}
+                            style={inputStyle} /></div>
+                        <div><label style={roLbl}>K</label>
+                          <input type="number" min="0" step="1" value={editForm.k_received}
+                            onChange={e => setEditForm({ ...editForm, k_received: e.target.value })}
+                            style={inputStyle} /></div>
+                      </>
+                    ) : (
+                      <>
+                        <div style={roBox}><span style={roLbl}>USD</span><strong>{fmtUSD(selected.cash_received)}</strong></div>
+                        <div style={roBox}><span style={roLbl}>FRA</span><strong>{fmtFRA(selected.fra_received)}</strong></div>
+                        <div style={roBox}><span style={roLbl}>K</span><strong>{fmtK(selected.k_received)}</strong></div>
+                      </>
+                    )}
                   </div>
                 </div>
 
-                {/* Change Returned */}
+                {/* Change Returned — editable when editing */}
                 <div style={{ marginBottom: 10 }}>
                   <div style={{ fontSize: 11, color: '#64748b', fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 6 }}>Change Returned</div>
                   <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8 }}>
-                    <div style={roBox}><span style={roLbl}>USD</span><strong>{fmtUSD(selected.usd_change_given)}</strong></div>
-                    <div style={roBox}><span style={roLbl}>FRA</span><strong>{fmtFRA(selected.fra_change_given)}</strong></div>
-                    <div style={roBox}><span style={roLbl}>K</span><strong>{fmtK(selected.k_change_given)}</strong></div>
+                    {editing ? (
+                      <>
+                        <div><label style={roLbl}>USD</label>
+                          <input type="number" min="0" step="0.01" value={editForm.usd_change_given}
+                            onChange={e => setEditForm({ ...editForm, usd_change_given: e.target.value })}
+                            style={inputStyle} /></div>
+                        <div><label style={roLbl}>FRA</label>
+                          <input type="number" min="0" step="1" value={editForm.fra_change_given}
+                            onChange={e => setEditForm({ ...editForm, fra_change_given: e.target.value })}
+                            style={inputStyle} /></div>
+                        <div><label style={roLbl}>K</label>
+                          <input type="number" min="0" step="1" value={editForm.k_change_given}
+                            onChange={e => setEditForm({ ...editForm, k_change_given: e.target.value })}
+                            style={inputStyle} /></div>
+                      </>
+                    ) : (
+                      <>
+                        <div style={roBox}><span style={roLbl}>USD</span><strong>{fmtUSD(selected.usd_change_given)}</strong></div>
+                        <div style={roBox}><span style={roLbl}>FRA</span><strong>{fmtFRA(selected.fra_change_given)}</strong></div>
+                        <div style={roBox}><span style={roLbl}>K</span><strong>{fmtK(selected.k_change_given)}</strong></div>
+                      </>
+                    )}
                   </div>
                 </div>
 
-                {/* Reconciliation box — explains the ± column from Sales Report */}
+                {/* Reconciliation box — uses editForm when editing so user sees the math live */}
                 {(() => {
+                  const src = editing ? editForm : selected;
                   const totalDue = parseFloat(selected.total_amount) || 0;
-                  const paidUSD  = parseFloat(selected.cash_received) || 0;
-                  const paidFRA  = parseFloat(selected.fra_received)  || 0;
-                  const paidK    = parseFloat(selected.k_received)    || 0;
-                  const sellFRA  = parseFloat(selected.selling_rate_used)   || 0;
-                  const sellK    = parseFloat(selected.selling_rate_k_used) || 0;
-                  const buyFRA   = parseFloat(selected.buying_rate_used)    || 0;
-                  const buyK     = parseFloat(selected.buying_rate_k_used)  || 0;
+                  const paidUSD  = parseFloat(src.cash_received) || 0;
+                  const paidFRA  = parseFloat(src.fra_received)  || 0;
+                  const paidK    = parseFloat(src.k_received)    || 0;
+                  const sellFRA  = parseFloat(src.selling_rate_used)   || 0;
+                  const sellK    = parseFloat(src.selling_rate_k_used) || 0;
+                  const buyFRA   = parseFloat(src.buying_rate_used)    || 0;
+                  const buyK     = parseFloat(src.buying_rate_k_used)  || 0;
                   const totalPaidUSDeq = paidUSD + (sellFRA > 0 ? paidFRA / sellFRA : 0) + (sellK > 0 ? paidK / sellK : 0);
                   const changeOwed = Math.max(0, totalPaidUSDeq - totalDue);
-                  const givenUSD = parseFloat(selected.usd_change_given) || 0;
-                  const givenFRA = parseFloat(selected.fra_change_given) || 0;
-                  const givenK   = parseFloat(selected.k_change_given)   || 0;
+                  const givenUSD = parseFloat(src.usd_change_given) || 0;
+                  const givenFRA = parseFloat(src.fra_change_given) || 0;
+                  const givenK   = parseFloat(src.k_change_given)   || 0;
                   const totalGivenUSDeq = givenUSD + (buyFRA > 0 ? givenFRA / buyFRA : 0) + (buyK > 0 ? givenK / buyK : 0);
-                  const keptCcy = (selected.overpaid_kept_ccy || '').toUpperCase();
-                  const keptAmt = parseFloat(selected.overpaid_kept_amt) || 0;
+                  const keptCcy = (src.overpaid_kept_ccy || '').toUpperCase();
+                  const keptAmt = parseFloat(src.overpaid_kept_amt) || 0;
                   const keptDisplay = keptCcy === 'USD' ? fmtUSD(keptAmt)
                                     : keptCcy === 'FRA' ? `${fmtFRA(keptAmt)} FRA`
                                     : keptCcy === 'K'   ? `${fmtK(keptAmt)} K`
                                     : '—';
                   return (
                     <div style={{ background: '#f8fafc', border: '1px solid #e5e7eb', borderRadius: 8, padding: 12, marginBottom: 10 }}>
-                      <div style={{ fontSize: 11, color: '#475569', fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 8 }}>Reconciliation</div>
+                      <div style={{ fontSize: 11, color: '#475569', fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 8 }}>Reconciliation {editing ? '(live preview)' : ''}</div>
                       <div style={{ fontSize: 12, color: '#475569', display: 'grid', rowGap: 4 }}>
                         <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>Total paid (USD-equiv)</span><strong>{fmtUSD(totalPaidUSDeq)}</strong></div>
                         <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>Change owed</span><strong>{fmtUSD(changeOwed)}</strong></div>
@@ -888,27 +1038,89 @@ export default function Cashier() {
                   );
                 })()}
 
-                {/* "Paid" badge replaces the Confirm Payment button */}
-                <div style={{
-                  marginTop: 18, width: '100%', padding: '14px',
-                  background: '#dcfce7', border: '1px solid #86efac',
-                  color: '#15803d', borderRadius: 8,
-                  fontSize: 14, fontWeight: 700, textAlign: 'center',
-                }}>
-                  ✓ Paid · Confirmed
-                  {selected.paid_at && (
-                    <div style={{ fontSize: 11, fontWeight: 500, marginTop: 4 }}>
-                      {new Date(selected.paid_at).toLocaleString()}
-                      {selected.cashier_name ? ` · by ${selected.cashier_name}` : ''}
+                {/* Editing: Reason field + Save / Cancel — replaces the Paid badge */}
+                {editing ? (
+                  <div style={{ marginTop: 18 }}>
+                    <label style={{ ...lblStyle, color: '#374151' }}>Reason <span style={{ color: '#dc2626' }}>*</span> <span style={{ fontWeight: 400, color: '#9ca3af' }}>(min 3 chars)</span></label>
+                    <input type="text" value={editReason}
+                      placeholder="e.g. typo, wrong currency, wrong rate"
+                      onChange={e => setEditReason(e.target.value)}
+                      style={inputStyle} maxLength={200} />
+                    <div style={{ display: 'flex', gap: 10, marginTop: 12 }}>
+                      <button onClick={cancelEdit} disabled={editSaving}
+                        style={{ flex: 1, padding: '12px', background: '#fff', border: '1px solid #e5e7eb', color: '#374151', borderRadius: 8, fontSize: 14, fontWeight: 600, cursor: 'pointer' }}>
+                        Cancel
+                      </button>
+                      <button onClick={saveEdit} disabled={editSaving || editReason.trim().length < 3}
+                        style={{ flex: 2, padding: '12px', background: editSaving || editReason.trim().length < 3 ? '#cbd5e1' : 'linear-gradient(135deg,#f59e0b,#d97706)', border: 'none', color: '#fff', borderRadius: 8, fontSize: 14, fontWeight: 700, cursor: editSaving ? 'wait' : 'pointer' }}>
+                        {editSaving ? 'Saving…' : 'Save Changes'}
+                      </button>
                     </div>
-                  )}
-                </div>
+                  </div>
+                ) : (
+                  <div style={{
+                    marginTop: 18, width: '100%', padding: '14px',
+                    background: '#dcfce7', border: '1px solid #86efac',
+                    color: '#15803d', borderRadius: 8,
+                    fontSize: 14, fontWeight: 700, textAlign: 'center',
+                  }}>
+                    ✓ Paid · Confirmed
+                    {selected.paid_at && (
+                      <div style={{ fontSize: 11, fontWeight: 500, marginTop: 4 }}>
+                        {new Date(selected.paid_at).toLocaleString()}
+                        {selected.cashier_name ? ` · by ${selected.cashier_name}` : ''}
+                      </div>
+                    )}
+                    {!canEdit && isAdmin && !!selected.paid_at && (
+                      <div style={{ fontSize: 10, fontWeight: 500, marginTop: 6, color: '#64748b' }}>
+                        Outside 7-day edit window
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
               )}
             </div>
           )}
         </div>
       </div>
+
+      {/* v1.8.87 — CR refresh warning after a payment edit on a day whose
+          Sales CR was already saved. We don't auto-fix the CR — instead we
+          nudge the user to re-open Cash Report and Save again so the CR
+          picks up the corrected amounts. */}
+      {crWarning && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,0.65)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 250, padding: 20 }}>
+          <div style={{ background: '#fff', borderRadius: 14, width: 'min(480px, 95vw)', boxShadow: '0 20px 60px rgba(0,0,0,0.3)', overflow: 'hidden' }}>
+            <div style={{ background: 'linear-gradient(135deg, #b45309, #92400e)', padding: '16px 22px', color: '#fff' }}>
+              <div style={{ fontSize: 15, fontWeight: 700 }}>⚠ Cash Report needs re-saving</div>
+              <div style={{ fontSize: 11, opacity: 0.85, marginTop: 2 }}>Payment edited successfully — but the day's CR holds the OLD amounts.</div>
+            </div>
+            <div style={{ padding: '20px 22px' }}>
+              <p style={{ margin: '0 0 12px 0', fontSize: 13.5, color: '#374151', lineHeight: 1.55 }}>
+                A Cash Receipt was already saved for <strong>{crWarning.cr_date}</strong>
+                {crWarning.cr_cashier_name ? <> (cashier <strong>{crWarning.cr_cashier_name}</strong>)</> : null}.
+                It still shows the old totals.
+              </p>
+              <div style={{ background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 8, padding: '12px 14px', fontSize: 12.5, color: '#78350f', lineHeight: 1.55 }}>
+                <strong>To fix it:</strong>
+                <ol style={{ margin: '6px 0 0 18px', padding: 0 }}>
+                  <li>Open <strong>Cash Report</strong></li>
+                  <li>Pick date <strong>{crWarning.cr_date}</strong> {crWarning.cr_cashier_name ? <>and cashier <strong>{crWarning.cr_cashier_name}</strong></> : null}</li>
+                  <li>Click <strong>Edit</strong>, then <strong>Save Report</strong></li>
+                  <li>Confirm the CR update when prompted</li>
+                </ol>
+              </div>
+            </div>
+            <div style={{ padding: '14px 22px', borderTop: '1px solid #e5e7eb', display: 'flex', justifyContent: 'flex-end' }}>
+              <button onClick={() => setCRWarning(null)}
+                style={{ padding: '9px 22px', borderRadius: 8, border: 'none', background: '#b45309', color: '#fff', cursor: 'pointer', fontSize: 13, fontWeight: 600 }}>
+                OK, got it
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Confirm modal */}
       {confirm && selected && (

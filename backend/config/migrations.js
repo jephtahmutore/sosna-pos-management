@@ -672,6 +672,30 @@ function initTenantDb(db) {
       updated_at        TEXT NOT NULL DEFAULT (datetime('now'))
     );
 
+    -- v1.8.87 — Order Payment Edits audit log.
+    -- Admin-only post-payment corrections (typos, wrong currency, wrong rate)
+    -- write a row here. old_payload / new_payload are JSON snapshots of the
+    -- 12 mutable payment fields on the order so we can replay any sequence.
+    -- 7-day window enforced at the route layer, not the schema.
+    CREATE TABLE IF NOT EXISTS order_payment_edits (
+      id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+      order_id           INTEGER NOT NULL,
+      order_sync_id      TEXT,
+      edited_by          INTEGER REFERENCES users(id),
+      edited_by_name     TEXT,
+      edited_at          TEXT NOT NULL DEFAULT (datetime('now')),
+      reason             TEXT NOT NULL,
+      old_payload        TEXT NOT NULL,    -- JSON
+      new_payload        TEXT NOT NULL,    -- JSON
+      sync_id            TEXT UNIQUE,
+      tenant_id          INTEGER,
+      branch_id          TEXT,
+      device_id          TEXT,
+      synced             INTEGER DEFAULT 0,
+      created_at         TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at         TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
     -- ── Loan Transactions ──────────────────────────────────────────────────
     -- Every cash movement against a loan, of three kinds:
     --   'Disbursement' → lender pays us; cash IN; not income; +outstanding
