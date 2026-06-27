@@ -56,21 +56,37 @@ function nextTransferNumber() {
 }
 
 // GET /api/transfers/source-products?slug=
-// Products at a given branch that have positive sales-floor stock — what
-// the operator can pick from when creating a new transfer.
+// Products at a given branch with their current total on-hand stock.
+//
+// v1.8.92 — was reading products.current_stock (cached column). That column
+// drifts (manual edits, sync gaps, reversal bugs) and got out of sync with
+// reality — Stock Reconciliation showed 22,398 Bottle of SAVANNA 330ML
+// while this endpoint reported 300 (a 75x gap). Now we compute on-hand
+// from stock_movements like Reconciliation does, summed across ALL
+// locations (sales + store + anywhere) because for an inter-branch
+// transfer the total physical stock at the branch is what's transferable.
+// Returns the same `current_stock` field name so the frontend doesn't
+// need to change.
 router.get('/source-products', hqAuth, (req, res) => {
   try {
     const slug = String(req.query.slug || '').toLowerCase();
     if (!slug || !isRegistered(slug)) return res.status(400).json({ error: 'Unknown source branch' });
     const db = getTenantDb(slug);
     const products = db.prepare(`
-      SELECT id, sync_id, name, unit, alt_unit, conversion_factor,
-             units_json, default_unit,
-             cost_price, selling_price,
-             current_stock, min_stock
-        FROM products
-       WHERE deleted_at IS NULL AND status != 'Inactive'
-       ORDER BY name COLLATE NOCASE ASC
+      SELECT p.id, p.sync_id, p.name, p.unit, p.alt_unit, p.conversion_factor,
+             p.units_json, p.default_unit,
+             p.cost_price, p.selling_price,
+             COALESCE(bal.balance, 0) AS current_stock,
+             p.min_stock
+        FROM products p
+        LEFT JOIN (
+          SELECT product_sync_id, SUM(quantity) AS balance
+            FROM stock_movements
+           WHERE deleted_at IS NULL AND product_sync_id IS NOT NULL
+           GROUP BY product_sync_id
+        ) bal ON bal.product_sync_id = p.sync_id
+       WHERE p.deleted_at IS NULL AND p.status != 'Inactive'
+       ORDER BY p.name COLLATE NOCASE ASC
     `).all();
     res.json({ products });
   } catch (error) {

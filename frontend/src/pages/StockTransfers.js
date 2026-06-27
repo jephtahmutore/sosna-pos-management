@@ -19,6 +19,7 @@ import {
   isHqHost, getHqBranch, getHqBranches, getBranchSlug,
   getTransferSourceProducts, getOutgoingTransfers, getIncomingTransfers,
   createTransfer, receiveTransfer, cancelTransfer,
+  getProducts,
 } from '../services/api';
 // v1.8.40 — show On Hand in the product's configured default unit
 // (e.g. Box) instead of the raw base unit (Bottle).
@@ -510,11 +511,46 @@ function TransferDetailModal({ transfer, mode, onClose, onSubmit }) {
     } catch { return []; }
   }, [transfer]);
 
+  // v1.8.92 — pull the product list so we can resolve each line's CURRENT
+  // default_unit (e.g. Box), instead of whatever unit was used at send time.
+  // Old behaviour: if a transfer was sent in Bottle (1 conv), the detail
+  // modal also showed Bottle — wrong for products whose preferred display
+  // is Box. Now we always render in the product's configured default_unit.
+  // Falls back to items_json's display_unit (then base unit) if the product
+  // can't be found in the response (deleted, sync gap, etc).
+  const [products, setProducts] = useState([]);
+  useEffect(() => {
+    getProducts()
+      .then(r => setProducts(Array.isArray(r.data) ? r.data : (r.data?.products || [])))
+      .catch(() => setProducts([]));
+  }, []);
+  const productBySync = useMemo(() => {
+    const m = {};
+    for (const p of products) if (p.sync_id) m[p.sync_id] = p;
+    return m;
+  }, [products]);
+  const getDisplayFor = (it) => {
+    const p = productBySync[it.product_sync_id];
+    if (p) {
+      const baseName = (p.unit || '').toLowerCase();
+      const defaultName = (p.default_unit || '').trim();
+      if (defaultName && defaultName.toLowerCase() !== baseName) {
+        try {
+          const units = JSON.parse(p.units_json || '[]');
+          const match = (Array.isArray(units) ? units : []).find(u =>
+            (u.name || '').toLowerCase() === defaultName.toLowerCase() && parseFloat(u.conv) > 0);
+          if (match) return { unit: match.name, conv: parseFloat(match.conv) };
+        } catch { /* fall through */ }
+      }
+      return { unit: p.unit, conv: 1 };
+    }
+    return { unit: it.display_unit || it.unit, conv: parseFloat(it.display_conv || 1) || 1 };
+  };
+
   // Per-line edit state — receive mode only.
-  // v1.8.66 — qty + cost displayed in the product's default unit (Box)
-  // when items_json carries display_unit / display_conv. Legacy rows
-  // without those fields fall back to the raw base unit (Bottle) — same
-  // behavior as before the upgrade.
+  // v1.8.66 — qty + cost displayed in the product's default unit (Box).
+  // Initial state uses items_json's display info; useEffect below replaces
+  // it with the product's current default_unit once products arrive.
   const [lines, setLines] = useState(() =>
     items.map(it => {
       const dispUnit = it.display_unit || it.unit;
@@ -536,6 +572,32 @@ function TransferDetailModal({ transfer, mode, onClose, onSubmit }) {
       };
     })
   );
+
+  // v1.8.92 — once products load, swap each line's display_unit/conv for the
+  // product's CURRENT default_unit. Preserves any received_qty the user typed
+  // by converting it to the new unit.
+  useEffect(() => {
+    if (products.length === 0) return;
+    setLines(prev => prev.map((l, i) => {
+      const it = items[i];
+      if (!it) return l;
+      const { unit: newUnit, conv: newConv } = getDisplayFor(it);
+      if (l.display_unit === newUnit && Math.abs((l.display_conv || 1) - newConv) < 0.0001) return l;
+      const sentBase = parseFloat(it.quantity || 0);
+      const oldConv = parseFloat(l.display_conv) || 1;
+      const wasUntouched = String(parseFloat(l.received_qty) || 0) === String(parseFloat(l.sent_qty) || 0);
+      const recvBaseIfTouched = (parseFloat(l.received_qty) || 0) * oldConv;
+      return {
+        ...l,
+        display_unit: newUnit,
+        display_conv: newConv,
+        cost_display: parseFloat(l.cost_price || 0) * newConv,
+        sent_qty:     sentBase / newConv,
+        received_qty: wasUntouched ? String(sentBase / newConv) : String(recvBaseIfTouched / newConv),
+      };
+    }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [productBySync]);
   const [submitting, setSubmitting] = useState(false);
 
   const setLine = (idx, field, value) => {
