@@ -427,8 +427,14 @@ router.post('/push', lanGate, async (req, res) => {
               const parse = (s) => new Date(typeof s === 'string' && !s.includes('T') ? s.replace(' ', 'T') + 'Z' : s).getTime();
               const incomingMs = parse(row.updated_at);
               const existingMs = parse(existing.updated_at);
-              if (isFinite(incomingMs) && isFinite(existingMs) && incomingMs < existingMs) {
-                slog(`push: REJECT [${table}] sync_id=${row.sync_id} — incoming ${row.updated_at} < server ${existing.updated_at}`);
+              // v1.8.91 — strict <= rejection. v1.8.89 used < which missed the
+              // EQUAL-timestamp clobbering case: both clients hold rows updated
+              // in the same earlier batch, so when one pushes, incoming == server,
+              // check didn't fire, server got overwritten with stale data. Equal
+              // timestamps = same data, so rejecting is always safe (no real edit
+              // to lose) and closes the hole completely.
+              if (isFinite(incomingMs) && isFinite(existingMs) && incomingMs <= existingMs) {
+                slog(`push: REJECT [${table}] sync_id=${row.sync_id} — incoming ${row.updated_at} <= server ${existing.updated_at}`);
                 continue;
               }
             }
