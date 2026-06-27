@@ -177,40 +177,70 @@ export default function Cashier() {
   })();
   const canEdit = mode === 'history' && !!selected && isAdmin && withinEditWindow;
 
+  // v1.8.97 — Edit mode now populates the SAME live state the Pending Payment
+  // form uses (amountPaidUSD/FRA/K, changeGivenUSD/FRA/K, fxRate, keptCcy).
+  // The Pending right-panel JSX re-renders with live computePayment() driving
+  // change owed / unpaid balance / kept ccy picker — admin sees the math react
+  // as they type, identical to the live cashier flow. On Save, we read those
+  // same live values + the order's stored FX rates back out and PUT them.
   const startEdit = () => {
     if (!selected) return;
-    setEditForm({
-      cash_received:        selected.cash_received        ?? 0,
-      fra_received:         selected.fra_received         ?? 0,
-      k_received:           selected.k_received           ?? 0,
-      usd_change_given:     selected.usd_change_given     ?? 0,
-      fra_change_given:     selected.fra_change_given     ?? 0,
-      k_change_given:       selected.k_change_given       ?? 0,
-      overpaid_kept_ccy:    selected.overpaid_kept_ccy    || '',
-      overpaid_kept_amt:    selected.overpaid_kept_amt    ?? 0,
-      selling_rate_used:    selected.selling_rate_used    ?? 0,
-      buying_rate_used:     selected.buying_rate_used     ?? 0,
-      selling_rate_k_used:  selected.selling_rate_k_used  ?? 0,
-      buying_rate_k_used:   selected.buying_rate_k_used   ?? 0,
-    });
+    // Seed live form state with the order's stored values.
+    setAmountPaidUSD(String(selected.cash_received ?? 0));
+    setAmountPaidFRA(String(selected.fra_received  ?? 0));
+    setAmountPaidK(  String(selected.k_received    ?? 0));
+    setChangeGivenUSD(String(selected.usd_change_given ?? 0));
+    setChangeGivenFRA(String(selected.fra_change_given ?? 0));
+    setChangeGivenK(  String(selected.k_change_given   ?? 0));
+    setKeptCcy(selected.overpaid_kept_ccy || '');
+    // Snapshot FX rates from the order so the math reproduces faithfully.
+    // Falls back to live rates if a particular rate wasn't stored.
+    setFxRate(prev => ({
+      sell:  parseFloat(selected.selling_rate_used)   > 0 ? parseFloat(selected.selling_rate_used)   : prev.sell,
+      buy:   parseFloat(selected.buying_rate_used)    > 0 ? parseFloat(selected.buying_rate_used)    : prev.buy,
+      sellK: parseFloat(selected.selling_rate_k_used) > 0 ? parseFloat(selected.selling_rate_k_used) : prev.sellK,
+      buyK:  parseFloat(selected.buying_rate_k_used)  > 0 ? parseFloat(selected.buying_rate_k_used)  : prev.buyK,
+    }));
     setEditReason('');
     setEditing(true);
   };
-  const cancelEdit = () => { setEditing(false); setEditForm(null); setEditReason(''); };
+  const cancelEdit = () => {
+    setEditing(false);
+    setEditReason('');
+    // Reset live form so the read-only panel re-renders clean.
+    setAmountPaidUSD(''); setAmountPaidFRA(''); setAmountPaidK('');
+    setChangeGivenUSD(''); setChangeGivenFRA(''); setChangeGivenK('');
+    setKeptCcy('');
+    refreshFxRate();
+  };
   const saveEdit = async () => {
-    if (!selected || !editForm) return;
+    if (!selected) return;
     if (editReason.trim().length < 3) {
       setToast({ type: 'error', text: 'Reason must be at least 3 characters' });
       setTimeout(() => setToast(null), 3000);
       return;
     }
+    // Read the same live state Pending uses → build the payload.
+    const payload = {
+      cash_received:        parseFloat(amountPaidUSD)   || 0,
+      fra_received:         parseFloat(amountPaidFRA)   || 0,
+      k_received:           parseFloat(amountPaidK)     || 0,
+      usd_change_given:     parseFloat(changeGivenUSD)  || 0,
+      fra_change_given:     parseFloat(changeGivenFRA)  || 0,
+      k_change_given:       parseFloat(changeGivenK)    || 0,
+      overpaid_kept_ccy:    keptCcy || null,
+      overpaid_kept_amt:    parseFloat(selected.overpaid_kept_amt) || 0,
+      selling_rate_used:    SELL_RATE   || 0,
+      buying_rate_used:     BUY_RATE    || 0,
+      selling_rate_k_used:  SELL_RATE_K || 0,
+      buying_rate_k_used:   BUY_RATE_K  || 0,
+      reason:               editReason.trim(),
+    };
     setEditSaving(true);
     try {
-      const res = await editOrderPayment(selected.id, { ...editForm, reason: editReason.trim() });
+      const res = await editOrderPayment(selected.id, payload);
       setSelected(res.data.order || selected);
-      setEditing(false);
-      setEditForm(null);
-      setEditReason('');
+      cancelEdit();
       if (res.data.cr_exists) {
         setCRWarning({ cr_date: res.data.cr_date, cr_cashier_name: res.data.cr_cashier_name });
       } else {
@@ -392,10 +422,19 @@ export default function Cashier() {
     && parseFloat(selected.customer_credit_limit || 0) > 0
     && (parseFloat(selected.customer_outstanding || 0) + calc.unpaidBalance) > parseFloat(selected.customer_credit_limit || 0) + 0.001;
   const onHold = hasRegisteredCustomer && selected.customer_credit_status === 'OnHold';
+  // v1.8.97 — OVER-CHANGE GUARD. Block save when cashier types change-given
+  // amounts whose USD-eq sum exceeds the actual change owed by more than
+  // the $0.10 rounding tolerance. Catches the "cashier gave back too much
+  // FRA on top of the correct USD" mistake (real incident: ORD-0039 lost
+  // 3,500 FRA to a $1.56 over-change). Applies in both Pending and Edit
+  // modes since computePayment is the same engine.
+  const overChangeUSD = calc ? (calc.totalChangeGiven - calc.changeUSD) : 0;
+  const isOverChange  = overChangeUSD > 0.10;
+
   // Walk-in: require any payment + must cover the full total (within 10¢).
   // Registered customer: any payment OR full credit (0) is allowed,
   // provided the customer isn't on hold and isn't over-limit.
-  const canConfirm = !!selected && !!calc && !onHold && !wouldExceedLimit && (
+  const canConfirm = !!selected && !!calc && !onHold && !wouldExceedLimit && !isOverChange && (
     hasRegisteredCustomer
       ? true                                                     // partial / full / 0 all OK
       : (calc.paidUSD > 0 || calc.paidFRA > 0 || calc.paidK > 0) // walk-in: must enter something
@@ -616,10 +655,20 @@ export default function Cashier() {
                 </div>
               </div>
 
-              {/* Right half: payment — Pending mode (live, editable) OR History mode (read-only). */}
-              {mode === 'pending' ? (
+              {/* v1.8.97 — Right half:
+                  • Pending mode → live payment form
+                  • History + editing=true → SAME live payment form (admin edit)
+                  • History + editing=false → read-only summary panel
+                  Reusing the Pending JSX for edit means computePayment runs
+                  live as the admin types — same UX as the cashier flow. */}
+              {(mode === 'pending' || (mode === 'history' && editing)) ? (
               <div>
-                <h3 style={{ margin: '0 0 10px 0', fontSize: 16, color: '#0f172a' }}>Payment</h3>
+                <h3 style={{ margin: '0 0 10px 0', fontSize: 16, color: '#0f172a', display: 'flex', alignItems: 'center', gap: 8 }}>
+                  Payment
+                  {editing && (
+                    <span style={{ fontSize: 10, background: '#fef3c7', color: '#92400e', padding: '2px 8px', borderRadius: 4, fontWeight: 700, letterSpacing: 0.5 }}>EDITING</span>
+                  )}
+                </h3>
                 <div style={{ background: '#f0f9ff', border: '1px solid #bae6fd', borderRadius: 8, padding: '12px 14px', marginBottom: 14 }}>
                   <div style={{ fontSize: 11, color: '#0369a1', fontWeight: 600 }}>Total Due</div>
                   <div style={{ fontSize: 26, fontWeight: 800, color: '#0c4a6e', lineHeight: 1.1 }}>{fmtUSD(selected.total_amount)}</div>
@@ -858,16 +907,58 @@ export default function Cashier() {
                   </div>
                 )}
 
-                <button onClick={handleConfirm}
-                  disabled={!canConfirm || submitting}
-                  style={{
-                    marginTop: 18, width: '100%', padding: '14px',
-                    background: canConfirm ? 'linear-gradient(135deg,#16a34a,#15803d)' : '#cbd5e1',
-                    color: '#fff', border: 'none', borderRadius: 8,
-                    fontSize: 15, fontWeight: 700, cursor: canConfirm ? 'pointer' : 'not-allowed',
-                  }}>
-                  Confirm Payment →
-                </button>
+                {/* v1.8.97 — over-change warning banner. Fires before the
+                    button is disabled so cashier sees WHY they can't save. */}
+                {isOverChange && (
+                  <div style={{ marginTop: 12, padding: '10px 12px', background: '#fee2e2', border: '1px solid #fecaca', borderRadius: 8, color: '#991b1b', fontSize: 12, fontWeight: 600 }}>
+                    ⚠ Change returned ({fmtUSD(calc.totalChangeGiven)}) exceeds change owed ({fmtUSD(calc.changeUSD)}) by {fmtUSD(overChangeUSD)} —
+                    that's shop loss. Adjust the change-given amounts before saving.
+                  </div>
+                )}
+
+                {/* v1.8.97 — in Edit mode, add Reason field + Save/Cancel. */}
+                {editing && (
+                  <div style={{ marginTop: 14 }}>
+                    <label style={{ ...lblStyle, color: '#374151' }}>
+                      Reason <span style={{ color: '#dc2626' }}>*</span>{' '}
+                      <span style={{ fontWeight: 400, color: '#9ca3af' }}>(min 3 chars)</span>
+                    </label>
+                    <input type="text" value={editReason}
+                      placeholder="e.g. typo, wrong currency, wrong rate"
+                      onChange={e => setEditReason(e.target.value)}
+                      style={inputStyle} maxLength={200} />
+                  </div>
+                )}
+
+                {editing ? (
+                  <div style={{ display: 'flex', gap: 10, marginTop: 12 }}>
+                    <button onClick={cancelEdit} disabled={editSaving}
+                      style={{ flex: 1, padding: '12px', background: '#fff', border: '1px solid #e5e7eb', color: '#374151', borderRadius: 8, fontSize: 14, fontWeight: 600, cursor: 'pointer' }}>
+                      Cancel
+                    </button>
+                    <button onClick={saveEdit}
+                      disabled={editSaving || editReason.trim().length < 3 || isOverChange}
+                      style={{
+                        flex: 2, padding: '12px',
+                        background: (editSaving || editReason.trim().length < 3 || isOverChange) ? '#cbd5e1' : 'linear-gradient(135deg,#f59e0b,#d97706)',
+                        border: 'none', color: '#fff', borderRadius: 8, fontSize: 14, fontWeight: 700,
+                        cursor: editSaving ? 'wait' : 'pointer',
+                      }}>
+                      {editSaving ? 'Saving…' : 'Save Edit'}
+                    </button>
+                  </div>
+                ) : (
+                  <button onClick={handleConfirm}
+                    disabled={!canConfirm || submitting}
+                    style={{
+                      marginTop: 18, width: '100%', padding: '14px',
+                      background: canConfirm ? 'linear-gradient(135deg,#16a34a,#15803d)' : '#cbd5e1',
+                      color: '#fff', border: 'none', borderRadius: 8,
+                      fontSize: 15, fontWeight: 700, cursor: canConfirm ? 'pointer' : 'not-allowed',
+                    }}>
+                    Confirm Payment →
+                  </button>
+                )}
               </div>
               ) : (
               // ─────── HISTORY MODE: read-only payment panel ───────
