@@ -610,10 +610,28 @@ export default function Cashier() {
                     {calc.netRemaining > 0.005 && (() => {
                       const defaultCcy = keptCcy
                         || (hasFra ? 'FRA' : hasK ? 'K' : 'USD');
+                      // v1.8.80 — headline amount follows the picker selection
+                      // so cashier sees the exact amount in the drawer's currency.
+                      // USD stays as a secondary "≈" reference.
+                      let headlineText;
+                      if (defaultCcy === 'FRA') {
+                        const fraAmt = calc.overFRA > 0.5
+                          ? calc.overFRA
+                          : (BUY_RATE > 0 ? calc.netRemaining * BUY_RATE : 0);
+                        headlineText = `FRA ${fmtFRA(fraAmt)} (≈ ${fmtUSD(calc.netRemaining)})`;
+                      } else if (defaultCcy === 'K') {
+                        const kAmt = calc.overK > 0.5
+                          ? calc.overK
+                          : (BUY_RATE_K > 0 ? calc.netRemaining * BUY_RATE_K : 0);
+                        headlineText = `K ${fmtK(kAmt)} (≈ ${fmtUSD(calc.netRemaining)})`;
+                      } else {
+                        const usdAmt = calc.overUSD > 0.001 ? calc.overUSD : calc.netRemaining;
+                        headlineText = fmtUSD(usdAmt);
+                      }
                       return (
                         <div style={{ marginTop: 10, padding: '10px 12px', background: '#fffbeb', border: '1px solid #fcd34d', borderRadius: 8 }}>
                           <div style={{ fontSize: 11, color: '#92400e', fontWeight: 600, marginBottom: 6 }}>
-                            Customer over-paid by {fmtUSD(calc.netRemaining)} — kept in drawer:
+                            Customer over-paid by {headlineText} — kept in drawer:
                           </div>
                           <div style={{ display: 'flex', gap: 8 }}>
                             {['USD', 'FRA', 'K'].map(c => {

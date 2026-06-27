@@ -1655,6 +1655,29 @@ function initTenantDb(db) {
     }
   } catch (e) { /* table may not yet have all columns on a fresh DB */ }
 
+  // v1.8.80 — SELF-HEALING zero-out for usd_change_given when the surplus is
+  // actually in a FRA or K drawer. The v1.8.68 backfill blindly seeded
+  // usd_change_given = change_amount for ALL orders, but for orders where the
+  // cashier kept the surplus in FRA/K (overpaid_kept_ccy != 'USD'), no USD
+  // was physically returned — so usd_change_given should be 0.
+  // Symptom: Sales Report By Payment USD column shows '$199.89' instead of
+  // '$200.00' for orders where the customer paid USD + FRA and the FRA
+  // surplus was kept by the cashier (e.g. ORD-0016).
+  try {
+    const result = db.prepare(`
+      UPDATE orders
+         SET usd_change_given = 0,
+             synced           = 0,
+             updated_at       = datetime('now')
+       WHERE deleted_at IS NULL
+         AND COALESCE(overpaid_kept_ccy, '') IN ('FRA', 'K')
+         AND COALESCE(usd_change_given, 0) > 0.005
+    `).run();
+    if (result.changes > 0) {
+      console.log(`[self-heal usd_change_given] zeroed ${result.changes} order(s) where surplus is in FRA/K drawer`);
+    }
+  } catch (e) { /* fresh DB or columns not yet present */ }
+
   // ── v1.8.58 — SELF-HEALING cash_received cleanup (was one-time in v1.8.53) ──
   // Foreign-currency-only payments stored the dollar-VALUE in cash_received,
   // double-counting against the FRA/K bucket. The original v1.8.53 backfill
