@@ -222,13 +222,26 @@ export default function Cashier() {
         // currency the customer paid in if this is blank.
         // v1.8.72 — send the NATIVE amount so backend doesn't round-trip
         // through USD (which loses 4 FRA per $0.11 to the sell/buy spread).
-        overpaid_kept_ccy: confirm.netRemaining > 0.005 ? (keptCcy || '') : '',
-        overpaid_kept_amt: confirm.netRemaining > 0.005
-          ? ((keptCcy === 'FRA') ? confirm.overFRA
-             : (keptCcy === 'K') ? confirm.overK
-             : (keptCcy === 'USD') ? confirm.overUSD
-             : 0)
-          : 0,
+        // v1.8.74 — use EFFECTIVE ccy (clicked OR default-highlighted) so
+        // backend stores the same currency the cashier saw highlighted on
+        // the picker, not the legacy backend fallback.
+        overpaid_kept_ccy: confirm.netRemaining > 0.005
+          ? (keptCcy
+             || (confirm.overFRA > 0.5 ? 'FRA'
+                : confirm.overK   > 0.5 ? 'K'
+                : 'USD'))
+          : '',
+        overpaid_kept_amt: (() => {
+          if (confirm.netRemaining <= 0.005) return 0;
+          const ccy = keptCcy
+            || (confirm.overFRA > 0.5 ? 'FRA'
+               : confirm.overK   > 0.5 ? 'K'
+               : 'USD');
+          if (ccy === 'FRA') return confirm.overFRA;
+          if (ccy === 'K')   return confirm.overK;
+          if (ccy === 'USD') return confirm.overUSD;
+          return 0;
+        })(),
       });
 
       // Snapshot for the printed receipt BEFORE we clear state.
@@ -504,24 +517,40 @@ export default function Cashier() {
                 {calc && (calc.paidUSD > 0 || calc.paidFRA > 0 || calc.paidK > 0) && (
                   <div style={{ marginTop: 12 }}>
                     {calc.isOverpaid ? (() => {
-                      // v1.8.73 — restore original Change card layout (headline USD,
-                      // sub-line FRA/K equivalents), but at SELL rate. Native over-
-                      // payment per currency takes precedence when present so the
-                      // customer always gets back the EXACT amount they overpaid
-                      // (no FX spread loss on same-currency refund).
-                      const headlineUSD = (calc.overUSD || 0)
-                                        + (SELL_RATE   > 0 ? (calc.overFRA || 0) / SELL_RATE   : 0)
-                                        + (SELL_RATE_K > 0 ? (calc.overK   || 0) / SELL_RATE_K : 0);
-                      const fraEquiv = calc.overFRA > 0.5 ? calc.overFRA : (SELL_RATE   > 0 ? headlineUSD * SELL_RATE   : 0);
-                      const kEquiv   = calc.overK   > 0.5 ? calc.overK   : (SELL_RATE_K > 0 ? headlineUSD * SELL_RATE_K : 0);
+                      // v1.8.74 — practical-handback rule (Option B):
+                      //   Source currency of the over-payment → NATIVE (1:1, no FX)
+                      //   All OTHER currencies → BUY rate (real currency exchange)
+                      // So when overpaid in FRA, the FRA row shows the exact FRA the
+                      // customer overpaid (no spread loss), and the USD/K rows show
+                      // what the cashier would actually count out if converting.
+                      const usdNative = calc.overUSD || 0;
+                      const fraNative = calc.overFRA || 0;
+                      const kNative   = calc.overK   || 0;
+                      // Headline (USD): source-currency native if all over-payment is
+                      // in USD; otherwise sum of non-USD over at BUY rate.
+                      const headlineUSD = usdNative
+                                        + (BUY_RATE   > 0 ? fraNative / BUY_RATE   : 0)
+                                        + (BUY_RATE_K > 0 ? kNative   / BUY_RATE_K : 0);
+                      // Sub-line FRA: native if FRA overpaid, else headline × BUY_RATE.
+                      const fraEquiv = fraNative > 0.5
+                        ? fraNative
+                        : (BUY_RATE > 0 ? headlineUSD * BUY_RATE : 0);
+                      // Sub-line K: native if K overpaid, else headline × BUY_RATE_K.
+                      const kEquiv = kNative > 0.5
+                        ? kNative
+                        : (BUY_RATE_K > 0 ? headlineUSD * BUY_RATE_K : 0);
+                      // Rate label per sub-line: "native" if that currency is the
+                      // source, else "buy" to make the conversion explicit.
+                      const fraLabel = fraNative > 0.5 ? 'native' : `buy ${BUY_RATE.toLocaleString()}`;
+                      const kLabel   = kNative   > 0.5 ? 'native' : `buy ${BUY_RATE_K.toLocaleString()}`;
                       return (
                         <div style={{ background: '#ecfdf5', border: '1px solid #a7f3d0', borderRadius: 8, padding: '10px 12px' }}>
                           <div style={{ fontSize: 11, color: '#047857', fontWeight: 600 }}>Change</div>
                           <div style={{ fontSize: 20, fontWeight: 800, color: '#065f46' }}>{fmtUSD(headlineUSD)}</div>
                           {hasFra && (
                             <div style={{ fontSize: 12, color: '#047857', fontWeight: 600, marginTop: 4 }}>
-                              ≈ FRA {fmtFRA(fraEquiv)} (sell {SELL_RATE.toLocaleString()})
-                              {hasK && <> · ≈ K {fmtK(kEquiv)} (sell {SELL_RATE_K.toLocaleString()})</>}
+                              ≈ FRA {fmtFRA(fraEquiv)} ({fraLabel})
+                              {hasK && <> · ≈ K {fmtK(kEquiv)} ({kLabel})</>}
                             </div>
                           )}
                         </div>
@@ -659,7 +688,23 @@ export default function Cashier() {
             <hr style={hrStyle} />
             {confirm.isOverpaid ? (
               <>
-                <div style={confirmRow}><span>Change</span><strong>{fmtUSD(confirm.changeUSD)} <span style={{ color: '#64748b', fontWeight: 500 }}>(FRA {fmtFRA(confirm.changeFRA)})</span></strong></div>
+                {/* v1.8.74 — Option B: source currency native, others at BUY rate.
+                    Matches the Change card on the Pay panel. */}
+                {(() => {
+                  const usdNative = confirm.overUSD || 0;
+                  const fraNative = confirm.overFRA || 0;
+                  const kNative   = confirm.overK   || 0;
+                  const headlineUSD = usdNative
+                                    + (BUY_RATE   > 0 ? fraNative / BUY_RATE   : 0)
+                                    + (BUY_RATE_K > 0 ? kNative   / BUY_RATE_K : 0);
+                  const fraEquiv = fraNative > 0.5 ? fraNative : (BUY_RATE > 0 ? headlineUSD * BUY_RATE : 0);
+                  return (
+                    <div style={confirmRow}>
+                      <span>Change</span>
+                      <strong>{fmtUSD(headlineUSD)} <span style={{ color: '#64748b', fontWeight: 500 }}>(FRA {fmtFRA(fraEquiv)})</span></strong>
+                    </div>
+                  );
+                })()}
                 {(confirm.givenUSD > 0 || confirm.givenFRA > 0) && (
                   <>
                     {confirm.givenUSD > 0 && <div style={confirmRow}><span>Change Given ($)</span><strong>{fmtUSD(confirm.givenUSD)}</strong></div>}
@@ -672,20 +717,28 @@ export default function Cashier() {
                   // v1.8.72 — when picker is set, netRemaining > 0 means the over-payment
                   // is being KEPT in the chosen drawer, not "still owed". Show the chosen
                   // currency + the amount in that currency.
-                  const kept     = !exact && !overpaid && !!keptCcy;
+                  // v1.8.74 — use the EFFECTIVE picker selection (clicked OR default-
+                  // highlighted) so the label is correct even when cashier accepts the
+                  // default without clicking the button.
+                  const effectiveCcy = keptCcy
+                    || (confirm.overFRA > 0.5 ? 'FRA'
+                       : confirm.overK   > 0.5 ? 'K'
+                       : confirm.overUSD > 0.001 ? 'USD'
+                       : '');
+                  const kept     = !exact && !overpaid && !!effectiveCcy;
                   const bg       = exact ? '#ecfdf5' : overpaid ? '#fef2f2' : kept ? '#fffbeb' : '#fef3c7';
                   const label    = exact ? 'Exact Change'
                                    : overpaid ? 'Overpaid'
-                                   : kept ? `Kept in ${keptCcy} drawer`
+                                   : kept ? `Kept in ${effectiveCcy} drawer`
                                    : 'Still owed';
                   const colour   = overpaid ? '#991b1b' : kept ? '#92400e' : undefined;
                   let amountText;
                   if (exact) amountText = fmtUSD(0);
                   else if (kept) {
                     // v1.8.72 — use native per-currency over-payment (no FX round-trip).
-                    if (keptCcy === 'USD')      amountText = fmtUSD(confirm.overUSD || confirm.netRemaining);
-                    else if (keptCcy === 'FRA') amountText = `FRA ${fmtFRA(confirm.overFRA || confirm.netRemainingFRA)}`;
-                    else if (keptCcy === 'K')   amountText = `K ${fmtK(confirm.overK || confirm.netRemainingK)}`;
+                    if (effectiveCcy === 'USD')      amountText = fmtUSD(confirm.overUSD || confirm.netRemaining);
+                    else if (effectiveCcy === 'FRA') amountText = `FRA ${fmtFRA(confirm.overFRA || confirm.netRemainingFRA)}`;
+                    else if (effectiveCcy === 'K')   amountText = `K ${fmtK(confirm.overK || confirm.netRemainingK)}`;
                     else amountText = fmtUSD(confirm.netRemaining);
                   } else amountText = fmtUSD(Math.abs(confirm.netRemaining));
                   return (

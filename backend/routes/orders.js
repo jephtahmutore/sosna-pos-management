@@ -217,6 +217,32 @@ router.post('/', auth, (req, res) => {
     const _changeOwedUSD = parseFloat(change_amount || 0) || 0;
     const _fraGivenAsUSD = (sellingRateUsed  || 0) > 0 ? fraChangeGiven / sellingRateUsed  : 0;
     const _kGivenAsUSD   = (sellingRateKUsed || 0) > 0 ? kChangeGiven   / sellingRateKUsed : 0;
+    // v1.8.74 — compute per-currency over-payment using source-currency
+    // priority (USD pays first, then FRA, then K). Mirrors the collect-payment
+    // endpoint + frontend logic so the default keptCcy lands on the currency
+    // that actually holds the surplus.
+    const _totalDuePost = parseFloat(total_amount || 0) || 0;
+    let _remPost = _totalDuePost;
+    const _usdUsedPost = Math.min(cashIn, _remPost);
+    const overUSDcomputedPost = cashIn - _usdUsedPost;
+    _remPost -= _usdUsedPost;
+    let overFRAcomputedPost = 0;
+    if (_remPost > 0 && fraReceived > 0 && (sellingRateUsed || 0) > 0) {
+      const fraNeededP = _remPost * sellingRateUsed;
+      if (fraReceived >= fraNeededP) { overFRAcomputedPost = fraReceived - fraNeededP; _remPost = 0; }
+      else                           { _remPost -= fraReceived / sellingRateUsed; }
+    } else if (fraReceived > 0) {
+      overFRAcomputedPost = fraReceived;
+    }
+    let overKcomputedPost = 0;
+    if (_remPost > 0 && kReceived > 0 && (sellingRateKUsed || 0) > 0) {
+      const kNeededP = _remPost * sellingRateKUsed;
+      if (kReceived >= kNeededP) { overKcomputedPost = kReceived - kNeededP; _remPost = 0; }
+      else                       { _remPost -= kReceived / sellingRateKUsed; }
+    } else if (kReceived > 0) {
+      overKcomputedPost = kReceived;
+    }
+
     let overpaidKeptCcy = (overpaid_kept_ccy || '').toUpperCase();
     if (!['USD', 'FRA', 'K'].includes(overpaidKeptCcy)) overpaidKeptCcy = null;
     let overpaidKeptAmt = parseFloat(overpaid_kept_amt || 0) || 0;
@@ -232,11 +258,27 @@ router.post('/', auth, (req, res) => {
     } else {
       usdChangeGiven = Math.max(0, _changeOwedUSD - _fraGivenAsUSD - _kGivenAsUSD);
     }
+    // v1.8.74 — when keptCcy missing, default to source-currency of the
+    // over-payment (FRA → K → USD priority) instead of legacy USD default.
+    if (!overpaidKeptCcy && _changeOwedUSD > 0.005) {
+      if      (overFRAcomputedPost > 0.5)   overpaidKeptCcy = 'FRA';
+      else if (overKcomputedPost   > 0.5)   overpaidKeptCcy = 'K';
+      else if (overUSDcomputedPost > 0.001) overpaidKeptCcy = 'USD';
+    }
     if (overpaidKeptCcy && overpaidKeptAmt < 0.005) {
+      // Prefer native source-currency amount; fall back to USD-equivalent × rate.
       const keptUSD = Math.max(0, _changeOwedUSD - _fraGivenAsUSD - _kGivenAsUSD - usdChangeGiven);
-      if (overpaidKeptCcy === 'USD')      overpaidKeptAmt = keptUSD;
-      else if (overpaidKeptCcy === 'FRA') overpaidKeptAmt = (sellingRateUsed  || 0) > 0 ? keptUSD * sellingRateUsed  : 0;
-      else if (overpaidKeptCcy === 'K')   overpaidKeptAmt = (sellingRateKUsed || 0) > 0 ? keptUSD * sellingRateKUsed : 0;
+      if (overpaidKeptCcy === 'USD') {
+        overpaidKeptAmt = overUSDcomputedPost > 0.001 ? overUSDcomputedPost : keptUSD;
+      } else if (overpaidKeptCcy === 'FRA') {
+        overpaidKeptAmt = overFRAcomputedPost > 0.5
+          ? overFRAcomputedPost
+          : ((sellingRateUsed  || 0) > 0 ? keptUSD * sellingRateUsed  : 0);
+      } else if (overpaidKeptCcy === 'K') {
+        overpaidKeptAmt = overKcomputedPost > 0.5
+          ? overKcomputedPost
+          : ((sellingRateKUsed || 0) > 0 ? keptUSD * sellingRateKUsed : 0);
+      }
     }
     if (overpaidKeptAmt < 0.005) { overpaidKeptCcy = null; overpaidKeptAmt = 0; }
     // Administrator-only back-dating: when the POS Pay modal sends an explicit
@@ -565,29 +607,62 @@ router.put('/:id/collect-payment', auth, requirePagePerm('Cashier'), (req, res) 
       const givenKasUSD   = sellRateK > 0 ? givenK   / sellRateK : 0;
       const totalGivenAsUSD = givenUSDasUSD + givenFRAasUSD + givenKasUSD;
       const overpaidKeptUSD = Math.max(0, change - totalGivenAsUSD);
-      // Pick currency: explicit param wins; else the currency the customer
-      // paid the most in (FRA-only → FRA, K-only → K, USD-only → USD).
+      // v1.8.74 — attribute the over-payment to its SOURCE currency using
+      // the same priority chain as the frontend (USD pays first, then FRA,
+      // then K). Whatever's left over in each currency is the native
+      // over-payment in that currency. Backend default keptCcy then matches
+      // the currency that actually holds the surplus — not the legacy
+      // "FRA-only/K-only/else USD" heuristic which incorrectly picked USD
+      // any time the customer also paid some USD.
+      let _remBe = totalDue;
+      const _usdUsedBe = Math.min(paidUSD, _remBe);
+      const overUSDcomputed = paidUSD - _usdUsedBe;
+      _remBe -= _usdUsedBe;
+      let overFRAcomputed = 0;
+      if (_remBe > 0 && paidFRA > 0 && sellRate > 0) {
+        const fraNeeded = _remBe * sellRate;
+        if (paidFRA >= fraNeeded) { overFRAcomputed = paidFRA - fraNeeded; _remBe = 0; }
+        else                      { _remBe -= paidFRA / sellRate; }
+      } else if (paidFRA > 0) {
+        overFRAcomputed = paidFRA;
+      }
+      let overKcomputed = 0;
+      if (_remBe > 0 && paidK > 0 && sellRateK > 0) {
+        const kNeeded = _remBe * sellRateK;
+        if (paidK >= kNeeded) { overKcomputed = paidK - kNeeded; _remBe = 0; }
+        else                  { _remBe -= paidK / sellRateK; }
+      } else if (paidK > 0) {
+        overKcomputed = paidK;
+      }
+      // Pick currency: explicit param wins; else default to the currency
+      // that actually holds the over-payment (FRA → K → USD priority).
       let keptCcy = (overpaid_kept_ccy || '').toUpperCase();
       if (overpaidKeptUSD < 0.005) {
         keptCcy = null;
       } else if (!['USD', 'FRA', 'K'].includes(keptCcy)) {
-        if      (paidFRA > 0 && paidUSD <= 0 && paidK   <= 0) keptCcy = 'FRA';
-        else if (paidK   > 0 && paidUSD <= 0 && paidFRA <= 0) keptCcy = 'K';
-        else                                                   keptCcy = 'USD';
+        if      (overFRAcomputed > 0.5)   keptCcy = 'FRA';
+        else if (overKcomputed   > 0.5)   keptCcy = 'K';
+        else if (overUSDcomputed > 0.001) keptCcy = 'USD';
+        else                              keptCcy = 'USD';
       }
       // v1.8.72 — prefer the NATIVE amount sent by the frontend (it computed
       // it directly from `paidFRA − fraNeeded`, no FX round-trip). Fall back
-      // to USD-equivalent × rate only when the client didn't send it.
+      // to source-currency native value computed above; only as a last resort
+      // (no sellRate at all) do we round-trip via overpaidKeptUSD.
       const explicitKeptAmt = parseFloat(overpaid_kept_amt || 0) || 0;
       let keptAmt = 0;
       if (keptCcy && explicitKeptAmt > 0.005) {
         keptAmt = explicitKeptAmt;
       } else if (keptCcy === 'FRA') {
-        keptAmt = sellRate  > 0 ? overpaidKeptUSD * sellRate  : 0;
+        keptAmt = overFRAcomputed > 0.5
+          ? overFRAcomputed
+          : (sellRate  > 0 ? overpaidKeptUSD * sellRate  : 0);
       } else if (keptCcy === 'K') {
-        keptAmt = sellRateK > 0 ? overpaidKeptUSD * sellRateK : 0;
+        keptAmt = overKcomputed > 0.5
+          ? overKcomputed
+          : (sellRateK > 0 ? overpaidKeptUSD * sellRateK : 0);
       } else if (keptCcy === 'USD') {
-        keptAmt = overpaidKeptUSD;
+        keptAmt = overUSDcomputed > 0.001 ? overUSDcomputed : overpaidKeptUSD;
       }
 
       // v1.8.49 — credit-at-Cashier. When the order has a registered

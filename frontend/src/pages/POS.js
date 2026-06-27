@@ -1929,12 +1929,13 @@ const POS = () => {
                       {money(enoughPaid ? changeNow : balanceDue)}
                     </span>
                   </div>
-                  {/* v1.8.73 — show native FRA equivalent at SELL rate (matches the
-                      Unpaid Balance sub-line). Same-currency refund = no FX spread. */}
+                  {/* v1.8.74 — Option B: source currency native, others at BUY rate.
+                      If over-payment is in FRA, show exact FRA (no spread loss).
+                      Otherwise, show what cashier would count out if converting via buy rate. */}
                   {isDual && enoughPaid && changeNow > 0.001 && (
                     <div style={{ display: 'flex', justifyContent: 'flex-end', padding: '2px 0', fontSize: 11, color: '#166534', fontWeight: 600 }}>
-                      ≈ FRA {(overFRApos > 0.5 ? overFRApos : (SELL_RATE > 0 ? changeNow * SELL_RATE : 0)).toLocaleString(undefined, { maximumFractionDigits: 0 })}
-                      {' '}(sell {SELL_RATE.toLocaleString()})
+                      ≈ FRA {(overFRApos > 0.5 ? overFRApos : (BUY_RATE > 0 ? changeNow * BUY_RATE : 0)).toLocaleString(undefined, { maximumFractionDigits: 0 })}
+                      {' '}({overFRApos > 0.5 ? 'native' : `buy ${BUY_RATE.toLocaleString()}`})
                     </div>
                   )}
 
