@@ -232,17 +232,17 @@ export default function Cashier() {
         overpaid_kept_amt: (() => {
           if (confirm.netRemaining <= 0.005) return 0;
           const ccy = keptCcy || (hasFra ? 'FRA' : hasK ? 'K' : 'USD');
-          // Prefer the native source-currency amount when available; otherwise
-          // convert the USD-equivalent netRemaining via the bill's sell rate
-          // (so e.g. defaulting to FRA when over-payment was actually USD still
-          // stores a sensible FRA amount = USD-overpayment × sell rate).
+          // v1.8.79 — when converting the USD-leftover to FRA/K storage, use
+          // the BUY rate. Buy rate is what the frontend already used to display
+          // "Change ≈ FRA 148,200" so this keeps the math consistent: 148,200
+          // owed − 148,000 given = 200 stored (was 203 at sell rate).
           if (ccy === 'FRA') {
             return confirm.overFRA > 0.5 ? confirm.overFRA
-                 : (SELL_RATE > 0 ? confirm.netRemaining * SELL_RATE : 0);
+                 : (BUY_RATE > 0 ? confirm.netRemaining * BUY_RATE : 0);
           }
           if (ccy === 'K') {
             return confirm.overK > 0.5 ? confirm.overK
-                 : (SELL_RATE_K > 0 ? confirm.netRemaining * SELL_RATE_K : 0);
+                 : (BUY_RATE_K > 0 ? confirm.netRemaining * BUY_RATE_K : 0);
           }
           if (ccy === 'USD') {
             return confirm.overUSD > 0.001 ? confirm.overUSD : confirm.netRemaining;
@@ -742,21 +742,21 @@ export default function Cashier() {
                   let amountText;
                   if (exact) amountText = fmtUSD(0);
                   else if (kept) {
-                    // v1.8.72/78 — display matches what the payload stores: native
-                    // source-currency over-payment when present; otherwise convert
-                    // the USD-equivalent surplus via the bill's SELL rate (matches
-                    // the rate the bill was quoted in).
+                    // v1.8.79 — display matches the payload: native source-currency
+                    // over-payment when present; otherwise convert USD-leftover at
+                    // BUY rate (matches the "Change ≈ FRA X" headline rate so the
+                    // subtraction is clean: 148,200 owed − 148,000 given = 200).
                     if (effectiveCcy === 'USD') {
                       amountText = fmtUSD(confirm.overUSD || confirm.netRemaining);
                     } else if (effectiveCcy === 'FRA') {
                       const fraAmt = confirm.overFRA > 0.5
                         ? confirm.overFRA
-                        : (SELL_RATE > 0 ? confirm.netRemaining * SELL_RATE : 0);
+                        : (BUY_RATE > 0 ? confirm.netRemaining * BUY_RATE : 0);
                       amountText = `FRA ${fmtFRA(fraAmt)}`;
                     } else if (effectiveCcy === 'K') {
                       const kAmt = confirm.overK > 0.5
                         ? confirm.overK
-                        : (SELL_RATE_K > 0 ? confirm.netRemaining * SELL_RATE_K : 0);
+                        : (BUY_RATE_K > 0 ? confirm.netRemaining * BUY_RATE_K : 0);
                       amountText = `K ${fmtK(kAmt)}`;
                     } else amountText = fmtUSD(confirm.netRemaining);
                   } else amountText = fmtUSD(Math.abs(confirm.netRemaining));

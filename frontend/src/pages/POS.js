@@ -2022,10 +2022,11 @@ const POS = () => {
                     // backend can fall back correctly even when the picker wasn't touched.
                     // v1.8.72 — also pass native keptAmt so backend doesn't round-trip via USD.
                     // v1.8.78 — default to FRA (most common at Sosna) regardless of source.
+                    // v1.8.79 — convert USD-leftover at BUY rate so kept = change owed − change given.
                     const inferredKeptCcy = payModal.keptCcy
                       || (isDual ? 'FRA' : 'USD');
                     const keptAmtNative = inferredKeptCcy === 'FRA'
-                      ? (overFRApos > 0.5 ? overFRApos : (SELL_RATE > 0 ? changeNow * SELL_RATE : 0))
+                      ? (overFRApos > 0.5 ? overFRApos : (BUY_RATE > 0 ? changeNow * BUY_RATE : 0))
                       : inferredKeptCcy === 'USD' ? (overUSDpos > 0.001 ? overUSDpos : changeNow)
                       : 0;
                     const breakdown = {

@@ -280,18 +280,19 @@ router.post('/', auth, (req, res) => {
       else if (overUSDcomputedPost > 0.001) overpaidKeptCcy = 'USD';
     }
     if (overpaidKeptCcy && overpaidKeptAmt < 0.005) {
-      // Prefer native source-currency amount; fall back to USD-equivalent × rate.
+      // v1.8.79 — fall back to USD-leftover × BUY rate (matches frontend
+      // display) instead of sell rate, so kept = change owed − change given.
       const keptUSD = Math.max(0, _changeOwedUSD - _fraGivenAsUSD - _kGivenAsUSD - usdChangeGiven);
       if (overpaidKeptCcy === 'USD') {
         overpaidKeptAmt = overUSDcomputedPost > 0.001 ? overUSDcomputedPost : keptUSD;
       } else if (overpaidKeptCcy === 'FRA') {
         overpaidKeptAmt = overFRAcomputedPost > 0.5
           ? overFRAcomputedPost
-          : ((sellingRateUsed  || 0) > 0 ? keptUSD * sellingRateUsed  : 0);
+          : ((buyingRateUsed  || 0) > 0 ? keptUSD * buyingRateUsed  : 0);
       } else if (overpaidKeptCcy === 'K') {
         overpaidKeptAmt = overKcomputedPost > 0.5
           ? overKcomputedPost
-          : ((sellingRateKUsed || 0) > 0 ? keptUSD * sellingRateKUsed : 0);
+          : ((buyingRateKUsed || 0) > 0 ? keptUSD * buyingRateKUsed : 0);
       }
     }
     if (overpaidKeptAmt < 0.005) { overpaidKeptCcy = null; overpaidKeptAmt = 0; }
@@ -666,8 +667,10 @@ router.put('/:id/collect-payment', auth, requirePagePerm('Cashier'), (req, res) 
       }
       // v1.8.72 — prefer the NATIVE amount sent by the frontend (it computed
       // it directly from `paidFRA − fraNeeded`, no FX round-trip). Fall back
-      // to source-currency native value computed above; only as a last resort
-      // (no sellRate at all) do we round-trip via overpaidKeptUSD.
+      // to source-currency native value computed above.
+      // v1.8.79 — when no native amount, convert USD-leftover at BUY rate
+      // (consistent with the frontend display rate so 200 kept stays 200,
+      // not 203 from sell rate).
       const explicitKeptAmt = parseFloat(overpaid_kept_amt || 0) || 0;
       let keptAmt = 0;
       if (keptCcy && explicitKeptAmt > 0.005) {
@@ -675,11 +678,11 @@ router.put('/:id/collect-payment', auth, requirePagePerm('Cashier'), (req, res) 
       } else if (keptCcy === 'FRA') {
         keptAmt = overFRAcomputed > 0.5
           ? overFRAcomputed
-          : (sellRate  > 0 ? overpaidKeptUSD * sellRate  : 0);
+          : (buyRate  > 0 ? overpaidKeptUSD * buyRate  : 0);
       } else if (keptCcy === 'K') {
         keptAmt = overKcomputed > 0.5
           ? overKcomputed
-          : (sellRateK > 0 ? overpaidKeptUSD * sellRateK : 0);
+          : (buyRateK > 0 ? overpaidKeptUSD * buyRateK : 0);
       } else if (keptCcy === 'USD') {
         keptAmt = overUSDcomputed > 0.001 ? overUSDcomputed : overpaidKeptUSD;
       }
