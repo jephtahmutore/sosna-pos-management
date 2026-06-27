@@ -176,6 +176,8 @@ export const createOrder = (data) => api.post('/orders', data);
 export const getOrder = (id) => api.get(`/orders/${id}`);
 export const reverseOrder = (id) => api.put(`/orders/${id}/reverse`);
 export const getCashierInbox = () => api.get('/orders/cashier-inbox');
+// v1.8.86 — read-only history of paid orders for the Cashier History tab.
+export const getCashierPaymentHistory = (limit = 50) => api.get('/orders/payment-history', { params: { limit } });
 export const collectOrderPayment = (id, data) => api.put(`/orders/${id}/collect-payment`, data);
 export const getDispatchInbox = () => api.get('/orders/dispatch-inbox');
 export const confirmDispatch = (id) => api.put(`/orders/${id}/confirm-dispatch`);

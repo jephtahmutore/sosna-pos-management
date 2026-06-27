@@ -21,6 +21,7 @@ import React, { useEffect, useState } from 'react';
 import { FiRefreshCw, FiClock, FiUser, FiShoppingCart } from 'react-icons/fi';
 import {
   getCashierInbox,
+  getCashierPaymentHistory,
   getOrder,
   collectOrderPayment,
   getSettings,
@@ -48,6 +49,12 @@ export default function Cashier() {
   const hasK   = currencyMode === 'USD+FRA+K';
   const [inbox, setInbox] = useState([]);
   const [loadingInbox, setLoadingInbox] = useState(false);
+  // v1.8.86 — Pending / History tabs. 'pending' shows the live queue + payment
+  // form. 'history' shows past paid orders in the same 3-column layout but
+  // with all inputs disabled and a Reconciliation box added.
+  const [mode, setMode] = useState('pending'); // 'pending' | 'history'
+  const [history, setHistory] = useState([]);
+  const [loadingHistory, setLoadingHistory] = useState(false);
   const [selected, setSelected] = useState(null);
   const [loadingDetail, setLoadingDetail] = useState(false);
   const [amountPaidUSD, setAmountPaidUSD] = useState('');
@@ -115,6 +122,25 @@ export default function Cashier() {
     const id = setInterval(refreshInbox, 5000);
     return () => clearInterval(id);
   }, []);
+
+  // v1.8.86 — fetch payment history when user switches to the History tab.
+  // No polling here — past orders don't change, so one fetch per open is enough.
+  const refreshHistory = async () => {
+    setLoadingHistory(true);
+    try {
+      const res = await getCashierPaymentHistory(50);
+      setHistory(Array.isArray(res.data) ? res.data : []);
+    } catch { /* ignore */ }
+    setLoadingHistory(false);
+  };
+  useEffect(() => {
+    if (mode === 'history') {
+      refreshHistory();
+      setSelected(null); // drop the live-selected order when switching tabs
+    } else {
+      setSelected(null);
+    }
+  }, [mode]);
 
   const openOrder = async (id) => {
     setLoadingDetail(true);
@@ -325,47 +351,125 @@ export default function Cashier() {
         }}>{toast.text}</div>
       )}
 
-      <div style={{ display: 'grid', gridTemplateColumns: '340px 1fr', gap: 16, height: 'calc(100vh - 200px)' }}>
-        {/* ── LEFT: Inbox queue ───────────────────────────────────────── */}
+      {/* v1.8.86 — Mode tabs (Pending / History). History is read-only. */}
+      <div style={{ display: 'flex', gap: 6, marginBottom: 12, borderBottom: '1px solid #e5e7eb' }}>
+        {[
+          { key: 'pending', label: 'Pending Payments', count: inbox.length, color: '#0ea5e9' },
+          { key: 'history', label: 'Payment History',  count: null,         color: '#7c3aed' },
+        ].map(t => {
+          const active = mode === t.key;
+          return (
+            <button key={t.key} onClick={() => setMode(t.key)}
+              style={{
+                padding: '10px 18px',
+                background: 'transparent',
+                border: 'none',
+                borderBottom: active ? `3px solid ${t.color}` : '3px solid transparent',
+                color: active ? t.color : '#64748b',
+                fontWeight: active ? 700 : 500,
+                fontSize: 13,
+                cursor: 'pointer',
+                marginBottom: -1,
+                display: 'inline-flex', alignItems: 'center', gap: 8,
+              }}>
+              {t.label}
+              {t.count !== null && (
+                <span style={{ fontSize: 11, background: active ? t.color : '#e5e7eb', color: active ? '#fff' : '#64748b', padding: '1px 8px', borderRadius: 999, fontWeight: 700 }}>
+                  {t.count}
+                </span>
+              )}
+            </button>
+          );
+        })}
+      </div>
+
+      <div style={{ display: 'grid', gridTemplateColumns: '340px 1fr', gap: 16, height: 'calc(100vh - 240px)' }}>
+        {/* ── LEFT: Inbox queue OR History list ──────────────────────── */}
         <div style={{ background: '#fff', border: '1px solid #e5e7eb', borderRadius: 10, padding: 14, overflowY: 'auto' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
-            <h3 style={{ margin: 0, fontSize: 15, color: '#0f172a' }}>Pending Payments</h3>
-            <span style={{ fontSize: 12, color: '#64748b', background: '#f1f5f9', padding: '2px 8px', borderRadius: 12 }}>
-              {inbox.length}
-            </span>
-          </div>
-          {loadingInbox && inbox.length === 0 ? (
-            <p style={{ color: '#64748b', fontSize: 13 }}>Loading…</p>
-          ) : inbox.length === 0 ? (
-            <p style={{ color: '#94a3b8', fontSize: 13, fontStyle: 'italic' }}>No pending payments</p>
-          ) : (
-            <div style={{ display: 'grid', gap: 8 }}>
-              {inbox.map(o => (
-                <div key={o.id}
-                  onClick={() => openOrder(o.id)}
-                  style={{
-                    padding: '10px 12px',
-                    border: `1.5px solid ${selected?.id === o.id ? '#2563eb' : '#e5e7eb'}`,
-                    background: selected?.id === o.id ? '#eff6ff' : '#fff',
-                    borderRadius: 8, cursor: 'pointer',
-                  }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
-                    <span style={{ fontWeight: 700, fontSize: 13, color: '#0f172a' }}>{o.order_number}</span>
-                    <span style={{ fontWeight: 700, fontSize: 14, color: '#0ea5e9' }}>{fmtUSD(o.total_amount)}</span>
-                  </div>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: '#64748b' }}>
-                    <span><FiUser size={10} style={{ verticalAlign: 'middle' }} /> {o.customer_name || 'Walk-in'}</span>
-                    <span>{o.item_count} item{o.item_count === 1 ? '' : 's'}</span>
-                  </div>
-                  {o.sales_at && (
-                    <div style={{ marginTop: 4, fontSize: 10, color: '#94a3b8' }}>
-                      <FiClock size={10} style={{ verticalAlign: 'middle' }} /> {new Date(o.sales_at).toLocaleString()}
-                      {o.sales_by_name ? ` · by ${o.sales_by_name}` : ''}
+          {mode === 'pending' ? (
+            <>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+                <h3 style={{ margin: 0, fontSize: 15, color: '#0f172a' }}>Pending Payments</h3>
+                <span style={{ fontSize: 12, color: '#64748b', background: '#f1f5f9', padding: '2px 8px', borderRadius: 12 }}>
+                  {inbox.length}
+                </span>
+              </div>
+              {loadingInbox && inbox.length === 0 ? (
+                <p style={{ color: '#64748b', fontSize: 13 }}>Loading…</p>
+              ) : inbox.length === 0 ? (
+                <p style={{ color: '#94a3b8', fontSize: 13, fontStyle: 'italic' }}>No pending payments</p>
+              ) : (
+                <div style={{ display: 'grid', gap: 8 }}>
+                  {inbox.map(o => (
+                    <div key={o.id}
+                      onClick={() => openOrder(o.id)}
+                      style={{
+                        padding: '10px 12px',
+                        border: `1.5px solid ${selected?.id === o.id ? '#2563eb' : '#e5e7eb'}`,
+                        background: selected?.id === o.id ? '#eff6ff' : '#fff',
+                        borderRadius: 8, cursor: 'pointer',
+                      }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+                        <span style={{ fontWeight: 700, fontSize: 13, color: '#0f172a' }}>{o.order_number}</span>
+                        <span style={{ fontWeight: 700, fontSize: 14, color: '#0ea5e9' }}>{fmtUSD(o.total_amount)}</span>
+                      </div>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: '#64748b' }}>
+                        <span><FiUser size={10} style={{ verticalAlign: 'middle' }} /> {o.customer_name || 'Walk-in'}</span>
+                        <span>{o.item_count} item{o.item_count === 1 ? '' : 's'}</span>
+                      </div>
+                      {o.sales_at && (
+                        <div style={{ marginTop: 4, fontSize: 10, color: '#94a3b8' }}>
+                          <FiClock size={10} style={{ verticalAlign: 'middle' }} /> {new Date(o.sales_at).toLocaleString()}
+                          {o.sales_by_name ? ` · by ${o.sales_by_name}` : ''}
+                        </div>
+                      )}
                     </div>
-                  )}
+                  ))}
                 </div>
-              ))}
-            </div>
+              )}
+            </>
+          ) : (
+            <>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+                <h3 style={{ margin: 0, fontSize: 15, color: '#0f172a' }}>Past Payments</h3>
+                <span style={{ fontSize: 12, color: '#64748b', background: '#f1f5f9', padding: '2px 8px', borderRadius: 12 }}>
+                  {history.length}
+                </span>
+              </div>
+              {loadingHistory && history.length === 0 ? (
+                <p style={{ color: '#64748b', fontSize: 13 }}>Loading…</p>
+              ) : history.length === 0 ? (
+                <p style={{ color: '#94a3b8', fontSize: 13, fontStyle: 'italic' }}>No past payments</p>
+              ) : (
+                <div style={{ display: 'grid', gap: 8 }}>
+                  {history.map(o => (
+                    <div key={o.id}
+                      onClick={() => openOrder(o.id)}
+                      style={{
+                        padding: '10px 12px',
+                        border: `1.5px solid ${selected?.id === o.id ? '#7c3aed' : '#e5e7eb'}`,
+                        background: selected?.id === o.id ? '#faf5ff' : '#fff',
+                        borderRadius: 8, cursor: 'pointer',
+                      }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+                        <span style={{ fontWeight: 700, fontSize: 13, color: '#0f172a' }}>{o.order_number}</span>
+                        <span style={{ fontWeight: 700, fontSize: 14, color: '#7c3aed' }}>{fmtUSD(o.total_amount)}</span>
+                      </div>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: '#64748b' }}>
+                        <span><FiUser size={10} style={{ verticalAlign: 'middle' }} /> {o.customer_name || 'Walk-in'}</span>
+                        <span>{o.item_count} item{o.item_count === 1 ? '' : 's'}</span>
+                      </div>
+                      {o.paid_at && (
+                        <div style={{ marginTop: 4, fontSize: 10, color: '#94a3b8' }}>
+                          <FiClock size={10} style={{ verticalAlign: 'middle' }} /> {new Date(o.paid_at).toLocaleString()}
+                          {o.cashier_name ? ` · by ${o.cashier_name}` : ''}
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </>
           )}
         </div>
 
@@ -441,7 +545,8 @@ export default function Cashier() {
                 </div>
               </div>
 
-              {/* Right half: payment */}
+              {/* Right half: payment — Pending mode (live, editable) OR History mode (read-only). */}
+              {mode === 'pending' ? (
               <div>
                 <h3 style={{ margin: '0 0 10px 0', fontSize: 16, color: '#0f172a' }}>Payment</h3>
                 <div style={{ background: '#f0f9ff', border: '1px solid #bae6fd', borderRadius: 8, padding: '12px 14px', marginBottom: 14 }}>
@@ -693,6 +798,113 @@ export default function Cashier() {
                   Confirm Payment →
                 </button>
               </div>
+              ) : (
+              // ─────── HISTORY MODE: read-only payment panel ───────
+              // Pulls stored values straight off the order row (no recompute);
+              // adds a Reconciliation box that shows the change owed / returned
+              // / ± kept in drawer math behind the Sales Report ± column.
+              <div>
+                <h3 style={{ margin: '0 0 10px 0', fontSize: 16, color: '#0f172a', display: 'flex', alignItems: 'center', gap: 8 }}>
+                  Payment
+                  <span style={{ fontSize: 10, background: '#e5e7eb', color: '#64748b', padding: '2px 8px', borderRadius: 4, fontWeight: 700, letterSpacing: 0.5 }}>READ-ONLY</span>
+                </h3>
+
+                {/* Total Due */}
+                <div style={{ background: '#f0f9ff', border: '1px solid #bae6fd', borderRadius: 8, padding: '12px 14px', marginBottom: 14 }}>
+                  <div style={{ fontSize: 11, color: '#0369a1', fontWeight: 600 }}>Total Due</div>
+                  <div style={{ fontSize: 26, fontWeight: 800, color: '#0c4a6e', lineHeight: 1.1 }}>{fmtUSD(selected.total_amount)}</div>
+                </div>
+
+                {/* FX Rate (stored) — only show if rates exist on order */}
+                {(parseFloat(selected.selling_rate_used) > 0 || parseFloat(selected.buying_rate_used) > 0) && (
+                  <div style={{ background: '#fef3c7', border: '1px solid #fde68a', borderRadius: 8, padding: 10, marginBottom: 10 }}>
+                    <div style={{ fontSize: 11, color: '#92400e', fontWeight: 700, marginBottom: 6 }}>FX Rate (locked — stored on this order)</div>
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, fontSize: 12, color: '#78350f' }}>
+                      <div>Sell FRA: <strong>{(parseFloat(selected.selling_rate_used) || 0).toLocaleString()}</strong></div>
+                      <div>Buy FRA: <strong>{(parseFloat(selected.buying_rate_used) || 0).toLocaleString()}</strong></div>
+                      {parseFloat(selected.selling_rate_k_used) > 0 && <div>Sell K: <strong>{(parseFloat(selected.selling_rate_k_used) || 0).toLocaleString()}</strong></div>}
+                      {parseFloat(selected.buying_rate_k_used)  > 0 && <div>Buy K: <strong>{(parseFloat(selected.buying_rate_k_used)  || 0).toLocaleString()}</strong></div>}
+                    </div>
+                  </div>
+                )}
+
+                {/* Amount Paid */}
+                <div style={{ marginBottom: 10 }}>
+                  <div style={{ fontSize: 11, color: '#64748b', fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 6 }}>Amount Paid</div>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8 }}>
+                    <div style={roBox}><span style={roLbl}>USD</span><strong>{fmtUSD(selected.cash_received)}</strong></div>
+                    <div style={roBox}><span style={roLbl}>FRA</span><strong>{fmtFRA(selected.fra_received)}</strong></div>
+                    <div style={roBox}><span style={roLbl}>K</span><strong>{fmtK(selected.k_received)}</strong></div>
+                  </div>
+                </div>
+
+                {/* Change Returned */}
+                <div style={{ marginBottom: 10 }}>
+                  <div style={{ fontSize: 11, color: '#64748b', fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 6 }}>Change Returned</div>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8 }}>
+                    <div style={roBox}><span style={roLbl}>USD</span><strong>{fmtUSD(selected.usd_change_given)}</strong></div>
+                    <div style={roBox}><span style={roLbl}>FRA</span><strong>{fmtFRA(selected.fra_change_given)}</strong></div>
+                    <div style={roBox}><span style={roLbl}>K</span><strong>{fmtK(selected.k_change_given)}</strong></div>
+                  </div>
+                </div>
+
+                {/* Reconciliation box — explains the ± column from Sales Report */}
+                {(() => {
+                  const totalDue = parseFloat(selected.total_amount) || 0;
+                  const paidUSD  = parseFloat(selected.cash_received) || 0;
+                  const paidFRA  = parseFloat(selected.fra_received)  || 0;
+                  const paidK    = parseFloat(selected.k_received)    || 0;
+                  const sellFRA  = parseFloat(selected.selling_rate_used)   || 0;
+                  const sellK    = parseFloat(selected.selling_rate_k_used) || 0;
+                  const buyFRA   = parseFloat(selected.buying_rate_used)    || 0;
+                  const buyK     = parseFloat(selected.buying_rate_k_used)  || 0;
+                  const totalPaidUSDeq = paidUSD + (sellFRA > 0 ? paidFRA / sellFRA : 0) + (sellK > 0 ? paidK / sellK : 0);
+                  const changeOwed = Math.max(0, totalPaidUSDeq - totalDue);
+                  const givenUSD = parseFloat(selected.usd_change_given) || 0;
+                  const givenFRA = parseFloat(selected.fra_change_given) || 0;
+                  const givenK   = parseFloat(selected.k_change_given)   || 0;
+                  const totalGivenUSDeq = givenUSD + (buyFRA > 0 ? givenFRA / buyFRA : 0) + (buyK > 0 ? givenK / buyK : 0);
+                  const keptCcy = (selected.overpaid_kept_ccy || '').toUpperCase();
+                  const keptAmt = parseFloat(selected.overpaid_kept_amt) || 0;
+                  const keptDisplay = keptCcy === 'USD' ? fmtUSD(keptAmt)
+                                    : keptCcy === 'FRA' ? `${fmtFRA(keptAmt)} FRA`
+                                    : keptCcy === 'K'   ? `${fmtK(keptAmt)} K`
+                                    : '—';
+                  return (
+                    <div style={{ background: '#f8fafc', border: '1px solid #e5e7eb', borderRadius: 8, padding: 12, marginBottom: 10 }}>
+                      <div style={{ fontSize: 11, color: '#475569', fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 8 }}>Reconciliation</div>
+                      <div style={{ fontSize: 12, color: '#475569', display: 'grid', rowGap: 4 }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>Total paid (USD-equiv)</span><strong>{fmtUSD(totalPaidUSDeq)}</strong></div>
+                        <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>Change owed</span><strong>{fmtUSD(changeOwed)}</strong></div>
+                        <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>Change returned (USD-eq)</span><strong>{fmtUSD(totalGivenUSDeq)}</strong></div>
+                        {keptAmt > 0 && (
+                          <div style={{ display: 'flex', justifyContent: 'space-between', borderTop: '1px dashed #e5e7eb', paddingTop: 4, marginTop: 2 }}>
+                            <span style={{ fontWeight: 700, color: '#16a34a' }}>± Kept in drawer</span>
+                            <strong style={{ color: '#16a34a' }}>+{keptDisplay}</strong>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })()}
+
+                {/* "Paid" badge replaces the Confirm Payment button */}
+                <div style={{
+                  marginTop: 18, width: '100%', padding: '14px',
+                  background: '#dcfce7', border: '1px solid #86efac',
+                  color: '#15803d', borderRadius: 8,
+                  fontSize: 14, fontWeight: 700, textAlign: 'center',
+                }}>
+                  ✓ Paid · Confirmed
+                  {selected.paid_at && (
+                    <div style={{ fontSize: 11, fontWeight: 500, marginTop: 4 }}>
+                      {new Date(selected.paid_at).toLocaleString()}
+                      {selected.cashier_name ? ` · by ${selected.cashier_name}` : ''}
+                    </div>
+                  )}
+                </div>
+              </div>
+              )}
             </div>
           )}
         </div>
@@ -999,3 +1211,6 @@ const lblStyle = { display: 'block', fontSize: 11, color: '#64748b', fontWeight:
 const inputStyle = { width: '100%', padding: '10px 12px', border: '1px solid #d1d5db', borderRadius: 6, fontSize: 14, boxSizing: 'border-box' };
 const confirmRow = { display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '6px 0', color: '#0f172a', fontSize: 13 };
 const hrStyle = { border: 'none', borderTop: '1px solid #e2e8f0', margin: '10px 0' };
+// v1.8.86 — read-only payment cells in the History tab.
+const roBox = { background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 6, padding: '8px 10px', fontSize: 13, color: '#0f172a', display: 'flex', flexDirection: 'column', gap: 2 };
+const roLbl = { fontSize: 10, color: '#94a3b8', fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5 };

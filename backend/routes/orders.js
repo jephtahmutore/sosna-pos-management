@@ -31,6 +31,33 @@ router.get('/', auth, readOnlyGuard, (req, res) => {
   }
 });
 
+// v1.8.86 — Cashier Payment History: read-only list of orders the Cashier
+// has already collected payment on. Newest first, limited to 50 by default
+// (override with ?limit=N). Same column shape as cashier-inbox so the same
+// list card UI can render it without changes.
+router.get('/payment-history', auth, readOnlyGuard, (req, res) => {
+  try {
+    const limit = Math.min(parseInt(req.query.limit) || 50, 200);
+    const rows = db.prepare(
+      `SELECT o.id, o.order_number, o.customer_name, o.total_amount, o.subtotal, o.discount,
+              o.paid_at, o.sales_at, o.cashier_user_id, o.currency,
+              TRIM(COALESCE(uc.first_name, '') || ' ' || COALESCE(uc.last_name, '')) AS cashier_name,
+              TRIM(COALESCE(uc.first_name, '') || ' ' || COALESCE(uc.last_name, '')) AS sales_by_name,
+              (SELECT COUNT(*) FROM order_items oi WHERE oi.order_sync_id = o.sync_id AND oi.deleted_at IS NULL) AS item_count
+       FROM orders o
+       LEFT JOIN users uc ON uc.id = o.cashier_user_id
+       WHERE o.deleted_at IS NULL
+         AND o.status IN ('PAID', 'DISPATCHED', 'COMPLETED')
+         AND o.tenant_id = ?
+       ORDER BY COALESCE(o.paid_at, o.created_at) DESC
+       LIMIT ?`
+    ).all(req.user.tenantId, limit);
+    res.json(rows);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // Dispatch inbox — list orders that the Cashier has collected payment on
 // and that are now waiting to be physically released by the Dispatch
 // station. Same FIFO ordering as the Cashier inbox so the oldest order
@@ -544,9 +571,12 @@ router.get('/product-summary', auth, readOnlyGuard, (req, res) => {
 router.get('/:id', auth, readOnlyGuard, (req, res) => {
   try {
     const order = db.prepare(
-      `SELECT o.*, TRIM(COALESCE(u.first_name, '') || ' ' || COALESCE(u.last_name, '')) AS created_by_name
+      `SELECT o.*,
+              TRIM(COALESCE(u.first_name,  '') || ' ' || COALESCE(u.last_name,  '')) AS created_by_name,
+              TRIM(COALESCE(uc.first_name, '') || ' ' || COALESCE(uc.last_name, '')) AS cashier_name
        FROM orders o
-       LEFT JOIN users u ON u.id = o.created_by
+       LEFT JOIN users u  ON u.id  = o.created_by
+       LEFT JOIN users uc ON uc.id = o.cashier_user_id
        WHERE o.id = ? AND o.deleted_at IS NULL AND o.tenant_id = ?`
     ).get(req.params.id, req.user.tenantId);
     const items = db.prepare(

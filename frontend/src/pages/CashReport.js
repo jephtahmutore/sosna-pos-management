@@ -1002,42 +1002,52 @@ const CashReport = () => {
                       style={{ ...inputStyle(editMode), marginTop: 4, fontSize: 18, fontWeight: 700, color: '#111827' }} />
                   </div>
 
-                  {/* Breakdown → Total cash in (bookable to CR) */}
-                  <div style={{ fontSize: 12, color: '#475569', display: 'flex', flexDirection: 'column', gap: 6 }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                      <span>+ Expenses paid</span>
-                      <span style={{ color: c.exp > 0 ? '#374151' : '#9ca3af', fontWeight: 600 }}>{fmt(c.exp)}</span>
-                    </div>
-                    <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                      <span>± Drawer exchanges</span>
-                      <span style={{ color: exch !== 0 ? '#7c3aed' : '#9ca3af', fontWeight: 600 }}>
-                        {exchAdj > 0 ? '+' : ''}{fmt(exchAdj)}
-                      </span>
-                    </div>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', borderTop: '1px solid #e5e7eb', paddingTop: 8, marginTop: 2 }}>
-                      <span style={{ fontWeight: 700, fontSize: 13, color: '#111827' }}>= Total cash in</span>
-                      <span style={{ fontWeight: 800, fontSize: 17, color: c.color, whiteSpace: 'nowrap' }}>{fmt(totalCashIn)}</span>
-                    </div>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 4 }}>
-                      <span style={{ color: '#9ca3af', fontSize: 11 }}>Expected sales (POS)</span>
-                      <span style={{ color: '#9ca3af', fontWeight: 500, fontSize: 12, whiteSpace: 'nowrap' }}>{fmt(c.posExp)}</span>
-                    </div>
+                  {/* Breakdown → Total cash in (bookable to CR).
+                      v1.8.86 — 2-col grid pulled left (maxWidth 260) so the
+                      number sits closer to the label instead of stuck at the
+                      card's right edge. Dead space on right is intentional. */}
+                  <div style={{
+                    fontSize: 12, color: '#475569',
+                    display: 'grid',
+                    gridTemplateColumns: '1fr auto',
+                    columnGap: 16,
+                    rowGap: 6,
+                    maxWidth: 260,
+                  }}>
+                    <span>+ Expenses paid</span>
+                    <span style={{ color: c.exp > 0 ? '#374151' : '#9ca3af', fontWeight: 600, whiteSpace: 'nowrap', textAlign: 'right' }}>{fmt(c.exp)}</span>
+
+                    <span>± Drawer exchanges</span>
+                    <span style={{ color: exch !== 0 ? '#7c3aed' : '#9ca3af', fontWeight: 600, whiteSpace: 'nowrap', textAlign: 'right' }}>
+                      {exchAdj > 0 ? '+' : ''}{fmt(exchAdj)}
+                    </span>
+
+                    <div style={{ gridColumn: '1 / span 2', borderTop: '1px solid #e5e7eb', marginTop: 2 }} />
+
+                    <span style={{ fontWeight: 700, fontSize: 13, color: '#111827', paddingTop: 4 }}>= Total cash in</span>
+                    <span style={{ fontWeight: 800, fontSize: 17, color: c.color, whiteSpace: 'nowrap', textAlign: 'right', paddingTop: 4 }}>{fmt(totalCashIn)}</span>
+
+                    <span style={{ color: '#9ca3af', fontSize: 11, paddingTop: 2 }}>Expected sales (POS)</span>
+                    <span style={{ color: '#9ca3af', fontWeight: 500, fontSize: 12, whiteSpace: 'nowrap', textAlign: 'right', paddingTop: 2 }}>{fmt(c.posExp)}</span>
                   </div>
                 </div>
 
-                {/* Footer Diff strip — full-width rounded bottom */}
+                {/* Footer Diff strip — full-width rounded bottom.
+                    v1.8.86 — inner pair wrapped in maxWidth: 260 so status +
+                    diff value pull left, matching the breakdown above. */}
                 <div style={{
                   background: footerBg,
                   borderTop: `1px solid ${footerBorder}`,
                   padding: '10px 16px',
-                  display: 'flex', justifyContent: 'space-between', alignItems: 'center',
                 }}>
-                  <span style={{ fontSize: 11, color: footerColor, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5 }}>
-                    {isOk ? '✓ Balanced' : status}
-                  </span>
-                  <span style={{ color: footerColor, fontWeight: 800, fontSize: 14, whiteSpace: 'nowrap' }}>
-                    {diff > 0 ? '+' : ''}{fmt(diff)}
-                  </span>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', maxWidth: 260 }}>
+                    <span style={{ fontSize: 11, color: footerColor, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5 }}>
+                      {isOk ? '✓ Balanced' : status}
+                    </span>
+                    <span style={{ color: footerColor, fontWeight: 800, fontSize: 14, whiteSpace: 'nowrap' }}>
+                      {diff > 0 ? '+' : ''}{fmt(diff)}
+                    </span>
+                  </div>
                 </div>
               </div>
             );
@@ -1093,30 +1103,41 @@ const CashReport = () => {
                     </div>
                   </div>
 
-                  <div style={{ fontSize: 12, color: '#475569', display: 'flex', flexDirection: 'column', gap: 6 }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', borderTop: '1px solid #e5e7eb', paddingTop: 8 }}>
+                  {/* v1.8.86 — pulled-left layout to match cash cards (Option C). */}
+                  <div>
+                    <div style={{
+                      fontSize: 12, color: '#475569',
+                      display: 'grid',
+                      gridTemplateColumns: '1fr auto',
+                      columnGap: 16,
+                      rowGap: 6,
+                      maxWidth: 260,
+                      borderTop: '1px solid #e5e7eb',
+                      paddingTop: 8,
+                    }}>
                       <span style={{ fontWeight: 700, fontSize: 13, color: '#111827' }}>= Becomes receivable</span>
-                      <span style={{ fontWeight: 800, fontSize: 17, color: '#dc2626' }}>{fmt(counted)}</span>
+                      <span style={{ fontWeight: 800, fontSize: 17, color: '#dc2626', whiteSpace: 'nowrap', textAlign: 'right' }}>{fmt(counted)}</span>
                     </div>
-                    <div style={{ marginTop: 4, fontSize: 11, color: '#9ca3af', lineHeight: 1.45 }}>
+                    <div style={{ marginTop: 10, fontSize: 11, color: '#9ca3af', lineHeight: 1.45 }}>
                       Credit owed by customers from today's sales. Not cash — does not affect any drawer.
                     </div>
                   </div>
                 </div>
 
-                {/* Footer — red strip, mirrors cash card structure */}
+                {/* Footer — red strip, mirrors cash card pulled-left layout */}
                 <div style={{
                   background: '#fef2f2',
                   borderTop: '1px solid #fecaca',
                   padding: '10px 16px',
-                  display: 'flex', justifyContent: 'space-between', alignItems: 'center',
                 }}>
-                  <span style={{ fontSize: 11, color: '#991b1b', fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5 }}>
-                    📋 Receivable (AR)
-                  </span>
-                  <span style={{ color: '#991b1b', fontWeight: 800, fontSize: 14 }}>
-                    {fmt(counted)}
-                  </span>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', maxWidth: 260 }}>
+                    <span style={{ fontSize: 11, color: '#991b1b', fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5 }}>
+                      📋 Receivable (AR)
+                    </span>
+                    <span style={{ color: '#991b1b', fontWeight: 800, fontSize: 14, whiteSpace: 'nowrap' }}>
+                      {fmt(counted)}
+                    </span>
+                  </div>
                 </div>
               </div>
             );
@@ -1940,25 +1961,56 @@ const CashReport = () => {
               <p style={{ margin: '0 0 16px', fontSize: 13.5, color: '#374151', lineHeight: 1.6 }}>
                 A Cash Receipt from <strong>Sales</strong> already exists for <strong>{formatDate(date)}</strong>:
               </p>
-              <div style={{ padding: '12px 16px', background: '#eff6ff', border: '1px solid #bfdbfe', borderRadius: 9, marginBottom: 16, fontSize: 13 }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                  <span style={{ fontWeight: 700, color: '#1d4ed8', fontFamily: 'monospace' }}>{existingCR.receipt_number}</span>
-                  <span style={{ color: '#6b7280' }}>Current amount:</span>
-                  <span style={{ fontWeight: 700, color: '#1d4ed8' }}>${parseFloat(existingCR.amount || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
-                </div>
-              </div>
-              <p style={{ margin: '0 0 6px', fontSize: 13.5, color: '#374151', lineHeight: 1.6 }}>
-                Do you want to update it with the new amount?
-              </p>
-              <div style={{ padding: '10px 14px', background: '#f0fdf4', border: '1px solid #86efac', borderRadius: 8, fontSize: 13 }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                  <span style={{ color: '#15803d' }}>New amount:</span>
-                  <span style={{ fontWeight: 700, color: '#15803d', fontSize: 15 }}>${parseFloat(pendingCRData.amount || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
-                </div>
-                <div style={{ fontSize: 11.5, color: '#6b7280', marginTop: 4 }}>
-                  Description: <em>{pendingCRData.description}</em>
-                </div>
-              </div>
+              {/* v1.8.86 — triple-currency breakdown so the user sees what's
+                  actually being replaced per drawer, not just USD-equivalent. */}
+              {(() => {
+                const fmtUSD = (n) => `$${parseFloat(n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+                const fmtInt = (n) => parseFloat(n || 0).toLocaleString(undefined, { maximumFractionDigits: 0 });
+                const Row = ({ label, valueColor, usd, fra, k }) => (
+                  <div style={{ fontSize: 12, display: 'flex', flexDirection: 'column', gap: 3 }}>
+                    <div style={{ color: '#6b7280', fontSize: 11, fontWeight: 600, marginBottom: 2 }}>{label}</div>
+                    <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                      <span style={{ color: '#6b7280' }}>USD</span>
+                      <span style={{ fontWeight: 700, color: valueColor, fontFamily: 'monospace' }}>{fmtUSD(usd)}</span>
+                    </div>
+                    <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                      <span style={{ color: '#6b7280' }}>FRA</span>
+                      <span style={{ fontWeight: 700, color: valueColor, fontFamily: 'monospace' }}>{fmtInt(fra)}</span>
+                    </div>
+                    <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                      <span style={{ color: '#6b7280' }}>K</span>
+                      <span style={{ fontWeight: 700, color: valueColor, fontFamily: 'monospace' }}>{fmtInt(k)}</span>
+                    </div>
+                  </div>
+                );
+                return (
+                  <>
+                    <div style={{ padding: '12px 16px', background: '#eff6ff', border: '1px solid #bfdbfe', borderRadius: 9, marginBottom: 16 }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8, paddingBottom: 8, borderBottom: '1px dashed #bfdbfe' }}>
+                        <span style={{ fontWeight: 700, color: '#1d4ed8', fontFamily: 'monospace', fontSize: 13 }}>{existingCR.receipt_number}</span>
+                        <span style={{ fontSize: 10, color: '#6b7280', fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.5 }}>Current</span>
+                      </div>
+                      <Row label="" valueColor="#1d4ed8"
+                           usd={existingCR.usd_amount || existingCR.amount}
+                           fra={existingCR.fra_amount}
+                           k={existingCR.k_amount} />
+                    </div>
+                    <p style={{ margin: '0 0 6px', fontSize: 13.5, color: '#374151', lineHeight: 1.6 }}>
+                      Do you want to update it with the new amount?
+                    </p>
+                    <div style={{ padding: '12px 16px', background: '#f0fdf4', border: '1px solid #86efac', borderRadius: 8 }}>
+                      <div style={{ marginBottom: 8, paddingBottom: 8, borderBottom: '1px dashed #86efac', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                        <span style={{ fontSize: 11, color: '#15803d', fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5 }}>New</span>
+                        <span style={{ fontSize: 11, color: '#6b7280' }}><em>{pendingCRData.description}</em></span>
+                      </div>
+                      <Row label="" valueColor="#15803d"
+                           usd={pendingCRData.usd_amount}
+                           fra={pendingCRData.fra_amount}
+                           k={pendingCRData.k_amount} />
+                    </div>
+                  </>
+                );
+              })()}
             </div>
 
             {/* Footer */}

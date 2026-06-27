@@ -64,7 +64,10 @@ router.get('/check-sales', auth, readOnlyGuard, (req, res) => {
     if (!date) return res.json({ exists: false });
     const receivedFrom = received_from || 'Sales';
     const row = db.prepare(
-      'SELECT id, receipt_number, amount FROM cash_receipts WHERE deleted_at IS NULL AND tenant_id = ? AND received_from = ? AND date = ?'
+      `SELECT id, receipt_number, amount,
+              usd_amount, fra_amount, k_amount
+         FROM cash_receipts
+        WHERE deleted_at IS NULL AND tenant_id = ? AND received_from = ? AND date = ?`
     ).get(req.user.tenantId, receivedFrom, date);
     if (row) {
       res.json({ exists: true, ...row });
