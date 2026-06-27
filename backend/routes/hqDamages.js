@@ -111,18 +111,33 @@ router.put('/:slug/:id/confirm', hqAuth, (req, res) => {
     if (!ret) return res.status(404).json({ error: 'Damage not found' });
     if (ret.status !== 'PENDING') return res.status(400).json({ error: `Damage is ${ret.status}, not PENDING` });
 
+    // v1.8.96 — also fetch the BRANCH's local product.id (p.id) via sync_id.
+    // Previously the INSERT below used sri.product_id, which is whatever local
+    // id the originating device stored — may not match this branch DB's local
+    // ids → FOREIGN KEY constraint failed on stock_movements(product_id).
     const items = db.prepare(`
-      SELECT sri.*, p.unit AS product_base_unit, p.alt_unit, p.conversion_factor, p.units_json
+      SELECT sri.*, p.id AS local_product_id,
+             p.unit AS product_base_unit, p.alt_unit, p.conversion_factor, p.units_json
         FROM sales_return_items sri
         LEFT JOIN products p ON p.sync_id = sri.product_sync_id
        WHERE sri.return_sync_id = ? AND sri.deleted_at IS NULL
     `).all(ret.sync_id);
 
-    const confirmedBy = req.user.id || null;
     const confirmedByName = req.user.firstName || req.user.email || 'HQ';
+    // v1.8.96 — created_by for branch-side stock_movements: prefer the branch
+    // user who originally declared the damage (their id exists on this DB),
+    // fall back to NULL. HQ user's id (req.user.id) was failing FK because
+    // HQ users don't exist in branch user tables.
+    const movementCreatedBy = ret.created_by || null;
 
     db.transaction(() => {
       for (const it of items) {
+        if (!it.local_product_id) {
+          throw Object.assign(
+            new Error(`Product not found on this branch (sync_id=${it.product_sync_id}). Cannot confirm damage.`),
+            { status: 400 }
+          );
+        }
         const prod = { unit: it.product_base_unit, alt_unit: it.alt_unit, conversion_factor: it.conversion_factor, units_json: it.units_json };
         const baseQty = parseFloat(it.quantity) * conversionToBase(prod, it.unit);
         db.prepare(`
@@ -132,9 +147,9 @@ router.put('/:slug/:id/confirm', hqAuth, (req, res) => {
                                        created_at, updated_at, reference_sync_id)
           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0,?,datetime('now'),?)
         `).run(
-          it.product_id, it.product_sync_id, 'sales', 'sales_return', -baseQty,
+          it.local_product_id, it.product_sync_id, 'sales', 'sales_return', -baseQty,
           ret.id, 'sales_return', ret.notes || null,
-          confirmedBy, randomUUID(), ret.tenant_id, ret.branch_id, ret.device_id,
+          movementCreatedBy, randomUUID(), ret.tenant_id, ret.branch_id, ret.device_id,
           ret.date, ret.sync_id
         );
       }
@@ -144,7 +159,7 @@ router.put('/:slug/:id/confirm', hqAuth, (req, res) => {
                confirmed_by = ?, confirmed_by_name = ?, confirmed_at = datetime('now'),
                confirm_notes = ?, synced = 0
          WHERE id = ?
-      `).run(confirmedBy, confirmedByName, req.body?.confirm_notes || null, req.params.id);
+      `).run(req.user.id || null, confirmedByName, req.body?.confirm_notes || null, req.params.id);
     })();
 
     recalculateDailyProfit(db, ret.date, ret.tenant_id);
