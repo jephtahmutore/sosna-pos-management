@@ -440,14 +440,12 @@ const CashReport = () => {
         setEditMode(false);
         await fetchReports();
 
-        // v1.8.1 — Sosna is cash-only across 3 currencies. The CR records the
-        // USD-equivalent total (cash drawer combined). FRA and K amounts are
-        // tracked in the Cash Report itself; CR books the consolidated USD
-        // figure so downstream ledgers (Cash Book) stay in one currency.
+        // Sosna is cash-only across 3 currencies. The CR books each currency
+        // in its own column (usd_amount / fra_amount / k_amount). amount stays
+        // in USD-equivalent so legacy USD-only readers still work.
         const usdAmt = parseFloat(form.usd_received) || 0;
         const fraAmt = parseFloat(form.fra_received) || 0;
         const kAmt2  = parseFloat(form.k_received)   || 0;
-        const totalReceipts = usdAmt + fraAmt + kAmt2;
         const paymentMethod = 'Cash';
         const status = form.status || computedStatus;
         const cashier = selectedCashier !== '0' ? allUsers.find(u => String(u.id) === String(selectedCashier)) : null;
@@ -456,10 +454,10 @@ const CashReport = () => {
           date,
           payment_method: paymentMethod,
           received_from: receivedFrom,
-          amount:       totalReceipts,
-          cash_amount:  usdAmt,
-          bank_amount:  0,
-          momo_amount:  0,
+          amount:       usdAmt,
+          usd_amount:   usdAmt,
+          fra_amount:   fraAmt,
+          k_amount:     kAmt2,
           description:  form.comment ? `${status} — ${form.comment}` : status,
         };
 

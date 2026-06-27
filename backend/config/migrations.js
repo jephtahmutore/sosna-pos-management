@@ -1707,6 +1707,48 @@ function initTenantDb(db) {
     }
   } catch (e) { /* fresh DB or columns not yet present */ }
 
+  // v1.8.83 — SELF-HEALING backfill for cash_receipts FRA / K columns.
+  // Auto-created CRs (received_from LIKE 'Sales%') before v1.8.83 only sent
+  // cash_amount (USD), so fra_amount and k_amount stayed at 0 even when the
+  // cashier physically counted FRA / K in the drawer. The Cash Report row
+  // (cash_reports.usd_received / fra_received / k_received) keyed on
+  // (date, cashier_id) holds the truth — copy those values into the CR row
+  // so the CR list and dashboard cards display FRA / K correctly.
+  //
+  // Joins received_from ('Sales' or 'Sales / FirstName') back to cashier_id
+  // via users.first_name (cashier_id = 0 ↔ 'Sales'). Only touches rows that
+  // still look unfilled (fra_amount = 0 AND k_amount = 0) and where the
+  // matching Cash Report actually has FRA or K data — idempotent / no-op
+  // on clean DBs.
+  try {
+    const result = db.prepare(`
+      UPDATE cash_receipts
+         SET usd_amount  = cre.usd_received,
+             fra_amount  = cre.fra_received,
+             k_amount    = cre.k_received,
+             amount      = cre.usd_received,
+             cash_amount = cre.usd_received,
+             synced      = 0,
+             updated_at  = datetime('now')
+        FROM cash_reports cre
+        LEFT JOIN users u ON u.id = cre.cashier_id
+       WHERE cash_receipts.deleted_at IS NULL
+         AND cre.date = cash_receipts.date
+         AND (
+           (cash_receipts.received_from = 'Sales' AND cre.cashier_id = 0)
+           OR cash_receipts.received_from = 'Sales / ' || u.first_name
+         )
+         AND COALESCE(cash_receipts.fra_amount, 0) = 0
+         AND COALESCE(cash_receipts.k_amount,   0) = 0
+         AND (COALESCE(cre.fra_received, 0) > 0 OR COALESCE(cre.k_received, 0) > 0)
+    `).run();
+    if (result.changes > 0) {
+      console.log(`[self-heal cash_receipts ccy] backfilled FRA/K on ${result.changes} sales CR(s) from cash_reports`);
+    }
+  } catch (e) {
+    console.warn('[self-heal cash_receipts ccy] skipped:', e.message);
+  }
+
   // ── v1.8.58 — SELF-HEALING cash_received cleanup (was one-time in v1.8.53) ──
   // Foreign-currency-only payments stored the dollar-VALUE in cash_received,
   // double-counting against the FRA/K bucket. The original v1.8.53 backfill
