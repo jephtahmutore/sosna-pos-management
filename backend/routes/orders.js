@@ -220,11 +220,23 @@ router.post('/', auth, (req, res) => {
     // v1.8.74 — compute per-currency over-payment using source-currency
     // priority (USD pays first, then FRA, then K). Mirrors the collect-payment
     // endpoint + frontend logic so the default keptCcy lands on the currency
-    // that actually holds the surplus.
+    // that actually holds the surplus. NOTE: must compute physical USD here
+    // inline because `cashIn` (with its multi-currency fallback) isn't declared
+    // until a few lines below (TDZ on the original v1.8.74 attempt).
+    const _cashInForOver = (() => {
+      const _fraI = parseFloat(fra_received || 0) || 0;
+      const _kI   = parseFloat(k_received   || 0) || 0;
+      const _isMulti = _fraI > 0 || _kI > 0;
+      const _legacy = (payment_method === 'Mobile Money' || payment_method === 'Transfer'
+                       || payment_method === 'Bank' || payment_method === 'Bank Transfer') ? 0 : (amount_received || 0);
+      return _isMulti
+        ? (parseFloat(cash_received || 0) || 0)
+        : (parseFloat(cash_received ?? _legacy) || 0);
+    })();
     const _totalDuePost = parseFloat(total_amount || 0) || 0;
     let _remPost = _totalDuePost;
-    const _usdUsedPost = Math.min(cashIn, _remPost);
-    const overUSDcomputedPost = cashIn - _usdUsedPost;
+    const _usdUsedPost = Math.min(_cashInForOver, _remPost);
+    const overUSDcomputedPost = _cashInForOver - _usdUsedPost;
     _remPost -= _usdUsedPost;
     let overFRAcomputedPost = 0;
     if (_remPost > 0 && fraReceived > 0 && (sellingRateUsed || 0) > 0) {
