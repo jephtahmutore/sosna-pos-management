@@ -1549,6 +1549,40 @@ function initTenantDb(db) {
   // exact moment the rate becomes active so the Cashier picks the right
   // one based on the order's created_at, and the chart can plot intra-day.
   addCol('fx_rates', 'effective_at', 'TEXT'); // SQLite DATETIME (YYYY-MM-DD HH:MM:SS)
+
+  // v1.8.81 — TZ FIX self-heal: previously effective_at was stored as the
+  // server's LOCAL time string but compared against SQLite datetime('now')
+  // (UTC) in /current. Any row whose effective_at is > current UTC NOW is
+  // almost certainly a misstored local-time value (rates can't legitimately
+  // be set with a future effective time in practice). Re-interpret those
+  // rows as local time → UTC so the SELECT picks them up immediately.
+  try {
+    const susRates = db.prepare(`
+      SELECT id, effective_at
+        FROM fx_rates
+       WHERE deleted_at IS NULL
+         AND effective_at IS NOT NULL
+         AND effective_at > datetime('now')
+    `).all();
+    if (susRates.length > 0) {
+      const upd = db.prepare(`UPDATE fx_rates SET effective_at = ? WHERE id = ?`);
+      let healed = 0;
+      for (const r of susRates) {
+        const s = String(r.effective_at).replace('T', ' ');
+        const [datePart, timePart = '00:00:00'] = s.split(' ');
+        const [y, m, d] = datePart.split('-').map(Number);
+        const [hh, mm, ss = 0] = timePart.split(':').map(Number);
+        // Interpret as server-local time, convert to UTC
+        const utcStr = new Date(y, m - 1, d, hh, mm, ss || 0)
+          .toISOString().slice(0, 19).replace('T', ' ');
+        if (utcStr !== r.effective_at) {
+          upd.run(utcStr, r.id);
+          healed++;
+        }
+      }
+      if (healed > 0) console.log(`[self-heal fx_rates effective_at] re-interpreted ${healed} row(s) from local → UTC`);
+    }
+  } catch (e) { /* fresh DB or fx_rates table not yet present */ }
   addCol('orders',   'k_received',         'REAL DEFAULT 0');
   addCol('orders',   'k_change_given',     'REAL DEFAULT 0');
   addCol('orders',   'selling_rate_k_used','REAL');

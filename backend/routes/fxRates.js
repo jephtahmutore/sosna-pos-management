@@ -152,15 +152,35 @@ router.post('/', auth, requirePagePerm('FxRates'), (req, res) => {
     //   effective_at  — full 'YYYY-MM-DD HH:MM' / 'YYYY-MM-DDTHH:MM' string, OR
     //   effective_time — 'HH:MM' (combined with effective_date)
     // Falls back to NOW() when neither is provided.
-    let effective_at = req.body.effective_at;
-    if (!effective_at && req.body.effective_time) {
-      effective_at = `${effective_date} ${String(req.body.effective_time).slice(0, 5)}:00`;
-    }
-    if (effective_at) {
-      effective_at = String(effective_at).replace('T', ' ').slice(0, 19);
-      if (effective_at.length === 16) effective_at += ':00'; // add seconds
+    // v1.8.81 — TIMEZONE FIX: SELECT in /current compares against SQLite's
+    // datetime('now') which is UTC, but we previously stored effective_at as
+    // a local-time string. That made every just-saved rate appear "future"
+    // by the UTC offset (~2h for Lusaka), so the Cashier fell back to the
+    // hardcoded 2900/2600 defaults until UTC caught up.
+    // Now: always store effective_at in UTC.
+    //
+    // localTimeToUtcStr interprets the input as server-local time and
+    // returns UTC. When backend runs in the same TZ as the user (typical
+    // for sosnazm.com deployed in Lusaka), user-supplied times convert
+    // correctly. The auto-now path uses UTC directly regardless.
+    const localTimeToUtcStr = (localTimeStr) => {
+      const s = String(localTimeStr).replace('T', ' ');
+      const [datePart, timePart = '00:00:00'] = s.split(' ');
+      const [y, m, d] = datePart.split('-').map(Number);
+      const [hh, mm, ss = 0] = timePart.split(':').map(Number);
+      return new Date(y, m - 1, d, hh, mm, ss || 0)
+        .toISOString().slice(0, 19).replace('T', ' ');
+    };
+    let effective_at;
+    if (req.body.effective_at) {
+      let localStr = String(req.body.effective_at).replace('T', ' ').slice(0, 19);
+      if (localStr.length === 16) localStr += ':00';
+      effective_at = localTimeToUtcStr(localStr);
+    } else if (req.body.effective_time) {
+      effective_at = localTimeToUtcStr(`${effective_date} ${String(req.body.effective_time).slice(0, 5)}:00`);
     } else {
-      effective_at = `${effective_date} ${new Date().toTimeString().slice(0, 8)}`;
+      // Auto NOW — use UTC directly so it matches SQLite datetime('now')
+      effective_at = new Date().toISOString().slice(0, 19).replace('T', ' ');
     }
     const sell = parseFloat(req.body.sell_rate);
     const buy  = parseFloat(req.body.buy_rate);

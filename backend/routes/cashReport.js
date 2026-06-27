@@ -160,6 +160,69 @@ router.get('/daily', auth, readOnlyGuard, (req, res) => {
       }
     }
 
+    // v1.8.81 — Category 3: cashier OVER-CHANGED (gave back more than owed).
+    // Real shop loss. Detected by: total USD-equivalent of change actually
+    // returned > change_amount (USD-equivalent of change owed).
+    // FRA / K change conversion uses BUY rate (matches the front-end formula
+    // and the v1.8.78 backend fix).
+    const overChangeRows = db.prepare(
+      `SELECT total_amount, change_amount, usd_change_given,
+              cash_received, fra_received, fra_change_given,
+              k_received, k_change_given,
+              selling_rate_used, buying_rate_used,
+              selling_rate_k_used, buying_rate_k_used
+       FROM orders WHERE ${orderDateClause} AND deleted_at IS NULL AND tenant_id = ?
+       AND (status IS NULL OR status != 'Reversed')${userFilter}`
+    ).all(...baseParams);
+    for (const r of overChangeRows) {
+      const changeOwedUSD = parseFloat(r.change_amount || 0) || 0;
+      if (changeOwedUSD < 0.005) continue;
+      const usdGiven = parseFloat(r.usd_change_given || 0) || 0;
+      const fraGiven = parseFloat(r.fra_change_given || 0) || 0;
+      const kGiven   = parseFloat(r.k_change_given   || 0) || 0;
+      const buyR     = parseFloat(r.buying_rate_used   || 0) || 0;
+      const buyRK    = parseFloat(r.buying_rate_k_used || 0) || 0;
+      const usdEqGiven = usdGiven
+                       + (buyR  > 0 ? fraGiven / buyR  : 0)
+                       + (buyRK > 0 ? kGiven   / buyRK : 0);
+      const overUSD = usdEqGiven - changeOwedUSD;
+      if (overUSD < 0.005) continue;
+      // Source currency of the overshoot: whichever foreign currency was
+      // returned in MORE than its share. Compute the "owed" portion per
+      // currency by walking USD-first → FRA → K consumption of changeOwedUSD.
+      let rem = changeOwedUSD;
+      const usdConsumed = Math.min(usdGiven, rem); rem -= usdConsumed;
+      let fraOver = 0;
+      if (buyR > 0 && fraGiven > 0) {
+        const fraOwedFRA = rem > 0 ? rem * buyR : 0;
+        fraOver = Math.max(0, fraGiven - fraOwedFRA);
+        rem -= Math.min(fraGiven / buyR, rem);
+      }
+      let kOver = 0;
+      if (buyRK > 0 && kGiven > 0) {
+        const kOwedK = rem > 0 ? rem * buyRK : 0;
+        kOver = Math.max(0, kGiven - kOwedK);
+      }
+      const usdOver = Math.max(0, usdGiven - usdConsumed);
+      // Attribute the overshoot to whichever currency has the biggest excess
+      // (in USD-equivalent), so a $0.04 over-given in FRA = FRA 100 stored
+      // natively, not USD-attributed.
+      const usdOverAsUSD = usdOver;
+      const fraOverAsUSD = buyR  > 0 ? fraOver / buyR  : 0;
+      const kOverAsUSD   = buyRK > 0 ? kOver   / buyRK : 0;
+      if (fraOverAsUSD >= kOverAsUSD && fraOverAsUSD >= usdOverAsUSD && fraOver > 0.5) {
+        underpaidFRA += fraOver;
+      } else if (kOverAsUSD >= usdOverAsUSD && kOver > 0.5) {
+        underpaidK += kOver;
+      } else if (usdOver > 0.005) {
+        underpaidUSD += usdOver;
+      } else if (fraOver > 0.5) {
+        underpaidFRA += fraOver;
+      } else if (kOver > 0.5) {
+        underpaidK += kOver;
+      }
+    }
+
     // CREDIT SALES ISSUED bucket = today's new receivables (unpaid portion of today's sales).
     // This is informational — represents money owed, NOT cash received.
     // v1.8.76 — only count rows whose payment_method is actually Credit or
@@ -306,7 +369,71 @@ router.get('/overpaid', auth, readOnlyGuard, (req, res) => {
       };
     });
 
-    const rows = [...overRows, ...underRows].sort((a, b) =>
+    // v1.8.81 — Category 3: cashier over-changed rows. Same shop-loss bucket
+    // as under-payments but caught by a different formula: USD-equivalent of
+    // change RETURNED > change OWED. Tag direction='UNDER' so frontend shows
+    // them with the ↓ arrow alongside customer under-payments.
+    const overChangeRowsDetail = db.prepare(
+      `SELECT o.id, o.order_number, o.customer_name, o.total_amount,
+              o.change_amount, o.usd_change_given,
+              o.fra_change_given, o.k_change_given,
+              o.buying_rate_used, o.buying_rate_k_used,
+              o.selling_rate_used, o.selling_rate_k_used,
+              o.created_at,
+              u.first_name || ' ' || u.last_name AS cashier_name
+         FROM orders o
+         LEFT JOIN users u ON o.created_by = u.id
+        WHERE ${dateClause} AND o.deleted_at IS NULL AND o.tenant_id = ?
+          AND (o.status IS NULL OR o.status != 'Reversed')
+          ${userFilter}`
+    ).all(...params);
+    const overChangeMappedRows = overChangeRowsDetail.map(r => {
+      const changeOwedUSD = parseFloat(r.change_amount || 0) || 0;
+      if (changeOwedUSD < 0.005) return null;
+      const usdGiven = parseFloat(r.usd_change_given || 0) || 0;
+      const fraGiven = parseFloat(r.fra_change_given || 0) || 0;
+      const kGiven   = parseFloat(r.k_change_given   || 0) || 0;
+      const buyR     = parseFloat(r.buying_rate_used   || 0) || 0;
+      const buyRK    = parseFloat(r.buying_rate_k_used || 0) || 0;
+      const usdEqGiven = usdGiven
+                       + (buyR  > 0 ? fraGiven / buyR  : 0)
+                       + (buyRK > 0 ? kGiven   / buyRK : 0);
+      const overUSD = usdEqGiven - changeOwedUSD;
+      if (overUSD < 0.005) return null;
+      // Source-currency attribution (USD-first → FRA → K consumption).
+      let rem = changeOwedUSD;
+      const usdConsumed = Math.min(usdGiven, rem); rem -= usdConsumed;
+      let fraOver = 0;
+      if (buyR > 0 && fraGiven > 0) {
+        const fraOwedFRA = rem > 0 ? rem * buyR : 0;
+        fraOver = Math.max(0, fraGiven - fraOwedFRA);
+        rem -= Math.min(fraGiven / buyR, rem);
+      }
+      let kOver = 0;
+      if (buyRK > 0 && kGiven > 0) {
+        const kOwedK = rem > 0 ? rem * buyRK : 0;
+        kOver = Math.max(0, kGiven - kOwedK);
+      }
+      const usdOver = Math.max(0, usdGiven - usdConsumed);
+      let ccy = 'USD', amt = overUSD;
+      const fraOverAsUSD = buyR  > 0 ? fraOver / buyR  : 0;
+      const kOverAsUSD   = buyRK > 0 ? kOver   / buyRK : 0;
+      if (fraOverAsUSD >= kOverAsUSD && fraOverAsUSD >= usdOver && fraOver > 0.5) {
+        ccy = 'FRA'; amt = fraOver;
+      } else if (kOverAsUSD >= usdOver && kOver > 0.5) {
+        ccy = 'K'; amt = kOver;
+      } else if (usdOver > 0.005) {
+        ccy = 'USD'; amt = usdOver;
+      }
+      return {
+        id: r.id, order_number: r.order_number, customer_name: r.customer_name,
+        total_amount: r.total_amount, direction: 'UNDER', ccy, amt,
+        selling_rate_used: r.selling_rate_used, selling_rate_k_used: r.selling_rate_k_used,
+        created_at: r.created_at, cashier_name: r.cashier_name,
+      };
+    }).filter(Boolean);
+
+    const rows = [...overRows, ...underRows, ...overChangeMappedRows].sort((a, b) =>
       (b.created_at || '').localeCompare(a.created_at || ''));
     res.json(rows);
   } catch (error) {

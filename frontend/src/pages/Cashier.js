@@ -753,7 +753,7 @@ export default function Cashier() {
                   const kept     = !exact && !overpaid && !!effectiveCcy;
                   const bg       = exact ? '#ecfdf5' : overpaid ? '#fef2f2' : kept ? '#fffbeb' : '#fef3c7';
                   const label    = exact ? 'Exact Change'
-                                   : overpaid ? 'Overpaid'
+                                   : overpaid ? 'Overpaid customer'
                                    : kept ? `Kept in ${effectiveCcy} drawer`
                                    : 'Still owed';
                   const colour   = overpaid ? '#991b1b' : kept ? '#92400e' : undefined;
@@ -777,11 +777,51 @@ export default function Cashier() {
                         : (BUY_RATE_K > 0 ? confirm.netRemaining * BUY_RATE_K : 0);
                       amountText = `K ${fmtK(kAmt)}`;
                     } else amountText = fmtUSD(confirm.netRemaining);
+                  } else if (overpaid) {
+                    // v1.8.81 — cashier over-changed (shop loss). Show the overshoot in
+                    // its SOURCE currency: detect which currency was returned in excess
+                    // (USD-first → FRA → K consumption). Native amount as headline,
+                    // USD-equivalent as reference (matches the picker-header pattern).
+                    const changeOwedUSD = parseFloat(confirm.changeUSD || 0);
+                    const usdGiven = parseFloat(confirm.givenUSD || 0);
+                    const fraGiven = parseFloat(confirm.givenFRA || 0);
+                    const kGiven   = parseFloat(confirm.givenK   || 0);
+                    const usdOverAbs = Math.abs(confirm.netRemaining);
+                    let rem = changeOwedUSD;
+                    const usdConsumed = Math.min(usdGiven, rem); rem -= usdConsumed;
+                    let fraOver = 0;
+                    if (BUY_RATE > 0 && fraGiven > 0) {
+                      const fraOwedFRA = rem > 0 ? rem * BUY_RATE : 0;
+                      fraOver = Math.max(0, fraGiven - fraOwedFRA);
+                      rem -= Math.min(fraGiven / BUY_RATE, rem);
+                    }
+                    let kOver = 0;
+                    if (BUY_RATE_K > 0 && kGiven > 0) {
+                      const kOwedK = rem > 0 ? rem * BUY_RATE_K : 0;
+                      kOver = Math.max(0, kGiven - kOwedK);
+                    }
+                    const usdOver = Math.max(0, usdGiven - usdConsumed);
+                    const fraOverAsUSD = BUY_RATE   > 0 ? fraOver / BUY_RATE   : 0;
+                    const kOverAsUSD   = BUY_RATE_K > 0 ? kOver   / BUY_RATE_K : 0;
+                    if (fraOverAsUSD >= kOverAsUSD && fraOverAsUSD >= usdOver && fraOver > 0.5) {
+                      amountText = `FRA ${fmtFRA(fraOver)} (≈ ${fmtUSD(usdOverAbs)})`;
+                    } else if (kOverAsUSD >= usdOver && kOver > 0.5) {
+                      amountText = `K ${fmtK(kOver)} (≈ ${fmtUSD(usdOverAbs)})`;
+                    } else {
+                      amountText = fmtUSD(usdOverAbs);
+                    }
                   } else amountText = fmtUSD(Math.abs(confirm.netRemaining));
                   return (
-                    <div style={{ ...confirmRow, marginTop: 8, padding: '10px 12px', background: bg, borderRadius: 8 }}>
-                      <span style={{ fontWeight: 700, color: colour }}>{label}</span>
-                      <strong style={{ color: colour }}>{amountText}</strong>
+                    <div style={{ ...confirmRow, marginTop: 8, padding: '10px 12px', background: bg, borderRadius: 8, flexDirection: 'column', alignItems: 'stretch' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                        <span style={{ fontWeight: 700, color: colour }}>{label}</span>
+                        <strong style={{ color: colour }}>{amountText}</strong>
+                      </div>
+                      {overpaid && (
+                        <div style={{ fontSize: 10, color: '#991b1b', marginTop: 4, opacity: 0.8 }}>
+                          Shop loss — recorded in Under-Payments
+                        </div>
+                      )}
                     </div>
                   );
                 })()}
