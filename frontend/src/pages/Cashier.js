@@ -503,26 +503,30 @@ export default function Cashier() {
 
                 {calc && (calc.paidUSD > 0 || calc.paidFRA > 0 || calc.paidK > 0) && (
                   <div style={{ marginTop: 12 }}>
-                    {calc.isOverpaid ? (
-                      <div style={{ background: '#ecfdf5', border: '1px solid #a7f3d0', borderRadius: 8, padding: '10px 12px' }}>
-                        <div style={{ fontSize: 11, color: '#047857', fontWeight: 600 }}>Change (per source currency)</div>
-                        {/* v1.8.72 — show native over-payment per currency, no FX round-trip */}
-                        <div style={{ display: 'flex', gap: 16, marginTop: 4, flexWrap: 'wrap' }}>
-                          {calc.overUSD > 0.001 && (
-                            <div><span style={{ fontSize: 11, color: '#047857' }}>USD</span>{' '}<strong style={{ fontSize: 18, color: '#065f46' }}>{fmtUSD(calc.overUSD)}</strong></div>
-                          )}
-                          {calc.overFRA > 0.5 && (
-                            <div><span style={{ fontSize: 11, color: '#047857' }}>FRA</span>{' '}<strong style={{ fontSize: 18, color: '#065f46' }}>{fmtFRA(calc.overFRA)}</strong></div>
-                          )}
-                          {calc.overK > 0.5 && (
-                            <div><span style={{ fontSize: 11, color: '#047857' }}>K</span>{' '}<strong style={{ fontSize: 18, color: '#065f46' }}>{fmtK(calc.overK)}</strong></div>
+                    {calc.isOverpaid ? (() => {
+                      // v1.8.73 — restore original Change card layout (headline USD,
+                      // sub-line FRA/K equivalents), but at SELL rate. Native over-
+                      // payment per currency takes precedence when present so the
+                      // customer always gets back the EXACT amount they overpaid
+                      // (no FX spread loss on same-currency refund).
+                      const headlineUSD = (calc.overUSD || 0)
+                                        + (SELL_RATE   > 0 ? (calc.overFRA || 0) / SELL_RATE   : 0)
+                                        + (SELL_RATE_K > 0 ? (calc.overK   || 0) / SELL_RATE_K : 0);
+                      const fraEquiv = calc.overFRA > 0.5 ? calc.overFRA : (SELL_RATE   > 0 ? headlineUSD * SELL_RATE   : 0);
+                      const kEquiv   = calc.overK   > 0.5 ? calc.overK   : (SELL_RATE_K > 0 ? headlineUSD * SELL_RATE_K : 0);
+                      return (
+                        <div style={{ background: '#ecfdf5', border: '1px solid #a7f3d0', borderRadius: 8, padding: '10px 12px' }}>
+                          <div style={{ fontSize: 11, color: '#047857', fontWeight: 600 }}>Change</div>
+                          <div style={{ fontSize: 20, fontWeight: 800, color: '#065f46' }}>{fmtUSD(headlineUSD)}</div>
+                          {hasFra && (
+                            <div style={{ fontSize: 12, color: '#047857', fontWeight: 600, marginTop: 4 }}>
+                              ≈ FRA {fmtFRA(fraEquiv)} (sell {SELL_RATE.toLocaleString()})
+                              {hasK && <> · ≈ K {fmtK(kEquiv)} (sell {SELL_RATE_K.toLocaleString()})</>}
+                            </div>
                           )}
                         </div>
-                        <div style={{ fontSize: 10, color: '#6b7280', marginTop: 4 }}>
-                          Give back in same currency = 1:1 (no FX). Convert only if customer asks.
-                        </div>
-                      </div>
-                    ) : (
+                      );
+                    })() : (
                       <div style={{ background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 8, padding: '10px 12px' }}>
                         <div style={{ fontSize: 11, color: '#b91c1c', fontWeight: 600 }}>Unpaid Balance</div>
                         <div style={{ fontSize: 20, fontWeight: 800, color: '#991b1b' }}>{fmtUSD(calc.unpaidBalance)}</div>
