@@ -1020,6 +1020,11 @@ export default function Cashier() {
                                     : keptCcy === 'FRA' ? `${fmtFRA(keptAmt)} FRA`
                                     : keptCcy === 'K'   ? `${fmtK(keptAmt)} K`
                                     : '—';
+                  // v1.8.88 — absorbed shortage: when totalPaidUSDeq < totalDue
+                  // (walk-in handed over slightly less than owed, shop ate the gap).
+                  // Mutually exclusive with "Kept in drawer" — a payment is either
+                  // over OR under, never both. Threshold 0.005 ignores FP dust.
+                  const shortageUSD = Math.max(0, totalDue - totalPaidUSDeq);
                   return (
                     <div style={{ background: '#f8fafc', border: '1px solid #e5e7eb', borderRadius: 8, padding: 12, marginBottom: 10 }}>
                       <div style={{ fontSize: 11, color: '#475569', fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 8 }}>Reconciliation {editing ? '(live preview)' : ''}</div>
@@ -1031,6 +1036,12 @@ export default function Cashier() {
                           <div style={{ display: 'flex', justifyContent: 'space-between', borderTop: '1px dashed #e5e7eb', paddingTop: 4, marginTop: 2 }}>
                             <span style={{ fontWeight: 700, color: '#16a34a' }}>± Kept in drawer</span>
                             <strong style={{ color: '#16a34a' }}>+{keptDisplay}</strong>
+                          </div>
+                        )}
+                        {keptAmt < 0.005 && shortageUSD > 0.005 && (
+                          <div style={{ display: 'flex', justifyContent: 'space-between', borderTop: '1px dashed #e5e7eb', paddingTop: 4, marginTop: 2 }}>
+                            <span style={{ fontWeight: 700, color: '#dc2626' }}>± Absorbed (shortage)</span>
+                            <strong style={{ color: '#dc2626' }}>−{fmtUSD(shortageUSD)}</strong>
                           </div>
                         )}
                       </div>

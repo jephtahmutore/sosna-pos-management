@@ -1068,13 +1068,30 @@ const SalesReport = () => {
           const kGiven   = parseFloat(o.k_change_given || 0) || 0;
           const keptCcy  = (o.overpaid_kept_ccy || '').toUpperCase();
           const keptAmt  = parseFloat(o.overpaid_kept_amt || 0) || 0;
+          // v1.8.88 — absorbed shortage: walk-in customer paid less than
+          // total_amount and cashier let them go (payment_method='Cash', within
+          // tolerance). Source-currency attribution mirrors the backend
+          // /cash-reports/daily endpoint (K → FRA → USD priority).
+          let absorbedUSD = 0, absorbedFRA = 0, absorbedK = 0;
+          if (o.payment_method === 'Cash') {
+            const shortUSD = (parseFloat(o.total_amount) || 0) - (parseFloat(o.amount_received) || 0);
+            if (shortUSD > 0.005) {
+              const sellR  = parseFloat(o.selling_rate_used)   || 0;
+              const sellRK = parseFloat(o.selling_rate_k_used) || 0;
+              if (kPaid > 0 && sellRK > 0)        absorbedK   = shortUSD * sellRK;
+              else if (fraPaid > 0 && sellR > 0)  absorbedFRA = shortUSD * sellR;
+              else                                 absorbedUSD = shortUSD;
+            }
+          }
           return {
             usdPaid, usdGiven, usdNet: usdPaid - usdGiven,
             fraPaid, fraGiven, fraNet: fraPaid - fraGiven,
             kPaid,   kGiven,   kNet:   kPaid   - kGiven,
-            usdDiff: keptCcy === 'USD' ? keptAmt : 0,
-            fraDiff: keptCcy === 'FRA' ? keptAmt : 0,
-            kDiff:   keptCcy === 'K'   ? keptAmt : 0,
+            // ± Signed. Positive = kept in drawer (over). Negative = absorbed (short).
+            // An order is either over or under, never both — so these are exclusive.
+            usdDiff: (keptCcy === 'USD' ? keptAmt : 0) - absorbedUSD,
+            fraDiff: (keptCcy === 'FRA' ? keptAmt : 0) - absorbedFRA,
+            kDiff:   (keptCcy === 'K'   ? keptAmt : 0) - absorbedK,
             // v1.8.76 — only Credit / Partial-Credit rows contribute to credit.
             credit:  (o.payment_method === 'Credit' || o.payment_method === 'Partial-Credit')
               ? Math.max(0, parseFloat(o.total_amount || 0) - parseFloat(o.amount_received || 0))
@@ -1154,10 +1171,16 @@ const SalesReport = () => {
                     if (Math.abs(n) < (dec === 0 ? 0.5 : 0.005)) return <span style={{ color: '#d1d5db' }}>—</span>;
                     return <span style={{ color }}>{sym}{n.toLocaleString(undefined, { minimumFractionDigits: dec, maximumFractionDigits: dec })}</span>;
                   };
+                  // v1.8.88 — signed display. Positive (kept) keeps the passed
+                  // amber color; negative (absorbed) overrides to red so loss
+                  // is visually distinct from gain at a glance.
                   const diffCell = (val, dec, sym, color) => {
                     const n = parseFloat(val) || 0;
                     if (Math.abs(n) < (dec === 0 ? 0.5 : 0.005)) return <span style={{ color: '#d1d5db' }}>—</span>;
-                    return <span style={{ color, fontWeight: 700 }}>+{sym}{n.toLocaleString(undefined, { minimumFractionDigits: dec, maximumFractionDigits: dec })}</span>;
+                    const isNeg = n < 0;
+                    const c = isNeg ? '#dc2626' : color;
+                    const sign = isNeg ? '−' : '+';
+                    return <span style={{ color: c, fontWeight: 700 }}>{sign}{sym}{Math.abs(n).toLocaleString(undefined, { minimumFractionDigits: dec, maximumFractionDigits: dec })}</span>;
                   };
                   return (
                     <tr key={o.id} style={{ borderBottom: '1px solid #f3f4f6' }}>
@@ -1193,15 +1216,31 @@ const SalesReport = () => {
                     <td style={{ padding: '11px 8px', textAlign: 'right', color: '#16a34a' }}>${totals.usdPaid.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</td>
                     <td style={{ padding: '11px 8px', textAlign: 'right', color: '#16a34a' }}>${totals.usdGiven.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</td>
                     <td style={{ padding: '11px 8px', textAlign: 'right', color: '#16a34a' }}>${totals.usdNet.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</td>
-                    <td style={{ padding: '11px 8px', textAlign: 'right', color: '#92400e', background: '#fffbeb' }}>{totals.usdDiff > 0.005 ? `+$${totals.usdDiff.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}` : '—'}</td>
+                    {/* v1.8.88 — signed totals: positive (kept) amber, negative (absorbed) red.
+                        sumCell renders the aggregate with the correct sign and colour
+                        and folds to '—' when within rounding-dust tolerance. */}
+                    {(() => null)()}
+                    <td style={{ padding: '11px 8px', textAlign: 'right', color: totals.usdDiff < -0.005 ? '#dc2626' : '#92400e', background: '#fffbeb' }}>
+                      {Math.abs(totals.usdDiff) < 0.005
+                        ? '—'
+                        : `${totals.usdDiff < 0 ? '−' : '+'}$${Math.abs(totals.usdDiff).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}`}
+                    </td>
                     <td style={{ padding: '11px 8px', textAlign: 'right', color: '#7c3aed' }}>{totals.fraPaid.toLocaleString(undefined,{maximumFractionDigits:0})}</td>
                     <td style={{ padding: '11px 8px', textAlign: 'right', color: '#7c3aed' }}>{totals.fraGiven.toLocaleString(undefined,{maximumFractionDigits:0})}</td>
                     <td style={{ padding: '11px 8px', textAlign: 'right', color: '#7c3aed' }}>{totals.fraNet.toLocaleString(undefined,{maximumFractionDigits:0})}</td>
-                    <td style={{ padding: '11px 8px', textAlign: 'right', color: '#92400e', background: '#fffbeb' }}>{totals.fraDiff > 0.5 ? `+${totals.fraDiff.toLocaleString(undefined,{maximumFractionDigits:0})}` : '—'}</td>
+                    <td style={{ padding: '11px 8px', textAlign: 'right', color: totals.fraDiff < -0.5 ? '#dc2626' : '#92400e', background: '#fffbeb' }}>
+                      {Math.abs(totals.fraDiff) < 0.5
+                        ? '—'
+                        : `${totals.fraDiff < 0 ? '−' : '+'}${Math.abs(totals.fraDiff).toLocaleString(undefined,{maximumFractionDigits:0})}`}
+                    </td>
                     <td style={{ padding: '11px 8px', textAlign: 'right', color: '#ea580c' }}>{totals.kPaid.toLocaleString(undefined,{maximumFractionDigits:0})}</td>
                     <td style={{ padding: '11px 8px', textAlign: 'right', color: '#ea580c' }}>{totals.kGiven.toLocaleString(undefined,{maximumFractionDigits:0})}</td>
                     <td style={{ padding: '11px 8px', textAlign: 'right', color: '#ea580c' }}>{totals.kNet.toLocaleString(undefined,{maximumFractionDigits:0})}</td>
-                    <td style={{ padding: '11px 8px', textAlign: 'right', color: '#92400e', background: '#fffbeb' }}>{totals.kDiff > 0.5 ? `+${totals.kDiff.toLocaleString(undefined,{maximumFractionDigits:0})}` : '—'}</td>
+                    <td style={{ padding: '11px 8px', textAlign: 'right', color: totals.kDiff < -0.5 ? '#dc2626' : '#92400e', background: '#fffbeb' }}>
+                      {Math.abs(totals.kDiff) < 0.5
+                        ? '—'
+                        : `${totals.kDiff < 0 ? '−' : '+'}${Math.abs(totals.kDiff).toLocaleString(undefined,{maximumFractionDigits:0})}`}
+                    </td>
                     <td style={{ padding: '11px 12px', textAlign: 'right', color: '#dc2626' }}>${(parseFloat(totals.credit)||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</td>
                   </tr>
                 </tfoot>
