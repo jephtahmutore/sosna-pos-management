@@ -413,6 +413,25 @@ router.post('/push', lanGate, async (req, res) => {
               db.prepare(`UPDATE ${table} SET updated_at = datetime('now') WHERE sync_id = ?`).run(row.sync_id);
             }
           } else {
+            // v1.8.89 — TIMESTAMP CHECK (defense against stale pushes).
+            // Before: server accepted any pushed row unconditionally → if a
+            // client pushed a stale local copy (e.g. after PROTECT rule
+            // blocked a pull), the server's correct state got OVERWRITTEN
+            // with old data. Real incident: ORD-0055 reversed on web at T2,
+            // Electron pushed stale PENDING_PAYMENT (updated_at=T1) at T3,
+            // server accepted → Reversed status destroyed.
+            // Now: reject incoming rows whose updated_at < server's. Last-
+            // writer-wins by wall-clock, which is the correct policy when
+            // both clients have synced clocks.
+            if (hasUpdatedAt && existing.updated_at && row.updated_at) {
+              const parse = (s) => new Date(typeof s === 'string' && !s.includes('T') ? s.replace(' ', 'T') + 'Z' : s).getTime();
+              const incomingMs = parse(row.updated_at);
+              const existingMs = parse(existing.updated_at);
+              if (isFinite(incomingMs) && isFinite(existingMs) && incomingMs < existingMs) {
+                slog(`push: REJECT [${table}] sync_id=${row.sync_id} — incoming ${row.updated_at} < server ${existing.updated_at}`);
+                continue;
+              }
+            }
             const updateCols = cols.filter(c => c !== 'id' && c !== 'sync_id' && row[c] !== undefined);
             const setClause = updateCols.map(c => `${c} = ?`).join(', ');
             const values = [...updateCols.map(c => row[c]), row.sync_id];

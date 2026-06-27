@@ -1024,7 +1024,22 @@ export default function Cashier() {
                   // (walk-in handed over slightly less than owed, shop ate the gap).
                   // Mutually exclusive with "Kept in drawer" — a payment is either
                   // over OR under, never both. Threshold 0.005 ignores FP dust.
+                  // v1.8.89 — source-currency attribution (K → FRA → USD priority)
+                  // so the displayed loss lives in the same drawer the cashier
+                  // can physically count. Matches the Cash Report aggregate +
+                  // Sales Report ± column. Mirror image of the "+keptDisplay"
+                  // logic above (kept uses overpaid_kept_ccy stored on order).
                   const shortageUSD = Math.max(0, totalDue - totalPaidUSDeq);
+                  let absorbedDisplay = '';
+                  if (shortageUSD > 0.005) {
+                    if (paidK > 0 && sellK > 0) {
+                      absorbedDisplay = `${fmtK(shortageUSD * sellK)} K`;
+                    } else if (paidFRA > 0 && sellFRA > 0) {
+                      absorbedDisplay = `${fmtFRA(shortageUSD * sellFRA)} FRA`;
+                    } else {
+                      absorbedDisplay = fmtUSD(shortageUSD);
+                    }
+                  }
                   return (
                     <div style={{ background: '#f8fafc', border: '1px solid #e5e7eb', borderRadius: 8, padding: 12, marginBottom: 10 }}>
                       <div style={{ fontSize: 11, color: '#475569', fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 8 }}>Reconciliation {editing ? '(live preview)' : ''}</div>
@@ -1041,7 +1056,7 @@ export default function Cashier() {
                         {keptAmt < 0.005 && shortageUSD > 0.005 && (
                           <div style={{ display: 'flex', justifyContent: 'space-between', borderTop: '1px dashed #e5e7eb', paddingTop: 4, marginTop: 2 }}>
                             <span style={{ fontWeight: 700, color: '#dc2626' }}>± Absorbed (shortage)</span>
-                            <strong style={{ color: '#dc2626' }}>−{fmtUSD(shortageUSD)}</strong>
+                            <strong style={{ color: '#dc2626' }}>−{absorbedDisplay}</strong>
                           </div>
                         )}
                       </div>
