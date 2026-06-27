@@ -1550,37 +1550,32 @@ function initTenantDb(db) {
   // one based on the order's created_at, and the chart can plot intra-day.
   addCol('fx_rates', 'effective_at', 'TEXT'); // SQLite DATETIME (YYYY-MM-DD HH:MM:SS)
 
-  // v1.8.81 — TZ FIX self-heal: previously effective_at was stored as the
-  // server's LOCAL time string but compared against SQLite datetime('now')
+  // v1.8.82 — TZ FIX self-heal: previously effective_at was stored as the
+  // user's LOCAL time string but compared against SQLite datetime('now')
   // (UTC) in /current. Any row whose effective_at is > current UTC NOW is
-  // almost certainly a misstored local-time value (rates can't legitimately
-  // be set with a future effective time in practice). Re-interpret those
-  // rows as local time → UTC so the SELECT picks them up immediately.
+  // a misstored local-time value (no one legitimately back-sets future
+  // effective times in practice).
+  //
+  // v1.8.81's heal tried to convert local→UTC using new Date() — but on a
+  // UTC server that's a no-op (server tz == UTC means the conversion adds
+  // nothing). So those rows stayed broken.
+  //
+  // v1.8.82's heal: snap any future row to datetime('now') so it's effective
+  // immediately. Loses the original sub-minute precision but unblocks the
+  // Cashier right away. New rates from v1.8.82+ frontend send UTC directly,
+  // so this heal only ever runs on legacy rows.
   try {
-    const susRates = db.prepare(`
-      SELECT id, effective_at
-        FROM fx_rates
+    const result = db.prepare(`
+      UPDATE fx_rates
+         SET effective_at = datetime('now'),
+             synced       = 0,
+             updated_at   = datetime('now')
        WHERE deleted_at IS NULL
          AND effective_at IS NOT NULL
          AND effective_at > datetime('now')
-    `).all();
-    if (susRates.length > 0) {
-      const upd = db.prepare(`UPDATE fx_rates SET effective_at = ? WHERE id = ?`);
-      let healed = 0;
-      for (const r of susRates) {
-        const s = String(r.effective_at).replace('T', ' ');
-        const [datePart, timePart = '00:00:00'] = s.split(' ');
-        const [y, m, d] = datePart.split('-').map(Number);
-        const [hh, mm, ss = 0] = timePart.split(':').map(Number);
-        // Interpret as server-local time, convert to UTC
-        const utcStr = new Date(y, m - 1, d, hh, mm, ss || 0)
-          .toISOString().slice(0, 19).replace('T', ' ');
-        if (utcStr !== r.effective_at) {
-          upd.run(utcStr, r.id);
-          healed++;
-        }
-      }
-      if (healed > 0) console.log(`[self-heal fx_rates effective_at] re-interpreted ${healed} row(s) from local → UTC`);
+    `).run();
+    if (result.changes > 0) {
+      console.log(`[self-heal fx_rates effective_at] snapped ${result.changes} future row(s) to NOW (legacy local-time storage)`);
     }
   } catch (e) { /* fresh DB or fx_rates table not yet present */ }
   addCol('orders',   'k_received',         'REAL DEFAULT 0');

@@ -173,10 +173,14 @@ router.post('/', auth, requirePagePerm('FxRates'), (req, res) => {
     };
     let effective_at;
     if (req.body.effective_at) {
-      let localStr = String(req.body.effective_at).replace('T', ' ').slice(0, 19);
-      if (localStr.length === 16) localStr += ':00';
-      effective_at = localTimeToUtcStr(localStr);
+      // v1.8.82 — frontend now sends UTC directly (computed in the browser
+      // where the user's local tz is known). Store as-is. No double conversion.
+      let utcStr = String(req.body.effective_at).replace('T', ' ').slice(0, 19);
+      if (utcStr.length === 16) utcStr += ':00';
+      effective_at = utcStr;
     } else if (req.body.effective_time) {
+      // Legacy path for older clients — assumes server tz matches user tz
+      // (correct when both are on the same machine, broken across regions).
       effective_at = localTimeToUtcStr(`${effective_date} ${String(req.body.effective_time).slice(0, 5)}:00`);
     } else {
       // Auto NOW — use UTC directly so it matches SQLite datetime('now')

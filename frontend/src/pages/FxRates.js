@@ -135,9 +135,18 @@ export default function FxRates() {
     }
     setSaving(true);
     try {
+      // v1.8.82 — convert the form's LOCAL date+time to a UTC effective_at
+      // string before sending. Server stores as-is so the comparison against
+      // SQLite datetime('now') (UTC) works regardless of server timezone.
+      // Replaces the legacy effective_time path which assumed server tz ==
+      // user tz (broke for UTC servers serving Lusaka users).
+      const [_y, _m, _d] = form.effective_date.split('-').map(Number);
+      const [_hh, _mm] = (form.effective_time || '00:00').split(':').map(Number);
+      const effective_at_utc = new Date(_y, _m - 1, _d, _hh, _mm, 0)
+        .toISOString().slice(0, 19).replace('T', ' ');
       await createFxRate({
         effective_date: form.effective_date,
-        effective_time: form.effective_time || null,
+        effective_at:   effective_at_utc,
         sell_rate: sell,
         buy_rate: buy,
         sell_rate_k: sellK,
@@ -428,7 +437,16 @@ export default function FxRates() {
                 <tr key={r.id} style={{ borderTop: '1px solid #f1f5f9', fontSize: 13 }}>
                   <td style={tdStyle}>{r.effective_date}</td>
                   <td style={{ ...tdStyle, color: '#475569', fontFamily: 'monospace' }}>
-                    {r.effective_at ? (r.effective_at.length >= 16 ? r.effective_at.slice(11, 16) : '—') : '—'}
+                    {(() => {
+                      // v1.8.82 — effective_at is now stored as UTC; convert to
+                      // local for display so the cashier sees the time they typed.
+                      if (!r.effective_at || r.effective_at.length < 16) return '—';
+                      const d = new Date(r.effective_at.replace(' ', 'T') + 'Z');
+                      if (isNaN(d)) return r.effective_at.slice(11, 16);
+                      const hh = String(d.getHours()).padStart(2, '0');
+                      const mm = String(d.getMinutes()).padStart(2, '0');
+                      return `${hh}:${mm}`;
+                    })()}
                   </td>
                   <td style={{ ...tdStyle, textAlign: 'right', fontWeight: 700 }}>{fmtRate(r.sell_rate)}</td>
                   <td style={{ ...tdStyle, textAlign: 'right', fontWeight: 700 }}>{fmtRate(r.buy_rate)}</td>

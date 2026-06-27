@@ -826,12 +826,35 @@ export default function Cashier() {
                   );
                 })()}
               </>
-            ) : (
-              <div style={{ ...confirmRow, padding: '10px 12px', background: '#fef2f2', borderRadius: 8 }}>
-                <span style={{ fontWeight: 700, color: '#b91c1c' }}>Unpaid Balance</span>
-                <strong style={{ color: '#991b1b' }}>−{fmtUSD(confirm.unpaidBalance)}</strong>
-              </div>
-            )}
+            ) : (() => {
+              // v1.8.82 — distinguish three under-paid scenarios:
+              //   • Within $0.10 tolerance walk-in → silently absorbed (shop loss)
+              //   • Registered customer with shortfall > tolerance → becomes credit
+              //   • Walk-in with shortfall > tolerance → blocked by backend anyway
+              // For absorbed-tolerance case, label as a shop loss (matches the
+              // Under-Payments line in Cash Report) instead of the confusing
+              // "Unpaid Balance" red box that implied the customer still owes.
+              const absorbed = !hasRegisteredCustomer && confirm.unpaidBalance <= 0.10;
+              if (absorbed) {
+                return (
+                  <div style={{ ...confirmRow, padding: '10px 12px', background: '#fef2f2', borderRadius: 8, flexDirection: 'column', alignItems: 'stretch' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                      <span style={{ fontWeight: 700, color: '#b91c1c' }}>Shortage (within tolerance)</span>
+                      <strong style={{ color: '#991b1b' }}>−{fmtUSD(confirm.unpaidBalance)}</strong>
+                    </div>
+                    <div style={{ fontSize: 10, color: '#991b1b', marginTop: 4, opacity: 0.8 }}>
+                      Shop loss — recorded in Under-Payments
+                    </div>
+                  </div>
+                );
+              }
+              return (
+                <div style={{ ...confirmRow, padding: '10px 12px', background: '#fef2f2', borderRadius: 8 }}>
+                  <span style={{ fontWeight: 700, color: '#b91c1c' }}>Unpaid Balance</span>
+                  <strong style={{ color: '#991b1b' }}>−{fmtUSD(confirm.unpaidBalance)}</strong>
+                </div>
+              );
+            })()}
             <div style={{ display: 'flex', gap: 10, marginTop: 18 }}>
               <button onClick={() => setConfirm(null)}
                 style={{ flex: 1, padding: '12px', background: '#f1f5f9', color: '#475569', border: '1px solid #e2e8f0', borderRadius: 8, cursor: 'pointer', fontWeight: 600 }}>
