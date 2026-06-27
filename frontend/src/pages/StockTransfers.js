@@ -596,7 +596,7 @@ function TransferDetailModal({ transfer, mode, onClose, onSubmit }) {
         received_qty: wasUntouched ? String(sentBase / newConv) : String(recvBaseIfTouched / newConv),
       };
     }));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line
   }, [productBySync]);
   const [submitting, setSubmitting] = useState(false);
 
