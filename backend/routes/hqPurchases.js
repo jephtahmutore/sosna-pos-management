@@ -337,6 +337,12 @@ router.put('/items/:itemId/confirm', hqAuth, (req, res) => {
 
     const confirmedBy     = req.user.id || null;
     const confirmedByName = req.user.firstName || req.user.email || 'HQ';
+    // v1.8.99 — stock_movements.created_by FK references users(id) ON THE
+    // BRANCH DB. HQ users don't exist there → FOREIGN KEY constraint failed.
+    // Same fix as v1.8.96 Confirm Damages: pass NULL for the branch-side
+    // movement's created_by. HQ user identity is preserved on the master
+    // hq_purchase_items row (confirmed_by + confirmed_by_name snapshot).
+    const branchSideCreatedBy = null;
     const qty = parseFloat(item.received_qty) || 0;
 
     toDb.transaction(() => {
@@ -388,7 +394,7 @@ router.put('/items/:itemId/confirm', hqAuth, (req, res) => {
         prod.id, prod.sync_id, 'sales', 'hq_receipt',
         baseQty, 'hq_purchase', item.sync_id,
         `HQ Purchase confirmed${confirm_notes ? ' — ' + confirm_notes : ''}`,
-        confirmedBy,
+        branchSideCreatedBy,
         randomUUID(), null, null, null
       );
     })();
