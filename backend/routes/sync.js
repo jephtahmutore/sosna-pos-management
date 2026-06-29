@@ -423,9 +423,19 @@ router.post('/push', lanGate, async (req, res) => {
             db.prepare(
               `INSERT OR IGNORE INTO ${table} (${insertCols.join(', ')}) VALUES (${placeholders})`
             ).run(...values);
-            if (hasUpdatedAt) {
-              db.prepare(`UPDATE ${table} SET updated_at = datetime('now') WHERE sync_id = ?`).run(row.sync_id);
-            }
+            // v1.9.5 — DO NOT overwrite updated_at with datetime('now') after
+            // INSERT. Previous code did so for incremental-pull bookkeeping,
+            // but it broke the symmetric timestamp check used by push: after
+            // server stamps the row with server-clock "now", any subsequent
+            // push from the same client (whose clock is even slightly behind
+            // the server) compares `incoming <= server` and gets REJECTED.
+            // Real incident 2026-06-29 ORD-EFAE4A-0004/0005: reverse on
+            // Electron correctly bumped updated_at to (creation + ~30s), but
+            // server's stored updated_at was already (creation + processing
+            // delay), so the reverse push was silently dropped and web kept
+            // showing PENDING_PAYMENT. Letting the client's updated_at flow
+            // through preserves the cross-client ordering the rest of the
+            // sync engine assumes.
           } else {
             // v1.8.89 — TIMESTAMP CHECK (defense against stale pushes).
             // Before: server accepted any pushed row unconditionally → if a
@@ -456,9 +466,10 @@ router.post('/push', lanGate, async (req, res) => {
             const setClause = updateCols.map(c => `${c} = ?`).join(', ');
             const values = [...updateCols.map(c => row[c]), row.sync_id];
             db.prepare(`UPDATE ${table} SET ${setClause} WHERE sync_id = ?`).run(...values);
-            if (hasUpdatedAt) {
-              db.prepare(`UPDATE ${table} SET updated_at = datetime('now') WHERE sync_id = ?`).run(row.sync_id);
-            }
+            // v1.9.5 — same as the INSERT path above: no longer overwrite
+            // updated_at with datetime('now'). Client's updated_at flows
+            // through unchanged so the next push's timestamp check compares
+            // apples to apples. See INSERT-branch comment for the incident.
           }
         }
       })();
