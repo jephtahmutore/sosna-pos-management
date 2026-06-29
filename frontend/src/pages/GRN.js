@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import ReactDOM from 'react-dom';
 import { useNavigate } from 'react-router-dom';
 import { getGRNs, getGRNStats, createGRN, getProducts, getSuppliers, createSupplier, getSettings, getGRNProductReport, getGRNProductBreakdown, getGRN, updateGRN, deleteGRN, getGRNNotes, getGRNRecentProducts } from '../services/api';
+import CreditNoteOverlay from '../components/CreditNoteOverlay';
 import { useAuth } from '../context/AuthContext';
 import { useCurrency } from '../context/CurrencyContext';
 import { useLanguage } from '../context/LanguageContext';
@@ -133,9 +134,10 @@ const GRN = () => {
   // supplier_credit_notes rows with grn_sync_id link.
   const [creditNotes, setCreditNotes]   = useState([]);
   const [activeTab,   setActiveTab]     = useState('details'); // 'details' | 'cn' | 'summary'
-  // v1.9.15 — inline form draft (no overlay anymore); committed to
-  // creditNotes by the Add button or Enter on the Notes input.
-  const [cnDraft,     setCnDraft]       = useState({ reason: 'Discount', amount: '', notes: '' });
+  // v1.9.16 — replaced inline form with the rich CreditNoteOverlay component
+  // (segmented Reason / Goods picker / AP preview). Local draft state lives
+  // inside the overlay; this page just toggles open/closed.
+  const [cnOverlayOpen, setCnOverlayOpen] = useState(false);
   const CN_REASONS = ['Discount', 'Damaged', 'Short', 'Crate Return', 'Bottle Return', 'Other'];
   const cnTotal = creditNotes.reduce((s, c) => s + (parseFloat(c.amount) || 0), 0);
 
@@ -1587,11 +1589,20 @@ const GRN = () => {
 
       {/* ── New GRN Modal ─────────────────────────────────────────── */}
       {showForm && ReactDOM.createPortal((
-        <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.5)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
-          {/* v1.9.13 — when linked to a HQ PO, the form is wider to fit
-              tabs + summary panel; otherwise legacy width keeps the
-              standalone GRN form compact. */}
-          <div style={{ background: '#fff', borderRadius: 12, width: '100%', maxWidth: linkedPurchaseSyncId ? 1200 : 980, maxHeight: '95vh', overflowY: 'auto', boxShadow: '0 20px 60px rgba(0,0,0,0.3)' }}>
+        <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: linkedPurchaseSyncId ? '#f8fafc' : 'rgba(0,0,0,0.5)', zIndex: 1000, display: 'flex', alignItems: linkedPurchaseSyncId ? 'stretch' : 'center', justifyContent: linkedPurchaseSyncId ? 'stretch' : 'center', padding: linkedPurchaseSyncId ? 0 : 20 }}>
+          {/* v1.9.16 — HQ-linked GRN fills the whole screen so it feels like
+              a real page (no modal feel). Standalone GRN keeps the legacy
+              centered modal look. */}
+          <div style={{
+            background: '#fff',
+            borderRadius: linkedPurchaseSyncId ? 0 : 12,
+            width: '100%',
+            maxWidth: linkedPurchaseSyncId ? 'none' : 980,
+            maxHeight: linkedPurchaseSyncId ? 'none' : '95vh',
+            height: linkedPurchaseSyncId ? '100vh' : 'auto',
+            overflowY: 'auto',
+            boxShadow: linkedPurchaseSyncId ? 'none' : '0 20px 60px rgba(0,0,0,0.3)',
+          }}>
 
             {/* Modal Header */}
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '20px 24px', borderBottom: '1px solid #e5e7eb' }}>
@@ -2088,57 +2099,19 @@ const GRN = () => {
             </div>
 
             {/* v1.9.13 — Credit Notes tab panel (linked GRNs only)
-                v1.9.15 — overlay sub-modal replaced by an inline form
-                at the top of the tab so adding a CN is a single panel,
-                no popup-on-popup. */}
+                v1.9.16 — opens the rich CreditNoteOverlay component as an
+                overlay (segmented Reason buttons / Goods picker / AP
+                preview) instead of the v1.9.15 inline form. Mirrors the
+                /accounting/credit-notes UX so users see a familiar form. */}
             {linkedPurchaseSyncId && activeTab === 'cn' && (
               <div style={{ padding: '20px 24px' }}>
-                <h4 style={{ margin: '0 0 10px', fontSize: 15 }}>Add a credit note</h4>
-                <div style={{ padding: 14, background: '#f8fafc', border: '1px solid #e5e7eb', borderRadius: 10, marginBottom: 20 }}>
-                  <div style={{ display: 'grid', gridTemplateColumns: '180px 140px 1fr 100px', gap: 10, alignItems: 'end' }}>
-                    <div>
-                      <label style={{ display: 'block', fontSize: 11, fontWeight: 700, color: '#64748b', marginBottom: 4, textTransform: 'uppercase', letterSpacing: 0.4 }}>Type</label>
-                      <select value={cnDraft.reason}
-                        onChange={e => setCnDraft(d => ({ ...d, reason: e.target.value }))}
-                        style={{ width: '100%', padding: '9px 10px', border: '1px solid #d1d5db', borderRadius: 6, fontSize: 13, background: '#fff', boxSizing: 'border-box' }}>
-                        {CN_REASONS.map(r => <option key={r} value={r}>{r}</option>)}
-                      </select>
-                    </div>
-                    <div>
-                      <label style={{ display: 'block', fontSize: 11, fontWeight: 700, color: '#64748b', marginBottom: 4, textTransform: 'uppercase', letterSpacing: 0.4 }}>Amount *</label>
-                      <input type="number" min="0" step="0.01"
-                        value={cnDraft.amount}
-                        onChange={e => setCnDraft(d => ({ ...d, amount: e.target.value }))}
-                        onFocus={e => e.target.select()}
-                        placeholder="0.00"
-                        style={{ width: '100%', padding: '9px 10px', border: '1px solid #d1d5db', borderRadius: 6, fontSize: 14, fontWeight: 700, textAlign: 'right', boxSizing: 'border-box' }} />
-                    </div>
-                    <div>
-                      <label style={{ display: 'block', fontSize: 11, fontWeight: 700, color: '#64748b', marginBottom: 4, textTransform: 'uppercase', letterSpacing: 0.4 }}>Notes</label>
-                      <input type="text"
-                        value={cnDraft.notes}
-                        onChange={e => setCnDraft(d => ({ ...d, notes: e.target.value }))}
-                        placeholder="e.g. 2 boxes damaged on truck"
-                        style={{ width: '100%', padding: '9px 10px', border: '1px solid #d1d5db', borderRadius: 6, fontSize: 13, boxSizing: 'border-box' }}
-                        onKeyDown={e => {
-                          if (e.key === 'Enter' && parseFloat(cnDraft.amount) > 0) {
-                            setCreditNotes(arr => [...arr, { reason: cnDraft.reason, amount: parseFloat(cnDraft.amount) || 0, notes: cnDraft.notes || '' }]);
-                            setCnDraft({ reason: 'Discount', amount: '', notes: '' });
-                          }
-                        }} />
-                    </div>
-                    <button
-                      disabled={!(parseFloat(cnDraft.amount) > 0)}
-                      onClick={() => {
-                        setCreditNotes(arr => [...arr, { reason: cnDraft.reason, amount: parseFloat(cnDraft.amount) || 0, notes: cnDraft.notes || '' }]);
-                        setCnDraft({ reason: 'Discount', amount: '', notes: '' });
-                      }}
-                      style={{ padding: '10px 12px', background: !(parseFloat(cnDraft.amount) > 0) ? '#9ca3af' : '#0ea5e9', color: '#fff', border: 'none', borderRadius: 6, cursor: !(parseFloat(cnDraft.amount) > 0) ? 'not-allowed' : 'pointer', fontWeight: 700, fontSize: 13, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 4 }}>
-                      <FiPlus size={14} /> Add
-                    </button>
-                  </div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
+                  <h4 style={{ margin: 0, fontSize: 15 }}>Credit Notes attached to this GRN</h4>
+                  <button onClick={() => setCnOverlayOpen(true)}
+                    style={{ padding: '10px 18px', background: '#1d4ed8', color: '#fff', border: 'none', borderRadius: 8, cursor: 'pointer', fontSize: 13, fontWeight: 700, display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                    <FiPlus size={14} /> Add Credit Note
+                  </button>
                 </div>
-                <h4 style={{ margin: '0 0 10px', fontSize: 14, color: '#374151' }}>Attached to this GRN</h4>
                 {creditNotes.length === 0 ? (
                   <div style={{ padding: 24, textAlign: 'center', color: '#9ca3af', fontStyle: 'italic', border: '1px dashed #e5e7eb', borderRadius: 8 }}>
                     No credit notes yet. Add one for any discount, damage, short delivery, or returns.
@@ -2228,6 +2201,22 @@ const GRN = () => {
 
         </div>
       ), document.body)}
+
+      {/* v1.9.16 — CreditNoteOverlay mounted outside the GRN modal so
+          its z-index sits cleanly above. Save pushes a draft into the
+          local creditNotes array; the real POST happens when the user
+          saves the GRN (so the CN inherits the grn_sync_id atomically). */}
+      <CreditNoteOverlay
+        open={cnOverlayOpen && linkedPurchaseSyncId && showForm}
+        onClose={() => setCnOverlayOpen(false)}
+        onSaved={(draft) => setCreditNotes(arr => [...arr, draft])}
+        prefillSupplierId={supplierId}
+        prefillSupplierName={suppliers.find(s => String(s.id) === String(supplierId))?.name || ''}
+        prefillReference={linkedPurchaseNumber || ''}
+        prefillGrnSyncId={linkedPurchaseSyncId}
+        defaultDeposit={parseFloat(businessInfo?.default_crate_deposit || 0)}
+        products={products}
+      />
 
       {/* ── Print Preview ─────────────────────────────────────────── */}
       {false && showPrintPreview && (

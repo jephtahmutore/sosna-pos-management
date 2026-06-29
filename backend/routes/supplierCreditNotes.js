@@ -113,7 +113,10 @@ router.get('/:id', auth, readOnlyGuard, (req, res) => {
 // ── Create ───────────────────────────────────────────────────────────────────
 router.post('/', auth, (req, res) => {
   try {
-    const { supplier_id, reason, reference, amount, notes, items, date } = req.body || {};
+    // v1.9.16 — accept grn_sync_id so credit notes raised from inside the
+    // GRN form get linked back to the parent GRN. HQ Confirm GRN sums by
+    // grn_sync_id to compute final payable. Standalone CN page sends null.
+    const { supplier_id, reason, reference, amount, notes, items, date, grn_sync_id } = req.body || {};
     if (!supplier_id) return res.status(400).json({ error: 'Supplier is required.' });
     if (!VALID_REASONS.includes(reason)) return res.status(400).json({ error: 'Invalid reason.' });
 
@@ -142,11 +145,11 @@ router.post('/', auth, (req, res) => {
 
       const info = db.prepare(`
         INSERT INTO supplier_credit_notes (credit_note_number, date, supplier_id, supplier_sync_id,
-                                            reason, reference, amount, notes, created_by,
+                                            reason, reference, amount, notes, grn_sync_id, created_by,
                                             sync_id, tenant_id, branch_id, device_id, synced, created_at, updated_at)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0,datetime('now'),datetime('now'))
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,datetime('now'),datetime('now'))
       `).run(cnNumber, cnDate, supplier_id, supplierSyncId,
-             reason, reference || null, finalAmount, notes || null, req.user.id,
+             reason, reference || null, finalAmount, notes || null, grn_sync_id || null, req.user.id,
              cnSyncId, tenantId, branchId, deviceId);
       const cnId = info.lastInsertRowid;
 
