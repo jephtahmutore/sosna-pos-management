@@ -376,6 +376,10 @@ try {
     // can pull the full GRN doc + credit notes by sync_id (no need to
     // join across tenant DBs).
     addCol('linked_grn_sync_id',  'TEXT');
+    // v1.9.21 — denormalised GRN# for display on the branch's Incoming
+    // Stock page (the "WAITING HQ" rows). Avoids a cross-tenant lookup
+    // just to render a human-readable reference.
+    addCol('linked_grn_number',   'TEXT');
   } catch (e) {
     console.warn('[masterDb] v1.3.0 hq_purchase_items migration:', e.message);
   }

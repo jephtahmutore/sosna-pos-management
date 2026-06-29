@@ -159,6 +159,10 @@ export default function IncomingStock() {
               const firstAwaiting = g.items.find(i => i.status === 'AWAITING_GRN');
               const anyAwaiting   = !!firstAwaiting;
               const allSubmitted  = g.items.every(i => i.status === 'GRN_SUBMITTED');
+              // v1.9.21 — when a GRN has been submitted, surface its
+              // number on the card so the branch user knows exactly
+              // which GRN to chase HQ about.
+              const submittedGrnNumber = g.items.find(i => i.linked_grn_number)?.linked_grn_number || null;
               return (
                 <div key={g.key} style={{ background: '#fff', border: '1px solid #e5e7eb', borderRadius: 10, padding: 0, marginBottom: 14, overflow: 'hidden' }}>
                   {/* PO header */}
@@ -174,6 +178,11 @@ export default function IncomingStock() {
                       <div style={{ marginTop: 4, fontSize: 11, color: '#64748b' }}>
                         {g.items.length} item{g.items.length === 1 ? '' : 's'}
                         {allSubmitted && <span style={{ ...tag('#fef3c7', '#92400e'), marginLeft: 8 }}><FiClock size={10} style={{ verticalAlign: 'middle' }} /> Waiting HQ</span>}
+                        {submittedGrnNumber && (
+                          <span style={{ marginLeft: 8, fontFamily: 'monospace', color: '#475569' }}>
+                            · GRN <strong>{submittedGrnNumber}</strong>
+                          </span>
+                        )}
                       </div>
                     </div>
                     {anyAwaiting && (

@@ -61,10 +61,22 @@ const cnProductUnitValue = (p, defaultDep, reason, conv = 1) => {
 };
 
 // ── Payment status badge style ────────────────────────────────────────────
+// Used only for legacy / standalone GRNs (no HQ link). HQ-linked GRNs in
+// Sosna don't carry AP at the branch — HQ pays — so they use hqStatusBadge.
 const paymentStatusStyle = (status) => {
   if (status === 'Paid')           return { bg: '#dcfce7', color: '#166534', border: '#86efac' };
   if (status === 'Partially Paid') return { bg: '#fef9c3', color: '#854d0e', border: '#fcd34d' };
   return                                  { bg: '#fee2e2', color: '#991b1b', border: '#fca5a5' }; // Not Paid
+};
+
+// v1.9.21 — HQ-linked GRN lifecycle badge. Replaces the legacy "Not Paid"
+// pill on the branch GRN view: Sosna branches no longer hold AP, so what
+// the user actually needs to see is whether HQ has approved the GRN yet.
+const hqStatusBadge = (s) => {
+  if (s === 'CONFIRMED')           return { bg: '#dcfce7', color: '#166534', border: '#86efac', label: 'Confirmed by HQ' };
+  if (s === 'HQ_REJECTED' || s === 'REJECTED')
+                                   return { bg: '#fee2e2', color: '#991b1b', border: '#fca5a5', label: 'HQ Rejected' };
+  return                                  { bg: '#fef3c7', color: '#92400e', border: '#fde68a', label: 'Awaiting HQ Confirm' };
 };
 
 // Track viewport width once at module scope so any page can read it. Re-checked
@@ -927,7 +939,15 @@ const GRN = () => {
                   <td style={{ textAlign: 'center' }}>{grn.total_items}</td>
                   <td>{curSym}{parseFloat(grn.total_amount).toLocaleString(undefined, { minimumFractionDigits: 2 })}</td>
                   <td>
-                    {(() => { const s = paymentStatusStyle(grn.payment_status); return (
+                    {/* v1.9.21 — HQ-linked GRNs show their HQ lifecycle
+                        (Awaiting / Confirmed / Rejected) instead of the
+                        legacy payment_status pill. Branches no longer pay. */}
+                    {grn.linked_purchase_sync_id ? (() => { const s = hqStatusBadge(grn.hq_status); return (
+                      <span style={{ padding: '3px 10px', borderRadius: 12, fontSize: 11, fontWeight: 700,
+                        background: s.bg, color: s.color, border: `1px solid ${s.border}` }}>
+                        {s.label}
+                      </span>
+                    ); })() : (() => { const s = paymentStatusStyle(grn.payment_status); return (
                       <span style={{ padding: '3px 10px', borderRadius: 12, fontSize: 11, fontWeight: 700,
                         background: s.bg, color: s.color, border: `1px solid ${s.border}` }}>
                         {grn.payment_status || 'Not Paid'}
@@ -1259,8 +1279,10 @@ const GRN = () => {
                   {formatDate(viewGRN.date || viewGRN.created_at)} · {viewGRN.supplier_name || '—'}
                 </div>
               </div>
+              {/* v1.9.21 — HQ lifecycle pill for HQ-linked GRNs, legacy
+                  payment_status for standalone/legacy GRNs. */}
               <span style={{ padding: '4px 10px', borderRadius: 14, fontSize: 10, fontWeight: 800, background: 'rgba(255,255,255,0.22)', color: '#fff', textTransform: 'uppercase', letterSpacing: 0.5 }}>
-                {viewGRN.payment_status || 'Not Paid'}
+                {viewGRN.linked_purchase_sync_id ? hqStatusBadge(viewGRN.hq_status).label : (viewGRN.payment_status || 'Not Paid')}
               </span>
             </div>
 
@@ -1276,10 +1298,34 @@ const GRN = () => {
                 </div>
                 <div style={{ display: 'flex', gap: 12, fontSize: 11, color: '#166534', flexWrap: 'wrap' }}>
                   <span>Items: <strong>{viewGRN.total_items}</strong></span>
-                  <span>Paid: <strong>{money(viewGRN.amount_paid_on_grn || 0)}</strong></span>
-                  <span>Balance: <strong style={{ color: parseFloat(viewGRN.balance_on_grn || 0) > 0.001 ? '#dc2626' : '#15803d' }}>{money(viewGRN.balance_on_grn || 0)}</strong></span>
+                  {/* v1.9.21 — Paid/Balance hidden for HQ-linked GRNs
+                      (branch has no AP). Kept for legacy/standalone GRNs. */}
+                  {!viewGRN.linked_purchase_sync_id && (
+                    <>
+                      <span>Paid: <strong>{money(viewGRN.amount_paid_on_grn || 0)}</strong></span>
+                      <span>Balance: <strong style={{ color: parseFloat(viewGRN.balance_on_grn || 0) > 0.001 ? '#dc2626' : '#15803d' }}>{money(viewGRN.balance_on_grn || 0)}</strong></span>
+                    </>
+                  )}
                 </div>
               </div>
+
+              {/* v1.9.21 — HQ status card (linked GRNs only). Replaces the
+                  legacy "Not Paid / Paid: $0 / Balance: $X" strip with
+                  the lifecycle the branch actually cares about. */}
+              {viewGRN.linked_purchase_sync_id && (() => {
+                const s = hqStatusBadge(viewGRN.hq_status);
+                const sub = viewGRN.hq_status === 'CONFIRMED'
+                  ? `Stock is on the sales floor${viewGRN.hq_confirmed_at ? ` · ${formatDate(viewGRN.hq_confirmed_at)}` : ''}${viewGRN.hq_confirmed_by_name ? ` · by ${viewGRN.hq_confirmed_by_name}` : ''}`
+                  : (viewGRN.hq_status === 'HQ_REJECTED' || viewGRN.hq_status === 'REJECTED')
+                    ? (viewGRN.hq_reject_reason || 'Re-submit a corrected GRN.')
+                    : 'Stock will post to the sales floor once HQ confirms.';
+                return (
+                  <div style={{ background: s.bg, border: `1px solid ${s.border}`, borderRadius: 12, padding: 12, marginBottom: 14 }}>
+                    <div style={{ fontSize: 12, fontWeight: 800, color: s.color, textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 4 }}>{s.label}</div>
+                    <div style={{ fontSize: 11, color: s.color }}>{sub}</div>
+                  </div>
+                );
+              })()}
 
               {/* Section heading */}
               <div style={{ fontSize: 11, fontWeight: 700, color: '#6b7280', textTransform: 'uppercase', letterSpacing: 0.5, padding: '4px 4px 8px' }}>
@@ -1393,11 +1439,13 @@ const GRN = () => {
                 </div>
               </div>
               <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                {/* v1.9.21 — pill shows HQ lifecycle for HQ-linked GRNs,
+                    legacy payment_status for standalone GRNs. */}
                 <span style={{
                   padding: '4px 12px', borderRadius: 20, fontSize: 11, fontWeight: 700,
                   background: 'rgba(255,255,255,0.2)', color: '#fff', border: '1px solid rgba(255,255,255,0.35)',
                 }}>
-                  {viewGRN.payment_status || 'Not Paid'}
+                  {viewGRN.linked_purchase_sync_id ? hqStatusBadge(viewGRN.hq_status).label : (viewGRN.payment_status || 'Not Paid')}
                 </span>
                 <button onClick={() => setViewGRN(null)} style={{ background: 'rgba(255,255,255,0.15)', border: '1px solid rgba(255,255,255,0.25)', borderRadius: 8, cursor: 'pointer', color: '#fff', width: 32, height: 32, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                   <FiX size={16} />
@@ -1408,9 +1456,22 @@ const GRN = () => {
             {/* Body */}
             <div style={{ padding: '24px 28px', flex: 1 }}>
 
-              {/* Info strip */}
-              {/* Payment status bar */}
-              {(() => {
+              {/* v1.9.21 — Status strip: HQ lifecycle card for linked GRNs,
+                  legacy Paid/Balance strip for standalone/legacy GRNs. */}
+              {viewGRN.linked_purchase_sync_id ? (() => {
+                const s = hqStatusBadge(viewGRN.hq_status);
+                const sub = viewGRN.hq_status === 'CONFIRMED'
+                  ? `Stock is on the sales floor${viewGRN.hq_confirmed_at ? ` · ${formatDate(viewGRN.hq_confirmed_at)}` : ''}${viewGRN.hq_confirmed_by_name ? ` · by ${viewGRN.hq_confirmed_by_name}` : ''}`
+                  : (viewGRN.hq_status === 'HQ_REJECTED' || viewGRN.hq_status === 'REJECTED')
+                    ? (viewGRN.hq_reject_reason || 'Re-submit a corrected GRN.')
+                    : 'Stock will post to the sales floor once HQ confirms.';
+                return (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 4, padding: '12px 16px', borderRadius: 8, background: s.bg, border: `1px solid ${s.border}`, marginBottom: 16 }}>
+                    <span style={{ fontWeight: 800, fontSize: 13, color: s.color, textTransform: 'uppercase', letterSpacing: 0.5 }}>{s.label}</span>
+                    <span style={{ fontSize: 12, color: s.color, opacity: 0.85 }}>{sub}</span>
+                  </div>
+                );
+              })() : (() => {
                 const s = paymentStatusStyle(viewGRN.payment_status);
                 return (
                   <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 14px', borderRadius: 8, background: s.bg, border: `1px solid ${s.border}`, marginBottom: 16 }}>
@@ -2463,7 +2524,13 @@ const GRN = () => {
                               {curSym}{parseFloat(grn.total_amount || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}
                             </td>
                             <td style={{ padding: '8px 12px', textAlign: 'right' }}>
-                              {(() => { const s = paymentStatusStyle(grn.payment_status); return (
+                              {/* v1.9.21 — Print preview honors HQ lifecycle for HQ-linked GRNs. */}
+                              {grn.linked_purchase_sync_id ? (() => { const s = hqStatusBadge(grn.hq_status); return (
+                                <span style={{ padding: '2px 10px', borderRadius: 12, fontSize: 10, fontWeight: 600,
+                                  background: s.bg, color: s.color, border: `1px solid ${s.border}` }}>
+                                  {s.label}
+                                </span>
+                              ); })() : (() => { const s = paymentStatusStyle(grn.payment_status); return (
                                 <span style={{ padding: '2px 10px', borderRadius: 12, fontSize: 10, fontWeight: 600,
                                   background: s.bg, color: s.color, border: `1px solid ${s.border}` }}>
                                   {grn.payment_status || 'Not Paid'}

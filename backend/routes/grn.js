@@ -336,12 +336,13 @@ router.post('/', auth, (req, res) => {
             UPDATE hq_purchase_items
                SET status              = 'GRN_SUBMITTED',
                    linked_grn_sync_id  = ?,
+                   linked_grn_number   = ?,
                    received_by         = ?,
                    received_by_name    = ?,
                    received_at         = datetime('now')
              WHERE purchase_sync_id = ?
                AND status = 'AWAITING_GRN'
-          `).run(grn.sync_id, req.user.id || null, req.user.firstName || req.user.email || 'branch', linked_purchase_sync_id);
+          `).run(grn.sync_id, grn.grn_number, req.user.id || null, req.user.firstName || req.user.email || 'branch', linked_purchase_sync_id);
         }
       } catch (err) {
         console.error('[grn] failed to flag parent PO lines as GRN_SUBMITTED:', err.message);
