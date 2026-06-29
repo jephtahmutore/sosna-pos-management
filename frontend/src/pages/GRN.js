@@ -8,9 +8,8 @@ import { useLanguage } from '../context/LanguageContext';
 import Toast from '../components/Toast';
 import InvoiceAttachment from '../components/InvoiceAttachment';
 import AdminPasswordPrompt from '../components/AdminPasswordPrompt';
-import ApPaymentFormModal from '../components/ApPaymentFormModal';
 import { unitsForProduct as unitsForProductFE } from '../utils/productUnits';
-import { FiPlus, FiFileText, FiCalendar, FiUsers, FiClock, FiX, FiTrash2, FiPrinter, FiSearch, FiChevronDown, FiChevronUp, FiPackage, FiEdit2, FiEye, FiDollarSign, FiCheckCircle, FiTag } from 'react-icons/fi';
+import { FiPlus, FiFileText, FiCalendar, FiUsers, FiClock, FiX, FiTrash2, FiPrinter, FiSearch, FiChevronDown, FiChevronUp, FiPackage, FiEdit2, FiEye, FiCheckCircle, FiTag } from 'react-icons/fi';
 
 const defaultStats = { totalGRNs: 0, thisMonth: 0, suppliers: 0, pending: 0 };
 const emptyItem = () => ({
@@ -185,27 +184,6 @@ const GRN = () => {
   const [dropdownRect, setDropdownRect] = useState(null);
   const [highlightedIdx, setHighlightedIdx] = useState(-1);
 
-  // GRN pay opens the shared ApPaymentFormModal (same as AP page uses)
-  // so a payment from here has split/attachment parity with payments
-  // entered directly from Account Payables. State holds the supplier
-  // context built from the GRN row.
-  const [payModalSupplier, setPayModalSupplier] = useState(null);
-  const [payModalDescription, setPayModalDescription] = useState('');
-  const openPayForGrn = (grn) => {
-    setPayModalSupplier({
-      id: grn.supplier_id,
-      sync_id: grn.supplier_sync_id || null,
-      supplier_name: grn.supplier_name,
-      balance: parseFloat(grn.total_amount) || 0,
-      // Surfaced inside the modal's green info card instead of the
-      // generic "Outstanding balance" line.
-      context_label: `GRN ${grn.grn_number} — Total: ${parseFloat(grn.total_amount || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}`,
-    });
-    // Pre-fill the description with both the supplier and the GRN reference
-    // so the entry shows up legibly in Cash Book / Profit Report.
-    setPayModalDescription(`Payment to ${grn.supplier_name} — GRN ${grn.grn_number}`);
-  };
-
   const [toast, setToast] = useState(null);
   const [scanMsg, setScanMsg] = useState(null); // { text, type: 'error'|'success' }
 
@@ -220,7 +198,7 @@ const GRN = () => {
   // they tapped.
   useEffect(() => {
     if (!isMobile) return;
-    const anyModalOpen = !!viewGRN || showForm || !!showPrintPreview || !!payModalSupplier;
+    const anyModalOpen = !!viewGRN || showForm || !!showPrintPreview;
     const pc = document.querySelector('.page-content');
     if (!pc) return;
     if (anyModalOpen) {
@@ -237,7 +215,7 @@ const GRN = () => {
       if (pc) pc.style.overflow = '';
       document.body.style.overflow = '';
     };
-  }, [viewGRN, showForm, showPrintPreview, payModalSupplier, isMobile]);
+  }, [viewGRN, showForm, showPrintPreview, isMobile]);
 
   const showToast = (msg, type = 'success') => {
     setToast({ msg, type });
@@ -1023,21 +1001,10 @@ const GRN = () => {
                           <FiEdit2 size={13} />
                         </button>
                       )}
-                      {grn.payment_status !== 'Paid' && (
-                        <button
-                          onClick={() => openPayForGrn(grn)}
-                          title="Record Payment"
-                          style={{
-                            display: 'inline-flex', alignItems: 'center', gap: 4,
-                            padding: '5px 11px', borderRadius: 6, border: '1px solid #86efac',
-                            background: '#f0fdf4', color: '#16a34a', cursor: 'pointer', transition: 'all 0.15s', fontSize: 12, fontWeight: 600,
-                          }}
-                          onMouseEnter={e => { e.currentTarget.style.background = '#16a34a'; e.currentTarget.style.color = '#fff'; }}
-                          onMouseLeave={e => { e.currentTarget.style.background = '#f0fdf4'; e.currentTarget.style.color = '#16a34a'; }}
-                        >
-                          <FiDollarSign size={12} /> {t('pay')}
-                        </button>
-                      )}
+                      {/* v1.9.19 — Pay button removed from branch GRN list.
+                          In Sosna's drop-ship model, supplier payments are
+                          made by HQ (not branches), so AP from the GRN flows
+                          to HQ Suppliers / HQ Payables, not here. */}
                       {isAdmin && (
                         <button
                           onClick={() => openCreditNoteForGRN(grn)}
@@ -2867,13 +2834,6 @@ const GRN = () => {
         onCancel={() => setPendingDelete(null)}
       />
 
-      <ApPaymentFormModal
-        open={!!payModalSupplier}
-        supplier={payModalSupplier}
-        defaultDescription={payModalDescription}
-        onClose={() => setPayModalSupplier(null)}
-        onSaved={() => { fetchData(); showToast('Payment recorded successfully.'); }}
-      />
     </div>
   );
 };

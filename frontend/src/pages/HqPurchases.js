@@ -179,7 +179,16 @@ function CreatePurchaseModal({ branches, onClose, onCreated, onError }) {
   const [invoice, setInvoice]   = useState('');
   const [date, setDate]         = useState(todayISO());
   const [notes, setNotes]       = useState('');
-  const [items, setItems]       = useState([newItem(branches[0]?.slug || '')]);
+  const [items, setItems]       = useState([newItem('')]);
+  // v1.9.19 — single destination for the whole PO (replaces per-line picker).
+  // Sosna's procurement is one-supplier-one-branch per PO. The submit handler
+  // copies this onto every line so the backend shape (per-line destination)
+  // doesn't change.
+  const [destinationSlug, setDestinationSlug] = useState(branches[0]?.slug || '');
+  useEffect(() => {
+    if (!destinationSlug && branches.length > 0) setDestinationSlug(branches[0].slug);
+  // eslint-disable-next-line
+  }, [branches]);
   const [submitting, setSubmitting] = useState(false);
 
   // v1.9.0 — quick-add HQ supplier (same pattern as GRN page).
@@ -210,14 +219,14 @@ function CreatePurchaseModal({ branches, onClose, onCreated, onError }) {
       .catch(() => {});
   }, []);
 
-  function newItem(defaultSlug = '') {
-    return { product_sync_id: '', product_name: '', unit: 'pcs', dispatched_qty: '', cost_price: '', destination_slug: defaultSlug };
+  function newItem() {
+    return { product_sync_id: '', product_name: '', unit: 'pcs', dispatched_qty: '', cost_price: '' };
   }
 
   const updateItem = (i, field, value) => {
     setItems(arr => arr.map((it, idx) => idx === i ? { ...it, [field]: value } : it));
   };
-  const addItem = () => setItems(arr => [...arr, newItem(branches[0]?.slug || '')]);
+  const addItem = () => setItems(arr => [...arr, newItem()]);
   const removeItem = (i) => setItems(arr => arr.length > 1 ? arr.filter((_, idx) => idx !== i) : arr);
 
   const totalAmount = useMemo(() => items.reduce((s, it) => {
@@ -254,19 +263,23 @@ function CreatePurchaseModal({ branches, onClose, onCreated, onError }) {
     // purchase + auto-create a branch product. Now: any line whose
     // product wasn't picked from the dropdown is rejected with a clear
     // error pointing the user to HQ Products.
+    // v1.9.19 — single destination for the entire PO. Stamp it onto every
+    // line so the backend (which still validates per-line destination_slug)
+    // accepts the payload unchanged.
+    if (!destinationSlug) return onError('Pick a destination branch for this PO.');
     const cleaned = items.map(it => ({
       product_sync_id:  (it.product_sync_id || '').trim(),
       product_name:     (it.product_name || '').trim(),
       unit:             it.unit || null,
       dispatched_qty:   parseFloat(it.dispatched_qty) || 0,
       cost_price:       parseFloat(it.cost_price) || 0,
-      destination_slug: it.destination_slug,
+      destination_slug: destinationSlug,
     }));
     const orphans = cleaned.filter(it => it.product_name && !it.product_sync_id);
     if (orphans.length > 0) {
       return onError(`"${orphans[0].product_name}" isn't in HQ Products. Pick from the dropdown, or add it via HQ Products first.`);
     }
-    const clean = cleaned.filter(it => it.product_sync_id && it.dispatched_qty > 0 && it.destination_slug);
+    const clean = cleaned.filter(it => it.product_sync_id && it.dispatched_qty > 0);
     if (clean.length === 0) return onError('Add at least one valid item');
     // v1.9.0 — supplier_id is now required (free-text supplier_name removed).
     const picked = suppliers.find(s => String(s.id) === String(supplierId));
@@ -351,14 +364,15 @@ function CreatePurchaseModal({ branches, onClose, onCreated, onError }) {
                 </div>
               )}
             </div>
-            {/* v1.9.12 — Invoice # removed from HQ Purchase. Supplier invoice
-                lives at the branch (collected on the GRN), not at HQ.
-                Purchase Number is generated server-side and surfaced as
-                "Auto-generated" placeholder text so HQ knows it's automatic. */}
+            {/* v1.9.19 — Purchase # field removed from the form (it's
+                auto-generated server-side and shown on the PO list / detail).
+                Single PO-level Destination replaces the per-line picker. */}
             <div>
-              <label style={lbl}>Purchase #</label>
-              <input type="text" value="Auto-generated on save" readOnly disabled
-                style={{ ...inp, background: '#f3f4f6', color: '#6b7280', fontStyle: 'italic' }} />
+              <label style={lbl}>Destination Branch <span style={{ color: '#dc2626' }}>*</span></label>
+              <select value={destinationSlug} onChange={e => setDestinationSlug(e.target.value)} style={inp}>
+                <option value="">— branch —</option>
+                {branches.map(b => <option key={b.slug} value={b.slug}>{b.name}</option>)}
+              </select>
             </div>
             <div><label style={lbl}>Date</label><input type="date" value={date} onChange={e => setDate(e.target.value)} style={inp} /></div>
           </div>
@@ -367,7 +381,7 @@ function CreatePurchaseModal({ branches, onClose, onCreated, onError }) {
             <input type="text" value={notes} onChange={e => setNotes(e.target.value)} placeholder="Truck #, driver, PO ref, etc." style={inp} />
           </div>
 
-          <label style={{ ...lbl, fontSize: 13 }}>Items (each line goes to ONE branch)</label>
+          <label style={{ ...lbl, fontSize: 13 }}>Items (all delivered to the destination branch chosen above)</label>
           <div style={{ overflowX: 'auto', border: '1px solid #e5e7eb', borderRadius: 8 }}>
             <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
               <thead style={{ background: '#f8fafc' }}>
@@ -377,7 +391,6 @@ function CreatePurchaseModal({ branches, onClose, onCreated, onError }) {
                   <th style={{ ...thS, textAlign: 'right', width: 90 }}>Qty</th>
                   <th style={{ ...thS, textAlign: 'right', width: 100 }}>Cost</th>
                   <th style={{ ...thS, textAlign: 'right', width: 110 }}>Line Total</th>
-                  <th style={{ ...thS, width: 180 }}>Destination</th>
                   <th style={{ ...thS, width: 40 }}></th>
                 </tr>
               </thead>
@@ -442,12 +455,6 @@ function CreatePurchaseModal({ branches, onClose, onCreated, onError }) {
                       <td style={tdS}><input type="number" min="0" step="any" value={it.dispatched_qty} onChange={e => updateItem(i, 'dispatched_qty', e.target.value)} style={{ ...cellInp, textAlign: 'right' }} /></td>
                       <td style={tdS}><input type="number" min="0" step="any" value={it.cost_price} onChange={e => updateItem(i, 'cost_price', e.target.value)} style={{ ...cellInp, textAlign: 'right' }} /></td>
                       <td style={{ ...tdS, textAlign: 'right', fontWeight: 700 }}>{fmtMoney(lineTotal)}</td>
-                      <td style={tdS}>
-                        <select value={it.destination_slug} onChange={e => updateItem(i, 'destination_slug', e.target.value)} style={cellInp}>
-                          <option value="">— branch —</option>
-                          {branches.map(b => <option key={b.slug} value={b.slug}>{b.name}</option>)}
-                        </select>
-                      </td>
                       <td style={tdS}>
                         <button onClick={() => removeItem(i)} disabled={items.length === 1}
                           style={{ background: 'none', border: 'none', color: items.length === 1 ? '#cbd5e1' : '#dc2626', cursor: items.length === 1 ? 'not-allowed' : 'pointer', padding: 2 }}>

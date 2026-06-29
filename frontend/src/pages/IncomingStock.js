@@ -9,7 +9,7 @@
 // on bare sosnazm.com, otherwise the host's first subdomain.
 import React, { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { FiRefreshCw, FiCheckCircle, FiPackage, FiInbox, FiClock, FiXCircle } from 'react-icons/fi';
+import { FiRefreshCw, FiCheckCircle, FiInbox, FiClock, FiXCircle } from 'react-icons/fi';
 import {
   isHqHost, getHqBranch, getHqPurchaseIncoming, branchRejectPoLine,
 } from '../services/api';
@@ -123,69 +123,117 @@ export default function IncomingStock() {
         }}>{toast.text}</div>
       )}
 
-      <div style={{ background: '#fff', border: '1px solid #e5e7eb', borderRadius: 10, padding: 14 }}>
+      {/* v1.9.19 — PO-grouped layout. One card per PO with supplier +
+          purchase # in the header; items listed underneath. Accept &
+          Generate GRN is at the PO header (one PO = one branch = one
+          GRN). Reject is still per-line because a single bad item
+          shouldn't force the whole PO to be rejected. */}
+      <div>
         {loading && items.length === 0 ? (
           <p style={{ color: '#64748b' }}>Loading…</p>
         ) : items.length === 0 ? (
           <p style={{ color: '#94a3b8', fontStyle: 'italic' }}><FiInbox /> No pending incoming stock.</p>
         ) : (
-          <div style={{ overflowX: 'auto' }}>
-            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
-              <thead style={{ background: '#f8fafc' }}>
-                <tr>
-                  <th style={th}>Purchase #</th>
-                  <th style={th}>Date</th>
-                  <th style={th}>Supplier</th>
-                  <th style={th}>Product</th>
-                  <th style={{ ...th, textAlign: 'right' }}>Expected</th>
-                  <th style={{ ...th, textAlign: 'right' }}>Submitted</th>
-                  <th style={th}>Status</th>
-                  <th style={th}></th>
-                </tr>
-              </thead>
-              <tbody>
-                {items.map(it => {
-                  const isAwaiting  = it.status === 'AWAITING_GRN';
-                  const isSubmitted = it.status === 'GRN_SUBMITTED';
-                  return (
-                    <tr key={it.id} style={{ borderTop: '1px solid #f1f5f9', background: isSubmitted ? '#fffbeb' : '#fff' }}>
-                      <td style={{ ...td, fontFamily: 'monospace', fontSize: 12 }}>{it.purchase_number}</td>
-                      <td style={td}>{it.purchase_date}</td>
-                      <td style={td}>{it.supplier_name || '—'}</td>
-                      <td style={td}>{it.product_name} <span style={{ color: '#94a3b8', fontSize: 11 }}>{it.unit}</span></td>
-                      <td style={{ ...td, textAlign: 'right' }}>{fmtQty(it.dispatched_qty)}</td>
-                      <td style={{ ...td, textAlign: 'right', fontWeight: 700 }}>
-                        {it.received_qty == null ? '—' : fmtQty(it.received_qty)}
-                      </td>
-                      <td style={td}>
-                        {isAwaiting && <span style={tag('#dbeafe', '#1e40af')}>Awaiting GRN</span>}
-                        {isSubmitted && <span style={tag('#fef3c7', '#92400e')}><FiClock size={10} style={{ verticalAlign: 'middle' }} /> Waiting HQ</span>}
-                      </td>
-                      <td style={td}>
-                        {isAwaiting && (
-                          <div style={{ display: 'flex', gap: 6 }}>
-                            <button onClick={() => acceptAndGenerate(it)}
-                              style={{ padding: '5px 12px', background: '#16a34a', color: '#fff', border: 'none', borderRadius: 4, cursor: 'pointer', fontSize: 12, fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-                              <FiCheckCircle size={12} /> Accept &amp; Generate GRN
-                            </button>
-                            <button onClick={() => setRejecting({ item: it, reason: '', submitting: false })}
-                              style={{ padding: '5px 12px', background: '#fff', color: '#b91c1c', border: '1px solid #fecaca', borderRadius: 4, cursor: 'pointer', fontSize: 12, fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-                              <FiXCircle size={12} /> Reject
-                            </button>
-                          </div>
-                        )}
-                        {isSubmitted && it.variance_notes && (
-                          <span style={{ fontSize: 11, color: '#92400e', fontStyle: 'italic' }}>
-                            {it.variance_notes}
-                          </span>
-                        )}
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
+          (() => {
+            const groups = [];
+            const byPo = new Map();
+            for (const it of items) {
+              const key = it.purchase_sync_id || it.purchase_number || `i${it.id}`;
+              if (!byPo.has(key)) {
+                const g = {
+                  key,
+                  purchase_number: it.purchase_number,
+                  purchase_date:   it.purchase_date,
+                  supplier_name:   it.supplier_name,
+                  supplier_id:     it.supplier_id,
+                  purchase_sync_id: it.purchase_sync_id,
+                  items: [],
+                };
+                byPo.set(key, g);
+                groups.push(g);
+              }
+              byPo.get(key).items.push(it);
+            }
+
+            return groups.map(g => {
+              const firstAwaiting = g.items.find(i => i.status === 'AWAITING_GRN');
+              const anyAwaiting   = !!firstAwaiting;
+              const allSubmitted  = g.items.every(i => i.status === 'GRN_SUBMITTED');
+              return (
+                <div key={g.key} style={{ background: '#fff', border: '1px solid #e5e7eb', borderRadius: 10, padding: 0, marginBottom: 14, overflow: 'hidden' }}>
+                  {/* PO header */}
+                  <div style={{ padding: '12px 16px', background: '#f8fafc', borderBottom: '1px solid #e5e7eb', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 10 }}>
+                    <div>
+                      <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, flexWrap: 'wrap' }}>
+                        <span style={{ fontFamily: 'monospace', fontWeight: 700, fontSize: 14, color: '#0f172a' }}>{g.purchase_number}</span>
+                        <span style={{ color: '#cbd5e1' }}>·</span>
+                        <span style={{ fontSize: 14, fontWeight: 600, color: '#0f172a' }}>{g.supplier_name || '—'}</span>
+                        <span style={{ color: '#cbd5e1' }}>·</span>
+                        <span style={{ fontSize: 12, color: '#64748b' }}>{g.purchase_date}</span>
+                      </div>
+                      <div style={{ marginTop: 4, fontSize: 11, color: '#64748b' }}>
+                        {g.items.length} item{g.items.length === 1 ? '' : 's'}
+                        {allSubmitted && <span style={{ ...tag('#fef3c7', '#92400e'), marginLeft: 8 }}><FiClock size={10} style={{ verticalAlign: 'middle' }} /> Waiting HQ</span>}
+                      </div>
+                    </div>
+                    {anyAwaiting && (
+                      <button onClick={() => acceptAndGenerate(firstAwaiting)}
+                        style={{ padding: '8px 14px', background: '#16a34a', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer', fontSize: 13, fontWeight: 700, display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                        <FiCheckCircle size={14} /> Accept &amp; Generate GRN
+                      </button>
+                    )}
+                  </div>
+                  {/* Items list */}
+                  <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+                    <thead style={{ background: '#fff' }}>
+                      <tr>
+                        <th style={{ ...th, width: 36, textAlign: 'right' }}>#</th>
+                        <th style={th}>Product</th>
+                        <th style={{ ...th, textAlign: 'right', width: 110 }}>Expected</th>
+                        <th style={{ ...th, textAlign: 'right', width: 110 }}>Submitted</th>
+                        <th style={{ ...th, width: 140 }}>Status</th>
+                        <th style={{ ...th, width: 100 }}></th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {g.items.map((it, idx) => {
+                        const isAwaiting  = it.status === 'AWAITING_GRN';
+                        const isSubmitted = it.status === 'GRN_SUBMITTED';
+                        return (
+                          <tr key={it.id} style={{ borderTop: '1px solid #f1f5f9', background: isSubmitted ? '#fffbeb' : '#fff' }}>
+                            <td style={{ ...td, textAlign: 'right', color: '#94a3b8', fontSize: 12 }}>{idx + 1}</td>
+                            <td style={td}>{it.product_name} <span style={{ color: '#94a3b8', fontSize: 11 }}>{it.unit}</span></td>
+                            <td style={{ ...td, textAlign: 'right' }}>{fmtQty(it.dispatched_qty)}</td>
+                            <td style={{ ...td, textAlign: 'right', fontWeight: 700 }}>
+                              {it.received_qty == null ? '—' : fmtQty(it.received_qty)}
+                            </td>
+                            <td style={td}>
+                              {isAwaiting && <span style={tag('#dbeafe', '#1e40af')}>Awaiting GRN</span>}
+                              {isSubmitted && <span style={tag('#fef3c7', '#92400e')}><FiClock size={10} style={{ verticalAlign: 'middle' }} /> Waiting HQ</span>}
+                            </td>
+                            <td style={td}>
+                              {isAwaiting && (
+                                <button onClick={() => setRejecting({ item: it, reason: '', submitting: false })}
+                                  title="Reject this line only"
+                                  style={{ padding: '4px 10px', background: '#fff', color: '#b91c1c', border: '1px solid #fecaca', borderRadius: 4, cursor: 'pointer', fontSize: 12, fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                                  <FiXCircle size={12} /> Reject
+                                </button>
+                              )}
+                              {isSubmitted && it.variance_notes && (
+                                <span style={{ fontSize: 11, color: '#92400e', fontStyle: 'italic' }}>
+                                  {it.variance_notes}
+                                </span>
+                              )}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              );
+            });
+          })()
         )}
       </div>
 
