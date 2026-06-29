@@ -2,6 +2,9 @@ const router = require('express').Router();
 const https = require('https');
 const http = require('http');
 const { URL } = require('url');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
 const db = require('../config/database');
 const syncConfig = require('../config/syncConfig');
 const { randomUUID } = require('crypto');
@@ -9,6 +12,17 @@ const bcrypt = require('bcrypt');
 const { auth } = require('../middleware/auth');
 const { getLicense, activateLicense, registerBranch, getTenant } = require('../config/masterDb');
 const masterDb = require('../config/masterDb').masterDb;
+
+// v1.9.3 — slog matches the helper in services/syncService.js. The push
+// timestamp-REJECT log on line ~437 was calling slog() since v1.8.91 but
+// it was never defined in this file → every rejected-by-timestamp row
+// crashed the whole push transaction with ReferenceError, returning 500
+// to clients silently for a full week. Define it locally so the call
+// works without coupling routes/sync.js to the service module.
+const _slogFile = path.join(os.tmpdir(), 'sosna-startup.log');
+function slog(msg) {
+  try { fs.appendFileSync(_slogFile, `[${new Date().toISOString()}] [Sync.route] ${msg}\n`); } catch (e) {}
+}
 
 // Central admin lives on Butchery's VPS — it owns the CB- prefix license
 // pool for bespoke deployments. Overridable via env for local dev.
