@@ -69,7 +69,7 @@ export default function IncomingStock() {
       purchase_number: it.purchase_number || '',
       supplier_id:     String(it.supplier_id || ''),
     });
-    navigate(`/grn?${params.toString()}`);
+    navigate(`/stock/grn?${params.toString()}`);
   };
 
   const submitReject = async () => {
