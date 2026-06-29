@@ -469,6 +469,12 @@ router.post('/push', lanGate, async (req, res) => {
     res.json({ success: true, conflicts });
   } catch (error) {
     db.pragma('foreign_keys = ON');
+    // v1.9.2 — log the full stack to pm2 logs so silent push failures are
+    // diagnosable. Previously the catch only returned 500 with error.message,
+    // which meant the actual row + SQL that crashed never reached the server
+    // log. Real incident 2026-06-29: discount_requests pushes returned 500
+    // for ~20 mins and we could only see status codes in nginx, not why.
+    console.error('[/api/sync/push] CRASH:', error && error.stack ? error.stack : error);
     res.status(500).json({ error: error.message });
   }
 });
