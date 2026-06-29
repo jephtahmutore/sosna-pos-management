@@ -8,7 +8,7 @@ import {
 } from 'react-icons/fi';
 import {
   getHqBranches, getHqPurchases, getHqPurchase, createHqPurchase, getHqSuppliers, createHqSupplier,
-  cancelHqPurchaseItem, cancelHqPurchase, getHqProducts,
+  cancelHqPurchaseItem, cancelHqPurchase, getProducts,
 } from '../services/api';
 import printHtml from '../utils/printHtml';
 
@@ -199,11 +199,16 @@ function CreatePurchaseModal({ branches, onClose, onCreated, onError }) {
     getHqSuppliers()
       .then(r => setSuppliers(r.data?.suppliers || []))
       .catch(() => {});
-    // Pre-load Active HQ master products for the line picker. Falls back
-    // to free-text input if the list is empty (fresh install with no
-    // catalogue yet).
-    getHqProducts({ status: 'Active' })
-      .then(r => setHqProducts(r.data?.products || []))
+    // v1.9.6 — pull from the regular HQ Item Details catalogue (default DB
+    // `products` on sosnazm.com), not the legacy master.db `hq_products`
+    // table. HQ admin already manages the master list there; having two
+    // sources caused the picker to show "No HQ Products yet" even though
+    // the Items page was full. Filter to Active + non-deleted.
+    getProducts()
+      .then(r => {
+        const list = Array.isArray(r.data) ? r.data : (r.data?.products || []);
+        setHqProducts(list.filter(p => !p.deleted_at && (p.status || 'Active') === 'Active'));
+      })
       .catch(() => {});
   }, []);
 
@@ -397,7 +402,9 @@ function CreatePurchaseModal({ branches, onClose, onCreated, onError }) {
                                   product_sync_id: picked.sync_id,
                                   product_name:    picked.name,
                                   unit:            picked.unit || 'pcs',
-                                  cost_price:      String(picked.default_cost_price || 0),
+                                  // v1.9.6 — products endpoint exposes cost_price (not
+                                  // legacy default_cost_price). Both fall back to 0.
+                                  cost_price:      String(picked.cost_price ?? picked.default_cost_price ?? 0),
                                 } : row));
                               } else {
                                 setItems(arr => arr.map((row, idx) => idx === i ? {
@@ -408,7 +415,7 @@ function CreatePurchaseModal({ branches, onClose, onCreated, onError }) {
                               }
                             }}
                             style={cellInp}>
-                            <option value="">— pick from HQ master —</option>
+                            <option value="">— pick item —</option>
                             {hqProducts.map(p => (
                               <option key={p.id} value={p.sync_id}>
                                 {p.name}{p.code ? ` (${p.code})` : ''}
@@ -417,7 +424,7 @@ function CreatePurchaseModal({ branches, onClose, onCreated, onError }) {
                           </select>
                         ) : (
                           <div style={{ ...cellInp, color: '#dc2626', fontSize: 11, padding: '6px 8px', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 4 }}>
-                            No HQ Products yet — add them under <strong>HQ Products</strong> first.
+                            No items yet — add them under <strong>Store &rarr; Item Details</strong> first.
                           </div>
                         )}
                       </td>
