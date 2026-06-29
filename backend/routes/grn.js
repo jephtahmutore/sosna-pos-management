@@ -248,15 +248,29 @@ router.post('/', auth, (req, res) => {
       // becomes a supplier_credit_notes row with grn_sync_id linking
       // back. CN reduces what HQ owes the supplier; HQ will see them on
       // Confirm GRN and the running AP totals.
+      // v1.9.17 — Crate Return / Goods Return CNs now carry an items[]
+      // array; persist into supplier_credit_note_items and (for the
+      // returned products) post negative stock_movements at location='sales'
+      // so the floor count drops. Mirrors supplierCreditNotes POST exactly.
       if (Array.isArray(credit_notes) && credit_notes.length > 0) {
         const supplierSyncIdForCn = supplierSyncId; // resolved above when inserting grn
+        const movementCreatedAt = grnDate + ' ' + new Date().toTimeString().slice(0, 8);
         for (const cn of credit_notes) {
-          const amt = Math.abs(parseFloat(cn?.amount || 0)) || 0;
-          if (amt < 0.001) continue;
           const reason = (cn?.reason || 'Other').toString();
+          const reasonHasStock = reason === 'Crate Return' || reason === 'Bottle Return' || reason === 'Goods Return';
+          const validItems = reasonHasStock
+            ? (Array.isArray(cn.items) ? cn.items.filter(i => i.product_id && parseFloat(i.quantity) > 0) : [])
+            : [];
+          const amt = reasonHasStock
+            ? validItems.reduce((s, i) => s + parseFloat(i.quantity) * parseFloat(i.unit_value || 0), 0)
+            : (Math.abs(parseFloat(cn?.amount || 0)) || 0);
+          if (amt < 0.001) continue;
+          if (reasonHasStock && validItems.length === 0) continue;
+
           const noteTxt = (cn?.notes || '').toString();
           const cnNum = syncConfig.generateNumber('SCN', 'supplier_credit_notes');
-          db.prepare(`
+          const cnSyncId = randomUUID();
+          const cnInfo = db.prepare(`
             INSERT INTO supplier_credit_notes (
               credit_note_number, date, supplier_id, supplier_sync_id, reason,
               reference, amount, notes, grn_sync_id, created_by,
@@ -265,8 +279,39 @@ router.post('/', auth, (req, res) => {
           `).run(
             cnNum, grnDate, supplier_id, supplierSyncIdForCn, reason,
             grnNum, amt, noteTxt, grnSyncId, req.user.id,
-            randomUUID(), tenantId, branchId, deviceId
+            cnSyncId, tenantId, branchId, deviceId
           );
+          const cnId = cnInfo.lastInsertRowid;
+
+          if (reasonHasStock) {
+            for (const i of validItems) {
+              const prod = db.prepare('SELECT sync_id FROM products WHERE id = ?').get(i.product_id);
+              const productSyncId = i.product_sync_id || prod?.sync_id || null;
+              const qty = parseFloat(i.quantity);
+              const unitVal = parseFloat(i.unit_value || 0);
+              const linePrice = qty * unitVal;
+              const unitName = i.unit || null;
+              const unitConv = parseFloat(i.unit_conv) > 0 ? parseFloat(i.unit_conv) : 1;
+              const baseQty = qty * unitConv;
+
+              db.prepare(`
+                INSERT INTO supplier_credit_note_items (credit_note_id, credit_note_sync_id, product_id, product_sync_id,
+                                                         quantity, unit_value, total_price, unit, unit_conv,
+                                                         sync_id, tenant_id, branch_id, device_id, synced, created_at, updated_at)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0,datetime('now'),datetime('now'))
+              `).run(cnId, cnSyncId, i.product_id, productSyncId, qty, unitVal, linePrice, unitName, unitConv,
+                     randomUUID(), tenantId, branchId, deviceId);
+
+              db.prepare(`
+                INSERT INTO stock_movements (product_id, product_sync_id, location, movement_type, quantity,
+                                             reference_id, reference_type, notes, created_by,
+                                             sync_id, tenant_id, branch_id, device_id, synced, created_at, updated_at, reference_sync_id)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0,?,datetime('now'),?)
+              `).run(i.product_id, productSyncId, 'sales', 'credit_note', -baseQty,
+                     cnId, 'credit_note', `${reason} via ${cnNum}`, req.user.id,
+                     randomUUID(), tenantId, branchId, deviceId, movementCreatedAt, cnSyncId);
+            }
+          }
         }
       }
 
