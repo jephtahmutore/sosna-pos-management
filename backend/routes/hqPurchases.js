@@ -202,7 +202,7 @@ router.get('/incoming', hqAuth, (req, res) => {
     if (!slug) return res.status(400).json({ error: 'slug is required' });
     const rows = masterDb.prepare(`
       SELECT i.*,
-             p.purchase_number, p.supplier_name, p.invoice_number,
+             p.purchase_number, p.supplier_name, p.supplier_id, p.invoice_number,
              p.date AS purchase_date, p.notes AS purchase_notes,
              p.created_by_name AS hq_user
         FROM hq_purchase_items i

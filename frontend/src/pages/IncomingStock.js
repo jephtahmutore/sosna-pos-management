@@ -68,6 +68,11 @@ export default function IncomingStock() {
       from_purchase:   it.purchase_sync_id || '',
       purchase_number: it.purchase_number || '',
       supplier_id:     String(it.supplier_id || ''),
+      // v1.9.18 — name is the only reliable cross-system key (HQ has its
+      // own supplier IDs, branch has its own; sync_id isn't pushed). GRN
+      // prefill uses name to resolve a matching local supplier when id
+      // doesn't match.
+      supplier_name:   it.supplier_name || '',
     });
     navigate(`/stock/grn?${params.toString()}`);
   };

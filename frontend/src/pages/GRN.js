@@ -275,26 +275,51 @@ const GRN = () => {
   // the URL carries the parent PO sync_id + number + supplier_id. Auto-
   // open the form, drop the PO# into Notes, lock the supplier, and stash
   // the linked_purchase_sync_id for the eventual save.
+  // v1.9.18 — also stash the supplier name from the URL so we can resolve
+  // the local supplier once the suppliers list has loaded (the HQ-side
+  // supplier_id integer doesn't match the branch's local suppliers.id).
+  const [pendingSupplierName, setPendingSupplierName] = useState('');
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const fromPo  = params.get('from_purchase');
     const poNum   = params.get('purchase_number');
     const supId   = params.get('supplier_id');
+    const supName = params.get('supplier_name') || '';
     if (fromPo) {
       setLinkedPurchaseSyncId(fromPo);
       setLinkedPurchaseNumber(poNum || null);
       setNotes(poNum ? `From HQ Purchase ${poNum}` : '');
       if (supId) setSupplierId(String(supId));
+      if (supName) setPendingSupplierName(supName);
       setShowForm(true);
       // Clear the params so a refresh doesn't re-prefill.
       const url = new URL(window.location.href);
       url.searchParams.delete('from_purchase');
       url.searchParams.delete('purchase_number');
       url.searchParams.delete('supplier_id');
+      url.searchParams.delete('supplier_name');
       window.history.replaceState({}, '', url.toString());
     }
   // eslint-disable-next-line
   }, []);
+
+  // v1.9.18 — when suppliers finish loading, resolve the HQ-passed supplier:
+  //   1) by current supplierId (if it's already a valid local id)
+  //   2) by name (case-insensitive) — the reliable cross-system key
+  // If still no match, leave supplierId empty so the supplier dropdown
+  // re-appears and the user can pick / quick-add.
+  useEffect(() => {
+    if (!linkedPurchaseSyncId || suppliers.length === 0) return;
+    const haveLocalMatch = supplierId && suppliers.some(s => String(s.id) === String(supplierId));
+    if (haveLocalMatch) return;
+    if (pendingSupplierName) {
+      const byName = suppliers.find(s => (s.name || '').toLowerCase() === pendingSupplierName.toLowerCase());
+      if (byName) { setSupplierId(String(byName.id)); return; }
+    }
+    // No match — clear so the dropdown shows and user can pick.
+    setSupplierId('');
+  // eslint-disable-next-line
+  }, [suppliers, linkedPurchaseSyncId, pendingSupplierName]);
 
   useEffect(() => {
     fetchData();
@@ -1717,36 +1742,45 @@ const GRN = () => {
                   <label style={{ display: 'block', fontSize: 13, fontWeight: 600, color: '#374151', marginBottom: 6 }}>
                     {t('supplier')} <span style={{ color: '#dc2626' }}>*</span>
                   </label>
-                  {linkedPurchaseSyncId ? (
-                    // v1.9.12 — HQ-linked GRN: supplier comes from the PO,
-                    // not the user. Show as read-only chip so it's clear no
-                    // edit is allowed at this step.
+                  {linkedPurchaseSyncId && suppliers.find(s => String(s.id) === String(supplierId)) ? (
+                    // v1.9.12 — HQ-linked GRN with a successfully resolved
+                    // local supplier: show as read-only chip.
+                    // v1.9.18 — if the HQ supplier doesn't match any local
+                    // one (id mismatch + name mismatch), fall through to
+                    // the dropdown + quick-add so the user can resolve it.
                     <div style={{ padding: '9px 12px', border: '1px solid #e5e7eb', borderRadius: 8, background: '#f3f4f6', fontSize: 14, color: '#374151', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                      <span>{suppliers.find(s => String(s.id) === String(supplierId))?.name || `Supplier #${supplierId}`}</span>
+                      <span>{suppliers.find(s => String(s.id) === String(supplierId))?.name}</span>
                       <span style={{ fontSize: 11, color: '#6b7280', fontStyle: 'italic' }}>from PO {linkedPurchaseNumber}</span>
                     </div>
                   ) : (
-                  <div style={{ display: 'flex', gap: 6 }}>
-                    <select
-                      value={supplierId} onChange={e => setSupplierId(e.target.value)}
-                      style={{ flex: 1, padding: '9px 12px', border: '1px solid #e5e7eb', borderRadius: 8, fontSize: 14, background: '#fff' }}
-                    >
-                      <option value="">— Select Supplier —</option>
-                      {suppliers.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
-                    </select>
-                    <button
-                      type="button"
-                      onClick={() => { setShowAddSupplier(v => !v); setAddSupplierError(''); }}
-                      title="Add new supplier"
-                      style={{ padding: '9px 12px', border: '1px solid #e5e7eb', borderRadius: 8, background: showAddSupplier ? '#dcfce7' : '#f9fafb', color: showAddSupplier ? '#16a34a' : '#374151', cursor: 'pointer', fontSize: 13, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 4, whiteSpace: 'nowrap' }}
-                    >
-                      <FiPlus size={13} /> New
-                    </button>
+                  <div>
+                    {linkedPurchaseSyncId && pendingSupplierName && !supplierId && (
+                      <div style={{ marginBottom: 6, padding: '8px 10px', background: '#fef3c7', border: '1px solid #fde68a', borderRadius: 6, fontSize: 11, color: '#92400e' }}>
+                        Supplier <strong>"{pendingSupplierName}"</strong> from the HQ PO isn't in this branch's supplier list. Pick the matching one below or add it.
+                      </div>
+                    )}
+                    <div style={{ display: 'flex', gap: 6 }}>
+                      <select
+                        value={supplierId} onChange={e => setSupplierId(e.target.value)}
+                        style={{ flex: 1, padding: '9px 12px', border: '1px solid #e5e7eb', borderRadius: 8, fontSize: 14, background: '#fff' }}
+                      >
+                        <option value="">— Select Supplier —</option>
+                        {suppliers.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+                      </select>
+                      <button
+                        type="button"
+                        onClick={() => { setShowAddSupplier(v => !v); setAddSupplierError(''); if (pendingSupplierName) setNewSupName(pendingSupplierName); }}
+                        title="Add new supplier"
+                        style={{ padding: '9px 12px', border: '1px solid #e5e7eb', borderRadius: 8, background: showAddSupplier ? '#dcfce7' : '#f9fafb', color: showAddSupplier ? '#16a34a' : '#374151', cursor: 'pointer', fontSize: 13, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 4, whiteSpace: 'nowrap' }}
+                      >
+                        <FiPlus size={13} /> New
+                      </button>
+                    </div>
                   </div>
                   )}
 
-                  {/* Quick-add supplier form (hidden when supplier is locked from PO) */}
-                  {!linkedPurchaseSyncId && showAddSupplier && (
+                  {/* Quick-add supplier form */}
+                  {showAddSupplier && (
                     <div style={{ marginTop: 8, padding: '12px 14px', background: '#f0fdf4', border: '1px solid #86efac', borderRadius: 8 }}>
                       <div style={{ fontSize: 12, fontWeight: 600, color: '#15803d', marginBottom: 8 }}>Quick-add Supplier</div>
                       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
