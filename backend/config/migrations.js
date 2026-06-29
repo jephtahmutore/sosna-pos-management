@@ -925,6 +925,12 @@ function initTenantDb(db) {
   // the purchase matched against when auditing AP.
   addCol('grn', 'supplier_invoice_number', 'TEXT');
 
+  // v1.9.13 — GRN-scoped credit notes. supplier_credit_notes is the
+  // existing master table; this new column ties each CN to the GRN it
+  // belongs to so the GRN form can list / total CNs alongside line
+  // items. NULL = standalone CN (legacy / not from a GRN).
+  addCol('supplier_credit_notes', 'grn_sync_id', 'TEXT');
+
   // ── Single-location mode (Option 2: auto-SIV after each GRN) ────────────────
   // When ON, GRN saves trigger an auto-generated SIV that issues 100% of the receipt
   // to the sales counter, so a small one-room shop never has to do a manual SIV.

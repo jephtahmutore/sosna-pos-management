@@ -135,6 +135,13 @@ router.post('/', auth, (req, res) => {
       // GRN form when linked to a HQ PO). Stored on the grn row so HQ
       // can cross-reference paper invoice → GRN → AP.
       supplier_invoice_number,
+      // v1.9.13 — inline credit notes for this GRN. Each entry shape:
+      //   { reason, amount, notes }
+      //   reason ∈ Discount|Damaged|Short|Crate Return|Bottle Return|Other
+      // amount is always a positive number; it is SUBTRACTED from the
+      // GRN total to give the final payable to HQ. Persisted to
+      // supplier_credit_notes with grn_sync_id linking back to this GRN.
+      credit_notes,
     } = req.body;
     const isHqLinked = !!linked_purchase_sync_id;
     if (isHqLinked && !(supplier_invoice_number || '').toString().trim()) {
@@ -236,6 +243,32 @@ router.post('/', auth, (req, res) => {
       // cleanup). HQ-linked GRNs likewise defer posting to HQ confirm,
       // which also writes at location='sales'.
       const grnRow = db.prepare('SELECT * FROM grn WHERE id = ?').get(grnId);
+
+      // v1.9.13 — inline credit notes attached to the GRN. Each entry
+      // becomes a supplier_credit_notes row with grn_sync_id linking
+      // back. CN reduces what HQ owes the supplier; HQ will see them on
+      // Confirm GRN and the running AP totals.
+      if (Array.isArray(credit_notes) && credit_notes.length > 0) {
+        const supplierSyncIdForCn = supplierSyncId; // resolved above when inserting grn
+        for (const cn of credit_notes) {
+          const amt = Math.abs(parseFloat(cn?.amount || 0)) || 0;
+          if (amt < 0.001) continue;
+          const reason = (cn?.reason || 'Other').toString();
+          const noteTxt = (cn?.notes || '').toString();
+          const cnNum = syncConfig.generateNumber('SCN', 'supplier_credit_notes');
+          db.prepare(`
+            INSERT INTO supplier_credit_notes (
+              credit_note_number, date, supplier_id, supplier_sync_id, reason,
+              reference, amount, notes, grn_sync_id, created_by,
+              sync_id, tenant_id, branch_id, device_id, synced, created_at, updated_at
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,datetime('now'),datetime('now'))
+          `).run(
+            cnNum, grnDate, supplier_id, supplierSyncIdForCn, reason,
+            grnNum, amt, noteTxt, grnSyncId, req.user.id,
+            randomUUID(), tenantId, branchId, deviceId
+          );
+        }
+      }
 
       return grnRow;
     })();

@@ -127,6 +127,16 @@ const GRN = () => {
   // v1.9.12 — supplier's printed invoice number, mandatory on HQ-linked
   // GRNs. Surfaced as its own input next to the date.
   const [supplierInvoiceNumber, setSupplierInvoiceNumber] = useState('');
+  // v1.9.13 — inline credit notes attached to this GRN. Each entry is
+  // { reason, amount, notes }. Active only when linked to a HQ PO; the
+  // legacy GRN flow doesn't surface this UI. Backend persists them as
+  // supplier_credit_notes rows with grn_sync_id link.
+  const [creditNotes, setCreditNotes]   = useState([]);
+  const [activeTab,   setActiveTab]     = useState('details'); // 'details' | 'cn' | 'summary'
+  const [cnAddOpen,   setCnAddOpen]     = useState(false);
+  const [cnDraft,     setCnDraft]       = useState({ reason: 'Discount', amount: '', notes: '' });
+  const CN_REASONS = ['Discount', 'Damaged', 'Short', 'Crate Return', 'Bottle Return', 'Other'];
+  const cnTotal = creditNotes.reduce((s, c) => s + (parseFloat(c.amount) || 0), 0);
 
   // ── Product autocomplete ──────────────────────────────────────────
   const [openDropdownIdx, setOpenDropdownIdx] = useState(-1);
@@ -483,6 +493,12 @@ const GRN = () => {
       linked_purchase_number:  linkedPurchaseNumber || null,
       // v1.9.12 — paper invoice number from supplier (mandatory when linked).
       supplier_invoice_number: (supplierInvoiceNumber || '').trim() || null,
+      // v1.9.13 — credit notes only sent when linked (legacy GRNs ignore).
+      credit_notes: linkedPurchaseSyncId
+        ? creditNotes
+            .map(c => ({ reason: c.reason, amount: parseFloat(c.amount) || 0, notes: c.notes || '' }))
+            .filter(c => c.amount > 0)
+        : undefined,
       items: validItems.map(i => ({
         product_id:  parseInt(i.product_id),
         quantity:    parseFloat(i.quantity),
@@ -518,6 +534,8 @@ const GRN = () => {
         setLinkedPurchaseSyncId(null);
         setLinkedPurchaseNumber(null);
         setSupplierInvoiceNumber('');
+        setCreditNotes([]);
+        setActiveTab('details');
         await fetchData();
         showToast(linkedPurchaseSyncId
           ? 'GRN submitted to HQ for confirmation. Stock will become sellable once HQ approves.'
@@ -1569,7 +1587,10 @@ const GRN = () => {
       {/* ── New GRN Modal ─────────────────────────────────────────── */}
       {showForm && ReactDOM.createPortal((
         <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.5)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
-          <div style={{ background: '#fff', borderRadius: 12, width: '100%', maxWidth: 980, maxHeight: '90vh', overflowY: 'auto', boxShadow: '0 20px 60px rgba(0,0,0,0.3)' }}>
+          {/* v1.9.13 — when linked to a HQ PO, the form is wider to fit
+              tabs + summary panel; otherwise legacy width keeps the
+              standalone GRN form compact. */}
+          <div style={{ background: '#fff', borderRadius: 12, width: '100%', maxWidth: linkedPurchaseSyncId ? 1200 : 980, maxHeight: '95vh', overflowY: 'auto', boxShadow: '0 20px 60px rgba(0,0,0,0.3)' }}>
 
             {/* Modal Header */}
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '20px 24px', borderBottom: '1px solid #e5e7eb' }}>
@@ -1582,14 +1603,40 @@ const GRN = () => {
                 <div>
                   <h3 style={{ margin: 0, fontSize: 17 }}>{editMode ? 'Edit GRN' : t('grnTitle')}</h3>
                   <p style={{ margin: '2px 0 0', fontSize: 12, color: '#6b7280' }}>
-                    {editMode ? 'Update the goods received note' : 'Record stock received from a supplier'}
+                    {editMode ? 'Update the goods received note'
+                      : linkedPurchaseSyncId ? `From HQ Purchase ${linkedPurchaseNumber}` : 'Record stock received from a supplier'}
                   </p>
                 </div>
               </div>
               <button onClick={() => setShowForm(false)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#6b7280', padding: 4 }}><FiX size={20} /></button>
             </div>
 
-            <div style={{ padding: '20px 24px' }}>
+            {/* v1.9.13 — tab strip (linked GRNs only). Past/legacy GRNs
+                keep the flat layout to avoid disrupting old behavior. */}
+            {linkedPurchaseSyncId && (
+              <div style={{ display: 'flex', borderBottom: '1px solid #e5e7eb', padding: '0 24px' }}>
+                {[
+                  { id: 'details', label: 'Details' },
+                  { id: 'cn',      label: `Credit Notes (${creditNotes.length})` },
+                  { id: 'summary', label: 'Summary' },
+                ].map(tab => (
+                  <button key={tab.id}
+                    onClick={() => setActiveTab(tab.id)}
+                    style={{
+                      padding: '12px 18px', border: 'none', background: 'transparent',
+                      cursor: 'pointer', fontSize: 14,
+                      fontWeight: activeTab === tab.id ? 700 : 500,
+                      color: activeTab === tab.id ? '#0ea5e9' : '#64748b',
+                      borderBottom: activeTab === tab.id ? '2px solid #0ea5e9' : '2px solid transparent',
+                      marginBottom: -1,
+                    }}>
+                    {tab.label}
+                  </button>
+                ))}
+              </div>
+            )}
+
+            <div style={{ padding: '20px 24px', display: (linkedPurchaseSyncId && activeTab !== 'details') ? 'none' : 'block' }}>
 
               {/* Supplier & Date — when GRN is HQ-PO-linked, the supplier
                   is locked from the PO (no dropdown). Also surface a
@@ -2037,15 +2084,94 @@ const GRN = () => {
                   <span style={{ fontWeight: 700, fontSize: 18, color: '#16a34a' }}>{curSym}{(parseFloat(totalAmount)||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</span>
                 </div>
               </div>
+            </div>
 
-              {/* Save error */}
+            {/* v1.9.13 — Credit Notes tab panel (linked GRNs only) */}
+            {linkedPurchaseSyncId && activeTab === 'cn' && (
+              <div style={{ padding: '20px 24px' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+                  <h4 style={{ margin: 0, fontSize: 15 }}>Credit Notes attached to this GRN</h4>
+                  <button onClick={() => { setCnDraft({ reason: 'Discount', amount: '', notes: '' }); setCnAddOpen(true); }}
+                    style={{ padding: '8px 14px', background: '#0ea5e9', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer', fontSize: 13, fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                    <FiPlus size={14} /> Add Credit Note
+                  </button>
+                </div>
+                {creditNotes.length === 0 ? (
+                  <div style={{ padding: 24, textAlign: 'center', color: '#9ca3af', fontStyle: 'italic', border: '1px dashed #e5e7eb', borderRadius: 8 }}>
+                    No credit notes yet. Add one for any discount, damage, short delivery, or returns.
+                  </div>
+                ) : (
+                  <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+                    <thead style={{ background: '#f8fafc' }}>
+                      <tr>
+                        <th style={{ padding: '10px 12px', textAlign: 'left', fontSize: 11, color: '#64748b', fontWeight: 700, textTransform: 'uppercase' }}>Type</th>
+                        <th style={{ padding: '10px 12px', textAlign: 'left', fontSize: 11, color: '#64748b', fontWeight: 700, textTransform: 'uppercase' }}>Notes</th>
+                        <th style={{ padding: '10px 12px', textAlign: 'right', fontSize: 11, color: '#64748b', fontWeight: 700, textTransform: 'uppercase' }}>Amount</th>
+                        <th style={{ padding: '10px 12px' }}></th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {creditNotes.map((c, idx) => (
+                        <tr key={idx} style={{ borderTop: '1px solid #f1f5f9' }}>
+                          <td style={{ padding: '8px 12px', fontWeight: 600 }}>{c.reason}</td>
+                          <td style={{ padding: '8px 12px', color: '#64748b' }}>{c.notes || '—'}</td>
+                          <td style={{ padding: '8px 12px', textAlign: 'right', color: '#dc2626', fontWeight: 700 }}>−{curSym}{(parseFloat(c.amount)||0).toFixed(2)}</td>
+                          <td style={{ padding: '8px 12px', textAlign: 'right' }}>
+                            <button onClick={() => setCreditNotes(arr => arr.filter((_, i) => i !== idx))}
+                              style={{ background: 'none', border: 'none', color: '#dc2626', cursor: 'pointer', fontSize: 16 }} title="Remove">×</button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                    <tfoot>
+                      <tr style={{ borderTop: '2px solid #e5e7eb', fontWeight: 700 }}>
+                        <td colSpan={2} style={{ padding: '10px 12px' }}>CN Total</td>
+                        <td style={{ padding: '10px 12px', textAlign: 'right', color: '#dc2626' }}>−{curSym}{cnTotal.toFixed(2)}</td>
+                        <td></td>
+                      </tr>
+                    </tfoot>
+                  </table>
+                )}
+              </div>
+            )}
+
+            {/* v1.9.13 — Summary tab panel */}
+            {linkedPurchaseSyncId && activeTab === 'summary' && (
+              <div style={{ padding: '20px 24px' }}>
+                <h4 style={{ margin: '0 0 14px', fontSize: 15 }}>Review &amp; Submit</h4>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 18, fontSize: 13, color: '#374151' }}>
+                  <div><span style={{ color: '#6b7280' }}>From PO:</span> <strong>{linkedPurchaseNumber || '—'}</strong></div>
+                  <div><span style={{ color: '#6b7280' }}>Supplier Invoice #:</span> <strong>{supplierInvoiceNumber || '—'}</strong></div>
+                  <div><span style={{ color: '#6b7280' }}>Date:</span> <strong>{date}</strong></div>
+                  <div><span style={{ color: '#6b7280' }}>Items:</span> <strong>{items.filter(i => i.product_id && parseFloat(i.quantity) > 0).length}</strong></div>
+                </div>
+                <div style={{ marginTop: 22, padding: 18, background: '#f8fafc', border: '1px solid #e5e7eb', borderRadius: 10 }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 0', fontSize: 14 }}>
+                    <span>Items subtotal</span>
+                    <strong>{curSym}{(parseFloat(totalAmount)||0).toFixed(2)}</strong>
+                  </div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 0', fontSize: 14, color: cnTotal > 0 ? '#dc2626' : '#9ca3af' }}>
+                    <span>Credit Notes</span>
+                    <strong>{cnTotal > 0 ? '−' : ''}{curSym}{cnTotal.toFixed(2)}</strong>
+                  </div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', padding: '12px 0 0', marginTop: 6, borderTop: '2px solid #e5e7eb', fontSize: 16, fontWeight: 700 }}>
+                    <span>Final Payable to HQ</span>
+                    <span style={{ color: '#16a34a' }}>{curSym}{Math.max(0, (parseFloat(totalAmount)||0) - cnTotal).toFixed(2)}</span>
+                  </div>
+                </div>
+                <p style={{ marginTop: 14, fontSize: 12, color: '#92400e', background: '#fef3c7', border: '1px solid #fde68a', padding: '10px 14px', borderRadius: 8 }}>
+                  On Save: this GRN is sent to HQ for confirmation. Stock posts to the sales floor only after HQ confirms.
+                </p>
+              </div>
+            )}
+
+            {/* Save error + Actions (always visible regardless of tab) */}
+            <div style={{ padding: '0 24px 20px' }}>
               {error && (
                 <div style={{ background: '#fee2e2', color: '#dc2626', padding: '10px 14px', borderRadius: 8, fontSize: 13, marginBottom: 16 }}>
                   {error}
                 </div>
               )}
-
-              {/* Actions */}
               <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10 }}>
                 <button onClick={() => setShowForm(false)} style={{ padding: '10px 24px', border: '1px solid #e5e7eb', borderRadius: 8, background: '#fff', cursor: 'pointer', fontSize: 14 }}>
                   {t('cancel')}
@@ -2056,6 +2182,52 @@ const GRN = () => {
               </div>
             </div>
           </div>
+
+          {/* v1.9.13 — Add Credit Note overlay (sub-modal of GRN form) */}
+          {cnAddOpen && (
+            <div onClick={() => setCnAddOpen(false)}
+              style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.55)', zIndex: 1100, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}>
+              <div onClick={e => e.stopPropagation()}
+                style={{ background: '#fff', borderRadius: 12, width: 'min(440px, 92vw)', padding: 22 }}>
+                <h3 style={{ margin: '0 0 12px', fontSize: 16 }}>Add Credit Note</h3>
+                <div style={{ marginBottom: 12 }}>
+                  <label style={{ fontSize: 12, fontWeight: 700, color: '#374151', display: 'block', marginBottom: 6 }}>Type</label>
+                  <select value={cnDraft.reason}
+                    onChange={e => setCnDraft(d => ({ ...d, reason: e.target.value }))}
+                    style={{ width: '100%', padding: '10px 12px', border: '1px solid #d1d5db', borderRadius: 8, fontSize: 14 }}>
+                    {CN_REASONS.map(r => <option key={r} value={r}>{r}</option>)}
+                  </select>
+                </div>
+                <div style={{ marginBottom: 12 }}>
+                  <label style={{ fontSize: 12, fontWeight: 700, color: '#374151', display: 'block', marginBottom: 6 }}>Amount *</label>
+                  <input type="number" min="0" step="0.01" autoFocus
+                    value={cnDraft.amount} onChange={e => setCnDraft(d => ({ ...d, amount: e.target.value }))}
+                    onFocus={e => e.target.select()}
+                    style={{ width: '100%', padding: '10px 12px', border: '1px solid #d1d5db', borderRadius: 8, fontSize: 18, fontWeight: 700, textAlign: 'right' }} />
+                </div>
+                <div style={{ marginBottom: 16 }}>
+                  <label style={{ fontSize: 12, fontWeight: 700, color: '#374151', display: 'block', marginBottom: 6 }}>Notes (optional)</label>
+                  <input type="text" value={cnDraft.notes}
+                    onChange={e => setCnDraft(d => ({ ...d, notes: e.target.value }))}
+                    placeholder="e.g. 2 boxes damaged on truck"
+                    style={{ width: '100%', padding: '10px 12px', border: '1px solid #d1d5db', borderRadius: 8, fontSize: 14 }} />
+                </div>
+                <div style={{ display: 'flex', gap: 10 }}>
+                  <button onClick={() => setCnAddOpen(false)}
+                    style={{ flex: 1, padding: '11px', background: '#fff', color: '#374151', border: '1px solid #e5e7eb', borderRadius: 8, cursor: 'pointer', fontWeight: 600 }}>Cancel</button>
+                  <button
+                    disabled={!(parseFloat(cnDraft.amount) > 0)}
+                    onClick={() => {
+                      setCreditNotes(arr => [...arr, { reason: cnDraft.reason, amount: parseFloat(cnDraft.amount) || 0, notes: cnDraft.notes || '' }]);
+                      setCnAddOpen(false);
+                    }}
+                    style={{ flex: 1, padding: '11px', background: !(parseFloat(cnDraft.amount) > 0) ? '#9ca3af' : '#0ea5e9', color: '#fff', border: 'none', borderRadius: 8, cursor: !(parseFloat(cnDraft.amount) > 0) ? 'not-allowed' : 'pointer', fontWeight: 700 }}>
+                    Add to GRN
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
         </div>
       ), document.body)}
 
