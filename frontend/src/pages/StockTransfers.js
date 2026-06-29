@@ -41,11 +41,28 @@ function currentBranchSlug() {
 const fmtMoney = (n) => `$${parseFloat(n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 const fmtQty   = (n) => parseFloat(n || 0).toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 });
 
+// v1.9.22 — default the history date range to the last 30 days. Outgoing
+// & Incoming "All Time" hits the LIMIT 500 ceiling on busy branches so
+// the page should default to a recent window the user can widen.
+const todayISO = () => new Date().toISOString().slice(0, 10);
+const daysAgoISO = (n) => {
+  const d = new Date();
+  d.setDate(d.getDate() - n);
+  return d.toISOString().slice(0, 10);
+};
+
 export default function StockTransfers() {
   const slug = currentBranchSlug();
   const [tab, setTab] = useState('outgoing');
-  const [out, setOut] = useState([]);
-  const [inc, setInc] = useState([]);
+  // v1.9.22 — sub-tab inside each main tab: pending | received | cancelled.
+  // pending = active queue (no date filter); received/cancelled = history
+  // (date filter applies).
+  const [subTab, setSubTab]   = useState('pending');
+  const [historyFrom, setHistoryFrom] = useState(daysAgoISO(30));
+  const [historyTo,   setHistoryTo]   = useState(todayISO());
+  const [out, setOut] = useState([]);     // pending only (count badge)
+  const [inc, setInc] = useState([]);     // pending only (count badge)
+  const [history, setHistory] = useState([]); // current sub-tab's history rows
   const [branches, setBranches] = useState([]);
   const [loading, setLoading] = useState(false);
   const [showCreate, setShowCreate] = useState(false);
@@ -55,18 +72,43 @@ export default function StockTransfers() {
   // qty + reason inputs and a Confirm Receive button (only for PENDING incoming).
   const [viewing, setViewing] = useState(null); // { transfer, mode }
 
+  // v1.9.22 — pending lists (small, always loaded for the count badges).
+  // History loads on demand per active sub-tab.
   const refresh = async () => {
     if (!slug) return;
     setLoading(true);
     try {
       const [o, i] = await Promise.all([
-        getOutgoingTransfers({ slug }),
-        getIncomingTransfers({ slug }),
+        getOutgoingTransfers({ slug, status: 'PENDING' }),
+        getIncomingTransfers({ slug, status: 'PENDING' }),
       ]);
       setOut(o.data?.transfers || []);
       setInc(i.data?.transfers || []);
     } catch (err) {
       // non-fatal — page still renders
+    }
+    setLoading(false);
+  };
+
+  // v1.9.22 — load the right history list whenever the user changes
+  // tab/sub-tab/date-range. PENDING sub-tab uses the already-loaded
+  // out/inc arrays; the historical sub-tabs hit the API with status
+  // + date range.
+  const refreshHistory = async () => {
+    if (!slug) return;
+    if (subTab === 'pending') return; // nothing to fetch — pending lists drive the table
+    setLoading(true);
+    try {
+      const fetcher = tab === 'outgoing' ? getOutgoingTransfers : getIncomingTransfers;
+      const statusMap = {
+        received:  'RECEIVED',
+        variance:  'RECEIVED_WITH_VARIANCE',
+        cancelled: 'CANCELLED',
+      };
+      const r = await fetcher({ slug, status: statusMap[subTab], from: historyFrom || undefined, to: historyTo || undefined });
+      setHistory(r.data?.transfers || []);
+    } catch (err) {
+      setHistory([]);
     }
     setLoading(false);
   };
@@ -79,6 +121,16 @@ export default function StockTransfers() {
     return () => clearInterval(id);
   // eslint-disable-next-line
   }, [slug]);
+
+  // v1.9.22 — re-fetch history whenever the active history view changes.
+  useEffect(() => {
+    refreshHistory();
+  // eslint-disable-next-line
+  }, [slug, tab, subTab, historyFrom, historyTo]);
+
+  // v1.9.22 — when switching main tab, reset sub-tab to pending so the
+  // user always starts on the actionable queue.
+  useEffect(() => { setSubTab('pending'); }, [tab]);
 
   const flash = (text, type) => {
     setToast({ text, type });
@@ -154,22 +206,68 @@ export default function StockTransfers() {
         }}>{toast.text}</div>
       )}
 
-      {/* Tabs */}
+      {/* Main tabs: Outgoing | Incoming */}
       <div style={{ display: 'flex', gap: 0, marginBottom: 14, background: '#f1f5f9', borderRadius: 8, padding: 3, width: 'fit-content' }}>
         <TabButton active={tab === 'outgoing'} onClick={() => setTab('outgoing')}>
-          <FiTruck /> Outgoing ({out.filter(t => t.status === 'PENDING').length} pending)
+          <FiTruck /> Outgoing ({out.length} pending)
         </TabButton>
         <TabButton active={tab === 'incoming'} onClick={() => setTab('incoming')}>
-          <FiInbox /> Incoming ({inc.filter(t => t.status === 'PENDING').length} pending)
+          <FiInbox /> Incoming ({inc.length} pending)
         </TabButton>
       </div>
 
-      <div style={{ background: '#fff', border: '1px solid #e5e7eb', borderRadius: 10, padding: 14 }}>
-        {tab === 'outgoing' ? (
-          <TransferTable rows={out} loading={loading} direction="out" onCancel={doCancel} onView={doView} />
-        ) : (
-          <TransferTable rows={inc} loading={loading} direction="in" onReceive={doReceive} onView={doView} />
+      {/* v1.9.22 — sub-tabs + date filter. Pending shows the live queue;
+          Received / Variance / Cancelled show history (date-filtered). */}
+      <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'center', marginBottom: 12 }}>
+        <div style={{ display: 'flex', gap: 6 }}>
+          {[
+            { id: 'pending',   label: 'Pending' },
+            { id: 'received',  label: 'Received' },
+            { id: 'variance',  label: 'With Variance' },
+            { id: 'cancelled', label: 'Cancelled' },
+          ].map(s => (
+            <button key={s.id} onClick={() => setSubTab(s.id)}
+              style={{
+                padding: '6px 14px', borderRadius: 16, border: '1px solid',
+                borderColor: subTab === s.id ? '#0ea5e9' : '#e2e8f0',
+                background: subTab === s.id ? '#0ea5e9' : '#fff',
+                color: subTab === s.id ? '#fff' : '#475569',
+                cursor: 'pointer', fontSize: 12, fontWeight: 600,
+              }}>
+              {s.label}
+            </button>
+          ))}
+        </div>
+        {subTab !== 'pending' && (
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 12, color: '#475569' }}>
+            <span>From</span>
+            <input type="date" value={historyFrom} onChange={e => setHistoryFrom(e.target.value)}
+              style={{ padding: '5px 8px', border: '1px solid #e2e8f0', borderRadius: 6, fontSize: 12 }} />
+            <span>To</span>
+            <input type="date" value={historyTo} onChange={e => setHistoryTo(e.target.value)}
+              style={{ padding: '5px 8px', border: '1px solid #e2e8f0', borderRadius: 6, fontSize: 12 }} />
+            <button onClick={() => { setHistoryFrom(daysAgoISO(30)); setHistoryTo(todayISO()); }}
+              style={{ padding: '5px 10px', background: '#f1f5f9', color: '#475569', border: '1px solid #e2e8f0', borderRadius: 6, cursor: 'pointer', fontSize: 11 }}>
+              Last 30d
+            </button>
+          </div>
         )}
+      </div>
+
+      <div style={{ background: '#fff', border: '1px solid #e5e7eb', borderRadius: 10, padding: 14 }}>
+        {(() => {
+          // v1.9.22 — pick which list to render based on main tab + sub-tab.
+          // Pending uses the in-memory polled list (out/inc); history sub-
+          // tabs use the on-demand fetched list (`history`). Direction
+          // controls which action buttons render in the table.
+          const rows = subTab === 'pending'
+            ? (tab === 'outgoing' ? out : inc)
+            : history;
+          const direction = tab === 'outgoing' ? 'out' : 'in';
+          return direction === 'out'
+            ? <TransferTable rows={rows} loading={loading} direction="out" onCancel={doCancel} onView={doView} />
+            : <TransferTable rows={rows} loading={loading} direction="in"  onReceive={doReceive} onView={doView} />;
+        })()}
       </div>
 
       {viewing && (

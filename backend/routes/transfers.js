@@ -8,9 +8,19 @@
  * branch's tenant DB on demand via getTenantDb(slug).
  *
  * State machine on stock_transfers.status:
- *   PENDING   — source created + decremented its stock; in transit
- *   RECEIVED  — destination confirmed + incremented its stock
- *   CANCELLED — source aborted before destination received
+ *   PENDING   — source dispatched, NO stock movement yet (in transit).
+ *               v1.9.22 — source no longer decrements at creation. The
+ *               sent-qty leaves source's books only when the destination
+ *               confirms (or partially confirms) receipt. This keeps the
+ *               source's Sales Bin Card honest while goods are in flight.
+ *               Trade-off: source can sell from this stock during transit;
+ *               availability check at create time subtracts pending
+ *               outgoing transfers to prevent over-promising.
+ *   RECEIVED  — destination confirmed. Source posts transfer_out (-sentQty),
+ *               destination posts transfer_in (+recvQty), variance for
+ *               the difference (lost / damaged in transit).
+ *   CANCELLED — source aborted before destination received. No stock
+ *               movement at all (nothing was deducted to reverse).
  *
  * Auth: hqAuth (JWT only) — every Sosna admin can move stock between
  * branches they're an admin on. Per-role gates can be added later.
@@ -94,17 +104,23 @@ router.get('/source-products', hqAuth, (req, res) => {
   }
 });
 
-// GET /api/transfers/outgoing?slug=&status=
+// GET /api/transfers/outgoing?slug=&status=&from=YYYY-MM-DD&to=YYYY-MM-DD
 // Transfers SENT from the named branch. Both PENDING and RECEIVED so the
 // operator can see their full send history; status filter narrows it.
+// v1.9.22 — date range filter added so the History tabs can scope to a
+// date window (and avoid hitting the LIMIT 500 ceiling on busy branches).
 router.get('/outgoing', hqAuth, (req, res) => {
   try {
     const slug   = String(req.query.slug || '').toLowerCase();
     const status = String(req.query.status || '').toUpperCase();
+    const from   = String(req.query.from || '').trim();
+    const to     = String(req.query.to   || '').trim();
     if (!slug) return res.status(400).json({ error: 'slug is required' });
     let sql = `SELECT * FROM stock_transfers WHERE from_slug = ?`;
     const params = [slug];
     if (status) { sql += ' AND status = ?'; params.push(status); }
+    if (from)   { sql += ' AND DATE(created_at) >= ?'; params.push(from); }
+    if (to)     { sql += ' AND DATE(created_at) <= ?'; params.push(to); }
     sql += ' ORDER BY created_at DESC LIMIT 500';
     const rows = masterDb.prepare(sql).all(...params).map(parseItems);
     res.json({ transfers: rows });
@@ -113,17 +129,21 @@ router.get('/outgoing', hqAuth, (req, res) => {
   }
 });
 
-// GET /api/transfers/incoming?slug=&status=
+// GET /api/transfers/incoming?slug=&status=&from=YYYY-MM-DD&to=YYYY-MM-DD
 // Transfers headed TO the named branch. Default filter status=PENDING so
 // the operator sees only what needs receiving; pass status= '' for all.
 router.get('/incoming', hqAuth, (req, res) => {
   try {
     const slug   = String(req.query.slug || '').toLowerCase();
     const status = req.query.status === undefined ? 'PENDING' : String(req.query.status).toUpperCase();
+    const from   = String(req.query.from || '').trim();
+    const to     = String(req.query.to   || '').trim();
     if (!slug) return res.status(400).json({ error: 'slug is required' });
     let sql = `SELECT * FROM stock_transfers WHERE to_slug = ?`;
     const params = [slug];
     if (status) { sql += ' AND status = ?'; params.push(status); }
+    if (from)   { sql += ' AND DATE(created_at) >= ?'; params.push(from); }
+    if (to)     { sql += ' AND DATE(created_at) <= ?'; params.push(to); }
     sql += ' ORDER BY created_at DESC LIMIT 500';
     const rows = masterDb.prepare(sql).all(...params).map(parseItems);
     res.json({ transfers: rows });
@@ -183,57 +203,55 @@ router.post('/', hqAuth, (req, res) => {
     const createdBy      = req.user.id || null;
     const createdByName  = req.user.firstName || req.user.email || 'HQ';
 
-    // 1) Decrement source stock + log stock_movements in source DB.
-    //    Same shape as the dispatch stock_movements in orders.js.
-    fromDb.transaction(() => {
-      const movStmt = fromDb.prepare(`
-        INSERT INTO stock_movements (product_id, product_sync_id, location, movement_type,
-                                     quantity, reference_type, reference_sync_id,
-                                     notes, created_by, sync_id, tenant_id, branch_id, device_id,
-                                     synced, created_at, updated_at)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0,datetime('now'),datetime('now'))
-      `);
-      const updStockStmt = fromDb.prepare(`
-        UPDATE products SET current_stock = current_stock - ?,
-                            updated_at = datetime('now'),
-                            synced = 0
-         WHERE sync_id = ?
-      `);
-      // v1.8.94 — stock check now computes live from stock_movements instead
-      // of reading products.current_stock (a cached column that drifts).
-      // Matches the source-products endpoint fix in v1.8.92. Without this,
-      // the picker correctly shows 933 Box but the validator blocks the
-      // transfer with "have 300, need X" using the stale cache.
-      const liveStockStmt = fromDb.prepare(
-        `SELECT COALESCE(SUM(quantity), 0) AS balance
-           FROM stock_movements
-          WHERE product_sync_id = ? AND deleted_at IS NULL`
-      );
-      for (const it of cleanItems) {
-        const prod = fromDb.prepare(
-          'SELECT id, sync_id, unit, alt_unit, conversion_factor, units_json, current_stock FROM products WHERE sync_id = ?'
-        ).get(it.product_sync_id);
-        if (!prod) {
-          throw Object.assign(new Error(`Product not found at source: ${it.product_name}`), { status: 400 });
-        }
-        const baseQty = parseFloat(it.quantity) * conversionToBase(prod, it.unit);
-        const liveStock = parseFloat(liveStockStmt.get(prod.sync_id).balance) || 0;
-        if (liveStock < baseQty - 0.0001) {
-          throw Object.assign(new Error(`Insufficient stock for ${it.product_name} (have ${liveStock}, need ${baseQty})`), { status: 400 });
-        }
-        movStmt.run(
-          prod.id, prod.sync_id, 'sales', 'transfer_out',
-          -baseQty, 'transfer', transferSyncId,
-          `Transfer ${transferNumber} → ${branchName(toSlug)}`,
-          createdBy,
-          randomUUID(), prod.tenant_id || null, prod.branch_id || null, prod.device_id || null
-        );
-        updStockStmt.run(baseQty, prod.sync_id);
+    // v1.9.22 — Availability check at create time. We no longer decrement
+    // source stock here (the deduction is deferred to /receive), but we
+    // still need to block sending qty the source can't actually ship.
+    // Available = live bin balance − qty already locked in other PENDING
+    // outgoing transfers for the same product. Otherwise a source could
+    // create 5 PENDINGs for the same 100 units and over-promise 500.
+    const liveStockStmt = fromDb.prepare(
+      `SELECT COALESCE(SUM(quantity), 0) AS balance
+         FROM stock_movements
+        WHERE product_sync_id = ? AND deleted_at IS NULL`
+    );
+    const pendingOutgoingRows = masterDb.prepare(
+      `SELECT items_json FROM stock_transfers
+        WHERE from_slug = ? AND status = 'PENDING'`
+    ).all(fromSlug);
+    // Sum base-qty already promised per product across all PENDING outgoing.
+    const pendingByPsid = new Map();
+    for (const row of pendingOutgoingRows) {
+      let parsed = [];
+      try { parsed = JSON.parse(row.items_json || '[]'); } catch { /* skip */ }
+      for (const it of parsed) {
+        const psid = it.product_sync_id;
+        if (!psid) continue;
+        const prodRow = fromDb.prepare(
+          'SELECT unit, alt_unit, conversion_factor, units_json FROM products WHERE sync_id = ?'
+        ).get(psid);
+        const baseQty = parseFloat(it.quantity) * conversionToBase(prodRow || {}, it.unit);
+        pendingByPsid.set(psid, (pendingByPsid.get(psid) || 0) + baseQty);
       }
-    })();
+    }
+    for (const it of cleanItems) {
+      const prod = fromDb.prepare(
+        'SELECT id, sync_id, unit, alt_unit, conversion_factor, units_json FROM products WHERE sync_id = ?'
+      ).get(it.product_sync_id);
+      if (!prod) {
+        return res.status(400).json({ error: `Product not found at source: ${it.product_name}` });
+      }
+      const baseQty   = parseFloat(it.quantity) * conversionToBase(prod, it.unit);
+      const liveStock = parseFloat(liveStockStmt.get(prod.sync_id).balance) || 0;
+      const promised  = pendingByPsid.get(prod.sync_id) || 0;
+      const available = liveStock - promised;
+      if (available < baseQty - 0.0001) {
+        return res.status(400).json({
+          error: `Insufficient stock for ${it.product_name} (have ${liveStock}, ${promised > 0 ? `already in pending transfers: ${promised}, ` : ''}available: ${available}, need ${baseQty})`,
+        });
+      }
+    }
 
-    // 2) Insert the master row last so a stock-decrement failure leaves
-    //    no orphan transfer record.
+    // Master row only — source stock_movements posted at /receive time.
     masterDb.prepare(`
       INSERT INTO stock_transfers (transfer_number, sync_id, from_slug, from_name, to_slug, to_name,
                                    items_json, total_items, total_value, notes,
@@ -266,9 +284,14 @@ router.post('/', hqAuth, (req, res) => {
 // v1.8.64 — Per-line receive: body.received_lines = [{
 //   product_sync_id, received_qty, reason ('OK'|'Short'|'Damaged'|'Lost'), notes
 // }]. When received_qty < sent_qty (or reason != 'OK'), a
-// transfer_variance row is recorded in master.db. The sender's stock
-// is NOT touched (it was already decremented at send time) — the gap
-// lives in the variance table for HQ to investigate.
+// transfer_variance row is recorded in master.db.
+//
+// v1.9.22 — Source-side decrement moved here from /create. On receive:
+//   - Source: post transfer_out (-sentQty) — the sent qty has left the
+//     source's books; variance is tracked separately as "lost in transit".
+//   - Destination: post transfer_in (+recvQty).
+//   - Variance: sentQty − recvQty (lost / damaged in transit). Owned by no
+//     branch's bin, surfaced in master.transfer_variances for HQ to chase.
 //
 // Backwards-compat: if received_lines is absent, fall back to receiving
 // every item at the sent qty (the old behavior).
@@ -300,6 +323,60 @@ router.put('/:id/receive', hqAuth, (req, res) => {
     const receivedByName = req.user.firstName || req.user.email || 'Branch';
     let anyVariance = false;
     const varianceInserts = []; // { sync_id, ...row } — pushed to master.db after the tenant tx
+
+    // v1.9.22 — Source-side deduction (deferred from /create). Posts the
+    // sentQty as transfer_out so the source's Sales Bin Card finally
+    // reflects what physically left. Skipped silently if the source
+    // branch isn't registered anymore (rare, but don't block receive).
+    //
+    // Legacy guard: pre-v1.9.22 PENDING transfers already posted the
+    // transfer_out at create time. We detect that via reference_sync_id
+    // = row.sync_id on stock_movements and skip the source deduction
+    // here to avoid double-counting.
+    if (isRegistered(fromSlug)) {
+      const fromDb = getTenantDb(fromSlug);
+      const alreadyPosted = fromDb.prepare(
+        `SELECT 1 FROM stock_movements
+          WHERE reference_sync_id = ? AND movement_type = 'transfer_out'
+            AND deleted_at IS NULL LIMIT 1`
+      ).get(row.sync_id);
+      if (alreadyPosted) {
+        // Pre-v1.9.22 transfer — source bin already reflects the deduction.
+        // Skip re-posting at /receive to preserve the legacy total.
+      } else {
+      fromDb.transaction(() => {
+        const movStmt = fromDb.prepare(`
+          INSERT INTO stock_movements (product_id, product_sync_id, location, movement_type,
+                                       quantity, reference_type, reference_sync_id,
+                                       notes, created_by, sync_id, tenant_id, branch_id, device_id,
+                                       synced, created_at, updated_at)
+          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0,datetime('now'),datetime('now'))
+        `);
+        const upd = fromDb.prepare(`
+          UPDATE products SET current_stock = current_stock - ?,
+                              updated_at    = datetime('now'),
+                              synced        = 0
+           WHERE sync_id = ?
+        `);
+        for (const it of items) {
+          const prod = fromDb.prepare(
+            'SELECT id, sync_id, unit, alt_unit, conversion_factor, units_json FROM products WHERE sync_id = ?'
+          ).get(it.product_sync_id);
+          if (!prod) continue; // product no longer at source — skip, variance will catch the gap
+          const sentBaseQty = (parseFloat(it.quantity) || 0) * conversionToBase(prod, it.unit);
+          if (sentBaseQty <= 0) continue;
+          movStmt.run(
+            prod.id, prod.sync_id, 'sales', 'transfer_out',
+            -sentBaseQty, 'transfer', row.sync_id,
+            `Transfer ${row.transfer_number} → ${row.to_name || toSlug} (confirmed)`,
+            receivedBy,
+            randomUUID(), null, null, null
+          );
+          upd.run(sentBaseQty, prod.sync_id);
+        }
+      })();
+      }
+    }
 
     toDb.transaction(() => {
       const movStmt = toDb.prepare(`
@@ -438,52 +515,13 @@ router.get('/:id/variances', hqAuth, (req, res) => {
 });
 
 // PUT /api/transfers/:id/cancel — source aborts a PENDING transfer.
-// Reverses the source-side decrement (positive transfer_cancel movement)
-// and flips status to CANCELLED. Destination never received anything so
-// no destination-side cleanup is needed.
+// v1.9.22 — Pure status flip now. Source never decremented (deferred to
+// /receive), so there's nothing to reverse. Destination never saw it.
 router.put('/:id/cancel', hqAuth, (req, res) => {
   try {
     const row = masterDb.prepare('SELECT * FROM stock_transfers WHERE id = ?').get(req.params.id);
     if (!row) return res.status(404).json({ error: 'Transfer not found' });
     if (row.status !== 'PENDING') return res.status(400).json({ error: `Transfer is ${row.status}, not PENDING` });
-
-    const fromSlug = row.from_slug;
-    if (!isRegistered(fromSlug)) return res.status(400).json({ error: 'Source branch no longer registered' });
-
-    let items = [];
-    try { items = JSON.parse(row.items_json || '[]'); } catch { /* empty */ }
-
-    const fromDb = getTenantDb(fromSlug);
-    fromDb.transaction(() => {
-      const movStmt = fromDb.prepare(`
-        INSERT INTO stock_movements (product_id, product_sync_id, location, movement_type,
-                                     quantity, reference_type, reference_sync_id,
-                                     notes, created_by, sync_id, tenant_id, branch_id, device_id,
-                                     synced, created_at, updated_at)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0,datetime('now'),datetime('now'))
-      `);
-      const upd = fromDb.prepare(`
-        UPDATE products SET current_stock = current_stock + ?,
-                            updated_at = datetime('now'),
-                            synced = 0
-         WHERE sync_id = ?
-      `);
-      for (const it of items) {
-        const prod = fromDb.prepare(
-          'SELECT id, sync_id, unit, alt_unit, conversion_factor, units_json FROM products WHERE sync_id = ?'
-        ).get(it.product_sync_id);
-        if (!prod) continue;
-        const baseQty = parseFloat(it.quantity) * conversionToBase(prod, it.unit);
-        movStmt.run(
-          prod.id, prod.sync_id, 'sales', 'transfer_cancel',
-          baseQty, 'transfer', row.sync_id,
-          `Cancelled ${row.transfer_number}`,
-          req.user.id || null,
-          randomUUID(), null, null, null
-        );
-        upd.run(baseQty, prod.sync_id);
-      }
-    })();
 
     masterDb.prepare(`UPDATE stock_transfers SET status='CANCELLED' WHERE id=?`).run(req.params.id);
 
