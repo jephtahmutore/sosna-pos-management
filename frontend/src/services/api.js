@@ -199,6 +199,13 @@ export const getHqInventoryReport = (params) => api.get('/hq/inventory-report', 
 // HQ — per-branch cash IN/OUT/Net per method (Cash/Bank/MoMo), today + MTD.
 export const getHqCashPosition = () => api.get('/hq/cash-position');
 
+// HQ — v1.9.0 Layer 3: manual mirror of all HQ-owned entities (main_categories,
+// categories, units, products) to every registered branch. Optional { slug }
+// targets a single branch instead of all of them. Returns per-branch counts of
+// inserted vs updated rows so the UI can show a results modal.
+export const mirrorHqToAllBranches = (slug) =>
+  api.post('/hq/mirror-all', slug ? { slug } : {});
+
 // Stock Transfers (Phase C — HQ Warehouse). Stored in master.db so source
 // + destination see the same row. Works the same on HQ and on per-branch
 // subdomains; the "current branch" the page operates against is derived

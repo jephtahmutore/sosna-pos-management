@@ -333,9 +333,86 @@ function pushProductToBranches(prodRow, { listTenants, getTenantDb }) {
   return out;
 }
 
+// v1.9.0 — bulk sweep helper. Reads every HQ-owned row (main categories,
+// categories, units, products) from the default DB and pushes each one to
+// every branch via the per-row helpers above. Branch-owned columns
+// (selling_price, cost_price, current_stock, min_stock, status, notes,
+// alt_price, units_json.price) stay untouched — see pushProductToBranches
+// for the per-column rules.
+//
+// Use cases (the "3 layers"):
+//   Layer 1 — boot heal:     called once at server start, targetSlug=null
+//   Layer 2 — on-register:   called once when a tenant DB is created,
+//                            targetSlug=<that slug>
+//   Layer 3 — manual refresh: called from HQ admin button, targetSlug=null
+//
+// Returns: { entities: {…counts}, per_branch: { slug: { products: {…} … } } }
+function mirrorAllHqToBranches(defaultDb, { listTenants, getTenantDb, targetSlug = null } = {}) {
+  if (!defaultDb || typeof defaultDb.prepare !== 'function') {
+    throw new Error('mirrorAllHqToBranches: defaultDb is required');
+  }
+  const allTenants = listTenants();
+  const tenants = targetSlug
+    ? allTenants.filter(t => t.slug === targetSlug)
+    : allTenants;
+
+  // Pre-read HQ source rows. deleted_at IS NULL: only push live entities.
+  // Soft-deletes are handled inline by the per-row helpers (each branch
+  // sets deleted_at on its mirror), but a sweep only re-pushes living rows
+  // because we have no easy way to know what the branch should forget
+  // without a cross-DB scan.
+  const safeAll = (sql) => {
+    try { return defaultDb.prepare(sql).all(); }
+    catch { return []; }
+  };
+  const mainCats   = safeAll(`SELECT * FROM main_categories WHERE deleted_at IS NULL`);
+  const categories = safeAll(`SELECT * FROM categories       WHERE deleted_at IS NULL`);
+  const units      = safeAll(`SELECT * FROM units            WHERE deleted_at IS NULL`);
+  const products   = safeAll(`SELECT * FROM products         WHERE deleted_at IS NULL`);
+
+  const per_branch = {};
+  for (const t of tenants) {
+    // Re-target the per-row helpers at a single branch by wrapping
+    // listTenants so they only iterate this one t.
+    const singleCtx = { listTenants: () => [t], getTenantDb };
+    const acc = {
+      main_categories: { pushed: 0, updated: 0, errors: [] },
+      categories:      { pushed: 0, updated: 0, errors: [] },
+      units:           { pushed: 0, updated: 0, errors: [] },
+      products:        { pushed: 0, updated: 0, errors: [] },
+    };
+    const merge = (key, r) => {
+      acc[key].pushed  += r.pushed  || 0;
+      acc[key].updated += r.updated || 0;
+      if (r.errors && r.errors.length) acc[key].errors.push(...r.errors);
+    };
+    // Order matters: main_categories → categories → units → products
+    // (products resolve category_id by sync_id; that sync_id must already
+    //  exist at the branch when the product push runs).
+    for (const mc of mainCats)   merge('main_categories', pushMainCategoryToBranches(mc, singleCtx));
+    for (const c  of categories) merge('categories',      pushCategoryToBranches(c,    singleCtx));
+    for (const u  of units)      merge('units',           pushUnitToBranches(u,        singleCtx));
+    for (const p  of products)   merge('products',        pushProductToBranches(p,     singleCtx));
+    per_branch[t.slug] = acc;
+  }
+
+  return {
+    entities: {
+      main_categories: mainCats.length,
+      categories:      categories.length,
+      units:           units.length,
+      products:        products.length,
+    },
+    target_slug: targetSlug || null,
+    branch_count: tenants.length,
+    per_branch,
+  };
+}
+
 module.exports = {
   isHqRequest, isHqOrSkip, getHostSlug,
   pushCategoryToBranches, pushMainCategoryToBranches, pushUnitToBranches,
   pushProductToBranches,
   mergeUnitsJsonPreservingBranchPrices,
+  mirrorAllHqToBranches,
 };

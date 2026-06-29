@@ -20,6 +20,8 @@ const router  = express.Router();
 const jwt = require('jsonwebtoken');
 const { listTenants } = require('../config/masterDb');
 const { getTenantDb } = require('../config/tenantDb');
+const { defaultDb }   = require('../config/database');
+const { mirrorAllHqToBranches } = require('../middleware/hqPush');
 
 // HQ admin auth — same JWT model the per-branch app uses. The token comes
 // from whichever branch the user picked at login; we trust it as proof of
@@ -611,6 +613,37 @@ router.put('/variances/transfer/:syncId/resolve', hqAuth, (req, res) => {
     `).run(resolution, notes || null, req.params.syncId);
     res.json({ ok: true });
   } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ─── v1.9.0 — Layer 3: HQ admin Refresh button ──────────────────────────────
+// Manual on-demand mirror of every HQ-owned entity (main_categories,
+// categories, units, products) to every registered branch. Idempotent —
+// safe to run any time, never overwrites branch-owned columns (prices /
+// stock / status / notes). Same helper feeds the boot heal (Layer 1) and
+// the on-register auto-mirror (Layer 2); the difference is just who
+// triggers it.
+//
+// Optional ?slug=<branch> targets a single branch instead of all of them
+// (e.g. for a "Resync mansa1 only" action from a future UI). When the
+// query is omitted, every active tenant gets the sweep.
+router.post('/mirror-all', hqAuth, (req, res) => {
+  try {
+    const slug = (req.query.slug || req.body?.slug || '').toString().trim().toLowerCase();
+    const t0 = Date.now();
+    const result = mirrorAllHqToBranches(defaultDb, {
+      listTenants,
+      getTenantDb,
+      targetSlug: slug || null,
+    });
+    res.json({
+      ok: true,
+      elapsed_ms: Date.now() - t0,
+      ...result,
+    });
+  } catch (e) {
+    console.error('[hq.mirror-all] failed:', e.message);
     res.status(500).json({ error: e.message });
   }
 });

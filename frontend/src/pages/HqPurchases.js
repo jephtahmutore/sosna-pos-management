@@ -7,7 +7,7 @@ import {
   FiRefreshCw, FiPlus, FiPackage, FiTrash2, FiEye, FiXCircle, FiPrinter,
 } from 'react-icons/fi';
 import {
-  getHqBranches, getHqPurchases, getHqPurchase, createHqPurchase, getHqSuppliers,
+  getHqBranches, getHqPurchases, getHqPurchase, createHqPurchase, getHqSuppliers, createHqSupplier,
   cancelHqPurchaseItem, cancelHqPurchase, getHqProducts,
 } from '../services/api';
 import printHtml from '../utils/printHtml';
@@ -177,13 +177,22 @@ function statusBadge(s) {
 
 function CreatePurchaseModal({ branches, onClose, onCreated, onError }) {
   const [supplierId, setSupplierId] = useState('');
-  const [supplier, setSupplier]     = useState('');
   const [suppliers, setSuppliers]   = useState([]);
   const [invoice, setInvoice]   = useState('');
   const [date, setDate]         = useState(todayISO());
   const [notes, setNotes]       = useState('');
   const [items, setItems]       = useState([newItem(branches[0]?.slug || '')]);
   const [submitting, setSubmitting] = useState(false);
+
+  // v1.9.0 — quick-add HQ supplier (same pattern as GRN page).
+  // Strict: free-text supplier entry removed; only HQ master suppliers
+  // can be referenced. If the user needs a new supplier they add it
+  // inline, which writes to HQ master and auto-selects.
+  const [showAddSupplier, setShowAddSupplier] = useState(false);
+  const [newSupName,  setNewSupName]  = useState('');
+  const [newSupPhone, setNewSupPhone] = useState('');
+  const [addingSupplier, setAddingSupplier] = useState(false);
+  const [addSupplierError, setAddSupplierError] = useState('');
 
   const [hqProducts, setHqProducts] = useState([]);
   useEffect(() => {
@@ -214,26 +223,56 @@ function CreatePurchaseModal({ branches, onClose, onCreated, onError }) {
     return s + q * c;
   }, 0), [items]);
 
+  // v1.9.0 — inline create HQ supplier; refreshes list + auto-selects.
+  const handleAddSupplier = async () => {
+    const name = newSupName.trim();
+    if (!name) { setAddSupplierError('Name is required.'); return; }
+    setAddingSupplier(true);
+    setAddSupplierError('');
+    try {
+      const res = await createHqSupplier({ name, phone: newSupPhone.trim() || null });
+      const created = res.data?.supplier || res.data || null;
+      // Refetch full list so the new supplier shows in dropdown ordering
+      const list = await getHqSuppliers();
+      setSuppliers(list.data?.suppliers || []);
+      if (created?.id) setSupplierId(String(created.id));
+      setShowAddSupplier(false);
+      setNewSupName(''); setNewSupPhone('');
+    } catch (err) {
+      setAddSupplierError(err?.response?.data?.error || 'Failed to create supplier');
+    }
+    setAddingSupplier(false);
+  };
+
   const submit = async () => {
-    const clean = items
-      .map(it => ({
-        product_sync_id:  (it.product_sync_id || '').trim(),
-        product_name:     (it.product_name || '').trim(),
-        unit:             it.unit || null,
-        dispatched_qty:   parseFloat(it.dispatched_qty) || 0,
-        cost_price:       parseFloat(it.cost_price) || 0,
-        destination_slug: it.destination_slug,
-      }))
-      .filter(it => it.product_name && it.dispatched_qty > 0 && it.destination_slug);
+    // v1.9.0 — strict: every line MUST have a product_sync_id (i.e. picked
+    // from HQ master). The old code allowed a free-text product_name to
+    // pass through, which let garbage like "fdfdfdf" become a real
+    // purchase + auto-create a branch product. Now: any line whose
+    // product wasn't picked from the dropdown is rejected with a clear
+    // error pointing the user to HQ Products.
+    const cleaned = items.map(it => ({
+      product_sync_id:  (it.product_sync_id || '').trim(),
+      product_name:     (it.product_name || '').trim(),
+      unit:             it.unit || null,
+      dispatched_qty:   parseFloat(it.dispatched_qty) || 0,
+      cost_price:       parseFloat(it.cost_price) || 0,
+      destination_slug: it.destination_slug,
+    }));
+    const orphans = cleaned.filter(it => it.product_name && !it.product_sync_id);
+    if (orphans.length > 0) {
+      return onError(`"${orphans[0].product_name}" isn't in HQ Products. Pick from the dropdown, or add it via HQ Products first.`);
+    }
+    const clean = cleaned.filter(it => it.product_sync_id && it.dispatched_qty > 0 && it.destination_slug);
     if (clean.length === 0) return onError('Add at least one valid item');
+    // v1.9.0 — supplier_id is now required (free-text supplier_name removed).
+    const picked = suppliers.find(s => String(s.id) === String(supplierId));
+    if (!picked) return onError('Pick a supplier from the dropdown, or add a new one with the + New button.');
     setSubmitting(true);
     try {
-      // If user picked from dropdown, send supplier_id + the master name.
-      // If they typed free-form, send just the name (legacy, no AP linkage).
-      const picked = suppliers.find(s => String(s.id) === String(supplierId));
       await createHqPurchase({
-        supplier_id:   picked ? picked.id : null,
-        supplier_name: picked ? picked.name : (supplier || null),
+        supplier_id:    picked.id,
+        supplier_name:  picked.name,
         invoice_number: invoice || null,
         date,
         notes: notes || null,
@@ -257,19 +296,56 @@ function CreatePurchaseModal({ branches, onClose, onCreated, onError }) {
         <div style={{ padding: 16, overflowY: 'auto', flex: 1 }}>
           <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr 1fr', gap: 12, marginBottom: 14 }}>
             <div>
-              <label style={lbl}>Supplier</label>
-              {suppliers.length > 0 ? (
-                <select value={supplierId} onChange={e => { setSupplierId(e.target.value); setSupplier(''); }} style={inp}>
-                  <option value="">— pick from master, or type new below —</option>
+              <label style={lbl}>Supplier <span style={{ color: '#dc2626' }}>*</span></label>
+              {/* v1.9.0 — strict supplier picker. Same pattern as GRN page:
+                  select from HQ master, or hit "+ New" to add inline. Free-text
+                  fallback removed so every purchase has a real AP linkage. */}
+              <div style={{ display: 'flex', gap: 6 }}>
+                <select
+                  value={supplierId}
+                  onChange={e => setSupplierId(e.target.value)}
+                  style={{ ...inp, flex: 1 }}>
+                  <option value="">— select supplier —</option>
                   {suppliers.map(s => (
                     <option key={s.id} value={s.id}>{s.name}{s.balance > 0.001 ? `  (owes $${s.balance.toFixed(2)})` : ''}</option>
                   ))}
                 </select>
-              ) : (
-                <input type="text" value={supplier} onChange={e => setSupplier(e.target.value)} placeholder="e.g. Sosna Distributors Ltd" style={inp} />
-              )}
-              {suppliers.length > 0 && !supplierId && (
-                <input type="text" value={supplier} onChange={e => setSupplier(e.target.value)} placeholder="Or type a new supplier name (won't link to AP master)" style={{ ...inp, marginTop: 6 }} />
+                <button
+                  type="button"
+                  onClick={() => { setShowAddSupplier(v => !v); setAddSupplierError(''); }}
+                  title="Add new HQ supplier"
+                  style={{ padding: '9px 12px', border: '1px solid #e5e7eb', borderRadius: 8, background: showAddSupplier ? '#dcfce7' : '#f9fafb', color: showAddSupplier ? '#16a34a' : '#374151', cursor: 'pointer', fontSize: 13, fontWeight: 600, whiteSpace: 'nowrap' }}>
+                  + New
+                </button>
+              </div>
+
+              {showAddSupplier && (
+                <div style={{ marginTop: 8, padding: '12px 14px', background: '#f0fdf4', border: '1px solid #86efac', borderRadius: 8 }}>
+                  <div style={{ fontSize: 12, fontWeight: 600, color: '#15803d', marginBottom: 8 }}>Quick-add HQ Supplier</div>
+                  <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                    <input
+                      value={newSupName} onChange={e => setNewSupName(e.target.value)}
+                      placeholder="Supplier name *"
+                      style={{ flex: 2, minWidth: 120, padding: '7px 10px', border: '1px solid #d1d5db', borderRadius: 6, fontSize: 13 }}
+                    />
+                    <input
+                      value={newSupPhone} onChange={e => setNewSupPhone(e.target.value)}
+                      placeholder="Phone (optional)"
+                      style={{ flex: 1, minWidth: 100, padding: '7px 10px', border: '1px solid #d1d5db', borderRadius: 6, fontSize: 13 }}
+                    />
+                    <button
+                      type="button" onClick={handleAddSupplier} disabled={addingSupplier}
+                      style={{ padding: '7px 14px', background: addingSupplier ? '#9ca3af' : '#16a34a', color: '#fff', border: 'none', borderRadius: 6, cursor: addingSupplier ? 'not-allowed' : 'pointer', fontSize: 13, fontWeight: 600 }}>
+                      {addingSupplier ? '…' : 'Create'}
+                    </button>
+                    <button
+                      type="button" onClick={() => { setShowAddSupplier(false); setNewSupName(''); setNewSupPhone(''); setAddSupplierError(''); }}
+                      style={{ padding: '7px 10px', background: '#fff', color: '#6b7280', border: '1px solid #e5e7eb', borderRadius: 6, cursor: 'pointer', fontSize: 13 }}>
+                      Cancel
+                    </button>
+                  </div>
+                  {addSupplierError && <div style={{ color: '#dc2626', fontSize: 12, marginTop: 6 }}>{addSupplierError}</div>}
+                </div>
               )}
             </div>
             <div><label style={lbl}>Invoice #</label><input type="text" value={invoice} onChange={e => setInvoice(e.target.value)} placeholder="INV-2026-…" style={inp} /></div>
@@ -300,11 +376,16 @@ function CreatePurchaseModal({ branches, onClose, onCreated, onError }) {
                   return (
                     <tr key={i} style={{ borderTop: '1px solid #f1f5f9' }}>
                       <td style={tdS}>
+                        {/* v1.9.0 — strict picker only. Free-text input removed:
+                            it let arbitrary strings like "fdfdfdf" become a
+                            purchase, auto-creating ghost branch products. If the
+                            HQ master is empty, show a clear empty-state instead
+                            of a typeable input. */}
                         {hqProducts.length > 0 ? (
                           <select
-                            value={it.product_name}
+                            value={it.product_sync_id || ''}
                             onChange={e => {
-                              const picked = hqProducts.find(p => p.name === e.target.value);
+                              const picked = hqProducts.find(p => p.sync_id === e.target.value);
                               if (picked) {
                                 // Atomic update so HQ master sync_id rides
                                 // through to the line — that's what makes the
@@ -322,20 +403,22 @@ function CreatePurchaseModal({ branches, onClose, onCreated, onError }) {
                                 setItems(arr => arr.map((row, idx) => idx === i ? {
                                   ...row,
                                   product_sync_id: '',
-                                  product_name:    e.target.value,
+                                  product_name:    '',
                                 } : row));
                               }
                             }}
                             style={cellInp}>
                             <option value="">— pick from HQ master —</option>
                             {hqProducts.map(p => (
-                              <option key={p.id} value={p.name}>
+                              <option key={p.id} value={p.sync_id}>
                                 {p.name}{p.code ? ` (${p.code})` : ''}
                               </option>
                             ))}
                           </select>
                         ) : (
-                          <input type="text" value={it.product_name} onChange={e => updateItem(i, 'product_name', e.target.value)} placeholder="Product name" style={cellInp} />
+                          <div style={{ ...cellInp, color: '#dc2626', fontSize: 11, padding: '6px 8px', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 4 }}>
+                            No HQ Products yet — add them under <strong>HQ Products</strong> first.
+                          </div>
                         )}
                       </td>
                       <td style={tdS}><input type="text" value={it.unit} onChange={e => updateItem(i, 'unit', e.target.value)} style={cellInp} /></td>

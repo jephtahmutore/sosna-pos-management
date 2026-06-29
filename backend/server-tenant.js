@@ -108,4 +108,28 @@ app.use((err, req, res, next) => {
 const PORT = process.env.TENANT_PORT || 5300;
 app.listen(PORT, () => {
   console.log(`Sosna tenant server running on port ${PORT}`);
+
+  // ─── v1.9.0 — Layer 1: boot-time HQ→Branch mirror sweep ───────────────
+  // Fires once on server start so any drift accumulated while the server
+  // was down (HQ added products, a branch DB got reset, etc.) heals
+  // before the first request lands. Async — we don't block listen() on
+  // it; if the sweep crashes the rest of the server keeps running.
+  setImmediate(() => {
+    try {
+      const { defaultDb } = require('./config/database');
+      const { listTenants } = require('./config/masterDb');
+      const { getTenantDb } = require('./config/tenantDb');
+      const { mirrorAllHqToBranches } = require('./middleware/hqPush');
+      const t0 = Date.now();
+      const r = mirrorAllHqToBranches(defaultDb, { listTenants, getTenantDb });
+      const totals = Object.values(r.per_branch || {}).reduce((a, b) => {
+        a.pushed  += (b.products.pushed  + b.categories.pushed  + b.units.pushed  + b.main_categories.pushed);
+        a.updated += (b.products.updated + b.categories.updated + b.units.updated + b.main_categories.updated);
+        return a;
+      }, { pushed: 0, updated: 0 });
+      console.log(`[hq-mirror] Boot sweep done in ${Date.now() - t0}ms — ${r.branch_count} branch(es), ${totals.pushed} inserted, ${totals.updated} updated`);
+    } catch (e) {
+      console.error('[hq-mirror] Boot sweep failed:', e.message);
+    }
+  });
 });
