@@ -920,6 +920,10 @@ function initTenantDb(db) {
   addCol('grn', 'hq_confirmed_by_name',    'TEXT');
   addCol('grn', 'hq_confirmed_at',         'TEXT');
   addCol('grn', 'hq_reject_reason',        'TEXT');
+  // v1.9.12 — supplier's printed invoice number captured at GRN time.
+  // Mandatory on the branch-side GRN form so HQ sees what paper invoice
+  // the purchase matched against when auditing AP.
+  addCol('grn', 'supplier_invoice_number', 'TEXT');
 
   // ── Single-location mode (Option 2: auto-SIV after each GRN) ────────────────
   // When ON, GRN saves trigger an auto-generated SIV that issues 100% of the receipt

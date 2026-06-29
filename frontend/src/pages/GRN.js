@@ -124,6 +124,9 @@ const GRN = () => {
   // until HQ confirms; supplier AP also deferred).
   const [linkedPurchaseSyncId, setLinkedPurchaseSyncId] = useState(null);
   const [linkedPurchaseNumber, setLinkedPurchaseNumber] = useState(null);
+  // v1.9.12 — supplier's printed invoice number, mandatory on HQ-linked
+  // GRNs. Surfaced as its own input next to the date.
+  const [supplierInvoiceNumber, setSupplierInvoiceNumber] = useState('');
 
   // ── Product autocomplete ──────────────────────────────────────────
   const [openDropdownIdx, setOpenDropdownIdx] = useState(-1);
@@ -462,6 +465,13 @@ const GRN = () => {
   const handleSave = async () => {
     setError('');
     if (!supplierId) return setError('Please select a supplier.');
+    // v1.9.12 — supplier invoice number mandatory when this GRN was opened
+    // from an HQ PO. Branch-only manual GRNs still don't need it (no AP
+    // crystallises until HQ approves, and that path doesn't exist for
+    // manual GRNs anyway).
+    if (linkedPurchaseSyncId && !(supplierInvoiceNumber || '').trim()) {
+      return setError('Supplier invoice number is required.');
+    }
     const validItems = items.filter(i => i.product_id && parseFloat(i.quantity) > 0 && parseFloat(i.unit_price) >= 0);
     if (validItems.length === 0) return setError('Please add at least one item with a product and quantity.');
     const payload = {
@@ -471,6 +481,8 @@ const GRN = () => {
       // v1.9.7 — when set, backend defers stock + AP until HQ confirms.
       linked_purchase_sync_id: linkedPurchaseSyncId || null,
       linked_purchase_number:  linkedPurchaseNumber || null,
+      // v1.9.12 — paper invoice number from supplier (mandatory when linked).
+      supplier_invoice_number: (supplierInvoiceNumber || '').trim() || null,
       items: validItems.map(i => ({
         product_id:  parseInt(i.product_id),
         quantity:    parseFloat(i.quantity),
@@ -505,6 +517,7 @@ const GRN = () => {
         // accidentally tied to the previous PO.
         setLinkedPurchaseSyncId(null);
         setLinkedPurchaseNumber(null);
+        setSupplierInvoiceNumber('');
         await fetchData();
         showToast(linkedPurchaseSyncId
           ? 'GRN submitted to HQ for confirmation. Stock will become sellable once HQ approves.'
@@ -1578,12 +1591,23 @@ const GRN = () => {
 
             <div style={{ padding: '20px 24px' }}>
 
-              {/* Supplier & Date */}
+              {/* Supplier & Date — when GRN is HQ-PO-linked, the supplier
+                  is locked from the PO (no dropdown). Also surface a
+                  required Supplier Invoice # input next to date. */}
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginBottom: 20 }}>
                 <div>
                   <label style={{ display: 'block', fontSize: 13, fontWeight: 600, color: '#374151', marginBottom: 6 }}>
                     {t('supplier')} <span style={{ color: '#dc2626' }}>*</span>
                   </label>
+                  {linkedPurchaseSyncId ? (
+                    // v1.9.12 — HQ-linked GRN: supplier comes from the PO,
+                    // not the user. Show as read-only chip so it's clear no
+                    // edit is allowed at this step.
+                    <div style={{ padding: '9px 12px', border: '1px solid #e5e7eb', borderRadius: 8, background: '#f3f4f6', fontSize: 14, color: '#374151', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                      <span>{suppliers.find(s => String(s.id) === String(supplierId))?.name || `Supplier #${supplierId}`}</span>
+                      <span style={{ fontSize: 11, color: '#6b7280', fontStyle: 'italic' }}>from PO {linkedPurchaseNumber}</span>
+                    </div>
+                  ) : (
                   <div style={{ display: 'flex', gap: 6 }}>
                     <select
                       value={supplierId} onChange={e => setSupplierId(e.target.value)}
@@ -1601,9 +1625,10 @@ const GRN = () => {
                       <FiPlus size={13} /> New
                     </button>
                   </div>
+                  )}
 
-                  {/* Quick-add supplier form */}
-                  {showAddSupplier && (
+                  {/* Quick-add supplier form (hidden when supplier is locked from PO) */}
+                  {!linkedPurchaseSyncId && showAddSupplier && (
                     <div style={{ marginTop: 8, padding: '12px 14px', background: '#f0fdf4', border: '1px solid #86efac', borderRadius: 8 }}>
                       <div style={{ fontSize: 12, fontWeight: 600, color: '#15803d', marginBottom: 8 }}>Quick-add Supplier</div>
                       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
@@ -1635,12 +1660,29 @@ const GRN = () => {
                   )}
                 </div>
                 <div>
+                  {/* v1.9.12 — Date + Supplier Invoice # share the right cell
+                      when the GRN is HQ-PO-linked. Invoice # is required;
+                      the form blocks save until it's filled. */}
                   <label style={{ display: 'block', fontSize: 13, fontWeight: 600, color: '#374151', marginBottom: 6 }}>{t('date')}</label>
                   <input
                     type="date" value={date} max={todayStr}
                     onChange={e => setDate(e.target.value)}
                     style={{ width: '100%', padding: '9px 12px', border: '1px solid #e5e7eb', borderRadius: 8, fontSize: 14, boxSizing: 'border-box' }}
                   />
+                  {linkedPurchaseSyncId && (
+                    <div style={{ marginTop: 10 }}>
+                      <label style={{ display: 'block', fontSize: 13, fontWeight: 600, color: '#374151', marginBottom: 6 }}>
+                        Supplier Invoice # <span style={{ color: '#dc2626' }}>*</span>
+                      </label>
+                      <input
+                        type="text"
+                        value={supplierInvoiceNumber}
+                        onChange={e => setSupplierInvoiceNumber(e.target.value)}
+                        placeholder="e.g. INV-12345"
+                        style={{ width: '100%', padding: '9px 12px', border: '1px solid #e5e7eb', borderRadius: 8, fontSize: 14, boxSizing: 'border-box' }}
+                      />
+                    </div>
+                  )}
                 </div>
               </div>
 

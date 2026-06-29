@@ -131,8 +131,15 @@ router.post('/', auth, (req, res) => {
       // /confirm. AP also stays uncommitted until HQ confirms.
       linked_purchase_sync_id,
       linked_purchase_number,
+      // v1.9.12 — supplier's invoice number (mandatory at the branch
+      // GRN form when linked to a HQ PO). Stored on the grn row so HQ
+      // can cross-reference paper invoice → GRN → AP.
+      supplier_invoice_number,
     } = req.body;
     const isHqLinked = !!linked_purchase_sync_id;
+    if (isHqLinked && !(supplier_invoice_number || '').toString().trim()) {
+      return res.status(400).json({ error: 'Supplier invoice number is required for HQ-linked GRNs.' });
+    }
     const grn = db.transaction(() => {
       const grnNum = syncConfig.generateNumber('GRN', 'grn');
       // Total = beverage subtotal + net container settlement (received − returned) × deposit.
@@ -163,9 +170,10 @@ router.post('/', auth, (req, res) => {
       // moves yet. Legacy / manual GRNs keep hq_status NULL.
       const hqStatus = isHqLinked ? 'PENDING_HQ_CONFIRM' : null;
       const info = db.prepare(
-        `INSERT INTO grn (grn_number, date, supplier_id, supplier_sync_id, total_items, total_amount, notes, invoice_attachment, created_by, status, linked_purchase_sync_id, linked_purchase_number, hq_status, sync_id, tenant_id, branch_id, device_id, synced, created_at, updated_at)
-         VALUES (?,?,?,?,?,?,?,?,?,'Completed',?,?,?,?,?,?,?,0,datetime('now'),datetime('now'))`
-      ).run(grnNum, grnDate, supplier_id, supplierSyncId, items.length, totalAmount, notes, invoice_attachment || null, req.user.id,
+        `INSERT INTO grn (grn_number, date, supplier_id, supplier_sync_id, total_items, total_amount, notes, invoice_attachment, supplier_invoice_number, created_by, status, linked_purchase_sync_id, linked_purchase_number, hq_status, sync_id, tenant_id, branch_id, device_id, synced, created_at, updated_at)
+         VALUES (?,?,?,?,?,?,?,?,?,?,'Completed',?,?,?,?,?,?,?,0,datetime('now'),datetime('now'))`
+      ).run(grnNum, grnDate, supplier_id, supplierSyncId, items.length, totalAmount, notes, invoice_attachment || null,
+            (supplier_invoice_number || null), req.user.id,
             linked_purchase_sync_id || null, linked_purchase_number || null, hqStatus,
             grnSyncId, tenantId, branchId, deviceId);
       const grnId = info.lastInsertRowid;

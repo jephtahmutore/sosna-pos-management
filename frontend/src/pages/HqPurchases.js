@@ -98,7 +98,6 @@ export default function HqPurchases() {
                   <th style={th}>Purchase #</th>
                   <th style={th}>Date</th>
                   <th style={th}>Supplier</th>
-                  <th style={th}>Invoice #</th>
                   <th style={{ ...th, textAlign: 'right' }}>Total</th>
                   <th style={th}>Lines</th>
                   <th style={th}>Status</th>
@@ -112,7 +111,6 @@ export default function HqPurchases() {
                     <td style={{ ...td, fontFamily: 'monospace', fontSize: 12 }}>{p.purchase_number}</td>
                     <td style={td}>{p.date}</td>
                     <td style={td}>{p.supplier_name || '—'}</td>
-                    <td style={td}>{p.invoice_number || '—'}</td>
                     <td style={{ ...td, textAlign: 'right', fontWeight: 700 }}>{fmtMoney(p.total_amount)}</td>
                     <td style={td}>
                       <span style={{ color: '#0f172a', fontWeight: 600 }}>{p.items_received}/{p.items_total}</span>
@@ -353,7 +351,15 @@ function CreatePurchaseModal({ branches, onClose, onCreated, onError }) {
                 </div>
               )}
             </div>
-            <div><label style={lbl}>Invoice #</label><input type="text" value={invoice} onChange={e => setInvoice(e.target.value)} placeholder="INV-2026-…" style={inp} /></div>
+            {/* v1.9.12 — Invoice # removed from HQ Purchase. Supplier invoice
+                lives at the branch (collected on the GRN), not at HQ.
+                Purchase Number is generated server-side and surfaced as
+                "Auto-generated" placeholder text so HQ knows it's automatic. */}
+            <div>
+              <label style={lbl}>Purchase #</label>
+              <input type="text" value="Auto-generated on save" readOnly disabled
+                style={{ ...inp, background: '#f3f4f6', color: '#6b7280', fontStyle: 'italic' }} />
+            </div>
             <div><label style={lbl}>Date</label><input type="date" value={date} onChange={e => setDate(e.target.value)} style={inp} /></div>
           </div>
           <div style={{ marginBottom: 14 }}>
