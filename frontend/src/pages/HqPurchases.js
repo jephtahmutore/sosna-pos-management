@@ -401,7 +401,11 @@ function CreatePurchaseModal({ branches, onClose, onCreated, onError }) {
                                   ...row,
                                   product_sync_id: picked.sync_id,
                                   product_name:    picked.name,
-                                  unit:            picked.unit || 'pcs',
+                                  // v1.9.10 — default to the product's preferred
+                                  // trade unit (default_unit), not the base unit.
+                                  // Falls back to base unit when no default set
+                                  // and finally 'pcs' for fresh items.
+                                  unit:            picked.default_unit || picked.unit || 'pcs',
                                   // v1.9.6 — products endpoint exposes cost_price (not
                                   // legacy default_cost_price). Both fall back to 0.
                                   cost_price:      String(picked.cost_price ?? picked.default_cost_price ?? 0),
