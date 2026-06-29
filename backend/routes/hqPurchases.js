@@ -251,18 +251,22 @@ router.get('/:id', hqAuth, (req, res) => {
   }
 });
 
-// Auto-promote a header to COMPLETED once every line is CONFIRMED or
-// CANCELLED. Called from confirm + cancel endpoints. Stays at whatever
-// it was (OPEN) while anything is still AWAITING_GRN or GRN_SUBMITTED.
+// Auto-promote a header to COMPLETED once every line is CONFIRMED,
+// CANCELLED, or BRANCH_REJECTED (v1.9.7). Called from confirm + cancel
+// + branch-reject endpoints. Stays OPEN while anything is still
+// AWAITING_GRN or GRN_SUBMITTED.
 function maybeCompleteHeader(purchaseId) {
   const cnt = masterDb.prepare(`
     SELECT
       SUM(CASE WHEN status IN ('AWAITING_GRN','GRN_SUBMITTED') THEN 1 ELSE 0 END) AS open,
-      SUM(CASE WHEN status = 'CONFIRMED'  THEN 1 ELSE 0 END) AS confirmed,
-      SUM(CASE WHEN status = 'CANCELLED'  THEN 1 ELSE 0 END) AS cancelled
+      SUM(CASE WHEN status = 'CONFIRMED'       THEN 1 ELSE 0 END) AS confirmed,
+      SUM(CASE WHEN status = 'CANCELLED'       THEN 1 ELSE 0 END) AS cancelled,
+      SUM(CASE WHEN status = 'BRANCH_REJECTED' THEN 1 ELSE 0 END) AS branch_rejected
       FROM hq_purchase_items WHERE purchase_id = ?
   `).get(purchaseId);
   if ((cnt.open || 0) === 0) {
+    // Header is COMPLETED if at least one line ended up CONFIRMED, else
+    // CANCELLED (all lines were cancelled / branch-rejected).
     const next = (cnt.confirmed || 0) > 0 ? 'COMPLETED' : 'CANCELLED';
     masterDb.prepare(`UPDATE hq_purchases SET status = ?, updated_at = datetime('now') WHERE id = ?`).run(next, purchaseId);
   }
@@ -441,6 +445,60 @@ router.put('/items/:itemId/reject', hqAuth, (req, res) => {
              confirm_notes = ?
        WHERE id = ?
     `).run(confirm_notes || 'Rejected — recount requested', req.params.itemId);
+
+    res.json({
+      item: masterDb.prepare(`SELECT * FROM hq_purchase_items WHERE id = ?`).get(req.params.itemId),
+      purchase_status: masterDb.prepare(`SELECT status FROM hq_purchases WHERE id = ?`).get(item.purchase_id)?.status,
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// PUT /api/hq/purchases/items/:itemId/branch-reject
+// v1.9.7 — branch action. Branch can decline an incoming PO line (wrong
+// branch, wrong supplier, item doesn't match what they were expecting,
+// etc.) instead of being forced to generate a GRN for it. Status
+// becomes BRANCH_REJECTED (terminal) and the rejection appears on the
+// HQ Purchases list with the reason so HQ can re-issue the line to a
+// different branch or cancel it outright.
+//
+// Body: { reason }  — required, surfaced on HQ's incoming view.
+router.put('/items/:itemId/branch-reject', hqAuth, (req, res) => {
+  try {
+    const reason = ((req.body && req.body.reason) || '').toString().trim();
+    if (!reason) return res.status(400).json({ error: 'A rejection reason is required.' });
+    const item = masterDb.prepare(`SELECT * FROM hq_purchase_items WHERE id = ?`).get(req.params.itemId);
+    if (!item) return res.status(404).json({ error: 'Line not found' });
+    // Only AWAITING_GRN lines can be branch-rejected. Once a GRN exists
+    // (GRN_SUBMITTED / CONFIRMED) the rejection has to come from HQ
+    // via the GRN-level reject path.
+    if (item.status !== 'AWAITING_GRN') {
+      return res.status(400).json({ error: `Line is ${item.status} — branch can only reject AWAITING_GRN lines.` });
+    }
+
+    masterDb.transaction(() => {
+      masterDb.prepare(`
+        UPDATE hq_purchase_items
+           SET status                  = 'BRANCH_REJECTED',
+               branch_rejected_by      = ?,
+               branch_rejected_by_name = ?,
+               branch_rejected_at      = datetime('now'),
+               branch_reject_reason    = ?
+         WHERE id = ?
+      `).run(req.user.id || null, req.user.firstName || req.user.email || 'branch', reason, req.params.itemId);
+
+      // Rejected lines don't count toward supplier AP — drop their value
+      // from the header total so HQ AP stays accurate.
+      masterDb.prepare(`
+        UPDATE hq_purchases
+           SET total_amount = MAX(0, total_amount - ?),
+               updated_at   = datetime('now')
+         WHERE id = ?
+      `).run(item.line_total || 0, item.purchase_id);
+    })();
+
+    maybeCompleteHeader(item.purchase_id);
 
     res.json({
       item: masterDb.prepare(`SELECT * FROM hq_purchase_items WHERE id = ?`).get(req.params.itemId),

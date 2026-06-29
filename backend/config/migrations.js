@@ -891,6 +891,36 @@ function initTenantDb(db) {
   addCol('payment_vouchers',   'invoice_attachment', 'TEXT');
   addCol('ap_payments',        'invoice_attachment', 'TEXT');
 
+  // ─────────────────────────────────────────────────────────────────────────
+  // v1.9.7 — HQ-PO-linked GRN flow.
+  // ─────────────────────────────────────────────────────────────────────────
+  // Sosna's procurement model: HQ creates the PO (sosnazm.com/hq/purchases),
+  // each line targets one branch. Branch sees the PO in their "Incoming"
+  // queue and either rejects it OR clicks "Accept & Generate GRN" — which
+  // opens a normal GRN form pre-filled with the PO number in notes. Branch
+  // enters the invoice qty per line, attaches credit notes for any short/
+  // damage/discount, and submits. The submitted GRN is NOT immediately
+  // posted to stock — it waits for HQ to confirm. On HQ confirm, the
+  // GRN's line items finally drive stock_movements at the branch (always
+  // location='sales' for Sosna — no store layer) and HQ AP locks in.
+  //
+  // New columns on grn:
+  //   linked_purchase_sync_id   — points at hq_purchases.sync_id when the
+  //                               GRN was generated from a PO accept.
+  //                               NULL for legacy / manual GRNs.
+  //   linked_purchase_number    — denormalised PO# for display + receipt.
+  //   hq_status                 — 'PENDING_HQ_CONFIRM' | 'CONFIRMED' |
+  //                               'REJECTED' | NULL (legacy = no HQ gate)
+  //   hq_confirmed_by/_name/_at — audit stamp for HQ confirmation.
+  //   hq_reject_reason          — reason HQ sent the GRN back to branch.
+  addCol('grn', 'linked_purchase_sync_id', 'TEXT');
+  addCol('grn', 'linked_purchase_number',  'TEXT');
+  addCol('grn', 'hq_status',               'TEXT');
+  addCol('grn', 'hq_confirmed_by',         'INTEGER');
+  addCol('grn', 'hq_confirmed_by_name',    'TEXT');
+  addCol('grn', 'hq_confirmed_at',         'TEXT');
+  addCol('grn', 'hq_reject_reason',        'TEXT');
+
   // ── Single-location mode (Option 2: auto-SIV after each GRN) ────────────────
   // When ON, GRN saves trigger an auto-generated SIV that issues 100% of the receipt
   // to the sales counter, so a small one-room shop never has to do a manual SIV.

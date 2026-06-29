@@ -361,6 +361,21 @@ try {
     // v1.8.65 — reason vocabulary aligned with transfer_variances:
     // OK / Short / Damaged / Lost. Existing rows default to OK on read.
     addCol('reason',            'TEXT');
+    // v1.9.7 — branch-side rejection. Branch can decline an incoming PO
+    // line (wrong branch, wrong supplier, qty looks off, etc.) instead
+    // of being forced to generate a GRN for it. status becomes
+    // BRANCH_REJECTED (terminal); reason + actor stamp captured for
+    // HQ visibility on the Purchases list.
+    addCol('branch_rejected_by',      'INTEGER');
+    addCol('branch_rejected_by_name', 'TEXT');
+    addCol('branch_rejected_at',      'TEXT');
+    addCol('branch_reject_reason',    'TEXT');
+    // v1.9.7 — link the PO line to the branch GRN that fulfilled it.
+    // When branch creates a GRN with linked_purchase_sync_id pointing
+    // at this PO, the GRN's sync_id is written here so HQ Confirm GRN
+    // can pull the full GRN doc + credit notes by sync_id (no need to
+    // join across tenant DBs).
+    addCol('linked_grn_sync_id',  'TEXT');
     // Status rename — only on rows that still carry the legacy labels.
     masterDb.prepare(`
       UPDATE hq_purchase_items SET status = 'AWAITING_GRN'

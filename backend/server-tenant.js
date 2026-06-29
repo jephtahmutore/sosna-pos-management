@@ -87,6 +87,7 @@ app.use('/api/hq/purchases',     require('./routes/hqPurchases'));
 app.use('/api/hq/suppliers',     require('./routes/hqSuppliers'));
 app.use('/api/hq/damages',       require('./routes/hqDamages'));
 app.use('/api/hq/products',      require('./routes/hqProducts'));
+app.use('/api/hq/grns',          require('./routes/hqGrns'));
 app.use('/api/transfers',        require('./routes/transfers'));
 app.use('/api/cash-deposits',    require('./routes/cashDeposits'));
 app.use('/api/notifications',    require('./routes/notifications'));

@@ -120,7 +120,19 @@ router.get('/stats', auth, readOnlyGuard, (req, res) => {
 // Create GRN
 router.post('/', auth, (req, res) => {
   try {
-    const { supplier_id, items, notes, date, invoice_attachment } = req.body;
+    const {
+      supplier_id, items, notes, date, invoice_attachment,
+      // v1.9.7 — HQ-PO-linked GRN flow. When the branch user clicks
+      // "Accept & Generate GRN" on an incoming PO line, the frontend
+      // passes the parent PO's sync_id + number so this GRN can be
+      // tied back to it. The presence of linked_purchase_sync_id
+      // switches the GRN into the "pending HQ confirm" mode: NO stock
+      // movement happens here — that's deferred to /api/hq/grns/:syncId
+      // /confirm. AP also stays uncommitted until HQ confirms.
+      linked_purchase_sync_id,
+      linked_purchase_number,
+    } = req.body;
+    const isHqLinked = !!linked_purchase_sync_id;
     const grn = db.transaction(() => {
       const grnNum = syncConfig.generateNumber('GRN', 'grn');
       // Total = beverage subtotal + net container settlement (received − returned) × deposit.
@@ -146,10 +158,15 @@ router.post('/', auth, (req, res) => {
       const supplierSyncId = req.body.supplier_sync_id
         || db.prepare('SELECT sync_id FROM suppliers WHERE id = ?').get(supplier_id)?.sync_id
         || null;
+      // v1.9.7 — for HQ-linked GRNs, leave hq_status='PENDING_HQ_CONFIRM'
+      // so the row is visible at HQ's "Confirm GRN" queue but no stock
+      // moves yet. Legacy / manual GRNs keep hq_status NULL.
+      const hqStatus = isHqLinked ? 'PENDING_HQ_CONFIRM' : null;
       const info = db.prepare(
-        `INSERT INTO grn (grn_number, date, supplier_id, supplier_sync_id, total_items, total_amount, notes, invoice_attachment, created_by, status, sync_id, tenant_id, branch_id, device_id, synced, created_at, updated_at)
-         VALUES (?,?,?,?,?,?,?,?,?,'Completed',?,?,?,?,0,datetime('now'),datetime('now'))`
+        `INSERT INTO grn (grn_number, date, supplier_id, supplier_sync_id, total_items, total_amount, notes, invoice_attachment, created_by, status, linked_purchase_sync_id, linked_purchase_number, hq_status, sync_id, tenant_id, branch_id, device_id, synced, created_at, updated_at)
+         VALUES (?,?,?,?,?,?,?,?,?,'Completed',?,?,?,?,?,?,?,0,datetime('now'),datetime('now'))`
       ).run(grnNum, grnDate, supplier_id, supplierSyncId, items.length, totalAmount, notes, invoice_attachment || null, req.user.id,
+            linked_purchase_sync_id || null, linked_purchase_number || null, hqStatus,
             grnSyncId, tenantId, branchId, deviceId);
       const grnId = info.lastInsertRowid;
 
@@ -176,36 +193,69 @@ router.post('/', auth, (req, res) => {
               recv, ret, dep, containerSyncId,
               randomUUID(), tenantId, branchId, deviceId);
 
-        // Beverage stock movement.
-        db.prepare(
-          `INSERT INTO stock_movements (product_id, product_sync_id, location, movement_type, quantity, reference_id, reference_type, created_by, sync_id, tenant_id, branch_id, device_id, synced, created_at, updated_at, reference_sync_id)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,0,?,datetime('now'),?)`
-        ).run(item.product_id, productSyncId, 'store', 'grn', baseQty, grnId, 'grn', req.user.id,
-              randomUUID(), tenantId, branchId, deviceId, movementCreatedAt, grnSyncId);
-
-        // Container stock movement — net (received − returned). Skipped when no net change.
-        const containerDelta = recv - ret;
-        if (containerSyncId && Math.abs(containerDelta) > 0.001) {
-          const containerProd = db.prepare('SELECT id FROM products WHERE sync_id = ?').get(containerSyncId);
+        // v1.9.7 — only post stock movements when the GRN is NOT awaiting
+        // HQ confirmation. Linked GRNs (Sosna procurement flow) defer the
+        // posting to /api/hq/grns/:syncId/confirm so stock and supplier AP
+        // both crystallise at the same moment, under HQ control.
+        if (!isHqLinked) {
+          // Beverage stock movement.
           db.prepare(
-            `INSERT INTO stock_movements (product_id, product_sync_id, location, movement_type, quantity, reference_id, reference_type, notes, created_by,
-                                          sync_id, tenant_id, branch_id, device_id, synced, created_at, updated_at, reference_sync_id)
-             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0,?,datetime('now'),?)`
-          ).run(containerProd?.id || null, containerSyncId, 'store', 'grn', containerDelta, grnId, 'grn',
-                `Container settlement via ${grnNum}`, req.user.id,
+            `INSERT INTO stock_movements (product_id, product_sync_id, location, movement_type, quantity, reference_id, reference_type, created_by, sync_id, tenant_id, branch_id, device_id, synced, created_at, updated_at, reference_sync_id)
+             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,0,?,datetime('now'),?)`
+          ).run(item.product_id, productSyncId, 'store', 'grn', baseQty, grnId, 'grn', req.user.id,
                 randomUUID(), tenantId, branchId, deviceId, movementCreatedAt, grnSyncId);
+
+          // Container stock movement — net (received − returned). Skipped when no net change.
+          const containerDelta = recv - ret;
+          if (containerSyncId && Math.abs(containerDelta) > 0.001) {
+            const containerProd = db.prepare('SELECT id FROM products WHERE sync_id = ?').get(containerSyncId);
+            db.prepare(
+              `INSERT INTO stock_movements (product_id, product_sync_id, location, movement_type, quantity, reference_id, reference_type, notes, created_by,
+                                            sync_id, tenant_id, branch_id, device_id, synced, created_at, updated_at, reference_sync_id)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0,?,datetime('now'),?)`
+            ).run(containerProd?.id || null, containerSyncId, 'store', 'grn', containerDelta, grnId, 'grn',
+                  `Container settlement via ${grnNum}`, req.user.id,
+                  randomUUID(), tenantId, branchId, deviceId, movementCreatedAt, grnSyncId);
+          }
         }
       }
 
-      // Single-location mode → spawn an auto-SIV that issues the full receipt to sales.
-      // The SIV gets a normal sequential number AND a link back to this GRN.
+      // v1.9.7 — auto-SIV only fires for legacy/manual GRNs. HQ-linked
+      // GRNs don't need it: the HQ confirm path posts directly to
+      // location='sales'.
       const grnRow = db.prepare('SELECT * FROM grn WHERE id = ?').get(grnId);
-      if (isSingleLocationMode(db, tenantId)) {
+      if (!isHqLinked && isSingleLocationMode(db, tenantId)) {
         createAutoSiv(db, grnRow, items, req, syncConfig, { conversionToBase });
       }
 
       return grnRow;
     })();
+
+    // v1.9.7 — for HQ-linked GRNs, flip the parent PO line(s) at HQ from
+    // AWAITING_GRN → GRN_SUBMITTED so HQ's Confirm GRN queue picks it up.
+    // The actual stock + AP commit happens later via /api/hq/grns/:syncId
+    // /confirm. We call out to master.db here because the PO lives there;
+    // failure is non-fatal (logged) so a flaky master link doesn't lose
+    // the GRN the branch just saved.
+    if (isHqLinked) {
+      try {
+        const { masterDb } = require('../config/masterDb');
+        if (masterDb) {
+          masterDb.prepare(`
+            UPDATE hq_purchase_items
+               SET status              = 'GRN_SUBMITTED',
+                   linked_grn_sync_id  = ?,
+                   received_by         = ?,
+                   received_by_name    = ?,
+                   received_at         = datetime('now')
+             WHERE purchase_sync_id = ?
+               AND status = 'AWAITING_GRN'
+          `).run(grn.sync_id, req.user.id || null, req.user.firstName || req.user.email || 'branch', linked_purchase_sync_id);
+        }
+      } catch (err) {
+        console.error('[grn] failed to flag parent PO lines as GRN_SUBMITTED:', err.message);
+      }
+    }
     res.status(201).json(grn);
   } catch (error) {
     res.status(500).json({ error: error.message });
