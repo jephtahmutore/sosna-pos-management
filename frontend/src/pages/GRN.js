@@ -133,7 +133,8 @@ const GRN = () => {
   // supplier_credit_notes rows with grn_sync_id link.
   const [creditNotes, setCreditNotes]   = useState([]);
   const [activeTab,   setActiveTab]     = useState('details'); // 'details' | 'cn' | 'summary'
-  const [cnAddOpen,   setCnAddOpen]     = useState(false);
+  // v1.9.15 — inline form draft (no overlay anymore); committed to
+  // creditNotes by the Add button or Enter on the Notes input.
   const [cnDraft,     setCnDraft]       = useState({ reason: 'Discount', amount: '', notes: '' });
   const CN_REASONS = ['Discount', 'Damaged', 'Short', 'Crate Return', 'Bottle Return', 'Other'];
   const cnTotal = creditNotes.reduce((s, c) => s + (parseFloat(c.amount) || 0), 0);
@@ -2086,16 +2087,58 @@ const GRN = () => {
               </div>
             </div>
 
-            {/* v1.9.13 — Credit Notes tab panel (linked GRNs only) */}
+            {/* v1.9.13 — Credit Notes tab panel (linked GRNs only)
+                v1.9.15 — overlay sub-modal replaced by an inline form
+                at the top of the tab so adding a CN is a single panel,
+                no popup-on-popup. */}
             {linkedPurchaseSyncId && activeTab === 'cn' && (
               <div style={{ padding: '20px 24px' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
-                  <h4 style={{ margin: 0, fontSize: 15 }}>Credit Notes attached to this GRN</h4>
-                  <button onClick={() => { setCnDraft({ reason: 'Discount', amount: '', notes: '' }); setCnAddOpen(true); }}
-                    style={{ padding: '8px 14px', background: '#0ea5e9', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer', fontSize: 13, fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-                    <FiPlus size={14} /> Add Credit Note
-                  </button>
+                <h4 style={{ margin: '0 0 10px', fontSize: 15 }}>Add a credit note</h4>
+                <div style={{ padding: 14, background: '#f8fafc', border: '1px solid #e5e7eb', borderRadius: 10, marginBottom: 20 }}>
+                  <div style={{ display: 'grid', gridTemplateColumns: '180px 140px 1fr 100px', gap: 10, alignItems: 'end' }}>
+                    <div>
+                      <label style={{ display: 'block', fontSize: 11, fontWeight: 700, color: '#64748b', marginBottom: 4, textTransform: 'uppercase', letterSpacing: 0.4 }}>Type</label>
+                      <select value={cnDraft.reason}
+                        onChange={e => setCnDraft(d => ({ ...d, reason: e.target.value }))}
+                        style={{ width: '100%', padding: '9px 10px', border: '1px solid #d1d5db', borderRadius: 6, fontSize: 13, background: '#fff', boxSizing: 'border-box' }}>
+                        {CN_REASONS.map(r => <option key={r} value={r}>{r}</option>)}
+                      </select>
+                    </div>
+                    <div>
+                      <label style={{ display: 'block', fontSize: 11, fontWeight: 700, color: '#64748b', marginBottom: 4, textTransform: 'uppercase', letterSpacing: 0.4 }}>Amount *</label>
+                      <input type="number" min="0" step="0.01"
+                        value={cnDraft.amount}
+                        onChange={e => setCnDraft(d => ({ ...d, amount: e.target.value }))}
+                        onFocus={e => e.target.select()}
+                        placeholder="0.00"
+                        style={{ width: '100%', padding: '9px 10px', border: '1px solid #d1d5db', borderRadius: 6, fontSize: 14, fontWeight: 700, textAlign: 'right', boxSizing: 'border-box' }} />
+                    </div>
+                    <div>
+                      <label style={{ display: 'block', fontSize: 11, fontWeight: 700, color: '#64748b', marginBottom: 4, textTransform: 'uppercase', letterSpacing: 0.4 }}>Notes</label>
+                      <input type="text"
+                        value={cnDraft.notes}
+                        onChange={e => setCnDraft(d => ({ ...d, notes: e.target.value }))}
+                        placeholder="e.g. 2 boxes damaged on truck"
+                        style={{ width: '100%', padding: '9px 10px', border: '1px solid #d1d5db', borderRadius: 6, fontSize: 13, boxSizing: 'border-box' }}
+                        onKeyDown={e => {
+                          if (e.key === 'Enter' && parseFloat(cnDraft.amount) > 0) {
+                            setCreditNotes(arr => [...arr, { reason: cnDraft.reason, amount: parseFloat(cnDraft.amount) || 0, notes: cnDraft.notes || '' }]);
+                            setCnDraft({ reason: 'Discount', amount: '', notes: '' });
+                          }
+                        }} />
+                    </div>
+                    <button
+                      disabled={!(parseFloat(cnDraft.amount) > 0)}
+                      onClick={() => {
+                        setCreditNotes(arr => [...arr, { reason: cnDraft.reason, amount: parseFloat(cnDraft.amount) || 0, notes: cnDraft.notes || '' }]);
+                        setCnDraft({ reason: 'Discount', amount: '', notes: '' });
+                      }}
+                      style={{ padding: '10px 12px', background: !(parseFloat(cnDraft.amount) > 0) ? '#9ca3af' : '#0ea5e9', color: '#fff', border: 'none', borderRadius: 6, cursor: !(parseFloat(cnDraft.amount) > 0) ? 'not-allowed' : 'pointer', fontWeight: 700, fontSize: 13, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 4 }}>
+                      <FiPlus size={14} /> Add
+                    </button>
+                  </div>
                 </div>
+                <h4 style={{ margin: '0 0 10px', fontSize: 14, color: '#374151' }}>Attached to this GRN</h4>
                 {creditNotes.length === 0 ? (
                   <div style={{ padding: 24, textAlign: 'center', color: '#9ca3af', fontStyle: 'italic', border: '1px dashed #e5e7eb', borderRadius: 8 }}>
                     No credit notes yet. Add one for any discount, damage, short delivery, or returns.
@@ -2183,51 +2226,6 @@ const GRN = () => {
             </div>
           </div>
 
-          {/* v1.9.13 — Add Credit Note overlay (sub-modal of GRN form) */}
-          {cnAddOpen && (
-            <div onClick={() => setCnAddOpen(false)}
-              style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.55)', zIndex: 1100, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}>
-              <div onClick={e => e.stopPropagation()}
-                style={{ background: '#fff', borderRadius: 12, width: 'min(440px, 92vw)', padding: 22 }}>
-                <h3 style={{ margin: '0 0 12px', fontSize: 16 }}>Add Credit Note</h3>
-                <div style={{ marginBottom: 12 }}>
-                  <label style={{ fontSize: 12, fontWeight: 700, color: '#374151', display: 'block', marginBottom: 6 }}>Type</label>
-                  <select value={cnDraft.reason}
-                    onChange={e => setCnDraft(d => ({ ...d, reason: e.target.value }))}
-                    style={{ width: '100%', padding: '10px 12px', border: '1px solid #d1d5db', borderRadius: 8, fontSize: 14 }}>
-                    {CN_REASONS.map(r => <option key={r} value={r}>{r}</option>)}
-                  </select>
-                </div>
-                <div style={{ marginBottom: 12 }}>
-                  <label style={{ fontSize: 12, fontWeight: 700, color: '#374151', display: 'block', marginBottom: 6 }}>Amount *</label>
-                  <input type="number" min="0" step="0.01" autoFocus
-                    value={cnDraft.amount} onChange={e => setCnDraft(d => ({ ...d, amount: e.target.value }))}
-                    onFocus={e => e.target.select()}
-                    style={{ width: '100%', padding: '10px 12px', border: '1px solid #d1d5db', borderRadius: 8, fontSize: 18, fontWeight: 700, textAlign: 'right' }} />
-                </div>
-                <div style={{ marginBottom: 16 }}>
-                  <label style={{ fontSize: 12, fontWeight: 700, color: '#374151', display: 'block', marginBottom: 6 }}>Notes (optional)</label>
-                  <input type="text" value={cnDraft.notes}
-                    onChange={e => setCnDraft(d => ({ ...d, notes: e.target.value }))}
-                    placeholder="e.g. 2 boxes damaged on truck"
-                    style={{ width: '100%', padding: '10px 12px', border: '1px solid #d1d5db', borderRadius: 8, fontSize: 14 }} />
-                </div>
-                <div style={{ display: 'flex', gap: 10 }}>
-                  <button onClick={() => setCnAddOpen(false)}
-                    style={{ flex: 1, padding: '11px', background: '#fff', color: '#374151', border: '1px solid #e5e7eb', borderRadius: 8, cursor: 'pointer', fontWeight: 600 }}>Cancel</button>
-                  <button
-                    disabled={!(parseFloat(cnDraft.amount) > 0)}
-                    onClick={() => {
-                      setCreditNotes(arr => [...arr, { reason: cnDraft.reason, amount: parseFloat(cnDraft.amount) || 0, notes: cnDraft.notes || '' }]);
-                      setCnAddOpen(false);
-                    }}
-                    style={{ flex: 1, padding: '11px', background: !(parseFloat(cnDraft.amount) > 0) ? '#9ca3af' : '#0ea5e9', color: '#fff', border: 'none', borderRadius: 8, cursor: !(parseFloat(cnDraft.amount) > 0) ? 'not-allowed' : 'pointer', fontWeight: 700 }}>
-                    Add to GRN
-                  </button>
-                </div>
-              </div>
-            </div>
-          )}
         </div>
       ), document.body)}
 
