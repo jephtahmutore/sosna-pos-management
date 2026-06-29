@@ -925,6 +925,12 @@ function initTenantDb(db) {
   // the purchase matched against when auditing AP.
   addCol('grn', 'supplier_invoice_number', 'TEXT');
 
+  // v1.9.20 — supplier name copied from the HQ PO. Sosna branches no
+  // longer maintain a supplier list (AP lives at HQ only), so the GRN
+  // stores the supplier name as plain text rather than relying on a
+  // local suppliers row. supplier_id may be NULL for HQ-linked GRNs.
+  addCol('grn', 'supplier_name', 'TEXT');
+
   // v1.9.13 — GRN-scoped credit notes. supplier_credit_notes is the
   // existing master table; this new column ties each CN to the GRN it
   // belongs to so the GRN form can list / total CNs alongside line

@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import ReactDOM from 'react-dom';
 import { useNavigate } from 'react-router-dom';
-import { getGRNs, getGRNStats, createGRN, getProducts, getSuppliers, createSupplier, getSettings, getGRNProductReport, getGRNProductBreakdown, getGRN, updateGRN, deleteGRN, getGRNNotes, getGRNRecentProducts } from '../services/api';
+import { getGRNs, getGRNStats, createGRN, getProducts, getSuppliers, getSettings, getGRNProductReport, getGRNProductBreakdown, getGRN, updateGRN, deleteGRN, getGRNNotes, getGRNRecentProducts } from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import { useCurrency } from '../context/CurrencyContext';
 import { useLanguage } from '../context/LanguageContext';
@@ -9,7 +9,7 @@ import Toast from '../components/Toast';
 import InvoiceAttachment from '../components/InvoiceAttachment';
 import AdminPasswordPrompt from '../components/AdminPasswordPrompt';
 import { unitsForProduct as unitsForProductFE } from '../utils/productUnits';
-import { FiPlus, FiFileText, FiCalendar, FiUsers, FiClock, FiX, FiTrash2, FiPrinter, FiSearch, FiChevronDown, FiChevronUp, FiPackage, FiEdit2, FiEye, FiCheckCircle, FiTag } from 'react-icons/fi';
+import { FiPlus, FiFileText, FiCalendar, FiUsers, FiClock, FiX, FiTrash2, FiPrinter, FiSearch, FiChevronDown, FiChevronUp, FiPackage, FiEdit2, FiEye, FiCheckCircle } from 'react-icons/fi';
 
 const defaultStats = { totalGRNs: 0, thisMonth: 0, suppliers: 0, pending: 0 };
 const emptyItem = () => ({
@@ -88,19 +88,7 @@ const GRN = () => {
   const isMobile = useIsMobile();
   const navigate = useNavigate();
   const pageScrollTopRef = useRef(0);
-  // Administrators can open the Credit Notes page pre-filled from a GRN
-  // (typical case: discount appears on the supplier invoice, recorded as a
-  // Discount CN against this GRN reference).
   const isAdmin = authUser?.role === 'Administrator';
-  const openCreditNoteForGRN = (grn) => {
-    const qs = new URLSearchParams({
-      new: '1',
-      supplier: String(grn.supplier_id || ''),
-      reference: grn.grn_number || '',
-      reason: 'Discount',
-    }).toString();
-    navigate(`/accounting/credit-notes?${qs}`);
-  };
   const [stats, setStats]       = useState(defaultStats);
   const [grns, setGRNs]         = useState([]);
   const [products, setProducts] = useState([]);
@@ -221,13 +209,6 @@ const GRN = () => {
     setToast({ msg, type });
     setTimeout(() => setToast(null), 3000);
   };
-
-  // ── Quick-add supplier ────────────────────────────────────────────
-  const [showAddSupplier, setShowAddSupplier]   = useState(false);
-  const [newSupName, setNewSupName]             = useState('');
-  const [newSupPhone, setNewSupPhone]           = useState('');
-  const [addingSupplier, setAddingSupplier]     = useState(false);
-  const [addSupplierError, setAddSupplierError] = useState('');
 
   const fetchData = async () => {
     try {
@@ -384,7 +365,6 @@ const GRN = () => {
     setSupplierId(''); setDate(todayStr); setNotes(''); setInvoiceAttachment(null);
     setItems([emptyItem()]); setError(''); setAddRowError('');
     setOpenDropdownIdx(-1);
-    setShowAddSupplier(false); setNewSupName(''); setNewSupPhone(''); setAddSupplierError('');
     setShowForm(true);
   };
 
@@ -417,7 +397,6 @@ const GRN = () => {
           : [emptyItem()]
       );
       setOpenDropdownIdx(-1);
-      setShowAddSupplier(false); setNewSupName(''); setNewSupPhone(''); setAddSupplierError('');
       setShowForm(true);
     } catch (err) {
       alert('Failed to load GRN details.');
@@ -486,20 +465,6 @@ const GRN = () => {
     setAddRowError('');
   };
 
-  const handleAddSupplier = async () => {
-    if (!newSupName.trim()) return setAddSupplierError('Name is required.');
-    setAddingSupplier(true); setAddSupplierError('');
-    try {
-      const res = await createSupplier({ name: newSupName.trim(), phone: newSupPhone.trim() || null });
-      const s = res.data;
-      setSuppliers(prev => [...prev, s].sort((a, b) => a.name.localeCompare(b.name)));
-      setSupplierId(String(s.id));
-      setShowAddSupplier(false); setNewSupName(''); setNewSupPhone('');
-    } catch (err) {
-      setAddSupplierError(err.response?.data?.error || 'Failed to create supplier.');
-    } finally { setAddingSupplier(false); }
-  };
-
   const beverageTotal = items.reduce((sum, item) => {
     return sum + (parseFloat(item.quantity) || 0) * (parseFloat(item.unit_price) || 0);
   }, 0);
@@ -519,18 +484,17 @@ const GRN = () => {
 
   const handleSave = async () => {
     setError('');
-    if (!supplierId) return setError('Please select a supplier.');
-    // v1.9.12 — supplier invoice number mandatory when this GRN was opened
-    // from an HQ PO. Branch-only manual GRNs still don't need it (no AP
-    // crystallises until HQ approves, and that path doesn't exist for
-    // manual GRNs anyway).
+    // v1.9.20 — supplier_id no longer required at branch. Sosna branches
+    // don't maintain a supplier list (AP lives at HQ). For HQ-linked GRNs
+    // the supplier name comes via the URL prefill and is sent as text.
     if (linkedPurchaseSyncId && !(supplierInvoiceNumber || '').trim()) {
       return setError('Supplier invoice number is required.');
     }
     const validItems = items.filter(i => i.product_id && parseFloat(i.quantity) > 0 && parseFloat(i.unit_price) >= 0);
     if (validItems.length === 0) return setError('Please add at least one item with a product and quantity.');
     const payload = {
-      supplier_id: parseInt(supplierId),
+      supplier_id: supplierId ? parseInt(supplierId) : null,
+      supplier_name: pendingSupplierName || (suppliers.find(s => String(s.id) === String(supplierId))?.name) || null,
       date, notes,
       invoice_attachment: invoiceAttachment,
       // v1.9.7 — when set, backend defers stock + AP until HQ confirms.
@@ -1001,25 +965,11 @@ const GRN = () => {
                           <FiEdit2 size={13} />
                         </button>
                       )}
-                      {/* v1.9.19 — Pay button removed from branch GRN list.
-                          In Sosna's drop-ship model, supplier payments are
-                          made by HQ (not branches), so AP from the GRN flows
-                          to HQ Suppliers / HQ Payables, not here. */}
-                      {isAdmin && (
-                        <button
-                          onClick={() => openCreditNoteForGRN(grn)}
-                          title="Record a supplier discount or refund against this GRN"
-                          style={{
-                            display: 'inline-flex', alignItems: 'center', gap: 4,
-                            padding: '5px 11px', borderRadius: 6, border: '1px solid #fde68a',
-                            background: '#fffbeb', color: '#b45309', cursor: 'pointer', transition: 'all 0.15s', fontSize: 12, fontWeight: 600,
-                          }}
-                          onMouseEnter={e => { e.currentTarget.style.background = '#fcd34d'; e.currentTarget.style.color = '#78350f'; }}
-                          onMouseLeave={e => { e.currentTarget.style.background = '#fffbeb'; e.currentTarget.style.color = '#b45309'; }}
-                        >
-                          <FiTag size={12} /> CN
-                        </button>
-                      )}
+                      {/* v1.9.19 — Pay button removed (HQ handles supplier payments).
+                          v1.9.20 — CN button removed too. Credit Notes are
+                          attached inside the NEW GRN form (Discount /
+                          Crate Return / Goods Return / Other tabs); no
+                          standalone CN flow on branch. */}
                     </div>
                   </td>
                 </tr>
@@ -1404,14 +1354,6 @@ const GRN = () => {
               >
                 <FiPrinter size={13} /> Print
               </button>
-              {isAdmin && (
-                <button
-                  onClick={() => { openCreditNoteForGRN(viewGRN); setViewGRN(null); }}
-                  style={{ flex: 1, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 6, padding: '10px 8px', borderRadius: 8, border: '1px solid #fde68a', background: '#fffbeb', color: '#b45309', fontSize: 12, fontWeight: 700 }}
-                >
-                  <FiTag size={13} /> CN
-                </button>
-              )}
               {hasPermission('GRN:Edit') && (
                 <button
                   onClick={() => { openEdit({ id: viewGRN.id }); setViewGRN(null); }}
@@ -1595,15 +1537,6 @@ const GRN = () => {
                 <FiPrinter size={14} /> Print
               </button>
               <div style={{ display: 'flex', gap: 10 }}>
-                {isAdmin && (
-                  <button
-                    onClick={() => { openCreditNoteForGRN(viewGRN); setViewGRN(null); }}
-                    title="Record a discount or refund the supplier gave on this GRN"
-                    style={{ display: 'inline-flex', alignItems: 'center', gap: 7, padding: '9px 18px', borderRadius: 8, border: '1px solid #fde68a', background: '#fffbeb', color: '#b45309', cursor: 'pointer', fontSize: 13, fontWeight: 600 }}
-                  >
-                    <FiTag size={13} /> + Credit Note
-                  </button>
-                )}
                 {hasPermission('GRN:Edit') && (
                   <button
                     onClick={() => { openEdit({ id: viewGRN.id }); setViewGRN(null); }}
@@ -1701,82 +1634,22 @@ const GRN = () => {
 
             <div style={{ padding: '20px 24px', display: (linkedPurchaseSyncId && activeTab !== 'grn') ? 'none' : 'block' }}>
 
-              {/* Supplier & Date — when GRN is HQ-PO-linked, the supplier
-                  is locked from the PO (no dropdown). Also surface a
-                  required Supplier Invoice # input next to date. */}
+              {/* v1.9.20 — Supplier is now display-only on branch GRN. The
+                  branch doesn't maintain a supplier list and doesn't pay
+                  AP (HQ does both). The name comes from the HQ PO via the
+                  ?supplier_name= URL prefill and is sent to the backend
+                  as plain text on save. */}
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginBottom: 20 }}>
                 <div>
                   <label style={{ display: 'block', fontSize: 13, fontWeight: 600, color: '#374151', marginBottom: 6 }}>
-                    {t('supplier')} <span style={{ color: '#dc2626' }}>*</span>
+                    {t('supplier')}
                   </label>
-                  {linkedPurchaseSyncId && suppliers.find(s => String(s.id) === String(supplierId)) ? (
-                    // v1.9.12 — HQ-linked GRN with a successfully resolved
-                    // local supplier: show as read-only chip.
-                    // v1.9.18 — if the HQ supplier doesn't match any local
-                    // one (id mismatch + name mismatch), fall through to
-                    // the dropdown + quick-add so the user can resolve it.
-                    <div style={{ padding: '9px 12px', border: '1px solid #e5e7eb', borderRadius: 8, background: '#f3f4f6', fontSize: 14, color: '#374151', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                      <span>{suppliers.find(s => String(s.id) === String(supplierId))?.name}</span>
+                  <div style={{ padding: '9px 12px', border: '1px solid #e5e7eb', borderRadius: 8, background: '#f3f4f6', fontSize: 14, color: '#374151', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                    <span>{pendingSupplierName || suppliers.find(s => String(s.id) === String(supplierId))?.name || '—'}</span>
+                    {linkedPurchaseNumber && (
                       <span style={{ fontSize: 11, color: '#6b7280', fontStyle: 'italic' }}>from PO {linkedPurchaseNumber}</span>
-                    </div>
-                  ) : (
-                  <div>
-                    {linkedPurchaseSyncId && pendingSupplierName && !supplierId && (
-                      <div style={{ marginBottom: 6, padding: '8px 10px', background: '#fef3c7', border: '1px solid #fde68a', borderRadius: 6, fontSize: 11, color: '#92400e' }}>
-                        Supplier <strong>"{pendingSupplierName}"</strong> from the HQ PO isn't in this branch's supplier list. Pick the matching one below or add it.
-                      </div>
                     )}
-                    <div style={{ display: 'flex', gap: 6 }}>
-                      <select
-                        value={supplierId} onChange={e => setSupplierId(e.target.value)}
-                        style={{ flex: 1, padding: '9px 12px', border: '1px solid #e5e7eb', borderRadius: 8, fontSize: 14, background: '#fff' }}
-                      >
-                        <option value="">— Select Supplier —</option>
-                        {suppliers.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
-                      </select>
-                      <button
-                        type="button"
-                        onClick={() => { setShowAddSupplier(v => !v); setAddSupplierError(''); if (pendingSupplierName) setNewSupName(pendingSupplierName); }}
-                        title="Add new supplier"
-                        style={{ padding: '9px 12px', border: '1px solid #e5e7eb', borderRadius: 8, background: showAddSupplier ? '#dcfce7' : '#f9fafb', color: showAddSupplier ? '#16a34a' : '#374151', cursor: 'pointer', fontSize: 13, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 4, whiteSpace: 'nowrap' }}
-                      >
-                        <FiPlus size={13} /> New
-                      </button>
-                    </div>
                   </div>
-                  )}
-
-                  {/* Quick-add supplier form */}
-                  {showAddSupplier && (
-                    <div style={{ marginTop: 8, padding: '12px 14px', background: '#f0fdf4', border: '1px solid #86efac', borderRadius: 8 }}>
-                      <div style={{ fontSize: 12, fontWeight: 600, color: '#15803d', marginBottom: 8 }}>Quick-add Supplier</div>
-                      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                        <input
-                          value={newSupName} onChange={e => setNewSupName(e.target.value)}
-                          placeholder="Supplier name *"
-                          style={{ flex: 2, minWidth: 120, padding: '7px 10px', border: '1px solid #d1d5db', borderRadius: 6, fontSize: 13 }}
-                        />
-                        <input
-                          value={newSupPhone} onChange={e => setNewSupPhone(e.target.value)}
-                          placeholder="Phone (optional)"
-                          style={{ flex: 1, minWidth: 100, padding: '7px 10px', border: '1px solid #d1d5db', borderRadius: 6, fontSize: 13 }}
-                        />
-                        <button
-                          type="button" onClick={handleAddSupplier} disabled={addingSupplier}
-                          style={{ padding: '7px 14px', background: addingSupplier ? '#9ca3af' : '#16a34a', color: '#fff', border: 'none', borderRadius: 6, cursor: addingSupplier ? 'not-allowed' : 'pointer', fontSize: 13, fontWeight: 600 }}
-                        >
-                          {addingSupplier ? '…' : 'Create'}
-                        </button>
-                        <button
-                          type="button" onClick={() => { setShowAddSupplier(false); setNewSupName(''); setNewSupPhone(''); setAddSupplierError(''); }}
-                          style={{ padding: '7px 10px', background: '#fff', color: '#6b7280', border: '1px solid #e5e7eb', borderRadius: 6, cursor: 'pointer', fontSize: 13 }}
-                        >
-                          Cancel
-                        </button>
-                      </div>
-                      {addSupplierError && <div style={{ color: '#dc2626', fontSize: 12, marginTop: 6 }}>{addSupplierError}</div>}
-                    </div>
-                  )}
                 </div>
                 <div>
                   {/* v1.9.12 — Date + Supplier Invoice # share the right cell

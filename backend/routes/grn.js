@@ -33,7 +33,7 @@ const FIFO_SQL = (extraWhere = '', params = [], tenantId = null) => ({
     grn_with_avail AS (
       SELECT
         gc.*,
-        s.name                        AS supplier_name,
+        COALESCE(s.name, gc.supplier_name) AS supplier_name,
         COALESCE(sp.total_paid, 0)    AS supplier_total_paid,
         COALESCE(sp.total_paid, 0) - (gc.cumulative_amount - gc.total_amount) AS available_for_grn
       FROM grn_cumulative gc
@@ -135,6 +135,10 @@ router.post('/', auth, (req, res) => {
       // GRN form when linked to a HQ PO). Stored on the grn row so HQ
       // can cross-reference paper invoice → GRN → AP.
       supplier_invoice_number,
+      // v1.9.20 — supplier name carried in from the HQ PO. Branches no
+      // longer maintain a supplier list (no AP at branch), so we just
+      // copy the name as text. supplier_id is allowed to be null.
+      supplier_name,
       // v1.9.13 — inline credit notes for this GRN. Each entry shape:
       //   { reason, amount, notes }
       //   reason ∈ Discount|Damaged|Short|Crate Return|Bottle Return|Other
@@ -177,9 +181,9 @@ router.post('/', auth, (req, res) => {
       // moves yet. Legacy / manual GRNs keep hq_status NULL.
       const hqStatus = isHqLinked ? 'PENDING_HQ_CONFIRM' : null;
       const info = db.prepare(
-        `INSERT INTO grn (grn_number, date, supplier_id, supplier_sync_id, total_items, total_amount, notes, invoice_attachment, supplier_invoice_number, created_by, status, linked_purchase_sync_id, linked_purchase_number, hq_status, sync_id, tenant_id, branch_id, device_id, synced, created_at, updated_at)
-         VALUES (?,?,?,?,?,?,?,?,?,?,'Completed',?,?,?,?,?,?,?,0,datetime('now'),datetime('now'))`
-      ).run(grnNum, grnDate, supplier_id, supplierSyncId, items.length, totalAmount, notes, invoice_attachment || null,
+        `INSERT INTO grn (grn_number, date, supplier_id, supplier_sync_id, supplier_name, total_items, total_amount, notes, invoice_attachment, supplier_invoice_number, created_by, status, linked_purchase_sync_id, linked_purchase_number, hq_status, sync_id, tenant_id, branch_id, device_id, synced, created_at, updated_at)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,'Completed',?,?,?,?,?,?,?,0,datetime('now'),datetime('now'))`
+      ).run(grnNum, grnDate, supplier_id || null, supplierSyncId, (supplier_name || null), items.length, totalAmount, notes, invoice_attachment || null,
             (supplier_invoice_number || null), req.user.id,
             linked_purchase_sync_id || null, linked_purchase_number || null, hqStatus,
             grnSyncId, tenantId, branchId, deviceId);
@@ -396,7 +400,7 @@ router.get('/product-breakdown', auth, readOnlyGuard, (req, res) => {
     if (from) { params.push(from); conditions.push('g.date >= ?'); }
     if (to)   { params.push(to);   conditions.push('g.date <= ?'); }
     const rows = db.prepare(`
-      SELECT g.grn_number, g.date, s.name AS supplier_name,
+      SELECT g.grn_number, g.date, COALESCE(s.name, g.supplier_name) AS supplier_name,
              gi.quantity, gi.unit_price, gi.total_price
       FROM grn_items gi
       JOIN grn g ON gi.grn_sync_id = g.sync_id
