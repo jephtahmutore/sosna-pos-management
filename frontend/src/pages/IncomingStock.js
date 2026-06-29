@@ -8,9 +8,10 @@
 // "current branch" derivation matches StockTransfers: HQ X-Branch when
 // on bare sosnazm.com, otherwise the host's first subdomain.
 import React, { useEffect, useState } from 'react';
-import { FiRefreshCw, FiCheckCircle, FiPackage, FiInbox, FiClock } from 'react-icons/fi';
+import { useNavigate } from 'react-router-dom';
+import { FiRefreshCw, FiCheckCircle, FiPackage, FiInbox, FiClock, FiXCircle } from 'react-icons/fi';
 import {
-  isHqHost, getHqBranch, getHqPurchaseIncoming, submitHqPurchaseGrn,
+  isHqHost, getHqBranch, getHqPurchaseIncoming, branchRejectPoLine,
 } from '../services/api';
 
 function currentBranchSlug() {
@@ -24,9 +25,13 @@ const fmtQty   = (n) => parseFloat(n || 0).toLocaleString(undefined, { minimumFr
 
 export default function IncomingStock() {
   const slug = currentBranchSlug();
+  const navigate = useNavigate();
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(false);
-  const [receiving, setReceiving] = useState(null); // { item, received_qty, notes }
+  // v1.9.7 — new flow: branch either Accepts (navigates to GRN form with
+  // PO# pre-filled) or Rejects (opens a reason modal). The inline
+  // "Submit GRN" receive modal is deprecated for HQ-PO lines.
+  const [rejecting, setRejecting] = useState(null); // { item, reason, submitting }
   const [toast, setToast] = useState(null);
 
   const refresh = async () => {
@@ -54,31 +59,32 @@ export default function IncomingStock() {
   // eslint-disable-next-line
   }, [slug]);
 
-  const openReceive = (it) => setReceiving({
-    item: it,
-    received_qty: String(it.dispatched_qty || ''),
-    reason: 'OK',
-    notes: '',
-    submitting: false,
-  });
+  // v1.9.7 — Accept: navigate to GRN form pre-filled with PO context.
+  // The GRN page reads ?from_purchase + ?purchase_number from the query
+  // string, drops the PO# into Notes, and (on save) attaches
+  // linked_purchase_sync_id so the GRN lands as PENDING_HQ_CONFIRM.
+  const acceptAndGenerate = (it) => {
+    const params = new URLSearchParams({
+      from_purchase:   it.purchase_sync_id || '',
+      purchase_number: it.purchase_number || '',
+      supplier_id:     String(it.supplier_id || ''),
+    });
+    navigate(`/grn?${params.toString()}`);
+  };
 
-  const submitReceive = async () => {
-    if (!receiving) return;
-    const qty = parseFloat(receiving.received_qty);
-    if (!(qty >= 0)) { flash('Received qty must be 0 or more', 'error'); return; }
-    setReceiving(r => ({ ...r, submitting: true }));
+  const submitReject = async () => {
+    if (!rejecting) return;
+    const reason = (rejecting.reason || '').trim();
+    if (!reason) { flash('A rejection reason is required', 'error'); return; }
+    setRejecting(r => ({ ...r, submitting: true }));
     try {
-      await submitHqPurchaseGrn(receiving.item.id, {
-        received_qty: qty,
-        reason: receiving.reason || 'OK',
-        variance_notes: receiving.notes || null,
-      });
-      flash('GRN submitted — waiting for HQ to confirm before stock is sellable.', 'success');
-      setReceiving(null);
+      await branchRejectPoLine(rejecting.item.id, reason);
+      flash('PO line rejected. HQ has been notified.', 'success');
+      setRejecting(null);
       refresh();
     } catch (err) {
-      flash(err?.response?.data?.error || 'Submit failed', 'error');
-      setReceiving(r => ({ ...r, submitting: false }));
+      flash(err?.response?.data?.error || 'Reject failed', 'error');
+      setRejecting(r => ({ ...r, submitting: false }));
     }
   };
 
@@ -152,10 +158,16 @@ export default function IncomingStock() {
                       </td>
                       <td style={td}>
                         {isAwaiting && (
-                          <button onClick={() => openReceive(it)}
-                            style={{ padding: '5px 12px', background: '#16a34a', color: '#fff', border: 'none', borderRadius: 4, cursor: 'pointer', fontSize: 12, fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-                            <FiCheckCircle size={12} /> Submit GRN
-                          </button>
+                          <div style={{ display: 'flex', gap: 6 }}>
+                            <button onClick={() => acceptAndGenerate(it)}
+                              style={{ padding: '5px 12px', background: '#16a34a', color: '#fff', border: 'none', borderRadius: 4, cursor: 'pointer', fontSize: 12, fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                              <FiCheckCircle size={12} /> Accept &amp; Generate GRN
+                            </button>
+                            <button onClick={() => setRejecting({ item: it, reason: '', submitting: false })}
+                              style={{ padding: '5px 12px', background: '#fff', color: '#b91c1c', border: '1px solid #fecaca', borderRadius: 4, cursor: 'pointer', fontSize: 12, fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                              <FiXCircle size={12} /> Reject
+                            </button>
+                          </div>
                         )}
                         {isSubmitted && it.variance_notes && (
                           <span style={{ fontSize: 11, color: '#92400e', fontStyle: 'italic' }}>
@@ -172,114 +184,59 @@ export default function IncomingStock() {
         )}
       </div>
 
-      {receiving && (
-        <ReceiveModal
-          state={receiving}
-          setState={setReceiving}
-          onCancel={() => setReceiving(null)}
-          onSubmit={submitReceive}
+      {rejecting && (
+        <RejectModal
+          state={rejecting}
+          setState={setRejecting}
+          onCancel={() => setRejecting(null)}
+          onSubmit={submitReject}
         />
       )}
     </div>
   );
 }
 
-// v1.8.65 — reason vocabulary aligned with transfer_variances.
-const RECEIVE_REASONS = [
-  { value: 'OK',      label: 'OK (qty matches)' },
-  { value: 'Short',   label: 'Short (fewer arrived)' },
-  { value: 'Damaged', label: 'Damaged' },
-  { value: 'Lost',    label: 'Lost in transit' },
-];
-
-function ReceiveModal({ state, setState, onCancel, onSubmit }) {
-  const { item, received_qty, reason, notes, submitting } = state;
-  const dispatched = parseFloat(item.dispatched_qty || 0);
-  const received   = parseFloat(received_qty) || 0;
-  const variance   = received - dispatched;
-  const isOk       = Math.abs(variance) < 0.0001;
-
-  // Auto-bump reason when qty changes, but preserve explicit Damaged/Lost.
-  const onQtyChange = (val) => {
-    setState(s => {
-      const recv = parseFloat(val || 0);
-      const matchOk = !isNaN(recv) && Math.abs(recv - dispatched) < 0.0001;
-      const next = { ...s, received_qty: val };
-      if (s.reason === 'OK' || s.reason === 'Short') {
-        next.reason = matchOk ? 'OK' : 'Short';
-      }
-      return next;
-    });
-  };
+// v1.9.7 — reason capture for branch-reject. Reason is mandatory; HQ
+// sees it on the HQ Purchases list so they can re-route or cancel.
+function RejectModal({ state, setState, onCancel, onSubmit }) {
+  const { item, reason, submitting } = state;
   return (
     <div style={overlay}>
-      <div style={{ background: '#fff', borderRadius: 12, width: 'min(520px, 92vw)', padding: 22 }}>
-        <h3 style={{ margin: '0 0 6px 0' }}>Submit GRN</h3>
+      <div style={{ background: '#fff', borderRadius: 12, width: 'min(440px, 92vw)', padding: 22 }}>
+        <h3 style={{ margin: '0 0 6px 0', color: '#b91c1c' }}>Reject PO Line</h3>
         <p style={{ margin: 0, fontSize: 13, color: '#64748b' }}>
-          <strong>{item.product_name}</strong> from <strong>{item.supplier_name || 'supplier'}</strong> · Purchase {item.purchase_number}
+          <strong>{item.product_name}</strong> on Purchase {item.purchase_number}.
         </p>
-        <div style={{ marginTop: 10, padding: '8px 12px', background: '#eff6ff', border: '1px solid #bfdbfe', borderRadius: 6, fontSize: 12, color: '#1e40af' }}>
-          You're submitting a GRN. Stock will become sellable only after HQ confirms the count.
+        <div style={{ marginTop: 10, padding: '8px 12px', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 6, fontSize: 12, color: '#991b1b' }}>
+          Rejecting removes this line from your incoming queue and notifies HQ. No stock change.
         </div>
-
-        <div style={{ marginTop: 16 }}>
-          <label style={lbl}>Expected (HQ said)</label>
-          <div style={{ fontSize: 18, fontWeight: 700, color: '#0f172a' }}>
-            {fmtQty(dispatched)} <span style={{ fontSize: 13, color: '#64748b', fontWeight: 500 }}>{item.unit}</span>
-          </div>
-        </div>
-
-        <div style={{ marginTop: 12 }}>
-          <label style={lbl}>Actual received qty (your count)</label>
-          <input type="number" min="0" step="any" value={received_qty}
-            onChange={e => onQtyChange(e.target.value)}
-            style={{ ...inp, fontSize: 18, fontWeight: 700 }}
-            autoFocus />
-        </div>
-
-        {/* v1.8.65 — reason dropdown matches Inter-Branch Transfer pattern. */}
-        <div style={{ marginTop: 12 }}>
-          <label style={lbl}>Reason</label>
-          <select value={reason || 'OK'}
+        <div style={{ marginTop: 14 }}>
+          <label style={lbl}>Reason (required)</label>
+          <input type="text" autoFocus value={reason}
             onChange={e => setState(s => ({ ...s, reason: e.target.value }))}
-            style={{ ...inp, fontSize: 14 }}>
-            {RECEIVE_REASONS.map(r => <option key={r.value} value={r.value}>{r.label}</option>)}
-          </select>
+            placeholder="e.g. wrong branch / wrong product / supplier dispute" style={inp} />
         </div>
-
-        {(!isOk || reason === 'Damaged' || reason === 'Lost') && (
-          <div style={{ marginTop: 8, padding: '8px 12px', background: variance < 0 || reason !== 'OK' ? '#fef2f2' : '#fef3c7', border: `1px solid ${variance < 0 || reason !== 'OK' ? '#fecaca' : '#fde68a'}`, borderRadius: 6, fontSize: 12 }}>
-            <strong>
-              {variance > 0.0001 ? `+${fmtQty(variance)} over`
-                : variance < -0.0001 ? `${fmtQty(variance)} short`
-                : reason}
-            </strong> vs dispatched — the variance will be recorded for HQ to review. Add a note below.
-          </div>
-        )}
-
-        <div style={{ marginTop: 12 }}>
-          <label style={lbl}>Notes (optional)</label>
-          <input type="text" value={notes}
-            onChange={e => setState(s => ({ ...s, notes: e.target.value }))}
-            placeholder="Damage, short delivery, etc." style={inp} />
-        </div>
-
         <div style={{ display: 'flex', gap: 10, marginTop: 18 }}>
           <button onClick={onCancel} disabled={submitting}
             style={{ flex: 1, padding: '12px', background: '#f1f5f9', color: '#475569', border: '1px solid #e2e8f0', borderRadius: 8, cursor: 'pointer', fontWeight: 600 }}>
             Cancel
           </button>
-          <button onClick={onSubmit} disabled={submitting}
+          <button onClick={onSubmit} disabled={submitting || !(reason || '').trim()}
             style={{ flex: 1, padding: '12px',
-                     background: submitting ? '#94a3b8' : 'linear-gradient(135deg,#16a34a,#15803d)',
-                     color: '#fff', border: 'none', borderRadius: 8, cursor: 'pointer', fontWeight: 700 }}>
-            {submitting ? 'Submitting…' : 'Submit GRN'}
+                     background: submitting ? '#94a3b8' : '#dc2626',
+                     color: '#fff', border: 'none', borderRadius: 8,
+                     cursor: submitting ? 'wait' : 'pointer', fontWeight: 700 }}>
+            {submitting ? 'Rejecting…' : 'Reject Line'}
           </button>
         </div>
       </div>
     </div>
   );
 }
+
+// v1.9.7 — old ReceiveModal removed. Branches now Accept (which navigates
+// to the GRN form pre-filled with PO#) or Reject (RejectModal above).
+// The inline qty/reason submit path is gone.
 
 const overlay = { position: 'fixed', inset: 0, background: 'rgba(15,23,42,0.6)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 200, padding: 16 };
 const lbl = { display: 'block', fontSize: 11, color: '#64748b', fontWeight: 600, marginBottom: 4 };

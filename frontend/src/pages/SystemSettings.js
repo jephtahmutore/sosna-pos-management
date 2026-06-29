@@ -367,25 +367,11 @@ const SystemSettings = () => {
             </div>
           </div>
 
-          {/* ── Single-location mode ────────────────────────────────────── */}
-          <div className="form-section" style={{ marginTop: 24 }}>
-            <h3 className="form-section-title">Single-location mode</h3>
-            <div style={{ padding: '12px 14px', background: '#f9fafb', border: '1px solid #e5e7eb', borderRadius: 8 }}>
-              <label style={{ display: 'flex', alignItems: 'flex-start', gap: 10, cursor: 'pointer', userSelect: 'none' }}>
-                <input type="checkbox"
-                  checked={!!form.singleLocationMode}
-                  onChange={e => setForm({ ...form, singleLocationMode: e.target.checked })}
-                  style={{ marginTop: 3 }} />
-                <span>
-                  <span style={{ fontWeight: 600, color: '#374151', fontSize: 14 }}>Auto-SIV after each GRN</span>
-                  <div style={{ fontSize: 12, color: '#6b7280', marginTop: 3, lineHeight: 1.5 }}>
-                    Every GRN automatically issues to the sales counter — no manual SIV needed.
-                    Useful for shops where the store and sales counter are the same room.
-                  </div>
-                </span>
-              </label>
-            </div>
-          </div>
+          {/* v1.9.7 — Single-location / Auto-SIV mode hidden for Sosna.
+              Sosna has no store layer: every GRN posts directly to the
+              branch sales floor, so the auto-SIV bridge has nothing to
+              do. The form field stays in state for backward compat with
+              the existing settings POST payload, but the UI is gone. */}
 
           {/* ── Stock guard at POS ─────────────────────────────────────── */}
           <div className="form-section" style={{ marginTop: 24 }}>

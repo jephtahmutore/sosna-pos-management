@@ -212,6 +212,24 @@ export const mirrorHqToAllBranches = (slug) =>
 export const triggerSyncNow = () =>
   api.post('/sync/run-now').catch(() => null);
 
+// v1.9.7 — Procurement Phase 2: branch can reject an incoming PO line.
+// Reason is mandatory and shows on the HQ Purchases list so HQ can re-route
+// the line to a different branch or cancel it.
+export const branchRejectPoLine = (itemId, reason) =>
+  api.put(`/hq/purchases/items/${itemId}/branch-reject`, { reason });
+
+// v1.9.7 — HQ Confirm GRN flow. Lists every branch's GRNs sitting at
+// hq_status='PENDING_HQ_CONFIRM'.
+export const getAwaitingHqGrns = () => api.get('/hq/grns/awaiting');
+// Full GRN doc (header + items) by branch slug + GRN sync_id, for the
+// review modal HQ opens before confirming.
+export const getHqGrn      = (slug, syncId)         => api.get(`/hq/grns/${slug}/${syncId}`);
+// Confirm: posts stock at branch location='sales', flips PO lines to
+// CONFIRMED, marks GRN hq_status='CONFIRMED'. Optional notes string.
+export const confirmHqGrn  = (slug, syncId, notes)  => api.post(`/hq/grns/${slug}/${syncId}/confirm`, { notes: notes || null });
+// Reject: branch can re-generate the GRN. Reason is mandatory.
+export const rejectHqGrn   = (slug, syncId, reason) => api.post(`/hq/grns/${slug}/${syncId}/reject`, { reason });
+
 // Stock Transfers (Phase C — HQ Warehouse). Stored in master.db so source
 // + destination see the same row. Works the same on HQ and on per-branch
 // subdomains; the "current branch" the page operates against is derived

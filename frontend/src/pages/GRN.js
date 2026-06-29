@@ -118,6 +118,12 @@ const GRN = () => {
   const [notes, setNotes]           = useState('');
   const [items, setItems]           = useState([emptyItem()]);
   const [invoiceAttachment, setInvoiceAttachment] = useState(null); // relative path under uploads/
+  // v1.9.7 — when the GRN form is opened via IncomingStock "Accept &
+  // Generate GRN", these carry the parent PO context. Saving with these
+  // set switches the GRN into PENDING_HQ_CONFIRM mode (no stock posted
+  // until HQ confirms; supplier AP also deferred).
+  const [linkedPurchaseSyncId, setLinkedPurchaseSyncId] = useState(null);
+  const [linkedPurchaseNumber, setLinkedPurchaseNumber] = useState(null);
 
   // ── Product autocomplete ──────────────────────────────────────────
   const [openDropdownIdx, setOpenDropdownIdx] = useState(-1);
@@ -209,6 +215,31 @@ const GRN = () => {
       }
     } catch (err) { /* use defaults */ }
   };
+
+  // v1.9.7 — when navigated from IncomingStock "Accept & Generate GRN",
+  // the URL carries the parent PO sync_id + number + supplier_id. Auto-
+  // open the form, drop the PO# into Notes, lock the supplier, and stash
+  // the linked_purchase_sync_id for the eventual save.
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const fromPo  = params.get('from_purchase');
+    const poNum   = params.get('purchase_number');
+    const supId   = params.get('supplier_id');
+    if (fromPo) {
+      setLinkedPurchaseSyncId(fromPo);
+      setLinkedPurchaseNumber(poNum || null);
+      setNotes(poNum ? `From HQ Purchase ${poNum}` : '');
+      if (supId) setSupplierId(String(supId));
+      setShowForm(true);
+      // Clear the params so a refresh doesn't re-prefill.
+      const url = new URL(window.location.href);
+      url.searchParams.delete('from_purchase');
+      url.searchParams.delete('purchase_number');
+      url.searchParams.delete('supplier_id');
+      window.history.replaceState({}, '', url.toString());
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
     fetchData();
@@ -437,6 +468,9 @@ const GRN = () => {
       supplier_id: parseInt(supplierId),
       date, notes,
       invoice_attachment: invoiceAttachment,
+      // v1.9.7 — when set, backend defers stock + AP until HQ confirms.
+      linked_purchase_sync_id: linkedPurchaseSyncId || null,
+      linked_purchase_number:  linkedPurchaseNumber || null,
       items: validItems.map(i => ({
         product_id:  parseInt(i.product_id),
         quantity:    parseFloat(i.quantity),
@@ -467,8 +501,14 @@ const GRN = () => {
       } else {
         await createGRN(payload);
         setShowForm(false);
+        // v1.9.7 — reset PO link so the next GRN (manually started) isn't
+        // accidentally tied to the previous PO.
+        setLinkedPurchaseSyncId(null);
+        setLinkedPurchaseNumber(null);
         await fetchData();
-        showToast('GRN saved successfully.');
+        showToast(linkedPurchaseSyncId
+          ? 'GRN submitted to HQ for confirmation. Stock will become sellable once HQ approves.'
+          : 'GRN saved successfully.');
       }
     } catch (err) {
       setError(err.response?.data?.error || 'Failed to save GRN. Please try again.');

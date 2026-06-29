@@ -197,12 +197,14 @@ router.post('/', auth, (req, res) => {
         // HQ confirmation. Linked GRNs (Sosna procurement flow) defer the
         // posting to /api/hq/grns/:syncId/confirm so stock and supplier AP
         // both crystallise at the same moment, under HQ control.
+        // location='sales' (no store layer — confirmed by user: Sosna has
+        // no warehouse, every GRN goes straight to the branch sales floor).
         if (!isHqLinked) {
           // Beverage stock movement.
           db.prepare(
             `INSERT INTO stock_movements (product_id, product_sync_id, location, movement_type, quantity, reference_id, reference_type, created_by, sync_id, tenant_id, branch_id, device_id, synced, created_at, updated_at, reference_sync_id)
              VALUES (?,?,?,?,?,?,?,?,?,?,?,?,0,?,datetime('now'),?)`
-          ).run(item.product_id, productSyncId, 'store', 'grn', baseQty, grnId, 'grn', req.user.id,
+          ).run(item.product_id, productSyncId, 'sales', 'grn', baseQty, grnId, 'grn', req.user.id,
                 randomUUID(), tenantId, branchId, deviceId, movementCreatedAt, grnSyncId);
 
           // Container stock movement — net (received − returned). Skipped when no net change.
@@ -213,20 +215,19 @@ router.post('/', auth, (req, res) => {
               `INSERT INTO stock_movements (product_id, product_sync_id, location, movement_type, quantity, reference_id, reference_type, notes, created_by,
                                             sync_id, tenant_id, branch_id, device_id, synced, created_at, updated_at, reference_sync_id)
                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0,?,datetime('now'),?)`
-            ).run(containerProd?.id || null, containerSyncId, 'store', 'grn', containerDelta, grnId, 'grn',
+            ).run(containerProd?.id || null, containerSyncId, 'sales', 'grn', containerDelta, grnId, 'grn',
                   `Container settlement via ${grnNum}`, req.user.id,
                   randomUUID(), tenantId, branchId, deviceId, movementCreatedAt, grnSyncId);
           }
         }
       }
 
-      // v1.9.7 — auto-SIV only fires for legacy/manual GRNs. HQ-linked
-      // GRNs don't need it: the HQ confirm path posts directly to
-      // location='sales'.
+      // v1.9.7 — auto-SIV removed. Sosna has no store layer, so GRN stock
+      // movements now post directly at location='sales'. The legacy
+      // single_location_mode setting becomes a no-op (UI-hidden in Phase 3
+      // cleanup). HQ-linked GRNs likewise defer posting to HQ confirm,
+      // which also writes at location='sales'.
       const grnRow = db.prepare('SELECT * FROM grn WHERE id = ?').get(grnId);
-      if (!isHqLinked && isSingleLocationMode(db, tenantId)) {
-        createAutoSiv(db, grnRow, items, req, syncConfig, { conversionToBase });
-      }
 
       return grnRow;
     })();
