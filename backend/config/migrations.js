@@ -1491,6 +1491,36 @@ function initTenantDb(db) {
   addCol('orders', 'dispatched_at',    'TEXT');
 
   // ─────────────────────────────────────────────────────────────────────────
+  // v1.9.1 — cross-device cashier-name fix.
+  // ─────────────────────────────────────────────────────────────────────────
+  // orders.created_by / cashier_user_id / sales_user_id / dispatch_user_id
+  // all stored the LOCAL users.id (INTEGER AUTOINCREMENT per DB). When an
+  // order pushed from Electron to VPS, the integer was copied as-is — but
+  // users.id=4 on Electron rarely matches users.id=4 on VPS, so the receipt
+  // JOIN on the OTHER side picked whoever happened to occupy that id. Real
+  // incident: Electron showed cashier "milan milan" while web showed the
+  // SAME order's cashier as "Yonas Yonas". Confirmed via SQL: Electron
+  // milan=id4, VPS milan=id2; Electron yonas=id2, VPS yonas=id4.
+  //
+  // Fix: store users.sync_id (UUID) in parallel mirror columns. Backfill
+  // existing rows from the local users table at boot — pre-fix rows that
+  // arrived via cross-device push may resolve to the wrong sync_id on this
+  // side (no way to recover original creator), but new rows going forward
+  // get stamped by the source device, so the JOIN always finds the right
+  // user no matter which DB is reading.
+  addCol('orders', 'created_by_sync_id',   'TEXT');
+  addCol('orders', 'cashier_user_sync_id', 'TEXT');
+  addCol('orders', 'sales_user_sync_id',   'TEXT');
+  addCol('orders', 'dispatch_user_sync_id','TEXT');
+  // Backfill from local users table — runs once per row (skips already-filled).
+  try {
+    db.prepare(`UPDATE orders SET created_by_sync_id    = (SELECT sync_id FROM users WHERE id = orders.created_by)     WHERE created_by_sync_id    IS NULL AND created_by     IS NOT NULL`).run();
+    db.prepare(`UPDATE orders SET cashier_user_sync_id  = (SELECT sync_id FROM users WHERE id = orders.cashier_user_id) WHERE cashier_user_sync_id  IS NULL AND cashier_user_id  IS NOT NULL`).run();
+    db.prepare(`UPDATE orders SET sales_user_sync_id    = (SELECT sync_id FROM users WHERE id = orders.sales_user_id)   WHERE sales_user_sync_id    IS NULL AND sales_user_id    IS NOT NULL`).run();
+    db.prepare(`UPDATE orders SET dispatch_user_sync_id = (SELECT sync_id FROM users WHERE id = orders.dispatch_user_id) WHERE dispatch_user_sync_id IS NULL AND dispatch_user_id IS NOT NULL`).run();
+  } catch (e) { /* tolerate empty users table on a fresh DB */ }
+
+  // ─────────────────────────────────────────────────────────────────────────
   // v1.3.1 — Sales Damages state machine
   // ─────────────────────────────────────────────────────────────────────────
   // Spec: branches can only declare damages; HQ must confirm before the

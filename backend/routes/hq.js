@@ -211,7 +211,8 @@ router.get('/sales-report', hqAuth, (req, res) => {
                  o.created_at, o.paid_at, o.dispatched_at,
                  TRIM(COALESCE(u.first_name,'') || ' ' || COALESCE(u.last_name,'')) AS created_by_name
             FROM orders o
-            LEFT JOIN users u ON u.id = o.created_by
+            LEFT JOIN users u ON u.sync_id = o.created_by_sync_id
+                              OR (o.created_by_sync_id IS NULL AND u.id = o.created_by)
            WHERE o.deleted_at IS NULL
              AND substr(COALESCE(o.paid_at, o.created_at), 1, 10) >= ?
              AND substr(COALESCE(o.paid_at, o.created_at), 1, 10) <= ?

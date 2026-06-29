@@ -6,13 +6,16 @@ const { randomUUID } = require('crypto');
 const { recalculateDailyProfit } = require('../config/profitHelper');
 const { conversionToBase, baseQtyExpr } = require('../config/unitsHelper');
 
-// Get distinct users that have orders (for filter dropdown)
+// Get distinct users that have orders (for filter dropdown).
+// v1.9.1 — JOIN by sync_id (with fallback to local id for legacy rows whose
+// backfill couldn't run, e.g. user later deleted from this DB).
 router.get('/users', auth, readOnlyGuard, (req, res) => {
   try {
     const rows = db.prepare(
       `SELECT DISTINCT o.created_by, u.first_name || ' ' || u.last_name AS full_name
        FROM orders o
-       LEFT JOIN users u ON o.created_by = u.id
+       LEFT JOIN users u ON u.sync_id = o.created_by_sync_id
+                         OR (o.created_by_sync_id IS NULL AND u.id = o.created_by)
        WHERE o.deleted_at IS NULL AND o.tenant_id = ? AND o.created_by IS NOT NULL`
     ).all(req.user.tenantId);
     res.json(rows);
@@ -45,7 +48,8 @@ router.get('/payment-history', auth, readOnlyGuard, (req, res) => {
               TRIM(COALESCE(uc.first_name, '') || ' ' || COALESCE(uc.last_name, '')) AS sales_by_name,
               (SELECT COUNT(*) FROM order_items oi WHERE oi.order_sync_id = o.sync_id AND oi.deleted_at IS NULL) AS item_count
        FROM orders o
-       LEFT JOIN users uc ON uc.id = o.cashier_user_id
+       LEFT JOIN users uc ON uc.sync_id = o.cashier_user_sync_id
+                          OR (o.cashier_user_sync_id IS NULL AND uc.id = o.cashier_user_id)
        WHERE o.deleted_at IS NULL
          AND o.status IN ('PAID', 'DISPATCHED', 'COMPLETED')
          AND o.tenant_id = ?
@@ -177,10 +181,16 @@ router.put('/:id/edit-payment', auth, (req, res) => {
     let crExists = false;
     let crCashierName = null;
     if (paidDate && order.cashier_user_id) {
+      // v1.9.1 — look up by sync_id first (stable across DBs); fall back to
+      // the legacy local-integer id only when the new column is empty (e.g.
+      // for pre-fix rows that haven't been backfilled yet).
       const cashier = db.prepare(
         `SELECT first_name, TRIM(COALESCE(first_name,'') || ' ' || COALESCE(last_name,'')) AS full_name
-           FROM users WHERE id = ?`
-      ).get(order.cashier_user_id);
+           FROM users
+          WHERE sync_id = ?
+             OR (? IS NULL AND id = ?)
+          LIMIT 1`
+      ).get(order.cashier_user_sync_id || null, order.cashier_user_sync_id || null, order.cashier_user_id);
       crCashierName = cashier?.full_name || `User ${order.cashier_user_id}`;
       const receivedFrom = cashier?.first_name ? `Sales / ${cashier.first_name}` : 'Sales';
       const crRow = db.prepare(
@@ -195,8 +205,10 @@ router.put('/:id/edit-payment', auth, (req, res) => {
               TRIM(COALESCE(u.first_name,  '') || ' ' || COALESCE(u.last_name,  '')) AS created_by_name,
               TRIM(COALESCE(uc.first_name, '') || ' ' || COALESCE(uc.last_name, '')) AS cashier_name
          FROM orders o
-         LEFT JOIN users u  ON u.id  = o.created_by
-         LEFT JOIN users uc ON uc.id = o.cashier_user_id
+         LEFT JOIN users u  ON u.sync_id  = o.created_by_sync_id
+                            OR (o.created_by_sync_id IS NULL AND u.id = o.created_by)
+         LEFT JOIN users uc ON uc.sync_id = o.cashier_user_sync_id
+                            OR (o.cashier_user_sync_id IS NULL AND uc.id = o.cashier_user_id)
         WHERE o.id = ?`
     ).get(req.params.id);
     res.json({ order: updated, cr_exists: crExists, cr_date: paidDate, cr_cashier_name: crCashierName });
@@ -217,7 +229,8 @@ router.get('/dispatch-inbox', auth, requirePagePerm('Dispatch'), readOnlyGuard, 
               TRIM(COALESCE(uc.first_name, '') || ' ' || COALESCE(uc.last_name, '')) AS cashier_name,
               (SELECT COUNT(*) FROM order_items oi WHERE oi.order_sync_id = o.sync_id AND oi.deleted_at IS NULL) AS item_count
        FROM orders o
-       LEFT JOIN users uc ON uc.id = o.cashier_user_id
+       LEFT JOIN users uc ON uc.sync_id = o.cashier_user_sync_id
+                          OR (o.cashier_user_sync_id IS NULL AND uc.id = o.cashier_user_id)
        WHERE o.deleted_at IS NULL
          AND o.status = 'PAID'
          AND o.tenant_id = ?
@@ -272,15 +285,18 @@ router.put('/:id/confirm-dispatch', auth, requirePagePerm('Dispatch'), (req, res
         );
       }
 
+      // v1.9.1 — also stamp sync_id so cross-device dispatch attribution stays right.
+      const userSyncId = db.prepare('SELECT sync_id FROM users WHERE id = ?').get(req.user.id)?.sync_id || null;
       db.prepare(`
         UPDATE orders
-           SET status            = 'DISPATCHED',
-               dispatch_user_id  = ?,
-               dispatched_at     = datetime('now'),
-               synced            = 0,
-               updated_at        = datetime('now')
+           SET status                 = 'DISPATCHED',
+               dispatch_user_id       = ?,
+               dispatch_user_sync_id  = ?,
+               dispatched_at          = datetime('now'),
+               synced                 = 0,
+               updated_at             = datetime('now')
          WHERE id = ?
-      `).run(req.user.id, req.params.id);
+      `).run(req.user.id, userSyncId, req.params.id);
 
       return db.prepare('SELECT * FROM orders WHERE id = ?').get(req.params.id);
     })();
@@ -316,7 +332,8 @@ router.get('/cashier-inbox', auth, requirePagePerm('Cashier'), readOnlyGuard, (r
               TRIM(COALESCE(u.first_name, '') || ' ' || COALESCE(u.last_name, '')) AS sales_by_name,
               (SELECT COUNT(*) FROM order_items oi WHERE oi.order_sync_id = o.sync_id AND oi.deleted_at IS NULL) AS item_count
        FROM orders o
-       LEFT JOIN users u     ON u.id = o.sales_user_id
+       LEFT JOIN users u     ON u.sync_id = o.sales_user_sync_id
+                              OR (o.sales_user_sync_id IS NULL AND u.id = o.sales_user_id)
        LEFT JOIN customers c ON c.id = o.customer_id AND c.deleted_at IS NULL
        LEFT JOIN (
          SELECT customer_sync_id,
@@ -560,6 +577,13 @@ router.post('/', auth, (req, res) => {
       }
     }
 
+    // v1.9.1 — resolve sync_id for the authenticated user once per order, so
+    // we can stamp it on created_by_sync_id (and sales_user_sync_id when
+    // pending-payment). Storing the sync_id alongside the legacy integer id
+    // means receipts JOIN to the correct user on any device, regardless of
+    // local-id collisions when the order syncs cross-device.
+    const userSyncId = db.prepare('SELECT sync_id FROM users WHERE id = ?').get(req.user.id)?.sync_id || null;
+
     const order = db.transaction(() => {
       const orderSyncId = randomUUID();
       // For PENDING_PAYMENT, also stamp sales_user_id + sales_at so the
@@ -567,21 +591,22 @@ router.post('/', auth, (req, res) => {
       const ordSql = `INSERT INTO orders (order_number, customer_name, customer_id, customer_sync_id, subtotal, tax_amount, total_amount, discount,
           amount_received, cash_received, momo_received, bank_received,
           change_amount, usd_change_given, overpaid_kept_ccy, overpaid_kept_amt,
-          payment_method, created_by,
+          payment_method, created_by, created_by_sync_id,
           currency, fra_received, fra_change_given, selling_rate_used, buying_rate_used,
           k_received, k_change_given, selling_rate_k_used, buying_rate_k_used,
-          status, sales_user_id, sales_at,
+          status, sales_user_id, sales_user_sync_id, sales_at,
           sync_id, tenant_id, branch_id, device_id, synced, created_at, updated_at)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,${tsExpr},?,?,?,?,0,${tsExpr},${tsExpr})`;
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,${tsExpr},?,?,?,?,0,${tsExpr},${tsExpr})`;
       const ordArgs = [orderNum, customer_name, customer_id || null, customer_sync_id || null,
             subtotal, tax_amount, total_amount, discount || 0,
             finalAmountReceived, cashIn, momoIn, bankIn,
             change_amount || 0, usdChangeGiven, overpaidKeptCcy, overpaidKeptAmt,
-            payment_method || 'Cash', req.user.id,
+            payment_method || 'Cash', req.user.id, userSyncId,
             orderCurrency, fraReceived, fraChangeGiven, sellingRateUsed, buyingRateUsed,
             kReceived, kChangeGiven, sellingRateKUsed, buyingRateKUsed,
             orderStatus,
-            isPendingPayment ? req.user.id : null];
+            isPendingPayment ? req.user.id : null,
+            isPendingPayment ? userSyncId   : null];
       if (overrideTs) ordArgs.push(overrideTs);                       // sales_at when override
       ordArgs.push(orderSyncId, tenantId, branchId, deviceId);
       if (overrideTs) ordArgs.push(overrideTs, overrideTs);
@@ -722,8 +747,10 @@ router.get('/:id', auth, readOnlyGuard, (req, res) => {
               TRIM(COALESCE(u.first_name,  '') || ' ' || COALESCE(u.last_name,  '')) AS created_by_name,
               TRIM(COALESCE(uc.first_name, '') || ' ' || COALESCE(uc.last_name, '')) AS cashier_name
        FROM orders o
-       LEFT JOIN users u  ON u.id  = o.created_by
-       LEFT JOIN users uc ON uc.id = o.cashier_user_id
+       LEFT JOIN users u  ON u.sync_id  = o.created_by_sync_id
+                          OR (o.created_by_sync_id IS NULL AND u.id = o.created_by)
+       LEFT JOIN users uc ON uc.sync_id = o.cashier_user_sync_id
+                          OR (o.cashier_user_sync_id IS NULL AND uc.id = o.cashier_user_id)
        WHERE o.id = ? AND o.deleted_at IS NULL AND o.tenant_id = ?`
     ).get(req.params.id, req.user.tenantId);
     const items = db.prepare(
@@ -916,35 +943,41 @@ router.put('/:id/collect-payment', auth, requirePagePerm('Cashier'), (req, res) 
       const wm = (db.prepare("SELECT workflow_mode FROM business_settings LIMIT 1").get()?.workflow_mode || 'three_station').toLowerCase();
       const isTwoStation = wm === 'two_station';
 
+      // v1.9.1 — stamp the cashier's sync_id (and dispatch sync_id for the
+      // two-station shortcut) so cross-device receipts show the right name.
+      const userSyncId = db.prepare('SELECT sync_id FROM users WHERE id = ?').get(req.user.id)?.sync_id || null;
+
       db.prepare(`
         UPDATE orders
-           SET status              = ?,
-               cashier_user_id     = ?,
-               paid_at             = datetime('now'),
-               amount_received     = ?,
-               cash_received       = ?,
-               momo_received       = 0,
-               bank_received       = 0,
-               change_amount       = ?,
-               usd_change_given    = ?,
-               overpaid_kept_ccy   = ?,
-               overpaid_kept_amt   = ?,
-               fra_received        = ?,
-               fra_change_given    = ?,
-               selling_rate_used   = ?,
-               buying_rate_used    = ?,
-               k_received          = ?,
-               k_change_given      = ?,
-               selling_rate_k_used = ?,
-               buying_rate_k_used  = ?,
-               payment_method      = ?,
-               ${isTwoStation ? 'dispatch_user_id = ?, dispatched_at = datetime(\'now\'),' : ''}
-               synced              = 0,
-               updated_at          = datetime('now')
+           SET status                = ?,
+               cashier_user_id       = ?,
+               cashier_user_sync_id  = ?,
+               paid_at               = datetime('now'),
+               amount_received       = ?,
+               cash_received         = ?,
+               momo_received         = 0,
+               bank_received         = 0,
+               change_amount         = ?,
+               usd_change_given      = ?,
+               overpaid_kept_ccy     = ?,
+               overpaid_kept_amt     = ?,
+               fra_received          = ?,
+               fra_change_given      = ?,
+               selling_rate_used     = ?,
+               buying_rate_used      = ?,
+               k_received            = ?,
+               k_change_given        = ?,
+               selling_rate_k_used   = ?,
+               buying_rate_k_used    = ?,
+               payment_method        = ?,
+               ${isTwoStation ? "dispatch_user_id = ?, dispatch_user_sync_id = ?, dispatched_at = datetime('now')," : ''}
+               synced                = 0,
+               updated_at            = datetime('now')
          WHERE id = ?
       `).run(...[
         isTwoStation ? 'DISPATCHED' : 'PAID',
         req.user.id,
+        userSyncId,
         totalAmountPaid,
         paidUSD,
         change,
@@ -954,7 +987,7 @@ router.put('/:id/collect-payment', auth, requirePagePerm('Cashier'), (req, res) 
         paidFRA, givenFRA, sellRate || null, buyRate || null,
         paidK,   givenK,   sellRateK || null, buyRateK || null,
         paymentMethod,
-        ...(isTwoStation ? [req.user.id] : []),
+        ...(isTwoStation ? [req.user.id, userSyncId] : []),
         req.params.id,
       ]);
 

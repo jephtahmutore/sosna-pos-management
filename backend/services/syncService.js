@@ -200,12 +200,17 @@ async function pull(opts = {}) {
   // so the backend can still respond to API calls from the frontend.
   const BATCH_SIZE = 200;
 
+  const hasUpdatedAt = (cols) => cols.includes('updated_at');
+
   const processBatch = (table, cols, batch) => {
+    const tableHasUpdatedAt = hasUpdatedAt(cols);
     _db.transaction(() => {
       for (const row of batch) {
         if (!row.sync_id) continue;
         try {
-          const existing = _db.prepare(`SELECT id, synced FROM ${table} WHERE sync_id = ?`).get(row.sync_id);
+          // v1.9.1 — read updated_at too so we can timestamp-resolve conflicts.
+          const selectCols = tableHasUpdatedAt ? 'id, synced, updated_at' : 'id, synced';
+          const existing = _db.prepare(`SELECT ${selectCols} FROM ${table} WHERE sync_id = ?`).get(row.sync_id);
 
           if (!existing) {
             // New record — insert it (mark synced=1 so we don't push it back)
@@ -218,10 +223,31 @@ async function pull(opts = {}) {
             if (ins.changes === 0) slog(`pull: IGNORED [${table}] sync_id=${row.sync_id} cols=${insertCols.join(',')}`);
             _db.prepare(`UPDATE ${table} SET synced = 1 WHERE sync_id = ?`).run(row.sync_id);
           } else if (existing.synced === 0 && !opts.force) {
-            // Local record has unsaved changes — skip to protect local edits.
-            // v1.8.90 — opts.force bypasses this (Force Resync is user-acknowledged
-            // intent to overwrite local with VPS state).
-            slog(`pull: PROTECT [${table}] sync_id=${row.sync_id} — local has pending changes, skipping overwrite`);
+            // v1.9.1 — TIMESTAMP-AWARE PROTECT.
+            // The old rule blocked every pull whenever local.synced=0. That
+            // was too aggressive: a trivial local write (e.g. last_login
+            // bump on user row) would lock the row forever, so legitimate
+            // server updates (admin edited permissions on the web) never
+            // arrived. The real intent was: "don't overwrite a row the
+            // user is mid-editing offline." Now we only block when LOCAL
+            // is genuinely newer than the incoming version. If incoming is
+            // newer (or equal), the server has the fresher state and we
+            // accept it — including a refresh of synced=0 → 1 because the
+            // local change was already superseded.
+            const localTs    = tableHasUpdatedAt ? (existing.updated_at || '') : '';
+            const incomingTs = tableHasUpdatedAt ? (row.updated_at || '')      : '';
+            if (tableHasUpdatedAt && incomingTs && localTs && localTs > incomingTs) {
+              slog(`pull: PROTECT [${table}] sync_id=${row.sync_id} — local(${localTs}) newer than incoming(${incomingTs}), skipping`);
+              continue;
+            }
+            // Incoming wins (newer or equal, or no timestamp column to compare).
+            const updateCols = cols.filter(c => c !== 'id' && c !== 'sync_id' && row[c] !== undefined);
+            if (updateCols.length === 0) continue;
+            const setClause = [...updateCols.map(c => `${c} = ?`), 'synced = 1'].join(', ');
+            _db.prepare(`UPDATE ${table} SET ${setClause} WHERE sync_id = ?`).run(
+              ...updateCols.map(c => row[c]), row.sync_id
+            );
+            slog(`pull: TIMESTAMP-WIN [${table}] sync_id=${row.sync_id} — incoming(${incomingTs}) overrode local(${localTs}, synced=0)`);
           } else {
             // Existing record is clean (or force=true) — overwrite with incoming version
             const updateCols = cols.filter(c => c !== 'id' && c !== 'sync_id' && row[c] !== undefined);
