@@ -32,6 +32,7 @@ import StockTransfers from './pages/StockTransfers';
 import HqPurchases from './pages/HqPurchases';
 import HqSuppliers from './pages/HqSuppliers';
 import HqConfirmGrn from './pages/HqConfirmGrn';
+import HqGrnArchive from './pages/HqGrnArchive';
 import HqVariances from './pages/HqVariances';
 import HqConfirmDamages from './pages/HqConfirmDamages';
 import HqProducts from './pages/HqProducts';
@@ -283,6 +284,7 @@ function AppRoutes() {
         <Route path="hq/cash-position"    element={<HqRoute><HqCashPosition /></HqRoute>} />
         <Route path="hq/purchases"        element={<HqRoute><HqPurchases /></HqRoute>} />
         <Route path="hq/confirm-grn"      element={<HqRoute><HqConfirmGrn /></HqRoute>} />
+        <Route path="hq/grn-archive"      element={<HqRoute><HqGrnArchive /></HqRoute>} />
         <Route path="hq/variances"        element={<HqRoute><HqVariances /></HqRoute>} />
         <Route path="hq/confirm-damages"  element={<HqRoute><HqConfirmDamages /></HqRoute>} />
         <Route path="hq/products"         element={<HqRoute><HqProducts /></HqRoute>} />

@@ -376,6 +376,54 @@ try {
     // can pull the full GRN doc + credit notes by sync_id (no need to
     // join across tenant DBs).
     addCol('linked_grn_sync_id',  'TEXT');
+  } catch (e) {
+    console.warn('[masterDb] v1.3.0 hq_purchase_items migration:', e.message);
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // v1.9.14 — HQ snapshot of every confirmed branch GRN.
+  // ─────────────────────────────────────────────────────────────────────────
+  // Each confirmed GRN writes one row here. Lets HQ aggregate AP / per-
+  // supplier statements / PO reconciliation in a single SQL query without
+  // scanning every branch tenant DB. Full GRN line items + credit notes
+  // stay at the branch — HQ pulls them on-demand via the existing
+  // GET /api/hq/grns/:slug/:syncId endpoint when the user clicks
+  // "See Details". Small (~200 bytes per GRN) so the duplication cost is
+  // negligible vs the speed + offline-resilience win.
+  try {
+    masterDb.exec(`
+      CREATE TABLE IF NOT EXISTS hq_confirmed_grn_totals (
+        id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+        grn_sync_id         TEXT NOT NULL UNIQUE,
+        grn_number          TEXT NOT NULL,
+        branch_slug         TEXT NOT NULL,
+        branch_name         TEXT,
+        supplier_id         INTEGER,
+        supplier_sync_id    TEXT,
+        supplier_name       TEXT,
+        po_sync_id          TEXT,
+        po_number           TEXT,
+        date                TEXT,
+        items_count         INTEGER NOT NULL DEFAULT 0,
+        items_subtotal      REAL NOT NULL DEFAULT 0,
+        cn_total            REAL NOT NULL DEFAULT 0,
+        final_payable       REAL NOT NULL DEFAULT 0,
+        invoice_number      TEXT,
+        confirmed_by        INTEGER,
+        confirmed_by_name   TEXT,
+        confirmed_at        TEXT NOT NULL DEFAULT (datetime('now')),
+        notes               TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_hq_grn_totals_branch   ON hq_confirmed_grn_totals (branch_slug);
+      CREATE INDEX IF NOT EXISTS idx_hq_grn_totals_supplier ON hq_confirmed_grn_totals (supplier_sync_id);
+      CREATE INDEX IF NOT EXISTS idx_hq_grn_totals_date     ON hq_confirmed_grn_totals (date);
+      CREATE INDEX IF NOT EXISTS idx_hq_grn_totals_po       ON hq_confirmed_grn_totals (po_sync_id);
+    `);
+  } catch (e) {
+    console.warn('[masterDb] v1.9.14 hq_confirmed_grn_totals:', e.message);
+  }
+
+  try {
     // Status rename — only on rows that still carry the legacy labels.
     masterDb.prepare(`
       UPDATE hq_purchase_items SET status = 'AWAITING_GRN'

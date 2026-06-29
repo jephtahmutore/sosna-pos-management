@@ -221,6 +221,9 @@ export const branchRejectPoLine = (itemId, reason) =>
 // v1.9.7 — HQ Confirm GRN flow. Lists every branch's GRNs sitting at
 // hq_status='PENDING_HQ_CONFIRM'.
 export const getAwaitingHqGrns = () => api.get('/hq/grns/awaiting');
+// v1.9.14 — HQ-wide archive of CONFIRMED GRNs from master.db snapshot.
+// params: { branch, supplier, from, to, limit }
+export const getHqGrnArchive   = (params) => api.get('/hq/grns/archive', { params });
 // Full GRN doc (header + items) by branch slug + GRN sync_id, for the
 // review modal HQ opens before confirming.
 export const getHqGrn      = (slug, syncId)         => api.get(`/hq/grns/${slug}/${syncId}`);

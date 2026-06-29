@@ -285,6 +285,7 @@ const Layout = () => {
       '/hq/products': 'HQ Products',
       '/hq/purchases': 'HQ Purchases',
       '/hq/confirm-grn': 'Confirm GRN',
+      '/hq/grn-archive': 'GRN Archive',
       '/hq/variances':   'Transit Variances',
       '/hq/confirm-damages': 'Confirm Damages',
       '/hq/suppliers': 'HQ Suppliers',
@@ -405,6 +406,15 @@ const Layout = () => {
               <FiCheckCircle className="nav-icon" />
               {!collapsed && <span>Confirm GRN</span>}
               {!collapsed && badges.hq_pending_grn > 0 && <SidebarBadge n={badges.hq_pending_grn} />}
+            </div>
+          )}
+          {/* v1.9.14 — HQ-wide archive of every confirmed GRN, served from
+              the master.db snapshot table. Full details fetch on demand
+              via the See Details button (reads branch tenant DB live). */}
+          {hq && (
+            <div className={`nav-item ${isActive('/hq/grn-archive') ? 'active' : ''}`} onClick={() => navigate('/hq/grn-archive')}>
+              <FiInbox className="nav-icon" />
+              {!collapsed && <span>GRN Archive</span>}
             </div>
           )}
           {/* v1.8.65 — Transit Variances dashboard (HQ only). Unified view

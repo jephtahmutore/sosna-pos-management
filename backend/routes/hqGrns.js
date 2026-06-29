@@ -101,7 +101,19 @@ router.get('/:slug/:syncId', hqAuth, (req, res) => {
        WHERE gi.grn_sync_id = ? AND gi.deleted_at IS NULL
        ORDER BY gi.id ASC
     `).all(syncId);
-    res.json({ grn: { ...grn, branch_slug: slug }, items });
+    // v1.9.14 — also return credit notes attached to this GRN so the
+    // HQ See Details modal can show them. supplier_credit_notes was
+    // linked via grn_sync_id in v1.9.13.
+    let credit_notes = [];
+    try {
+      credit_notes = db.prepare(`
+        SELECT id, credit_note_number, reason, amount, notes, date, reference
+          FROM supplier_credit_notes
+         WHERE grn_sync_id = ? AND deleted_at IS NULL
+         ORDER BY id ASC
+      `).all(syncId);
+    } catch { /* table may not have the column yet on very old DBs */ }
+    res.json({ grn: { ...grn, branch_slug: slug }, items, credit_notes });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -207,6 +219,50 @@ router.post('/:slug/:syncId/confirm', hqAuth, (req, res) => {
       `).run(req.user.id || null, confirmerName, syncId);
     })();
 
+    // v1.9.14 — write the HQ snapshot row so HQ reports + AP run on
+    // master.db alone. Full GRN doc stays at the branch; HQ pulls via
+    // the existing GET /api/hq/grns/:slug/:syncId when a user clicks
+    // "See Details". Pull CN total from supplier_credit_notes by GRN
+    // link so the snapshot's payable matches what HQ owes the supplier.
+    if (masterDb) {
+      try {
+        const cnTotal = db.prepare(`
+          SELECT COALESCE(SUM(amount), 0) AS t
+            FROM supplier_credit_notes
+           WHERE grn_sync_id = ? AND deleted_at IS NULL
+        `).get(grn.sync_id)?.t || 0;
+        const itemsSubtotal = parseFloat(grn.total_amount) || 0;
+        const finalPayable  = Math.max(0, itemsSubtotal - (parseFloat(cnTotal) || 0));
+        // Branch + supplier display names (denormalised so HQ pages don't
+        // have to re-join).
+        const branchName    = (listTenants().find(t => t.slug === slug)?.business_name) || slug;
+        const supplierName  = grn.supplier_name || (db.prepare('SELECT name FROM suppliers WHERE id = ?').get(grn.supplier_id)?.name) || null;
+        const poNumber      = grn.linked_purchase_number || null;
+        masterDb.prepare(`
+          INSERT OR REPLACE INTO hq_confirmed_grn_totals (
+            grn_sync_id, grn_number, branch_slug, branch_name,
+            supplier_id, supplier_sync_id, supplier_name,
+            po_sync_id, po_number, date, items_count,
+            items_subtotal, cn_total, final_payable,
+            invoice_number, confirmed_by, confirmed_by_name, confirmed_at, notes
+          ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,datetime('now'),?)
+        `).run(
+          grn.sync_id, grn.grn_number, slug, branchName,
+          grn.supplier_id || null, grn.supplier_sync_id || null, supplierName,
+          grn.linked_purchase_sync_id || null, poNumber, grn.date || null,
+          parseInt(grn.total_items) || items.length,
+          itemsSubtotal, cnTotal, finalPayable,
+          grn.supplier_invoice_number || null,
+          req.user.id || null, confirmerName, notes || null
+        );
+      } catch (err) {
+        // Snapshot is best-effort: branch stock + master.db PO status are
+        // already committed above. Drift can be fixed manually with a
+        // re-run. Don't fail the confirm response over a snapshot hiccup.
+        console.error('[hq.grns.confirm] snapshot insert failed:', err.message);
+      }
+    }
+
     // Flip the parent PO line(s) at master.db. Done outside the branch
     // transaction because masterDb is a separate connection.
     if (masterDb && grn.linked_purchase_sync_id) {
@@ -303,6 +359,48 @@ router.post('/:slug/:syncId/reject', hqAuth, (req, res) => {
     res.json({ ok: true });
   } catch (error) {
     console.error('[hq.grns.reject] CRASH:', error.stack || error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// GET /api/hq/grns/archive
+// v1.9.14 — HQ-wide list of CONFIRMED GRNs, served entirely from the
+// master.db snapshot table. Supports filters via query string:
+//   ?branch=slug      one branch only (default: all)
+//   ?supplier=syncId  one supplier only (default: all)
+//   ?from=YYYY-MM-DD  inclusive lower bound on date
+//   ?to=YYYY-MM-DD    inclusive upper bound on date
+//   ?limit=N          row cap (default 500, max 2000)
+// Returns rows + roll-up totals so the page header can show
+// "X GRNs / $Y payable" without a second query.
+router.get('/archive', hqAuth, (req, res) => {
+  try {
+    if (!masterDb) return res.json({ grns: [], totals: { count: 0, subtotal: 0, cn: 0, payable: 0 } });
+    const { branch, supplier, from, to } = req.query || {};
+    const limit = Math.min(parseInt(req.query.limit, 10) || 500, 2000);
+    const where = ['1=1'];
+    const params = [];
+    if (branch && branch !== 'all')     { where.push('branch_slug = ?');      params.push(branch); }
+    if (supplier && supplier !== 'all') { where.push('supplier_sync_id = ?'); params.push(supplier); }
+    if (from) { where.push('date >= ?'); params.push(from); }
+    if (to)   { where.push('date <= ?'); params.push(to); }
+    const sql = `
+      SELECT * FROM hq_confirmed_grn_totals
+       WHERE ${where.join(' AND ')}
+       ORDER BY confirmed_at DESC
+       LIMIT ?
+    `;
+    const grns = masterDb.prepare(sql).all(...params, limit);
+    const totals = grns.reduce((acc, g) => {
+      acc.count    += 1;
+      acc.subtotal += parseFloat(g.items_subtotal) || 0;
+      acc.cn       += parseFloat(g.cn_total)       || 0;
+      acc.payable  += parseFloat(g.final_payable)  || 0;
+      return acc;
+    }, { count: 0, subtotal: 0, cn: 0, payable: 0 });
+    res.json({ grns, totals });
+  } catch (error) {
+    console.error('[hq.grns.archive] failed:', error.message);
     res.status(500).json({ error: error.message });
   }
 });
