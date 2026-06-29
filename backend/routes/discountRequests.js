@@ -46,8 +46,9 @@ router.post('/', auth, (req, res) => {
       const up = parseFloat(unit_price) || 0;
       const qty = parseFloat(quantity) || 0;
       if (Math.abs(np - up) < 0.0001) return res.status(400).json({ error: 'new_price equals original price — nothing to approve.' });
-      const reason = (change_reason || '').trim();
-      if (reason.length < 3) return res.status(400).json({ error: 'Reason must be at least 3 characters.' });
+      // v1.9.4 — reason is now OPTIONAL (used to require >= 3 chars). The
+      // approver still sees the field; cashier can leave it blank when no
+      // explanation is needed (e.g. quick VIP discounts during a rush).
       amt = (up - np) * qty; // signed; can be negative for surcharges
     } else {
       // Legacy discount request

@@ -1057,13 +1057,21 @@ router.put('/:id/reverse', auth, (req, res) => {
            AND movement_type IN ('sale', 'sale_reverse') AND deleted_at IS NULL`
       ).run(order.sync_id);
 
-      // Mark all line items fully reversed (cumulative reversed_quantity = original quantity)
+      // Mark all line items fully reversed (cumulative reversed_quantity = original quantity).
+      // v1.9.4 — bump updated_at on both rows. Without this, sync push to VPS
+      // gets silently REJECTed by the timestamp check (incoming == server
+      // because the row's local timestamp didn't move when status flipped),
+      // and the web side keeps showing PENDING_PAYMENT forever. Reproduced
+      // 2026-06-29 with ORD-0058–0061.
       db.prepare(
         `UPDATE order_items
-         SET reversed = 1, reversed_quantity = quantity, reversed_at = datetime('now'), synced=0
+         SET reversed = 1, reversed_quantity = quantity, reversed_at = datetime('now'),
+             updated_at = datetime('now'), synced = 0
          WHERE order_sync_id = ? AND reversed = 0 AND deleted_at IS NULL`
       ).run(order.sync_id);
-      db.prepare("UPDATE orders SET status = 'Reversed', synced=0 WHERE id = ?").run(req.params.id);
+      db.prepare(
+        `UPDATE orders SET status = 'Reversed', updated_at = datetime('now'), synced = 0 WHERE id = ?`
+      ).run(req.params.id);
       return db.prepare('SELECT * FROM orders WHERE id = ?').get(req.params.id);
     })();
 
@@ -1140,7 +1148,9 @@ router.put('/:id/items/:itemId/reverse', auth, (req, res) => {
       const newReversedQty = alreadyReversedInLineUnit + reverseInLineUnit;
       const fullyReversed = newReversedQty >= parseFloat(item.quantity) - 0.0001;
       db.prepare(
-        `UPDATE order_items SET reversed_quantity = ?, reversed = ?, reversed_at = CASE WHEN ? THEN datetime('now') ELSE reversed_at END, synced=0 WHERE id = ?`
+        // v1.9.4 — also bump updated_at; otherwise the row's local timestamp
+        // doesn't move, server's timestamp REJECT silently drops the push.
+        `UPDATE order_items SET reversed_quantity = ?, reversed = ?, reversed_at = CASE WHEN ? THEN datetime('now') ELSE reversed_at END, updated_at = datetime('now'), synced = 0 WHERE id = ?`
       ).run(newReversedQty, fullyReversed ? 1 : 0, fullyReversed ? 1 : 0, req.params.itemId);
 
       // Proportional refund based on reversed base qty relative to original base qty
@@ -1186,6 +1196,7 @@ router.put('/:id/items/:itemId/reverse', auth, (req, res) => {
          SET subtotal = ?, total_amount = ?, status = ?,
              cash_received = ?, fra_received = ?, k_received = ?,
              amount_received = ?,
+             updated_at = datetime('now'),
              synced = 0
          WHERE id = ?`).run(
         newSubtotal, newTotal, allReversed ? 'Reversed' : 'Partial',

@@ -206,6 +206,12 @@ export const getHqCashPosition = () => api.get('/hq/cash-position');
 export const mirrorHqToAllBranches = (slug) =>
   api.post('/hq/mirror-all', slug ? { slug } : {});
 
+// Sync — v1.9.4 trigger an immediate sync cycle on the local Electron backend.
+// Used by the POS Change Price flow so the cashier doesn't wait up to 30s for
+// the next scheduled push/pull. Harmless on web (returns triggered=false).
+export const triggerSyncNow = () =>
+  api.post('/sync/run-now').catch(() => null);
+
 // Stock Transfers (Phase C — HQ Warehouse). Stored in master.db so source
 // + destination see the same row. Works the same on HQ and on per-branch
 // subdomains; the "current branch" the page operates against is derived

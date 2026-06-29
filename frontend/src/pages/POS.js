@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { getInventory, createOrder, getSettings, openCashDrawer, printReceipt, getQuickItems, addQuickItem, removeQuickItem, getCustomers, createDiscountRequest, getDiscountRequest, cancelDiscountRequest, getCurrentFxRate } from '../services/api';
+import { getInventory, createOrder, getSettings, openCashDrawer, printReceipt, getQuickItems, addQuickItem, removeQuickItem, getCustomers, createDiscountRequest, getDiscountRequest, cancelDiscountRequest, getCurrentFxRate, triggerSyncNow } from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import { useCurrency } from '../context/CurrencyContext';
 import { FiSearch, FiShoppingCart, FiX, FiDollarSign, FiUnlock, FiStar, FiFileText, FiTag } from 'react-icons/fi';
@@ -587,8 +587,16 @@ const POS = () => {
     const syncId = discountModal?.pendingSyncId;
     if (!syncId || discountModal?.verdict) return;
     let cancelled = false;
+    let ticks = 0;
     const tick = async () => {
       try {
+        // v1.9.4 — on every other tick (~6s cadence) ask the sync engine to
+        // run a cycle. Cheap call (200 OK + maybe queues a push+pull) and
+        // means the admin's approval lands on this Electron in seconds
+        // instead of waiting up to 30s for the next scheduled pull.
+        ticks += 1;
+        if (ticks > 1 && ticks % 2 === 0) triggerSyncNow();
+
         const res = await getDiscountRequest(syncId);
         if (cancelled) return;
         const st = res.data?.status;
@@ -2704,7 +2712,11 @@ const POS = () => {
         const lineZero       = !isCart && draftNum <= 0;
         const lineUnchanged  = !isCart && Math.abs(draftNum - origUnitPrice) < 0.0001;
         const overSubtotal   = isCart && draftNum > subtotal;
-        const reasonInvalid  = !isCart && !isAdmin && (discountModal.reason || '').trim().length < 3;
+        // v1.9.4 — reason is now optional. Kept the variable name so the
+        // legacy disable-button check (further below) keeps compiling; it
+        // simply always evaluates false and the button is never blocked
+        // on reason alone.
+        const reasonInvalid  = false;
         const totalOff = isCart ? draftNum : parseFloat(item.quantity || 0) * lineDelta;
 
         const applyNow = () => {
@@ -2748,6 +2760,10 @@ const POS = () => {
                 };
             const res = await createDiscountRequest(payload);
             setDiscountModal(d => d ? { ...d, submitting: false, pendingSyncId: res.data?.sync_id, verdict: null, rejectionReason: '' } : d);
+            // v1.9.4 — kick a sync cycle right after the row is inserted so
+            // the admin sees the request within a couple of seconds instead
+            // of waiting for the next scheduled 30s push tick.
+            triggerSyncNow();
           } catch (err) {
             setDiscountModal(d => d ? { ...d, submitting: false, error: err.response?.data?.error || 'Could not send request.' } : d);
           }
@@ -2766,8 +2782,10 @@ const POS = () => {
 
         return (
           <Portal>
-          <div onClick={() => setDiscountModal(null)}
-               style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.55)', zIndex: 1100, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}>
+          {/* v1.9.4 — backdrop is no longer click-to-close. Half-finished
+              price changes were being lost when the cashier accidentally
+              tapped outside the modal. Close is now Cancel / X only. */}
+          <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.55)', zIndex: 1100, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}>
             <div onClick={e => e.stopPropagation()}
                  style={{ background: '#fff', borderRadius: 14, width: '100%', maxWidth: 420, boxShadow: '0 24px 64px rgba(0,0,0,0.35)', overflow: 'hidden' }}>
               <div style={{ padding: '16px 22px', background: 'linear-gradient(135deg,#dc2626,#b91c1c)', color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
@@ -2811,6 +2829,7 @@ const POS = () => {
                       autoFocus
                       value={discountModal.draft}
                       onChange={e => setDiscountModal({ ...discountModal, draft: e.target.value })}
+                      onFocus={e => e.target.select()}
                       onKeyDown={e => {
                         if (e.key === 'Enter') requestApply();
                         else if (e.key === 'Escape') setDiscountModal(null);
@@ -2862,19 +2881,18 @@ const POS = () => {
                         <strong>{lineDelta > 0 ? '−' : '+'}{money(Math.abs(totalOff))}</strong>
                       </div>
                     )}
-                    {/* Line: Reason field — required for non-admin */}
+                    {/* Line: Reason field — v1.9.4 OPTIONAL (was required). */}
                     {!isCart && !isAdmin && !lineZero && !lineUnchanged && (
                       <div style={{ marginTop: 12 }}>
                         <label style={{ fontSize: 12, fontWeight: 700, color: '#374151', display: 'block', marginBottom: 6 }}>
-                          Reason <span style={{ color: '#dc2626' }}>*</span>{' '}
-                          <span style={{ fontWeight: 400, color: '#9ca3af' }}>(min 3 chars)</span>
+                          Reason <span style={{ fontWeight: 400, color: '#9ca3af' }}>(optional)</span>
                         </label>
                         <input
                           type="text" maxLength={200}
                           value={discountModal.reason || ''}
                           onChange={e => setDiscountModal({ ...discountModal, reason: e.target.value })}
                           placeholder="e.g. VIP customer, damaged label, bulk discount"
-                          style={{ width: '100%', padding: '10px 12px', border: `1px solid ${reasonInvalid ? '#dc2626' : '#d1d5db'}`, borderRadius: 8, fontSize: 13, boxSizing: 'border-box', outline: 'none' }}
+                          style={{ width: '100%', padding: '10px 12px', border: '1px solid #d1d5db', borderRadius: 8, fontSize: 13, boxSizing: 'border-box', outline: 'none' }}
                         />
                       </div>
                     )}

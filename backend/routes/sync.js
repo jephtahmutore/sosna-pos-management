@@ -583,6 +583,23 @@ router.get('/current-status', (req, res) => {
   }
 });
 
+// ─── POST /api/sync/run-now ──────────────────────────────────────────────────
+// v1.9.4 — fire a sync cycle on demand. POS Change Price flow calls this
+// twice: once after creating a discount_request (so the cashier doesn't wait
+// up to 30s for the next scheduled push to reach the admin), and again every
+// few seconds while the cashier is waiting on the verdict (so the admin's
+// approval pulls back quickly). Returns 200 with {triggered: bool} —
+// triggered=false means either the sync engine isn't running (VPS mode) or
+// a cycle is already in flight. Either way the call is harmless.
+router.post('/run-now', (req, res) => {
+  try {
+    const triggered = require('../services/syncService').runNow();
+    res.json({ triggered });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // ─── GET /api/sync/status ────────────────────────────────────────────────────
 // Returns current sync configuration (used by Setup screen to check registration)
 router.get('/status', (req, res) => {

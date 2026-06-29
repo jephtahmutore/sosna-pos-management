@@ -377,4 +377,16 @@ function getStatus() {
   return { ..._status, target: getSyncTargetUrl(), intervalMs: _currentIntervalMs };
 }
 
-module.exports = { start, stop, reload, getStatus, pull };
+// v1.9.4 — kick a sync cycle on demand. Used by /api/sync/run-now so the
+// POS Change Price flow doesn't have to wait up to 30s for the next scheduled
+// tick to push the request (or to pull the admin's verdict back). Returns
+// immediately; the actual cycle is fire-and-forget. Rate-limited internally
+// by `_running` (set by loopOnce) so a flood of triggers can't pile up.
+function runNow() {
+  if (!_db || !_syncConfig) return false; // sync engine not started (VPS mode)
+  if (_running) return false;             // a cycle is already in flight
+  setImmediate(loopOnce);
+  return true;
+}
+
+module.exports = { start, stop, reload, getStatus, pull, runNow };
