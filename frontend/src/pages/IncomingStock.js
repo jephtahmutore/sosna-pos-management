@@ -262,6 +262,7 @@ export default function IncomingStock() {
           purchase={confirming.purchase}
           items={confirming.items}
           products={products}
+          branchSlug={slug}
           onClose={() => setConfirming(null)}
           onConfirmed={() => {
             setConfirming(null);

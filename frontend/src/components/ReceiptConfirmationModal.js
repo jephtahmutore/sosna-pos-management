@@ -19,6 +19,7 @@ export default function ReceiptConfirmationModal({
   purchase,        // { purchase_number, sync_id, supplier_name, date }
   items,           // [{ sync_id, product_sync_id, product_name, unit, dispatched_qty, cost_price }]
   products,        // local branch products list for the "Add Item" picker
+  branchSlug,      // derived from the host on the parent page (mansa1, etc.)
   onClose,
   onConfirmed,
 }) {
@@ -35,9 +36,13 @@ export default function ReceiptConfirmationModal({
   );
 
   // Extras = items branch received that weren't on the PO.
+  // v1.10.0 (rev) — branch can only PICK from existing HQ products. They
+  // can never type a brand-new product name. The picker is a strict
+  // <select> over the products prop (which is the HQ-pushed branch
+  // catalogue), so product_sync_id is always populated.
   const emptyExtra = () => ({
     product_sync_id: '',
-    product_text:    '',
+    product_name:    '',
     unit:            'pcs',
     quantity:        '',
     cost_price:      '',
@@ -58,9 +63,11 @@ export default function ReceiptConfirmationModal({
     prev.map((r, idx) => {
       if (idx !== i) return r;
       const next = { ...r, [field]: val };
-      if (field === 'product_text') {
-        const m = products.find(p => p.name && p.name.toLowerCase() === val.trim().toLowerCase());
-        next.product_sync_id = m ? m.sync_id : '';
+      // v1.10.0 (rev) — product_sync_id is now picked from a <select>.
+      // Looking up by sync_id (not name) so it's unambiguous.
+      if (field === 'product_sync_id') {
+        const m = products.find(p => p.sync_id === val);
+        next.product_name = m ? m.name : '';
         if (m) {
           next.unit = m.default_unit || m.unit || 'pcs';
           if (!next.cost_price) next.cost_price = String(m.cost_price || m.avg_cost_price || 0);
@@ -77,6 +84,9 @@ export default function ReceiptConfirmationModal({
     setSaving(true);
     try {
       const payload = {
+        // v1.10.0 — branch slug carried in the body; backend's middleware
+        // doesn't auto-derive the tenant from the subdomain on this route.
+        branch_slug: branchSlug,
         lines: lines.map(l => ({
           purchase_item_sync_id: l.sync_id,
           received_qty: Math.max(0, parseFloat(l.received) || 0),
@@ -86,12 +96,14 @@ export default function ReceiptConfirmationModal({
         extras: extras
           .map(e => ({
             product_sync_id: e.product_sync_id || null,
-            product_name:    e.product_text,
+            product_name:    e.product_name,
             unit:            e.unit || null,
             quantity:        Math.max(0, parseFloat(e.quantity) || 0),
             cost_price:      parseFloat(e.cost_price) || 0,
           }))
-          .filter(e => e.product_name && e.quantity > 0),
+          // v1.10.0 (rev) — every extra MUST have a picked product (sync_id).
+          // Branch cannot submit a free-text product name.
+          .filter(e => e.product_sync_id && e.quantity > 0),
         supplier_invoice_number: invoiceNumber.trim(),
         invoice_attachment:      invoiceAttachment,
       };
@@ -145,9 +157,15 @@ export default function ReceiptConfirmationModal({
             </tbody>
           </table>
 
-          {/* Extras */}
+          {/* Extras — branch can only PICK from existing HQ products. Free-
+              text product names are not allowed (HQ owns the catalogue). */}
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
-            <h4 style={{ margin: 0, fontSize: 14 }}>Items added (not on the PO)</h4>
+            <div>
+              <h4 style={{ margin: 0, fontSize: 14 }}>Additional items received</h4>
+              <p style={{ margin: '2px 0 0', fontSize: 11, color: '#9ca3af' }}>
+                For products the supplier delivered that weren't on this PO. Pick from existing HQ items only.
+              </p>
+            </div>
             <button type="button" onClick={addExtra}
               style={{ display: 'inline-flex', alignItems: 'center', gap: 5, padding: '6px 12px', borderRadius: 8, border: '1px dashed #93c5fd', background: '#eff6ff', color: '#1d4ed8', cursor: 'pointer', fontSize: 12, fontWeight: 600 }}>
               <FiPlus size={12} /> Add Item
@@ -168,13 +186,17 @@ export default function ReceiptConfirmationModal({
                 {extras.map((r, idx) => (
                   <tr key={idx} style={{ borderTop: '1px solid #f1f5f9' }}>
                     <td style={{ padding: '6px 10px' }}>
-                      <input list={`extra-prod-${idx}`} value={r.product_text}
-                        onChange={e => updateExtra(idx, 'product_text', e.target.value)}
-                        placeholder="Type to search HQ items"
-                        style={{ width: '100%', padding: '6px 10px', border: '1px solid #d1d5db', borderRadius: 6, fontSize: 13, boxSizing: 'border-box' }} />
-                      <datalist id={`extra-prod-${idx}`}>
-                        {products.map(p => <option key={p.id} value={p.name} />)}
-                      </datalist>
+                      {/* Strict picker — branch cannot type a free-text product
+                          name. If the item isn't in HQ's catalogue, HQ must
+                          add it first via Item Details. */}
+                      <select value={r.product_sync_id}
+                        onChange={e => updateExtra(idx, 'product_sync_id', e.target.value)}
+                        style={{ width: '100%', padding: '6px 10px', border: '1px solid #d1d5db', borderRadius: 6, fontSize: 13, boxSizing: 'border-box', background: '#fff' }}>
+                        <option value="">— pick an HQ item —</option>
+                        {products.map(p => (
+                          <option key={p.id} value={p.sync_id}>{p.name}</option>
+                        ))}
+                      </select>
                     </td>
                     <td style={{ padding: '6px 10px', textAlign: 'right' }}>
                       <input type="number" min="0" step="any" value={r.quantity}
