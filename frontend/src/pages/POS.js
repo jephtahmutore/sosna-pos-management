@@ -2117,12 +2117,17 @@ const POS = () => {
       })()}
 
       {creditModal && selectedCustomer && (() => {
+        // v1.9.31 — Liquor branches sum cash/momo/bank for the modal's
+        // running totals. Sosna branches keep the USD/FRA/K currency
+        // calculation (with FX rate conversion).
         const usdNow = Math.max(0, parseFloat(creditModal.usd || 0));
         const fraNow = Math.max(0, parseFloat(creditModal.fra || 0));
         const kNow   = Math.max(0, parseFloat(creditModal.k   || 0));
         const fraAsUSD = SELL_RATE   > 0 ? fraNow / SELL_RATE   : 0;
         const kAsUSD   = SELL_RATE_K > 0 ? kNow   / SELL_RATE_K : 0;
-        const payNow = usdNow + fraAsUSD + kAsUSD;
+        const payNow = hasMoMoBank
+          ? (parseFloat(creditModal.cash || 0) + parseFloat(creditModal.momo || 0) + parseFloat(creditModal.bank || 0))
+          : (usdNow + fraAsUSD + kAsUSD);
         const newCredit = Math.max(0, total - payNow);
         const projectedOutstanding = currentOutstanding + newCredit;
         const overLimit = creditLimit > 0 && projectedOutstanding > creditLimit + 0.001;
