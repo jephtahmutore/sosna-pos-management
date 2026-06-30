@@ -2337,7 +2337,18 @@ const POS = () => {
                 </button>
                 <button
                   onClick={() => {
-                    const breakdown = { usd: usdNow, fra: fraNow, k: kNow };
+                    // v1.9.32 — same branching as confirmOpenModal (Enter key)
+                    // and the customer-display payNow effect. Without this the
+                    // Confirm button always sends {usd:0, fra:0, k:0} on Liquor
+                    // branches, so amount_received saves as 0 even when the
+                    // cashier typed Cash/MoMo/Bank amounts.
+                    const breakdown = hasMoMoBank
+                      ? {
+                          cash: Math.max(0, parseFloat(creditModal.cash || 0)),
+                          momo: Math.max(0, parseFloat(creditModal.momo || 0)),
+                          bank: Math.max(0, parseFloat(creditModal.bank || 0)),
+                        }
+                      : { usd: usdNow, fra: fraNow, k: kNow };
                     setCreditModal(null);
                     handleCheckout(breakdown);
                   }}

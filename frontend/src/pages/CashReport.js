@@ -316,14 +316,26 @@ const CashReport = () => {
           exNet = r.data || exNet;
         } catch { /* keep zeros */ }
         if (!isLatest()) return; // stale: a newer loadDate has already started
-        const usdDrawer = (parseFloat(daily.usd_received || 0) || 0) - (parseFloat(daily.usd_expenses || 0) || 0) + (parseFloat(exNet.usd_net || 0) || 0);
-        const fraDrawer = (parseFloat(daily.fra_received || 0) || 0) - (parseFloat(daily.fra_expenses || 0) || 0) + (parseFloat(exNet.fra_net || 0) || 0);
-        const kDrawer   = (parseFloat(daily.k_received   || 0) || 0) - (parseFloat(daily.k_expenses   || 0) || 0) + (parseFloat(exNet.k_net   || 0) || 0);
+        // v1.9.32 — on Liquor branches, auto-fill the three counter inputs
+        // from the method-axis rollups (cash_net / momo_net / bank_net).
+        // The legacy fra_received / k_received columns are always 0 on
+        // Mansa/Lusaka because the walk-in modal writes to momo_received /
+        // bank_received instead. Using them would auto-fill MoMo and Bank
+        // with 0 even when the day had per-method sales.
+        const usdDrawer = isLiquorStyle
+          ? (parseFloat(daily.cash_net || 0) || 0)
+          : ((parseFloat(daily.usd_received || 0) || 0) - (parseFloat(daily.usd_expenses || 0) || 0) + (parseFloat(exNet.usd_net || 0) || 0));
+        const fraDrawer = isLiquorStyle
+          ? (parseFloat(daily.momo_net || 0) || 0)
+          : ((parseFloat(daily.fra_received || 0) || 0) - (parseFloat(daily.fra_expenses || 0) || 0) + (parseFloat(exNet.fra_net || 0) || 0));
+        const kDrawer = isLiquorStyle
+          ? (parseFloat(daily.bank_net || 0) || 0)
+          : ((parseFloat(daily.k_received || 0) || 0) - (parseFloat(daily.k_expenses || 0) || 0) + (parseFloat(exNet.k_net || 0) || 0));
         setForm(prev => ({
           ...prev,
           usd_received: usdDrawer ? usdDrawer.toFixed(2) : '',
-          fra_received: fraDrawer ? fraDrawer.toFixed(0) : '',
-          k_received:   kDrawer   ? kDrawer.toFixed(0)   : '',
+          fra_received: fraDrawer ? fraDrawer.toFixed(isLiquorStyle ? 2 : 0) : '',
+          k_received:   kDrawer   ? kDrawer.toFixed(isLiquorStyle ? 2 : 0)   : '',
           expenses:     daily.expenses     ? parseFloat(daily.expenses).toFixed(2)     : '',
           pending:      issuedToday ? issuedToday.toFixed(2) : '',
           initial_change: '0',
@@ -1106,7 +1118,10 @@ const CashReport = () => {
               physical cash). Red across the board to signal "owed, not held". */}
           {(() => {
             const counted = creditExpected;
-            const fmt     = (n) => `$${parseFloat(n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+            // v1.9.32 — use the branch's primary currency symbol so the
+            // Credit Sales card reads K… on Mansa/Lusaka and $… on
+            // Kassumbalesa instead of always hardcoding $.
+            const fmt     = (n) => `${curSym}${parseFloat(n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
             return (
               <div style={{
                 background: '#fff',
@@ -1124,7 +1139,7 @@ const CashReport = () => {
                   display: 'flex', justifyContent: 'space-between', alignItems: 'center',
                 }}>
                   <span style={{ fontWeight: 800, fontSize: 13, textTransform: 'uppercase', letterSpacing: 0.5 }}>
-                    Credit Sales ($)
+                    Credit Sales ({curSym})
                   </span>
                   <span style={{ fontSize: 9, opacity: 0.95, background: 'rgba(255,255,255,0.2)', padding: '3px 8px', borderRadius: 4, fontWeight: 700, letterSpacing: 0.4 }}>
                     AUTO · READ-ONLY
@@ -1304,26 +1319,23 @@ const CashReport = () => {
       })()}
 
       {/* v1.8.6 — Currency Exchanges for this date+cashier (drawer scope).
-          Append-only ledger; reverse a mistake by recording the opposite.
-          v1.8.8 — pass live drawer balance per currency so the modal can
-          warn the manager before overdrawing. Balance = what's in the
-          form's per-currency inputs (which already include the net effect
-          of all SAVED exchanges via the auto-fill from /daily). The modal
-          excludes the in-progress exchange itself, so the comparison stays
-          valid. */}
-      <CurrencyExchangePanel
-        scope="drawer"
-        date={date}
-        cashierId={selectedCashier ? parseInt(selectedCashier) : 0}
-        user={authUser}
-        title="Currency Exchanges (Drawer)"
-        drawerBalance={{
-          USD: (parseFloat(form.usd_received || 0) || 0) + (parseFloat(exchangeNet.usd_net || 0) || 0),
-          FRA: (parseFloat(form.fra_received || 0) || 0) + (parseFloat(exchangeNet.fra_net || 0) || 0),
-          K:   (parseFloat(form.k_received   || 0) || 0) + (parseFloat(exchangeNet.k_net   || 0) || 0),
-        }}
-        onChanged={() => { setExchangeRefreshKey(k => k + 1); handleVoucherSaved(); }}
-      />
+          v1.9.32 — Hidden on Liquor branches (Mansa/Lusaka) — K-only
+          branches have no USD↔FRA exchanges to track. */}
+      {!isLiquorStyle && (
+        <CurrencyExchangePanel
+          scope="drawer"
+          date={date}
+          cashierId={selectedCashier ? parseInt(selectedCashier) : 0}
+          user={authUser}
+          title="Currency Exchanges (Drawer)"
+          drawerBalance={{
+            USD: (parseFloat(form.usd_received || 0) || 0) + (parseFloat(exchangeNet.usd_net || 0) || 0),
+            FRA: (parseFloat(form.fra_received || 0) || 0) + (parseFloat(exchangeNet.fra_net || 0) || 0),
+            K:   (parseFloat(form.k_received   || 0) || 0) + (parseFloat(exchangeNet.k_net   || 0) || 0),
+          }}
+          onChanged={() => { setExchangeRefreshKey(k => k + 1); handleVoucherSaved(); }}
+        />
+      )}
       {(exchangeNet.usd_net || exchangeNet.fra_net || exchangeNet.k_net) && (
         <div style={{ marginTop: 10, padding: '10px 14px', background: '#f5f3ff', border: '1px solid #ddd6fe', borderRadius: 10, fontSize: 12, color: '#5b21b6' }}>
           <strong>Net drawer impact:</strong>{' '}
@@ -1470,22 +1482,42 @@ const CashReport = () => {
         <h3 style={{ padding: '12px 16px', fontSize: 15, fontWeight: 600, borderBottom: '1px solid #e5e7eb' }}>Report History</h3>
         <table className="data-table">
           <thead>
+            {/* v1.9.32 — Report History columns follow the same axis swap as
+                the counter cards. Liquor branches see Cash / MoMo / Bank
+                with their diffs; Sosna branches see USD / FRA / K. */}
             <tr>
               <th>Date</th><th>Cashier</th>
-              <th style={{ color: '#16a34a' }}>USD ($)</th><th>Diff $</th>
-              <th style={{ color: '#7c3aed' }}>FRA</th><th>Diff FRA</th>
-              <th style={{ color: '#ea580c' }}>K</th><th>Diff K</th>
-              {/* v1.8.26 — expenses split into 3 sub-columns. */}
-              <th style={{ color: '#16a34a' }}>Exp $</th>
-              <th style={{ color: '#7c3aed' }}>Exp FRA</th>
-              <th style={{ color: '#ea580c' }}>Exp K</th>
+              {isLiquorStyle ? (
+                <>
+                  <th style={{ color: '#16a34a' }}>Cash ({curSym})</th><th>Diff</th>
+                  <th style={{ color: '#ea580c' }}>MoMo ({curSym})</th><th>Diff</th>
+                  <th style={{ color: '#2563eb' }}>Bank ({curSym})</th><th>Diff</th>
+                </>
+              ) : (
+                <>
+                  <th style={{ color: '#16a34a' }}>USD ($)</th><th>Diff $</th>
+                  <th style={{ color: '#7c3aed' }}>FRA</th><th>Diff FRA</th>
+                  <th style={{ color: '#ea580c' }}>K</th><th>Diff K</th>
+                </>
+              )}
+              {/* v1.8.26 — expenses split into 3 sub-columns.
+                  v1.9.32 — single Expenses column on Liquor branches. */}
+              {isLiquorStyle ? (
+                <th style={{ color: '#dc2626' }}>Expenses ({curSym})</th>
+              ) : (
+                <>
+                  <th style={{ color: '#16a34a' }}>Exp $</th>
+                  <th style={{ color: '#7c3aed' }}>Exp FRA</th>
+                  <th style={{ color: '#ea580c' }}>Exp K</th>
+                </>
+              )}
               <th>Credit Sales</th>
               <th>Comment</th>
             </tr>
           </thead>
           <tbody>
             {filteredReports.length === 0 ? (
-              <tr><td colSpan="13" style={{ textAlign: 'center', color: '#9ca3af', padding: 40 }}>No reports found for the selected period.</td></tr>
+              <tr><td colSpan={isLiquorStyle ? 11 : 13} style={{ textAlign: 'center', color: '#9ca3af', padding: 40 }}>No reports found for the selected period.</td></tr>
             ) : filteredReports.map(r => {
               const usdR = parseFloat(r.usd_received || r.cash || 0);
               const fraR = parseFloat(r.fra_received || r.mobile_money || 0);
@@ -1504,20 +1536,38 @@ const CashReport = () => {
               const diffColor = (d, eps) => Math.abs(d) < eps ? '#16a34a' : d > 0 ? '#d97706' : '#dc2626';
               const sign = (d) => d > 0 ? '+' : '';
               const dash = <span style={{ color: '#cbd5e1' }}>—</span>;
+              // v1.9.32 — Liquor branches re-purpose usd_received / fra_received /
+              // k_received as cash / momo / bank. Render with K symbol + 2 dec.
+              const fmtK = (n) => `${curSym}${parseFloat(n||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}`;
+              const totalExp = usdEx + fraEx + kEx;
               return (
                 <tr key={r.id} style={{ cursor: 'pointer' }} onClick={() => { const cid = r.cashier_id ? String(r.cashier_id) : ''; setSelectedCashier(cid); loadDate(r.date.split('T')[0], cid); }}>
                   <td style={{ fontWeight: 500 }}>{formatDate(r.date)}</td>
                   <td style={{ fontSize: 12, color: '#6b7280' }}>{r.cashier_name || '—'}</td>
-                  <td>${usdR.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
-                  <td style={{ fontWeight: 600, color: diffColor(usdD, 0.01) }}>{sign(usdD)}${usdD.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
-                  <td>{fraR.toLocaleString(undefined, { maximumFractionDigits: 0 })}</td>
-                  <td style={{ fontWeight: 600, color: diffColor(fraD, 1) }}>{sign(fraD)}{fraD.toLocaleString(undefined, { maximumFractionDigits: 0 })}</td>
-                  <td>{kR.toLocaleString(undefined, { maximumFractionDigits: 0 })}</td>
-                  <td style={{ fontWeight: 600, color: diffColor(kD, 1) }}>{sign(kD)}{kD.toLocaleString(undefined, { maximumFractionDigits: 0 })}</td>
-                  <td style={{ color: usdEx > 0 ? '#dc2626' : '' }}>{usdEx > 0 ? `$${usdEx.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : dash}</td>
-                  <td style={{ color: fraEx > 0 ? '#dc2626' : '' }}>{fraEx > 0 ? fraEx.toLocaleString(undefined, { maximumFractionDigits: 0 }) : dash}</td>
-                  <td style={{ color: kEx > 0 ? '#dc2626' : '' }}>{kEx > 0 ? kEx.toLocaleString(undefined, { maximumFractionDigits: 0 }) : dash}</td>
-                  <td>${parseFloat(r.pending || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+                  {isLiquorStyle ? (
+                    <>
+                      <td>{fmtK(usdR)}</td>
+                      <td style={{ fontWeight: 600, color: diffColor(usdD, 0.01) }}>{sign(usdD)}{fmtK(usdD)}</td>
+                      <td>{fmtK(fraR)}</td>
+                      <td style={{ fontWeight: 600, color: diffColor(fraD, 0.01) }}>{sign(fraD)}{fmtK(fraD)}</td>
+                      <td>{fmtK(kR)}</td>
+                      <td style={{ fontWeight: 600, color: diffColor(kD, 0.01) }}>{sign(kD)}{fmtK(kD)}</td>
+                      <td style={{ color: totalExp > 0 ? '#dc2626' : '' }}>{totalExp > 0 ? fmtK(totalExp) : dash}</td>
+                    </>
+                  ) : (
+                    <>
+                      <td>${usdR.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+                      <td style={{ fontWeight: 600, color: diffColor(usdD, 0.01) }}>{sign(usdD)}${usdD.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+                      <td>{fraR.toLocaleString(undefined, { maximumFractionDigits: 0 })}</td>
+                      <td style={{ fontWeight: 600, color: diffColor(fraD, 1) }}>{sign(fraD)}{fraD.toLocaleString(undefined, { maximumFractionDigits: 0 })}</td>
+                      <td>{kR.toLocaleString(undefined, { maximumFractionDigits: 0 })}</td>
+                      <td style={{ fontWeight: 600, color: diffColor(kD, 1) }}>{sign(kD)}{kD.toLocaleString(undefined, { maximumFractionDigits: 0 })}</td>
+                      <td style={{ color: usdEx > 0 ? '#dc2626' : '' }}>{usdEx > 0 ? `$${usdEx.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : dash}</td>
+                      <td style={{ color: fraEx > 0 ? '#dc2626' : '' }}>{fraEx > 0 ? fraEx.toLocaleString(undefined, { maximumFractionDigits: 0 }) : dash}</td>
+                      <td style={{ color: kEx > 0 ? '#dc2626' : '' }}>{kEx > 0 ? kEx.toLocaleString(undefined, { maximumFractionDigits: 0 }) : dash}</td>
+                    </>
+                  )}
+                  <td>{curSym}{parseFloat(r.pending || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
                   <td style={{ color: '#6b7280', fontSize: 12, maxWidth: 150, overflow: 'hidden', textOverflow: 'ellipsis' }}>{r.comment || '—'}</td>
                 </tr>
               );
