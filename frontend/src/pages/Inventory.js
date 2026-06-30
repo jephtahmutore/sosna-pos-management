@@ -258,7 +258,10 @@ const Inventory = ({ viewLocation = 'store' }) => {
         <table className="data-table">
           <thead>
             <tr>
-              <th>{t('code')}</th><th>{t('product')}</th><th>{t('category')}</th><th>{t('openingBalance')}</th><th>{t('totalIn')}</th><th>{t('totalOut')}</th><th>{t('storeBalance')}</th><th>{t('minStock')}</th><th>{t('balanceValue')}</th><th>{t('status')}</th>
+              {/* v1.9.24 — On the Sales Stock Card variant (viewLocation='sales')
+                  the balance is the sales-floor balance, not a "store" balance
+                  (Sosna has no store layer). Show a clearer label. */}
+              <th>{t('code')}</th><th>{t('product')}</th><th>{t('category')}</th><th>{t('openingBalance')}</th><th>{t('totalIn')}</th><th>{t('totalOut')}</th><th>{isSalesView ? 'Stock Balance' : t('storeBalance')}</th><th>{t('minStock')}</th><th>{t('balanceValue')}</th><th>{t('status')}</th>
             </tr>
           </thead>
           <tbody>

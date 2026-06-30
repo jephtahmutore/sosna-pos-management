@@ -205,12 +205,20 @@ router.get('/sales', auth, readOnlyGuard, (req, res) => {
       ) opening_agg ON opening_agg.product_sync_id = p.sync_id
 
       LEFT JOIN (
-        SELECT sm.product_sync_id, SUM(sm.quantity) AS input
-        FROM stock_movements sm
-        JOIN siv s ON s.sync_id = sm.reference_sync_id
-        WHERE sm.location = 'sales' AND sm.movement_type = 'siv'
-          AND s.date = @date AND sm.deleted_at IS NULL AND sm.product_sync_id IS NOT NULL
-        GROUP BY sm.product_sync_id
+        -- v1.9.24 — Sosna posts GRN directly at location='sales' (no store
+        -- layer, no SIV), so the Input column has to include 'grn' (and
+        -- 'transfer_in') alongside 'siv'. Date filter is on the stock_movement
+        -- created_at (which carries the GRN/SIV business date, set explicitly
+        -- in the writer), so the old JOIN to siv just to read siv.date is
+        -- unnecessary.
+        SELECT product_sync_id, SUM(quantity) AS input
+        FROM stock_movements
+        WHERE location = 'sales'
+          AND movement_type IN ('siv', 'grn', 'transfer_in')
+          AND date(created_at) = @date
+          AND deleted_at IS NULL
+          AND product_sync_id IS NOT NULL
+        GROUP BY product_sync_id
       ) input_agg ON input_agg.product_sync_id = p.sync_id
 
       LEFT JOIN (
@@ -686,7 +694,10 @@ router.get('/sales-bin-card', auth, readOnlyGuard, (req, res) => {
         (${effectiveDate}) AS date,
         sm.movement_type,
         sm.reference_type,
-        COALESCE(o.order_number, sv.siv_number, sr.return_number, sm.movement_type) AS reference,
+        -- v1.9.24 — include grn.grn_number so a GRN posted directly to
+        -- sales (Sosna's drop-ship flow) shows "GRN-…" in the reference
+        -- column instead of the raw movement_type "grn".
+        COALESCE(o.order_number, sv.siv_number, sr.return_number, g.grn_number, sm.movement_type) AS reference,
         -- When the SIV was auto-generated from a GRN (single-location mode), surface the GRN
         -- number so the bin card row reads "SIV-…0010 (from GRN-…0009)".
         sv_grn.grn_number AS source_grn_number,
@@ -699,6 +710,7 @@ router.get('/sales-bin-card', auth, readOnlyGuard, (req, res) => {
       LEFT JOIN orders o         ON o.sync_id  = sm.reference_sync_id AND sm.reference_type = 'order'
       LEFT JOIN siv sv           ON sv.sync_id = sm.reference_sync_id AND sm.reference_type = 'siv'
       LEFT JOIN grn sv_grn       ON sv_grn.sync_id = sv.source_grn_sync_id
+      LEFT JOIN grn g            ON g.sync_id  = sm.reference_sync_id AND sm.reference_type = 'grn'
       LEFT JOIN sales_returns sr ON sr.sync_id = sm.reference_sync_id AND sm.reference_type = 'sales_return'
       WHERE sm.product_sync_id = @product_sync_id AND sm.location = 'sales'
         AND sm.deleted_at IS NULL
