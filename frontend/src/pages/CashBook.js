@@ -11,7 +11,7 @@ const CashBook = () => {
   const { hasPermission, user: authUser } = useAuth();
   // v1.8.6 — tab toggle between the ledger view and the Exchanges ledger.
   const [activeTab, setActiveTab] = useState('ledger');
-  const { symbol: curSym, currencyMode } = useCurrency();
+  const { symbol: curSym, currencyMode, isLiquorStyle } = useCurrency();
   // v1.9.26 — Cash Book columns + opening-balance editors gate on the
   // branch's currency_mode. K-only branches see one K column only.
   const showUSDccy = currencyMode === 'USD+FRA' || currencyMode === 'USD+FRA+K';
