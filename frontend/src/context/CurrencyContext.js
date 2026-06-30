@@ -71,7 +71,16 @@ export const CurrencyProvider = ({ children }) => {
   const money = (n) => `${symbol}${parseFloat(n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
   return (
-    <CurrencyContext.Provider value={{ currencies, primary, symbol, money, workflowMode, currencyMode, paymentMethods, legacyProcurementEnabled, refresh }}>
+    <CurrencyContext.Provider value={{
+      currencies, primary, symbol, money,
+      workflowMode, currencyMode, paymentMethods,
+      // v1.9.27 — one switch every Liquor-vs-Sosna page reads. True for
+      // K-only branches that accept Cash + MoMo + Bank (Mansa, Lusaka);
+      // false for Sosna multi-currency cash branches (Kassumbalesa).
+      isLiquorStyle: currencyMode === 'K' && paymentMethods === 'cash_momo_bank',
+      legacyProcurementEnabled,
+      refresh,
+    }}>
       {children}
     </CurrencyContext.Provider>
   );

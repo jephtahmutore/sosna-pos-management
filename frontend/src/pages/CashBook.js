@@ -29,7 +29,10 @@ const CashBook = () => {
   const [openingBal, setOpeningBal] = useState(0);
   // v1.8.62 — per-currency opening balance editor (USD / FRA / K).
   const [editingOB, setEditingOB] = useState(false);
-  const [obInput, setObInput] = useState({ usd: '', fra: '', k: '' });
+  // v1.9.27 — keys differ by branch profile: Sosna uses usd/fra/k,
+  // Liquor (Mansa/Lusaka) uses cash/momo/bank. Single state object holds
+  // both; the editor + save read the right pair based on isLiquorStyle.
+  const [obInput, setObInput] = useState({ usd: '', fra: '', k: '', cash: '', momo: '', bank: '' });
   // v1.8.62 — active currency filter for the ledger ('all' | 'usd' | 'fra' | 'k').
   // Clicking a currency card sets this; ledger filters rows that touch that
   // currency and the Balance column switches to that currency's running total.
@@ -119,11 +122,21 @@ const CashBook = () => {
   const handleSaveOB = async () => {
     setSavingOB(true);
     try {
-      await setOpeningBalance({
-        usd: parseFloat(obInput.usd || 0) || 0,
-        fra: parseFloat(obInput.fra || 0) || 0,
-        k:   parseFloat(obInput.k   || 0) || 0,
-      });
+      // v1.9.27 — send the per-method opening balances on Liquor branches
+      // and the per-currency opening balances on Sosna branches. Backend
+      // accepts both shapes.
+      const payload = isLiquorStyle
+        ? {
+            cash: parseFloat(obInput.cash || 0) || 0,
+            momo: parseFloat(obInput.momo || 0) || 0,
+            bank: parseFloat(obInput.bank || 0) || 0,
+          }
+        : {
+            usd: parseFloat(obInput.usd || 0) || 0,
+            fra: parseFloat(obInput.fra || 0) || 0,
+            k:   parseFloat(obInput.k   || 0) || 0,
+          };
+      await setOpeningBalance(payload);
       setEditingOB(false);
       await fetchData(from, to);
     } catch (err) { /* ignore */ }
@@ -133,9 +146,12 @@ const CashBook = () => {
   const openEditOB = () => {
     if (!window.confirm('Editing opening balances will affect all running balances in the Cash Book. Do you want to continue?')) return;
     setObInput({
-      usd: String(stats.openingByCcy?.usd || 0),
-      fra: String(stats.openingByCcy?.fra || 0),
-      k:   String(stats.openingByCcy?.k   || 0),
+      usd:  String(stats.openingByCcy?.usd     || 0),
+      fra:  String(stats.openingByCcy?.fra     || 0),
+      k:    String(stats.openingByCcy?.k       || 0),
+      cash: String(stats.openingByMethod?.cash || 0),
+      momo: String(stats.openingByMethod?.momo || 0),
+      bank: String(stats.openingByMethod?.bank || 0),
     });
     setEditingOB(true);
   };
@@ -341,12 +357,14 @@ const CashBook = () => {
         </div>
       </div>
 
-      {/* v1.8.6 — Tab strip: Ledger (existing entries view) vs Exchanges. */}
+      {/* v1.8.6 — Tab strip: Ledger (existing entries view) vs Exchanges.
+          v1.9.27 — Exchanges hidden on Liquor-style K-only branches —
+          they have no USD↔FRA conversions to track. */}
       <div style={{ display: 'flex', gap: 4, marginBottom: 16, borderBottom: '2px solid #e5e7eb' }}>
         {[
-          { key: 'ledger',    label: 'Ledger' },
-          { key: 'exchanges', label: 'Exchanges' },
-        ].map(tab => (
+          { key: 'ledger',    label: 'Ledger',    show: true },
+          { key: 'exchanges', label: 'Exchanges', show: !isLiquorStyle },
+        ].filter(t => t.show).map(tab => (
           <button key={tab.key} onClick={() => setActiveTab(tab.key)}
             style={{
               padding: '10px 22px', border: 'none', background: 'none',
@@ -424,40 +442,64 @@ const CashBook = () => {
           </div>
         </div>
 
-        {/* v1.8.62 — true per-currency cards. Each shows its own opening
-            balance + current balance, computed independently with no
-            cross-currency FX conversion. Clickable to filter the ledger. */}
-        {/* v1.9.26 — gate per-currency cards on branch currency_mode. */}
-        {[
-          { key: 'usd', label: 'USD ($)', defaultClass: 'green',  symbol: '$',  raw: false, show: showUSDccy },
-          { key: 'fra', label: 'FRA',     defaultClass: 'purple', symbol: '',   raw: true,  show: showFRAccy },
-          { key: 'k',   label: 'K',       defaultClass: 'orange', symbol: '',   raw: true,  show: showKccy   },
-        ].filter(m => m.show).map(m => {
-          const bal  = stats.currentByCcy?.[m.key] || 0;
-          const open = stats.openingByCcy?.[m.key] || 0;
-          const isNegative = bal < -0.001;
-          const fmtBal = m.raw
-            ? `${Math.round(bal).toLocaleString()} ${m.label.replace(' ($)', '')}`
-            : `${m.symbol}${bal.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-          const fmtOpen = m.raw
-            ? `${Math.round(open).toLocaleString()} ${m.label.replace(' ($)', '')}`
-            : `${m.symbol}${open.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-          const isActive = activeCcy === m.key;
-          return (
-            <div key={m.key}
-              className={`stat-card ${isNegative ? 'red' : m.defaultClass} ${isActive ? 'active-filter' : ''}`}
-              onClick={() => setActiveCcy(isActive ? 'all' : m.key)}
-              style={{ cursor: 'pointer', outline: isActive ? '3px solid #fbbf24' : 'none' }}
-            >
-              <div className="stat-icon"><FiDollarSign /></div>
-              <div>
-                <div className="stat-label">{m.label}{isActive && <span style={{ fontSize: 10, marginLeft: 6, opacity: 0.85 }}>· active</span>}</div>
-                <div className="stat-value">{hasPermission('CashBook:View') ? fmtBal : 'N/A'}</div>
-                <div style={{ fontSize: 11, opacity: 0.85, marginTop: 2 }}>{t('opening')} {fmtOpen}</div>
+        {/* v1.9.27 — Liquor-style branches render Cash on Hand / Mobile
+            Money / Cash at Bank cards using stats.currentByMethod (already
+            on the response). Sosna multi-currency branches keep per-
+            currency cards (gated by v1.9.26 currency_mode). */}
+        {isLiquorStyle ? (
+          [
+            { key: 'cash', label: 'Cash on Hand', defaultClass: 'green'  },
+            { key: 'momo', label: 'Mobile Money', defaultClass: 'orange' },
+            { key: 'bank', label: 'Cash at Bank', defaultClass: 'purple' },
+          ].map(m => {
+            const bal  = stats.currentByMethod?.[m.key] || 0;
+            const open = stats.openingByMethod?.[m.key] || 0;
+            const isNegative = bal < -0.001;
+            const fmtBal  = `${curSym}${bal.toLocaleString(undefined,  { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+            const fmtOpen = `${curSym}${open.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+            return (
+              <div key={m.key} className={`stat-card ${isNegative ? 'red' : m.defaultClass}`}>
+                <div className="stat-icon"><FiDollarSign /></div>
+                <div>
+                  <div className="stat-label">{m.label}</div>
+                  <div className="stat-value">{hasPermission('CashBook:View') ? fmtBal : 'N/A'}</div>
+                  <div style={{ fontSize: 11, opacity: 0.85, marginTop: 2 }}>{t('opening')} {fmtOpen}</div>
+                </div>
               </div>
-            </div>
-          );
-        })}
+            );
+          })
+        ) : (
+          [
+            { key: 'usd', label: 'USD ($)', defaultClass: 'green',  symbol: '$',  raw: false, show: showUSDccy },
+            { key: 'fra', label: 'FRA',     defaultClass: 'purple', symbol: '',   raw: true,  show: showFRAccy },
+            { key: 'k',   label: 'K',       defaultClass: 'orange', symbol: '',   raw: true,  show: showKccy   },
+          ].filter(m => m.show).map(m => {
+            const bal  = stats.currentByCcy?.[m.key] || 0;
+            const open = stats.openingByCcy?.[m.key] || 0;
+            const isNegative = bal < -0.001;
+            const fmtBal = m.raw
+              ? `${Math.round(bal).toLocaleString()} ${m.label.replace(' ($)', '')}`
+              : `${m.symbol}${bal.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+            const fmtOpen = m.raw
+              ? `${Math.round(open).toLocaleString()} ${m.label.replace(' ($)', '')}`
+              : `${m.symbol}${open.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+            const isActive = activeCcy === m.key;
+            return (
+              <div key={m.key}
+                className={`stat-card ${isNegative ? 'red' : m.defaultClass} ${isActive ? 'active-filter' : ''}`}
+                onClick={() => setActiveCcy(isActive ? 'all' : m.key)}
+                style={{ cursor: 'pointer', outline: isActive ? '3px solid #fbbf24' : 'none' }}
+              >
+                <div className="stat-icon"><FiDollarSign /></div>
+                <div>
+                  <div className="stat-label">{m.label}{isActive && <span style={{ fontSize: 10, marginLeft: 6, opacity: 0.85 }}>· active</span>}</div>
+                  <div className="stat-value">{hasPermission('CashBook:View') ? fmtBal : 'N/A'}</div>
+                  <div style={{ fontSize: 11, opacity: 0.85, marginTop: 2 }}>{t('opening')} {fmtOpen}</div>
+                </div>
+              </div>
+            );
+          })
+        )}
       </div>
 
       {/* Activity strip — compact secondary cards. Opening Balance + period totals.
@@ -501,12 +543,17 @@ const CashBook = () => {
               <div style={{ fontSize: 12, color: '#6b7280', marginTop: 4 }}>Starting balance per currency (USD / FRA / K) — used as the base for the Cash Book.</div>
             </div>
             <div style={{ padding: 22, display: 'grid', gap: 12 }}>
-              {/* v1.9.26 — gate per-currency editors on branch currency_mode. */}
-              {[
+              {/* v1.9.27 — Liquor branches edit Cash / MoMo / Bank
+                  openings; Sosna branches keep per-currency editors. */}
+              {(isLiquorStyle ? [
+                { key: 'cash', label: 'Cash on Hand', color: '#16a34a', show: true },
+                { key: 'momo', label: 'Mobile Money', color: '#ea580c', show: true },
+                { key: 'bank', label: 'Cash at Bank', color: '#7c3aed', show: true },
+              ] : [
                 { key: 'usd', label: 'USD ($)', color: '#16a34a', show: showUSDccy },
                 { key: 'fra', label: 'FRA',     color: '#7c3aed', show: showFRAccy },
                 { key: 'k',   label: 'K',       color: '#ea580c', show: showKccy   },
-              ].filter(f => f.show).map(f => (
+              ]).filter(f => f.show).map(f => (
                 <div key={f.key}>
                   <label style={{ fontSize: 12, color: f.color, fontWeight: 700, textTransform: 'uppercase', marginBottom: 4, display: 'block' }}>{f.label}</label>
                   <input type="number" min="0" step="0.01"
@@ -534,11 +581,21 @@ const CashBook = () => {
           <thead>
             <tr>
               <th>{t('date')}</th><th>{t('description')}</th><th>{t('reference')}</th><th>{t('type')}</th>
-              {/* v1.9.26 — column visibility now follows the branch's
-                  currency_mode setting (K-only → one K column only). */}
-              {showUSDccy && <th style={{ textAlign: 'right' }}>USD ($)</th>}
-              {showFRAccy && <th style={{ textAlign: 'right' }}>FRA</th>}
-              {showKccy && <th style={{ textAlign: 'right' }}>K</th>}
+              {/* v1.9.27 — Liquor branches show single Receipts/Payments
+                  columns; Sosna branches keep per-currency columns gated
+                  by v1.9.26 currency_mode. */}
+              {isLiquorStyle ? (
+                <>
+                  <th style={{ textAlign: 'right' }}>{t('receiptsCR') || 'Receipts'}</th>
+                  <th style={{ textAlign: 'right' }}>{t('paymentsPV') || 'Payments'}</th>
+                </>
+              ) : (
+                <>
+                  {showUSDccy && <th style={{ textAlign: 'right' }}>USD ($)</th>}
+                  {showFRAccy && <th style={{ textAlign: 'right' }}>FRA</th>}
+                  {showKccy && <th style={{ textAlign: 'right' }}>K</th>}
+                </>
+              )}
               <th style={{ textAlign: 'right' }}>{t('balance')}</th>
             </tr>
           </thead>
@@ -561,9 +618,20 @@ const CashBook = () => {
                   <td style={{ fontWeight: 600 }}>{t('openingBalance')}</td>
                   <td style={{ color: '#9ca3af', fontSize: 12 }}>OB</td>
                   <td></td>
-                  {showUSDccy && <td style={{ color: obUsd ? '#16a34a' : '#cbd5e1', fontWeight: 600, textAlign: 'right' }}>{obUsd ? `${curSym}${obUsd.toLocaleString()}` : '—'}</td>}
-                  {showFRAccy && <td style={{ color: obFra ? '#2563eb' : '#cbd5e1', fontWeight: 600, textAlign: 'right' }}>{obFra ? `${Math.round(obFra).toLocaleString()} FRA` : '—'}</td>}
-                  {showKccy && <td style={{ color: obK ? '#7c3aed' : '#cbd5e1', fontWeight: 600, textAlign: 'right' }}>{obK ? `${Math.round(obK).toLocaleString()} K` : '—'}</td>}
+                  {isLiquorStyle ? (
+                    <>
+                      <td style={{ color: openingBal > 0 ? '#16a34a' : '#cbd5e1', fontWeight: 600, textAlign: 'right' }}>
+                        {openingBal > 0 ? `${curSym}${openingBal.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}` : '—'}
+                      </td>
+                      <td style={{ color: '#cbd5e1', textAlign: 'right' }}>—</td>
+                    </>
+                  ) : (
+                    <>
+                      {showUSDccy && <td style={{ color: obUsd ? '#16a34a' : '#cbd5e1', fontWeight: 600, textAlign: 'right' }}>{obUsd ? `${curSym}${obUsd.toLocaleString()}` : '—'}</td>}
+                      {showFRAccy && <td style={{ color: obFra ? '#2563eb' : '#cbd5e1', fontWeight: 600, textAlign: 'right' }}>{obFra ? `${Math.round(obFra).toLocaleString()} FRA` : '—'}</td>}
+                      {showKccy && <td style={{ color: obK ? '#7c3aed' : '#cbd5e1', fontWeight: 600, textAlign: 'right' }}>{obK ? `${Math.round(obK).toLocaleString()} K` : '—'}</td>}
+                    </>
+                  )}
                   <td style={{ fontWeight: 600, textAlign: 'right' }}>{fmtBalActive}</td>
                 </tr>
               );
@@ -599,20 +667,41 @@ const CashBook = () => {
                       {e.type}
                     </span>
                   </td>
-                  {showUSDccy && (
-                    <td style={{ textAlign: 'right', color: usdNet > 0 ? '#16a34a' : usdNet < 0 ? '#dc2626' : '#cbd5e1', fontWeight: usdNet !== 0 ? 600 : 400 }}>
-                      {usdNet !== 0 ? `${usdNet > 0 ? '+' : '-'}${fmtUsd(Math.abs(usdNet))}` : '—'}
-                    </td>
-                  )}
-                  {showFRAccy && (
-                    <td style={{ textAlign: 'right', color: fraNet > 0 ? '#2563eb' : fraNet < 0 ? '#dc2626' : '#cbd5e1', fontWeight: fraNet !== 0 ? 600 : 400 }}>
-                      {fraNet !== 0 ? `${fraNet > 0 ? '+' : '-'}${fmtRaw(Math.abs(fraNet))} FRA` : '—'}
-                    </td>
-                  )}
-                  {showKccy && (
-                    <td style={{ textAlign: 'right', color: kNet > 0 ? '#7c3aed' : kNet < 0 ? '#dc2626' : '#cbd5e1', fontWeight: kNet !== 0 ? 600 : 400 }}>
-                      {kNet !== 0 ? `${kNet > 0 ? '+' : '-'}${fmtRaw(Math.abs(kNet))} K` : '—'}
-                    </td>
+                  {isLiquorStyle ? (() => {
+                    // v1.9.27 — Liquor view: receipts (inflow) and
+                    // payments (outflow) as two separate columns. The
+                    // backend already aggregates these on each row.
+                    const inflow  = parseFloat(e.receipt_amount || 0) || 0;
+                    const outflow = parseFloat(e.payment_amount || 0) || 0;
+                    const fmtK = (n) => `${curSym}${parseFloat(n||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}`;
+                    return (
+                      <>
+                        <td style={{ textAlign: 'right', color: inflow > 0 ? '#16a34a' : '#cbd5e1', fontWeight: inflow > 0 ? 600 : 400 }}>
+                          {inflow > 0 ? `+${fmtK(inflow)}` : '—'}
+                        </td>
+                        <td style={{ textAlign: 'right', color: outflow > 0 ? '#dc2626' : '#cbd5e1', fontWeight: outflow > 0 ? 600 : 400 }}>
+                          {outflow > 0 ? `-${fmtK(outflow)}` : '—'}
+                        </td>
+                      </>
+                    );
+                  })() : (
+                    <>
+                      {showUSDccy && (
+                        <td style={{ textAlign: 'right', color: usdNet > 0 ? '#16a34a' : usdNet < 0 ? '#dc2626' : '#cbd5e1', fontWeight: usdNet !== 0 ? 600 : 400 }}>
+                          {usdNet !== 0 ? `${usdNet > 0 ? '+' : '-'}${fmtUsd(Math.abs(usdNet))}` : '—'}
+                        </td>
+                      )}
+                      {showFRAccy && (
+                        <td style={{ textAlign: 'right', color: fraNet > 0 ? '#2563eb' : fraNet < 0 ? '#dc2626' : '#cbd5e1', fontWeight: fraNet !== 0 ? 600 : 400 }}>
+                          {fraNet !== 0 ? `${fraNet > 0 ? '+' : '-'}${fmtRaw(Math.abs(fraNet))} FRA` : '—'}
+                        </td>
+                      )}
+                      {showKccy && (
+                        <td style={{ textAlign: 'right', color: kNet > 0 ? '#7c3aed' : kNet < 0 ? '#dc2626' : '#cbd5e1', fontWeight: kNet !== 0 ? 600 : 400 }}>
+                          {kNet !== 0 ? `${kNet > 0 ? '+' : '-'}${fmtRaw(Math.abs(kNet))} K` : '—'}
+                        </td>
+                      )}
+                    </>
                   )}
                   <td style={{ fontWeight: 600, textAlign: 'right' }}>
                     {(() => {
@@ -656,9 +745,24 @@ const CashBook = () => {
               return (
                 <tr style={{ background: '#f9fafb', fontWeight: 700, borderTop: '2px solid #e5e7eb' }}>
                   <td colSpan="4" style={{ textAlign: 'right' }}>TOTALS:</td>
-                  {showUSDccy && <td style={{ textAlign: 'right', color: t.usd >= 0 ? '#16a34a' : '#dc2626' }}>{t.usd >= 0 ? '+' : '-'}{fmtUsd(Math.abs(t.usd))}</td>}
-                  {showFRAccy && <td style={{ textAlign: 'right', color: t.fra >= 0 ? '#2563eb' : '#dc2626' }}>{t.fra >= 0 ? '+' : '-'}{fmtRaw(Math.abs(t.fra))} FRA</td>}
-                  {showKccy && <td style={{ textAlign: 'right', color: t.k   >= 0 ? '#7c3aed' : '#dc2626' }}>{t.k   >= 0 ? '+' : '-'}{fmtRaw(Math.abs(t.k))} K</td>}
+                  {isLiquorStyle ? (() => {
+                    // v1.9.27 — Liquor totals: sum receipts and payments.
+                    const totIn  = entries.reduce((a, e) => a + (parseFloat(e.receipt_amount || 0) || 0), 0);
+                    const totOut = entries.reduce((a, e) => a + (parseFloat(e.payment_amount || 0) || 0), 0);
+                    const fmtK = (n) => `${curSym}${parseFloat(n||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}`;
+                    return (
+                      <>
+                        <td style={{ textAlign: 'right', color: '#16a34a' }}>+{fmtK(totIn)}</td>
+                        <td style={{ textAlign: 'right', color: '#dc2626' }}>-{fmtK(totOut)}</td>
+                      </>
+                    );
+                  })() : (
+                    <>
+                      {showUSDccy && <td style={{ textAlign: 'right', color: t.usd >= 0 ? '#16a34a' : '#dc2626' }}>{t.usd >= 0 ? '+' : '-'}{fmtUsd(Math.abs(t.usd))}</td>}
+                      {showFRAccy && <td style={{ textAlign: 'right', color: t.fra >= 0 ? '#2563eb' : '#dc2626' }}>{t.fra >= 0 ? '+' : '-'}{fmtRaw(Math.abs(t.fra))} FRA</td>}
+                      {showKccy && <td style={{ textAlign: 'right', color: t.k   >= 0 ? '#7c3aed' : '#dc2626' }}>{t.k   >= 0 ? '+' : '-'}{fmtRaw(Math.abs(t.k))} K</td>}
+                    </>
+                  )}
                   <td style={{ textAlign: 'right', color: closeBal >= 0 ? '#16a34a' : '#dc2626' }}>{fmtClose}</td>
                 </tr>
               );

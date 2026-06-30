@@ -20,7 +20,7 @@ const todayStr = new Date().toISOString().split('T')[0];
 
 const PaymentVoucher = () => {
   const { hasPermission } = useAuth();
-  const { symbol: curSym } = useCurrency();
+  const { symbol: curSym, isLiquorStyle } = useCurrency();
   const { t } = useLanguage();
   // v1.8.25 — stats now include per-currency totals (today / month / all).
   const [stats, setStats]       = useState({
@@ -321,21 +321,32 @@ const PaymentVoucher = () => {
             <span style={{ opacity: 0.85 }}>{label}</span><strong style={{ color }}>{val}</strong>
           </div>
         );
-        const Card = ({ label, ccyData, bg, icon }) => (
-          <div style={{ borderRadius: 14, padding: '14px 18px', background: bg, color: '#fff', boxShadow: '0 4px 16px rgba(0,0,0,0.1)', position: 'relative', overflow: 'hidden' }}>
-            <div style={{ position: 'absolute', right: -10, top: -10, width: 60, height: 60, borderRadius: '50%', background: 'rgba(255,255,255,0.1)' }} />
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
-              {icon} <div style={{ fontSize: 11, fontWeight: 700, opacity: 0.9, textTransform: 'uppercase', letterSpacing: 0.5 }}>{label}</div>
-            </div>
-            {allowed ? (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
-                <Line label="USD" val={fmtU(ccyData?.usd || 0)} color="#fff" />
-                <Line label="FRA" val={fmtN(ccyData?.fra || 0)} color="#fff" />
-                <Line label="K"   val={fmtN(ccyData?.k   || 0)} color="#fff" />
+        // v1.9.27 — Liquor-style branches collapse 3 currency rows into
+        // one single-amount line in the primary currency.
+        const Card = ({ label, ccyData, bg, icon }) => {
+          const single = (parseFloat(ccyData?.usd || 0) || 0)
+                       + (parseFloat(ccyData?.fra || 0) || 0)
+                       + (parseFloat(ccyData?.k   || 0) || 0);
+          return (
+            <div style={{ borderRadius: 14, padding: '14px 18px', background: bg, color: '#fff', boxShadow: '0 4px 16px rgba(0,0,0,0.1)', position: 'relative', overflow: 'hidden' }}>
+              <div style={{ position: 'absolute', right: -10, top: -10, width: 60, height: 60, borderRadius: '50%', background: 'rgba(255,255,255,0.1)' }} />
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+                {icon} <div style={{ fontSize: 11, fontWeight: 700, opacity: 0.9, textTransform: 'uppercase', letterSpacing: 0.5 }}>{label}</div>
               </div>
-            ) : <div style={{ fontSize: 18, fontWeight: 800 }}>N/A</div>}
-          </div>
-        );
+              {allowed ? (
+                isLiquorStyle ? (
+                  <div style={{ fontSize: 22, fontWeight: 800 }}>{curSym}{single.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
+                ) : (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
+                    <Line label="USD" val={fmtU(ccyData?.usd || 0)} color="#fff" />
+                    <Line label="FRA" val={fmtN(ccyData?.fra || 0)} color="#fff" />
+                    <Line label="K"   val={fmtN(ccyData?.k   || 0)} color="#fff" />
+                  </div>
+                )
+              ) : <div style={{ fontSize: 18, fontWeight: 800 }}>N/A</div>}
+            </div>
+          );
+        };
         return (
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 14, marginBottom: 18 }}>
             <Card label={t('todaysPayments')} ccyData={stats.today} bg="linear-gradient(135deg,#ef4444,#dc2626)" icon={<FiDollarSign size={20} />} />

@@ -22,8 +22,11 @@ const getStatus = (diff) => {
 const CashReport = () => {
   const { user: authUser } = useAuth();
   const { symbol: curSym, currencyMode } = useCurrency();
-  // v1.9.26 — branch's currency_mode controls which per-currency panels
-  // render on this page. K-only branches collapse to a single K column.
+  // v1.9.26 — currency_mode gates per-currency panels.
+  // v1.9.27 — Cash Report method-axis (Cash / MoMo / Bank counting panels
+  // for Liquor branches) deferred — needs a backend rollup of expected
+  // sales per method, currently only exposed per currency. Mansa keeps
+  // the K-only panel from v1.9.26 in the meantime.
   const showUSDccy = currencyMode === 'USD+FRA' || currencyMode === 'USD+FRA+K';
   const showFRAccy = currencyMode === 'USD+FRA' || currencyMode === 'USD+FRA+K';
   const showKccy   = currencyMode === 'USD+FRA+K' || currencyMode === 'K';

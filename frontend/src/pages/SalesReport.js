@@ -23,7 +23,7 @@ const PARTIAL_REVERSE_ENABLED = true;
 
 const SalesReport = () => {
   const { hasPermission, user: authUser } = useAuth();
-  const { symbol: curSym, currencyMode } = useCurrency();
+  const { symbol: curSym, currencyMode, isLiquorStyle } = useCurrency();
   // v1.9.26 — gate the USD/FRA/K rows + columns on the branch's
   // currency_mode. Mansa/Lusaka run K-only and should see one column.
   const showUSD = currencyMode === 'USD+FRA' || currencyMode === 'USD+FRA+K';
@@ -161,6 +161,19 @@ const SalesReport = () => {
     s + parseFloat(o.fra_received || 0) - parseFloat(o.fra_change_given || 0), 0);
   const totalKReceived = activeOrders.reduce((s, o) =>
     s + parseFloat(o.k_received || 0) - parseFloat(o.k_change_given || 0), 0);
+
+  // v1.9.27 — method-axis totals for Liquor-style branches (Mansa/Lusaka).
+  // The single-screen Pay modal writes per-method amounts into these
+  // columns directly; the credit portion is anything billed but not
+  // collected by any of the three methods.
+  const totalCashReceived = activeOrders.reduce((s, o) =>
+    s + parseFloat(o.cash || o.cash_amount || 0), 0);
+  const totalMomoReceived = activeOrders.reduce((s, o) =>
+    s + parseFloat(o.momo || o.momo_amount || 0), 0);
+  const totalBankReceived = activeOrders.reduce((s, o) =>
+    s + parseFloat(o.bank || o.bank_amount || 0), 0);
+  const totalCreditByMethod = activeOrders.reduce((s, o) =>
+    s + Math.max(0, parseFloat(o.total_amount || 0) - parseFloat(o.amount_received || 0)), 0);
 
   // v1.8.68 — over-collections kept by cashier, summed per source currency.
   const totalOverpaidUSD = activeOrders.reduce((s, o) =>
@@ -798,24 +811,45 @@ const SalesReport = () => {
           <div style={{ position: 'absolute', right: -12, top: -12, width: 80, height: 80, borderRadius: '50%', background: 'rgba(255,255,255,0.1)' }} />
           <div style={{ fontSize: 11, fontWeight: 700, opacity: 0.85, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 8 }}>{t('cashSales')}</div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-            {/* v1.9.26 — only show currencies the branch actually trades in. */}
-            {showUSD && (
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
-                <span style={{ fontSize: 11, opacity: 0.8 }}>USD</span>
-                <span style={{ fontSize: 17, fontWeight: 800 }}>${(parseFloat(totalUsdReceived)||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</span>
-              </div>
-            )}
-            {showFRA && (
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
-                <span style={{ fontSize: 11, opacity: 0.8 }}>FRA</span>
-                <span style={{ fontSize: 17, fontWeight: 800 }}>{(parseFloat(totalFraReceived)||0).toLocaleString(undefined,{maximumFractionDigits:0})}</span>
-              </div>
-            )}
-            {showK && (
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
-                <span style={{ fontSize: 11, opacity: 0.8 }}>K</span>
-                <span style={{ fontSize: 17, fontWeight: 800 }}>{(parseFloat(totalKReceived)||0).toLocaleString(undefined,{maximumFractionDigits:0})}</span>
-              </div>
+            {/* v1.9.27 — Liquor branches break Cash Sales by method
+                (Cash / MoMo / Bank); Sosna multi-currency branches break
+                by currency (USD/FRA/K). The bottom ≈ total line stays. */}
+            {isLiquorStyle ? (
+              <>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
+                  <span style={{ fontSize: 11, opacity: 0.8 }}>Cash</span>
+                  <span style={{ fontSize: 17, fontWeight: 800 }}>{curSym}{(parseFloat(totalCashReceived)||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</span>
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
+                  <span style={{ fontSize: 11, opacity: 0.8 }}>MoMo</span>
+                  <span style={{ fontSize: 17, fontWeight: 800 }}>{curSym}{(parseFloat(totalMomoReceived)||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</span>
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
+                  <span style={{ fontSize: 11, opacity: 0.8 }}>Bank</span>
+                  <span style={{ fontSize: 17, fontWeight: 800 }}>{curSym}{(parseFloat(totalBankReceived)||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</span>
+                </div>
+              </>
+            ) : (
+              <>
+                {showUSD && (
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
+                    <span style={{ fontSize: 11, opacity: 0.8 }}>USD</span>
+                    <span style={{ fontSize: 17, fontWeight: 800 }}>${(parseFloat(totalUsdReceived)||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</span>
+                  </div>
+                )}
+                {showFRA && (
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
+                    <span style={{ fontSize: 11, opacity: 0.8 }}>FRA</span>
+                    <span style={{ fontSize: 17, fontWeight: 800 }}>{(parseFloat(totalFraReceived)||0).toLocaleString(undefined,{maximumFractionDigits:0})}</span>
+                  </div>
+                )}
+                {showK && (
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
+                    <span style={{ fontSize: 11, opacity: 0.8 }}>K</span>
+                    <span style={{ fontSize: 17, fontWeight: 800 }}>{(parseFloat(totalKReceived)||0).toLocaleString(undefined,{maximumFractionDigits:0})}</span>
+                  </div>
+                )}
+              </>
             )}
           </div>
           <div style={{ fontSize: 10, opacity: 0.7, marginTop: 6, borderTop: '1px solid rgba(255,255,255,0.2)', paddingTop: 4 }}>
@@ -1063,7 +1097,82 @@ const SalesReport = () => {
       })()}
 
       {/* By Payment / Currency Tab — v1.8.1 */}
-      {activeTab === 'byPayment' && (() => {
+      {activeTab === 'byPayment' && isLiquorStyle && (() => {
+        // v1.9.27 — Liquor-style branches: simple Cash / MoMo / Bank /
+        // Credit breakdown. No currency split, no Given/Net/± because the
+        // single-screen Pay modal collects whole amounts in each method.
+        const fmtK = (n) => `${curSym}${(parseFloat(n)||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}`;
+        const totalRevenue = activeOrders.reduce((s, o) => s + (parseFloat(o.total_amount)||0), 0);
+        const pct = (n) => totalRevenue > 0 ? `${((n / totalRevenue) * 100).toFixed(1)}% of revenue` : '0% of revenue';
+        return (
+          <div className="card">
+            <div className="card-header">
+              <h3>Sales by Payment Method</h3>
+              <span style={{ fontSize: 13, color: '#6b7280' }}>{activeOrders.length} order(s) · {fmtK(totalRevenue)}</span>
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 14, padding: '16px 20px' }}>
+              {[
+                { label: 'Cash',         value: totalCashReceived,   color: '#16a34a' },
+                { label: 'Mobile Money', value: totalMomoReceived,   color: '#ea580c' },
+                { label: 'Bank',         value: totalBankReceived,   color: '#2563eb' },
+                { label: 'Credit',       value: totalCreditByMethod, color: '#dc2626' },
+              ].map(b => (
+                <div key={b.label} style={{ padding: '14px 16px', borderRadius: 12, background: b.color + '15', border: `1.5px solid ${b.color}40` }}>
+                  <div style={{ fontSize: 11, fontWeight: 700, color: b.color, textTransform: 'uppercase', letterSpacing: 0.5 }}>{b.label}</div>
+                  <div style={{ fontSize: 22, fontWeight: 800, color: b.color, marginTop: 4 }}>{fmtK(b.value)}</div>
+                  <div style={{ fontSize: 11, color: b.color, opacity: 0.75, marginTop: 2 }}>{pct(b.value)}</div>
+                </div>
+              ))}
+            </div>
+            <table className="data-table" style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+              <thead>
+                <tr style={{ background: '#f9fafb' }}>
+                  <th style={{ padding: '10px 12px', textAlign: 'left' }}>Date</th>
+                  <th style={{ padding: '10px 12px', textAlign: 'left' }}>Receipt #</th>
+                  <th style={{ padding: '10px 12px', textAlign: 'left' }}>Customer</th>
+                  <th style={{ padding: '10px 12px', textAlign: 'right' }}>Total</th>
+                  <th style={{ padding: '10px 12px', textAlign: 'right', color: '#16a34a' }}>Cash</th>
+                  <th style={{ padding: '10px 12px', textAlign: 'right', color: '#ea580c' }}>MoMo</th>
+                  <th style={{ padding: '10px 12px', textAlign: 'right', color: '#2563eb' }}>Bank</th>
+                  <th style={{ padding: '10px 12px', textAlign: 'right', color: '#dc2626' }}>Credit</th>
+                </tr>
+              </thead>
+              <tbody>
+                {activeOrders.map(o => {
+                  const cash = parseFloat(o.cash || o.cash_amount || 0);
+                  const momo = parseFloat(o.momo || o.momo_amount || 0);
+                  const bank = parseFloat(o.bank || o.bank_amount || 0);
+                  const credit = Math.max(0, parseFloat(o.total_amount || 0) - parseFloat(o.amount_received || 0));
+                  return (
+                    <tr key={o.id}>
+                      <td style={{ padding: '8px 12px' }}>{(o.date || '').slice(0,10)}</td>
+                      <td style={{ padding: '8px 12px', fontFamily: 'monospace' }}>{o.order_number}</td>
+                      <td style={{ padding: '8px 12px' }}>{o.customer_name || 'Walk-in'}</td>
+                      <td style={{ padding: '8px 12px', textAlign: 'right', fontWeight: 600 }}>{fmtK(o.total_amount)}</td>
+                      <td style={{ padding: '8px 12px', textAlign: 'right', color: cash > 0 ? '#16a34a' : '#cbd5e1' }}>{cash > 0 ? fmtK(cash) : '—'}</td>
+                      <td style={{ padding: '8px 12px', textAlign: 'right', color: momo > 0 ? '#ea580c' : '#cbd5e1' }}>{momo > 0 ? fmtK(momo) : '—'}</td>
+                      <td style={{ padding: '8px 12px', textAlign: 'right', color: bank > 0 ? '#2563eb' : '#cbd5e1' }}>{bank > 0 ? fmtK(bank) : '—'}</td>
+                      <td style={{ padding: '8px 12px', textAlign: 'right', color: credit > 0 ? '#dc2626' : '#cbd5e1' }}>{credit > 0 ? fmtK(credit) : '—'}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+              <tfoot>
+                <tr style={{ background: '#f9fafb', fontWeight: 700, borderTop: '2px solid #e5e7eb' }}>
+                  <td colSpan={3} style={{ padding: '10px 12px', textAlign: 'right' }}>TOTAL</td>
+                  <td style={{ padding: '10px 12px', textAlign: 'right' }}>{fmtK(totalRevenue)}</td>
+                  <td style={{ padding: '10px 12px', textAlign: 'right', color: '#16a34a' }}>{fmtK(totalCashReceived)}</td>
+                  <td style={{ padding: '10px 12px', textAlign: 'right', color: '#ea580c' }}>{fmtK(totalMomoReceived)}</td>
+                  <td style={{ padding: '10px 12px', textAlign: 'right', color: '#2563eb' }}>{fmtK(totalBankReceived)}</td>
+                  <td style={{ padding: '10px 12px', textAlign: 'right', color: '#dc2626' }}>{fmtK(totalCreditByMethod)}</td>
+                </tr>
+              </tfoot>
+            </table>
+          </div>
+        );
+      })()}
+
+      {activeTab === 'byPayment' && !isLiquorStyle && (() => {
         // Sosna is cash-only across 3 currencies. Per-order breakdown shows
         // what the customer paid IN each currency (net of change in that same
         // currency) plus any unpaid balance (Credit, always in USD).
