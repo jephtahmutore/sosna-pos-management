@@ -504,9 +504,16 @@ const GRN = () => {
     }
     const validItems = items.filter(i => i.product_id && parseFloat(i.quantity) > 0 && parseFloat(i.unit_price) >= 0);
     if (validItems.length === 0) return setError('Please add at least one item with a product and quantity.');
+    // v1.9.23 — only send supplier_id when it actually matches a local
+    // supplier row. The HQ-side supplier_id passed via the URL prefill
+    // doesn't exist in the branch's suppliers table, so passing it raw
+    // triggered a FOREIGN KEY constraint failure on insert. Sending NULL
+    // is fine — the branch has no AP, and supplier_name carries the
+    // human-readable label.
+    const localSupplier = supplierId ? suppliers.find(s => String(s.id) === String(supplierId)) : null;
     const payload = {
-      supplier_id: supplierId ? parseInt(supplierId) : null,
-      supplier_name: pendingSupplierName || (suppliers.find(s => String(s.id) === String(supplierId))?.name) || null,
+      supplier_id:   localSupplier ? parseInt(supplierId) : null,
+      supplier_name: pendingSupplierName || localSupplier?.name || null,
       date, notes,
       invoice_attachment: invoiceAttachment,
       // v1.9.7 — when set, backend defers stock + AP until HQ confirms.
