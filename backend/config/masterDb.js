@@ -445,6 +445,161 @@ try {
     console.warn('[masterDb] v1.3.0 hq_purchase_items migration:', e.message);
   }
 
+  // ─────────────────────────────────────────────────────────────────────────
+  // v1.10.0 — procurement rearchitecture.
+  // ─────────────────────────────────────────────────────────────────────────
+  // The GRN-paperwork ownership shifts from branch to HQ. Branch's role
+  // collapses to "confirm what physically arrived"; HQ does invoice + CN
+  // paperwork and generates the GRN. New state machine on hq_purchase_items:
+  //   AWAITING_CONFIRMATION → RECEIPT_REPORTED → CONFIRMED
+  // (BRANCH_REJECTED unchanged; legacy AWAITING_GRN/GRN_SUBMITTED rows
+  // continue to work through the old endpoints for back-compat.)
+  try {
+    // Branch confirmation captures invoice # + photo on the PO header.
+    const hpCols = masterDb.prepare(`PRAGMA table_info(hq_purchases)`).all().map(c => c.name);
+    const addHpCol = (col, def) => {
+      if (!hpCols.includes(col)) {
+        masterDb.prepare(`ALTER TABLE hq_purchases ADD COLUMN ${col} ${def}`).run();
+        hpCols.push(col);
+      }
+    };
+    addHpCol('supplier_invoice_number',  'TEXT');
+    addHpCol('invoice_attachment',       'TEXT');
+    addHpCol('confirmed_by_branch',      'INTEGER');
+    addHpCol('confirmed_by_branch_name', 'TEXT');
+    addHpCol('confirmed_at_branch',      'TEXT');
+    addHpCol('confirmed_branch_slug',    'TEXT');
+  } catch (e) {
+    console.warn('[masterDb] v1.10.0 hq_purchases migration:', e.message);
+  }
+
+  try {
+    // Off-PO items branch received (e.g. supplier sent SAVANNA 20 when the
+    // PO only listed CASTLE LITE). Each gets reviewed by HQ when they
+    // generate the GRN; rolls into the GRN as an extra line.
+    masterDb.exec(`
+      CREATE TABLE IF NOT EXISTS hq_purchase_receipt_extras (
+        id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+        sync_id             TEXT NOT NULL UNIQUE,
+        purchase_sync_id    TEXT NOT NULL,
+        product_sync_id     TEXT,
+        product_name        TEXT NOT NULL,
+        unit                TEXT,
+        quantity            REAL NOT NULL DEFAULT 0,
+        cost_price          REAL NOT NULL DEFAULT 0,
+        added_by            INTEGER,
+        added_by_name       TEXT,
+        added_at            TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_hq_extras_purchase ON hq_purchase_receipt_extras (purchase_sync_id);
+    `);
+  } catch (e) {
+    console.warn('[masterDb] v1.10.0 hq_purchase_receipt_extras:', e.message);
+  }
+
+  try {
+    // HQ-owned GRN. Replaces the per-branch grn table for v1.10.0+ flow.
+    // Branch's grn table stays untouched for legacy reads.
+    masterDb.exec(`
+      CREATE TABLE IF NOT EXISTS hq_grns (
+        id                        INTEGER PRIMARY KEY AUTOINCREMENT,
+        grn_number                TEXT NOT NULL UNIQUE,
+        sync_id                   TEXT NOT NULL UNIQUE,
+        date                      TEXT NOT NULL,
+        branch_slug               TEXT NOT NULL,
+        branch_name               TEXT,
+        supplier_id               INTEGER,
+        supplier_sync_id          TEXT,
+        supplier_name             TEXT,
+        po_sync_id                TEXT,
+        po_number                 TEXT,
+        supplier_invoice_number   TEXT,
+        invoice_attachment        TEXT,
+        items_subtotal            REAL NOT NULL DEFAULT 0,
+        cn_total                  REAL NOT NULL DEFAULT 0,
+        final_payable             REAL NOT NULL DEFAULT 0,
+        notes                     TEXT,
+        confirmed_by_branch       INTEGER,
+        confirmed_by_branch_name  TEXT,
+        confirmed_at_branch       TEXT,
+        generated_by_hq           INTEGER,
+        generated_by_hq_name      TEXT,
+        generated_at              TEXT NOT NULL DEFAULT (datetime('now')),
+        deleted_at                TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_hq_grns_branch   ON hq_grns (branch_slug);
+      CREATE INDEX IF NOT EXISTS idx_hq_grns_supplier ON hq_grns (supplier_sync_id);
+      CREATE INDEX IF NOT EXISTS idx_hq_grns_po       ON hq_grns (po_sync_id);
+      CREATE INDEX IF NOT EXISTS idx_hq_grns_date     ON hq_grns (date);
+
+      CREATE TABLE IF NOT EXISTS hq_grn_items (
+        id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+        sync_id             TEXT NOT NULL UNIQUE,
+        grn_id              INTEGER NOT NULL REFERENCES hq_grns(id),
+        grn_sync_id         TEXT NOT NULL,
+        product_sync_id     TEXT,
+        product_name        TEXT NOT NULL,
+        unit                TEXT,
+        quantity            REAL NOT NULL DEFAULT 0,
+        unit_price          REAL NOT NULL DEFAULT 0,
+        total_price         REAL NOT NULL DEFAULT 0,
+        expiry_date         TEXT,
+        is_extra            INTEGER NOT NULL DEFAULT 0,
+        po_expected_qty     REAL,
+        created_at          TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_hq_grn_items_grn ON hq_grn_items (grn_sync_id);
+    `);
+  } catch (e) {
+    console.warn('[masterDb] v1.10.0 hq_grns:', e.message);
+  }
+
+  try {
+    // HQ-owned supplier credit notes (linked to hq_grns). Mirrors the
+    // branch supplier_credit_notes shape so the existing CN UI maps cleanly.
+    masterDb.exec(`
+      CREATE TABLE IF NOT EXISTS hq_supplier_credit_notes (
+        id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+        credit_note_number    TEXT NOT NULL UNIQUE,
+        sync_id               TEXT NOT NULL UNIQUE,
+        date                  TEXT NOT NULL,
+        supplier_id           INTEGER,
+        supplier_sync_id      TEXT,
+        supplier_name         TEXT,
+        reason                TEXT NOT NULL,
+        reference             TEXT,
+        amount                REAL NOT NULL DEFAULT 0,
+        notes                 TEXT,
+        grn_sync_id           TEXT,
+        branch_slug           TEXT,
+        created_by            INTEGER,
+        created_by_name       TEXT,
+        created_at            TEXT NOT NULL DEFAULT (datetime('now')),
+        deleted_at            TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_hq_scn_grn      ON hq_supplier_credit_notes (grn_sync_id);
+      CREATE INDEX IF NOT EXISTS idx_hq_scn_supplier ON hq_supplier_credit_notes (supplier_sync_id);
+
+      CREATE TABLE IF NOT EXISTS hq_supplier_credit_note_items (
+        id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+        sync_id               TEXT NOT NULL UNIQUE,
+        credit_note_id        INTEGER NOT NULL REFERENCES hq_supplier_credit_notes(id),
+        credit_note_sync_id   TEXT NOT NULL,
+        product_sync_id       TEXT,
+        product_name          TEXT,
+        quantity              REAL NOT NULL DEFAULT 0,
+        unit                  TEXT,
+        unit_conv             REAL NOT NULL DEFAULT 1,
+        unit_value            REAL NOT NULL DEFAULT 0,
+        total_price           REAL NOT NULL DEFAULT 0,
+        created_at            TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_hq_scn_items_cn ON hq_supplier_credit_note_items (credit_note_sync_id);
+    `);
+  } catch (e) {
+    console.warn('[masterDb] v1.10.0 hq_supplier_credit_notes:', e.message);
+  }
+
   console.log('[master] Master DB ready:', masterDbPath);
 } catch (e) {
   console.warn('[master] Could not open master DB (Electron mode — VPS-only features disabled):', e.message);

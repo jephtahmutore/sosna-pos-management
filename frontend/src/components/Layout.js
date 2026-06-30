@@ -284,7 +284,7 @@ const Layout = () => {
       '/hq/cash-position': 'HQ Cash Position',
       '/hq/products': 'HQ Products',
       '/hq/purchases': 'HQ Purchases',
-      '/hq/confirm-grn': 'Confirm GRN',
+      '/hq/confirm-grn': 'Generate GRN',
       '/hq/grn-archive': 'GRN Archive',
       '/hq/variances':   'Transit Variances',
       '/hq/confirm-damages': 'Confirm Damages',
@@ -487,7 +487,7 @@ const Layout = () => {
                   )}
                   {hq && (
                     <div className={`nav-item ${isActive('/hq/confirm-grn') ? 'active' : ''}`} onClick={() => navigate('/hq/confirm-grn')}>
-                      <FiCheckCircle className="nav-icon" /> <span>Confirm GRN</span>
+                      <FiCheckCircle className="nav-icon" /> <span>Generate GRN</span>
                       {badges.hq_pending_grn > 0 && <SidebarBadge n={badges.hq_pending_grn} />}
                     </div>
                   )}

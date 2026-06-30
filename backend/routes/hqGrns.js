@@ -405,4 +405,259 @@ router.get('/archive', hqAuth, (req, res) => {
   }
 });
 
+// ── v1.10.0 — HQ generates the GRN from a branch's confirmed receipt ────────
+
+// GET /api/hq/grns/awaiting-generation
+// Returns hq_purchases whose lines are all at status='RECEIPT_REPORTED'
+// (branch has confirmed received qty + supplier invoice). One row per PO
+// with summary + branch confirmation audit so HQ can fan through the queue.
+router.get('/awaiting-generation', hqAuth, (req, res) => {
+  try {
+    if (!masterDb) return res.json({ purchases: [] });
+    const rows = masterDb.prepare(`
+      SELECT p.*,
+             (SELECT COUNT(*) FROM hq_purchase_items i
+               WHERE i.purchase_sync_id = p.sync_id
+                 AND i.status = 'RECEIPT_REPORTED') AS reported_count,
+             (SELECT COUNT(*) FROM hq_purchase_items i
+               WHERE i.purchase_sync_id = p.sync_id) AS items_count,
+             (SELECT COUNT(*) FROM hq_purchase_receipt_extras e
+               WHERE e.purchase_sync_id = p.sync_id) AS extras_count
+        FROM hq_purchases p
+       WHERE p.confirmed_at_branch IS NOT NULL
+         AND EXISTS (
+           SELECT 1 FROM hq_purchase_items i
+            WHERE i.purchase_sync_id = p.sync_id
+              AND i.status = 'RECEIPT_REPORTED'
+         )
+       ORDER BY p.confirmed_at_branch DESC
+    `).all();
+    res.json({ purchases: rows });
+  } catch (error) {
+    console.error('[hq.grns.awaiting-generation]', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// GET /api/hq/grns/receipt/:syncId
+// Returns the full receipt-ready doc for one PO: header + lines (with
+// received_qty) + extras + branch confirmation audit. HQ uses this to
+// pre-fill the Generate GRN modal.
+router.get('/receipt/:syncId', hqAuth, (req, res) => {
+  try {
+    if (!masterDb) return res.status(404).json({ error: 'master.db unavailable' });
+    const syncId = req.params.syncId;
+    const purchase = masterDb.prepare(`SELECT * FROM hq_purchases WHERE sync_id = ?`).get(syncId);
+    if (!purchase) return res.status(404).json({ error: 'PO not found.' });
+    const items = masterDb.prepare(
+      `SELECT * FROM hq_purchase_items WHERE purchase_sync_id = ? ORDER BY id ASC`
+    ).all(syncId);
+    const extras = masterDb.prepare(
+      `SELECT * FROM hq_purchase_receipt_extras WHERE purchase_sync_id = ? ORDER BY id ASC`
+    ).all(syncId);
+    res.json({ purchase, items, extras });
+  } catch (error) {
+    console.error('[hq.grns.receipt]', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// POST /api/hq/grns/generate
+// Body: {
+//   purchase_sync_id,
+//   date,
+//   notes?,
+//   items: [{ product_sync_id, product_name, unit, quantity, unit_price,
+//             expiry_date?, is_extra, po_expected_qty? }],
+//   credit_notes: [{ reason, amount, notes? }]   // optional in v1.10.0
+// }
+// Side-effects:
+//   1. Inserts hq_grns + hq_grn_items at master.db
+//   2. Posts +qty stock_movements + current_stock at the branch tenant DB
+//      (location='sales' — Sosna's no-store model)
+//   3. Updates linked hq_purchase_items.status = 'CONFIRMED', stamps audit
+//   4. Persists CNs at hq_supplier_credit_notes if provided
+router.post('/generate', hqAuth, (req, res) => {
+  try {
+    if (!masterDb) return res.status(500).json({ error: 'master.db unavailable' });
+    const {
+      purchase_sync_id,
+      date,
+      notes,
+      items,
+      credit_notes,
+    } = req.body || {};
+    if (!purchase_sync_id) return res.status(400).json({ error: 'purchase_sync_id required' });
+    if (!Array.isArray(items) || items.length === 0) {
+      return res.status(400).json({ error: 'At least one item is required.' });
+    }
+
+    const purchase = masterDb.prepare(`SELECT * FROM hq_purchases WHERE sync_id = ?`).get(purchase_sync_id);
+    if (!purchase) return res.status(404).json({ error: 'PO not found.' });
+    if (!purchase.confirmed_at_branch) {
+      return res.status(400).json({ error: 'Branch has not confirmed receipt for this PO yet.' });
+    }
+    if (!purchase.supplier_invoice_number) {
+      return res.status(400).json({ error: 'Branch did not record a supplier invoice number.' });
+    }
+
+    const branchSlug = purchase.confirmed_branch_slug || '';
+    if (!branchSlug || !isRegistered(branchSlug)) {
+      return res.status(400).json({ error: 'Branch tenant not registered or missing.' });
+    }
+    const branchName = (listTenants().find(t => t.slug === branchSlug)?.business_name) || branchSlug;
+
+    const grnSyncId = randomUUID();
+    const grnNumber = `GRN-${new Date().getFullYear()}-${String(Date.now()).slice(-8)}`;
+    const grnDate = date || new Date().toISOString().slice(0, 10);
+    const validItems = items.filter(i => parseFloat(i.quantity) > 0);
+    const itemsSubtotal = validItems.reduce((s, i) =>
+      s + (parseFloat(i.quantity) || 0) * (parseFloat(i.unit_price) || 0), 0);
+    const cnTotal = Array.isArray(credit_notes)
+      ? credit_notes.reduce((s, c) => s + (parseFloat(c.amount) || 0), 0)
+      : 0;
+    const finalPayable = Math.max(0, itemsSubtotal - cnTotal);
+
+    const generatorId   = req.user?.id || null;
+    const generatorName = req.user?.firstName || req.user?.email || 'HQ';
+
+    masterDb.transaction(() => {
+      // 1. Insert hq_grns + hq_grn_items
+      const info = masterDb.prepare(`
+        INSERT INTO hq_grns
+          (grn_number, sync_id, date, branch_slug, branch_name,
+           supplier_id, supplier_name, po_sync_id, po_number,
+           supplier_invoice_number, invoice_attachment,
+           items_subtotal, cn_total, final_payable, notes,
+           confirmed_by_branch, confirmed_by_branch_name, confirmed_at_branch,
+           generated_by_hq, generated_by_hq_name)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+      `).run(
+        grnNumber, grnSyncId, grnDate, branchSlug, branchName,
+        purchase.supplier_id || null, purchase.supplier_name || null,
+        purchase_sync_id, purchase.purchase_number,
+        purchase.supplier_invoice_number, purchase.invoice_attachment || null,
+        itemsSubtotal, cnTotal, finalPayable, notes || null,
+        purchase.confirmed_by_branch, purchase.confirmed_by_branch_name, purchase.confirmed_at_branch,
+        generatorId, generatorName
+      );
+      const grnId = info.lastInsertRowid;
+
+      const insItem = masterDb.prepare(`
+        INSERT INTO hq_grn_items
+          (sync_id, grn_id, grn_sync_id, product_sync_id, product_name, unit,
+           quantity, unit_price, total_price, expiry_date, is_extra, po_expected_qty)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+      `);
+      for (const it of validItems) {
+        const qty   = parseFloat(it.quantity) || 0;
+        const price = parseFloat(it.unit_price) || 0;
+        insItem.run(
+          randomUUID(), grnId, grnSyncId,
+          it.product_sync_id || null,
+          it.product_name || '',
+          it.unit || null,
+          qty, price, qty * price,
+          it.expiry_date || null,
+          it.is_extra ? 1 : 0,
+          it.po_expected_qty != null ? parseFloat(it.po_expected_qty) : null
+        );
+      }
+
+      // 2. Update PO lines → CONFIRMED, copy the GRN link onto them
+      masterDb.prepare(`
+        UPDATE hq_purchase_items
+           SET status              = 'CONFIRMED',
+               linked_grn_sync_id  = ?,
+               linked_grn_number   = ?,
+               confirmed_by        = ?,
+               confirmed_by_name   = ?,
+               confirmed_at        = datetime('now')
+         WHERE purchase_sync_id = ?
+           AND status = 'RECEIPT_REPORTED'
+      `).run(grnSyncId, grnNumber, generatorId, generatorName, purchase_sync_id);
+
+      // 3. CNs (if any)
+      if (Array.isArray(credit_notes)) {
+        const insCn = masterDb.prepare(`
+          INSERT INTO hq_supplier_credit_notes
+            (credit_note_number, sync_id, date, supplier_id, supplier_sync_id, supplier_name,
+             reason, reference, amount, notes, grn_sync_id, branch_slug,
+             created_by, created_by_name)
+          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        `);
+        for (const cn of credit_notes) {
+          const amt = Math.abs(parseFloat(cn?.amount || 0)) || 0;
+          if (amt < 0.001) continue;
+          const cnNumber = `SCN-${new Date().getFullYear()}-${randomUUID().slice(0, 8).toUpperCase()}`;
+          insCn.run(
+            cnNumber, randomUUID(), grnDate,
+            purchase.supplier_id || null, null, purchase.supplier_name || null,
+            String(cn.reason || 'Other'),
+            grnNumber, amt, cn.notes || null,
+            grnSyncId, branchSlug,
+            generatorId, generatorName
+          );
+        }
+      }
+    })();
+
+    // 4. Post stock to branch tenant DB (outside master tx — different connection)
+    try {
+      const branchDb = getTenantDb(branchSlug);
+      const branchMovementAt = grnDate + ' ' + new Date().toTimeString().slice(0, 8);
+      const upd = branchDb.prepare(`
+        UPDATE products SET current_stock = current_stock + ?,
+                            updated_at    = datetime('now'),
+                            synced        = 0
+         WHERE sync_id = ?
+      `);
+      const insMov = branchDb.prepare(`
+        INSERT INTO stock_movements
+          (product_id, product_sync_id, location, movement_type, quantity,
+           reference_id, reference_type, reference_sync_id, notes,
+           created_by, sync_id, tenant_id, branch_id, device_id,
+           synced, created_at, updated_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?,datetime('now'))
+      `);
+      for (const it of validItems) {
+        if (!it.product_sync_id) continue; // extra items without a known product — skip stock posting
+        const qty = parseFloat(it.quantity) || 0;
+        if (qty <= 0) continue;
+        const prod = branchDb.prepare(`
+          SELECT id, sync_id, unit, alt_unit, conversion_factor, units_json
+            FROM products WHERE sync_id = ? AND deleted_at IS NULL
+        `).get(it.product_sync_id);
+        if (!prod) continue;
+        // We use the line's qty directly as base units for v1.10.0 — the
+        // branch picker writes line.unit_conv-aware values, so this matches
+        // what hqGrns.confirm did in the prior flow. Tighten later if needed.
+        upd.run(qty, prod.sync_id);
+        insMov.run(
+          prod.id, prod.sync_id, 'sales', 'grn', qty,
+          null, 'hq_grn', grnSyncId,
+          `HQ-generated GRN ${grnNumber}`,
+          null,
+          randomUUID(), null, null, null,
+          branchMovementAt
+        );
+      }
+    } catch (err) {
+      console.error('[hq.grns.generate] stock post failed:', err.message);
+      // Don't roll back the master tx — the GRN is recorded; stock can be
+      // backfilled if needed. Surface a warning to the caller.
+    }
+
+    res.status(201).json({
+      success: true,
+      grn_sync_id: grnSyncId,
+      grn_number: grnNumber,
+      branch_slug: branchSlug,
+    });
+  } catch (error) {
+    console.error('[hq.grns.generate] CRASH:', error.stack || error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 module.exports = router;

@@ -233,6 +233,15 @@ export const confirmHqGrn  = (slug, syncId, notes)  => api.post(`/hq/grns/${slug
 // Reject: branch can re-generate the GRN. Reason is mandatory.
 export const rejectHqGrn   = (slug, syncId, reason) => api.post(`/hq/grns/${slug}/${syncId}/reject`, { reason });
 
+// v1.10.0 — new procurement flow: branch confirms received qty + invoice on
+// the PO; HQ then generates the GRN. See backend/routes/branchReceipts.js
+// + backend/routes/hqGrns.js (awaiting-generation / receipt / generate).
+export const confirmBranchReceipt = (purchaseSyncId, payload) =>
+  api.post(`/branch/po-receipts/${purchaseSyncId}/confirm`, payload);
+export const getAwaitingGeneration = () => api.get('/hq/grns/awaiting-generation');
+export const getHqReceipt          = (syncId) => api.get(`/hq/grns/receipt/${syncId}`);
+export const generateHqGrn         = (payload) => api.post('/hq/grns/generate', payload);
+
 // Stock Transfers (Phase C — HQ Warehouse). Stored in master.db so source
 // + destination see the same row. Works the same on HQ and on per-branch
 // subdomains; the "current branch" the page operates against is derived
