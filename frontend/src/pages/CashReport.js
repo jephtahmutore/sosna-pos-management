@@ -21,7 +21,12 @@ const getStatus = (diff) => {
 
 const CashReport = () => {
   const { user: authUser } = useAuth();
-  const { symbol: curSym } = useCurrency();
+  const { symbol: curSym, currencyMode } = useCurrency();
+  // v1.9.26 — branch's currency_mode controls which per-currency panels
+  // render on this page. K-only branches collapse to a single K column.
+  const showUSDccy = currencyMode === 'USD+FRA' || currencyMode === 'USD+FRA+K';
+  const showFRAccy = currencyMode === 'USD+FRA' || currencyMode === 'USD+FRA+K';
+  const showKccy   = currencyMode === 'USD+FRA+K' || currencyMode === 'K';
   const { t } = useLanguage();
   const today = new Date().toISOString().split('T')[0];
   const [date, setDate] = useState(today);
@@ -832,11 +837,12 @@ const CashReport = () => {
           aggregates POS net (expected) + sum of saved cash report counted
           per currency. */}
       <div className="no-print" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 12, marginBottom: 16 }}>
+        {/* v1.9.26 — gate per-currency panels on branch currency_mode. */}
         {[
-          { ccy: 'USD', symbol: '$', dec: 2, label: 'USD', color: '#16a34a', bg: 'linear-gradient(135deg,#16a34a,#15803d)' },
-          { ccy: 'FRA', symbol: '',  dec: 0, label: 'FRA', color: '#7c3aed', bg: 'linear-gradient(135deg,#7c3aed,#6d28d9)' },
-          { ccy: 'K',   symbol: '',  dec: 0, label: 'K',   color: '#ea580c', bg: 'linear-gradient(135deg,#ea580c,#c2410c)' },
-        ].map(c => {
+          { ccy: 'USD', symbol: '$', dec: 2, label: 'USD', color: '#16a34a', bg: 'linear-gradient(135deg,#16a34a,#15803d)', show: showUSDccy },
+          { ccy: 'FRA', symbol: '',  dec: 0, label: 'FRA', color: '#7c3aed', bg: 'linear-gradient(135deg,#7c3aed,#6d28d9)', show: showFRAccy },
+          { ccy: 'K',   symbol: '',  dec: 0, label: 'K',   color: '#ea580c', bg: 'linear-gradient(135deg,#ea580c,#c2410c)', show: showKccy },
+        ].filter(c => c.show).map(c => {
           const key      = c.ccy.toLowerCase();
           const expected = parseFloat(daySummaryByCcy[key]?.expected || 0) || 0;
           const counted  = parseFloat(daySummaryByCcy[key]?.counted  || 0) || 0;
@@ -933,11 +939,13 @@ const CashReport = () => {
               for that currency's expenses inside the card. No more shared
               'Expenses Paid From Drawer' row below — each card owns its
               own currency's PV view + add. */}
+          {/* v1.9.26 — gate the per-currency cash counting cards on the
+              branch's currency_mode. */}
           {[
-            { key: 'usd_received', label: 'USD Cash ($)',  ccy: 'USD', symbol: '$',  dec: 2, posExp: expectedByCcy.usd, exp: expensesByCcy.usd, exch: exchangeNet.usd_net, step: '0.01', color: '#16a34a', bg: '#f0fdf4' },
-            { key: 'fra_received', label: 'FRA Cash',      ccy: 'FRA', symbol: '',   dec: 0, posExp: expectedByCcy.fra, exp: expensesByCcy.fra, exch: exchangeNet.fra_net, step: '1',    color: '#7c3aed', bg: '#faf5ff' },
-            { key: 'k_received',   label: 'K Cash',        ccy: 'K',   symbol: '',   dec: 0, posExp: expectedByCcy.k,   exp: expensesByCcy.k,   exch: exchangeNet.k_net,   step: '1',    color: '#ea580c', bg: '#fff7ed' },
-          ].map(c => {
+            { key: 'usd_received', label: 'USD Cash ($)',  ccy: 'USD', symbol: '$',  dec: 2, posExp: expectedByCcy.usd, exp: expensesByCcy.usd, exch: exchangeNet.usd_net, step: '0.01', color: '#16a34a', bg: '#f0fdf4', show: showUSDccy },
+            { key: 'fra_received', label: 'FRA Cash',      ccy: 'FRA', symbol: '',   dec: 0, posExp: expectedByCcy.fra, exp: expensesByCcy.fra, exch: exchangeNet.fra_net, step: '1',    color: '#7c3aed', bg: '#faf5ff', show: showFRAccy },
+            { key: 'k_received',   label: 'K Cash',        ccy: 'K',   symbol: '',   dec: 0, posExp: expectedByCcy.k,   exp: expensesByCcy.k,   exch: exchangeNet.k_net,   step: '1',    color: '#ea580c', bg: '#fff7ed', show: showKccy },
+          ].filter(c => c.show).map(c => {
             const counted     = parseFloat(form[c.key] || 0) || 0;
             const exch        = parseFloat(c.exch || 0) || 0;
             // v1.8.84 — new model: Total cash in = Counted + Expenses − exch_net.

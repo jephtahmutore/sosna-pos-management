@@ -1596,6 +1596,13 @@ function initTenantDb(db) {
   // pages. HQ host always sees them regardless of this flag.
   addCol('business_settings', 'legacy_procurement_enabled', 'INTEGER NOT NULL DEFAULT 0');
 
+  // v1.9.26 — payment_methods is the third independent dial alongside
+  // currency_mode + workflow_mode. 'cash_only' = Sosna 3-currency cash
+  // branches (no MoMo, no Bank). 'cash_momo_bank' = Liquor-style
+  // branches that take Cash + MoMo + Bank. Default cash_momo_bank so
+  // existing tenants keep their current Pay-modal behaviour.
+  addCol('business_settings', 'payment_methods', "TEXT NOT NULL DEFAULT 'cash_momo_bank'");
+
   // ─────────────────────────────────────────────────────────────────────────
   // v1.4.0 — FX Rates (Accounting → Currency Rates)
   // ─────────────────────────────────────────────────────────────────────────

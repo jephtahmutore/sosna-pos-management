@@ -63,7 +63,12 @@ router.put('/business', auth, (req, res) => {
     const { business_name, business_phone, business_email, business_address, tax_rate, single_location_mode, block_oversell, currencies,
             receipt_printer_type, receipt_printer_name, receipt_printer_ip, receipt_printer_port,
             default_crate_deposit, currency_mode, workflow_mode,
-            legacy_procurement_enabled } = req.body;
+            legacy_procurement_enabled,
+            // v1.9.26 — payment_methods is the third dial alongside
+            // currency_mode + workflow_mode. 'cash_only' (Sosna-style:
+            // Cash only at the till) | 'cash_momo_bank' (Liquor-style:
+            // Cash + MoMo + Bank). Independent of currency / workflow.
+            payment_methods } = req.body;
     // Only update currencies if the caller explicitly sent them; otherwise leave whatever's stored.
     const currenciesJson = currencies !== undefined ? JSON.stringify(normaliseCurrencies(currencies)) : null;
     const existing = db.prepare('SELECT * FROM business_settings LIMIT 1').get();
@@ -117,6 +122,15 @@ router.put('/business', auth, (req, res) => {
         const raw = String(workflow_mode || 'single_pos').toLowerCase();
         const wm = ['three_station', 'two_station'].includes(raw) ? raw : 'single_pos';
         sets.push('workflow_mode=?'); vals.push(wm);
+      }
+      // v1.9.26 — payment_methods controls which method columns appear on
+      // the POS Pay modal. 'cash_only' = Sosna 3-currency cash branches
+      // (no MoMo, no Bank). 'cash_momo_bank' = Liquor-style branches that
+      // accept all three. Anything else falls back to cash_momo_bank.
+      if (payment_methods !== undefined) {
+        const raw = String(payment_methods || 'cash_momo_bank').toLowerCase();
+        const pm = ['cash_only', 'cash_momo_bank'].includes(raw) ? raw : 'cash_momo_bank';
+        sets.push('payment_methods=?'); vals.push(pm);
       }
       // legacy_procurement_enabled re-exposes the legacy GRN + Suppliers
       // sidebar entries on a branch (hidden by v1.3.2 lockdown). Useful

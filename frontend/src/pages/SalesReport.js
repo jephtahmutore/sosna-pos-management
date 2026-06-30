@@ -23,7 +23,12 @@ const PARTIAL_REVERSE_ENABLED = true;
 
 const SalesReport = () => {
   const { hasPermission, user: authUser } = useAuth();
-  const { symbol: curSym } = useCurrency();
+  const { symbol: curSym, currencyMode } = useCurrency();
+  // v1.9.26 — gate the USD/FRA/K rows + columns on the branch's
+  // currency_mode. Mansa/Lusaka run K-only and should see one column.
+  const showUSD = currencyMode === 'USD+FRA' || currencyMode === 'USD+FRA+K';
+  const showFRA = currencyMode === 'USD+FRA' || currencyMode === 'USD+FRA+K';
+  const showK   = currencyMode === 'USD+FRA+K' || currencyMode === 'K';
   const { t } = useLanguage();
   const [orders, setOrders] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -793,18 +798,25 @@ const SalesReport = () => {
           <div style={{ position: 'absolute', right: -12, top: -12, width: 80, height: 80, borderRadius: '50%', background: 'rgba(255,255,255,0.1)' }} />
           <div style={{ fontSize: 11, fontWeight: 700, opacity: 0.85, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 8 }}>{t('cashSales')}</div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
-              <span style={{ fontSize: 11, opacity: 0.8 }}>USD</span>
-              <span style={{ fontSize: 17, fontWeight: 800 }}>${(parseFloat(totalUsdReceived)||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</span>
-            </div>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
-              <span style={{ fontSize: 11, opacity: 0.8 }}>FRA</span>
-              <span style={{ fontSize: 17, fontWeight: 800 }}>{(parseFloat(totalFraReceived)||0).toLocaleString(undefined,{maximumFractionDigits:0})}</span>
-            </div>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
-              <span style={{ fontSize: 11, opacity: 0.8 }}>K</span>
-              <span style={{ fontSize: 17, fontWeight: 800 }}>{(parseFloat(totalKReceived)||0).toLocaleString(undefined,{maximumFractionDigits:0})}</span>
-            </div>
+            {/* v1.9.26 — only show currencies the branch actually trades in. */}
+            {showUSD && (
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
+                <span style={{ fontSize: 11, opacity: 0.8 }}>USD</span>
+                <span style={{ fontSize: 17, fontWeight: 800 }}>${(parseFloat(totalUsdReceived)||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</span>
+              </div>
+            )}
+            {showFRA && (
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
+                <span style={{ fontSize: 11, opacity: 0.8 }}>FRA</span>
+                <span style={{ fontSize: 17, fontWeight: 800 }}>{(parseFloat(totalFraReceived)||0).toLocaleString(undefined,{maximumFractionDigits:0})}</span>
+              </div>
+            )}
+            {showK && (
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
+                <span style={{ fontSize: 11, opacity: 0.8 }}>K</span>
+                <span style={{ fontSize: 17, fontWeight: 800 }}>{(parseFloat(totalKReceived)||0).toLocaleString(undefined,{maximumFractionDigits:0})}</span>
+              </div>
+            )}
           </div>
           <div style={{ fontSize: 10, opacity: 0.7, marginTop: 6, borderTop: '1px solid rgba(255,255,255,0.2)', paddingTop: 4 }}>
             ≈ {curSym}{(parseFloat(totalCashSales)||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})} total

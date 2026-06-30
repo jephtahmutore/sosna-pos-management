@@ -11,7 +11,12 @@ const CashBook = () => {
   const { hasPermission, user: authUser } = useAuth();
   // v1.8.6 — tab toggle between the ledger view and the Exchanges ledger.
   const [activeTab, setActiveTab] = useState('ledger');
-  const { symbol: curSym } = useCurrency();
+  const { symbol: curSym, currencyMode } = useCurrency();
+  // v1.9.26 — Cash Book columns + opening-balance editors gate on the
+  // branch's currency_mode. K-only branches see one K column only.
+  const showUSDccy = currencyMode === 'USD+FRA' || currencyMode === 'USD+FRA+K';
+  const showFRAccy = currencyMode === 'USD+FRA' || currencyMode === 'USD+FRA+K';
+  const showKccy   = currencyMode === 'USD+FRA+K' || currencyMode === 'K';
   const { t } = useLanguage();
   const [stats, setStats] = useState({
     openingBalance: 0, openingByMethod: { cash: 0, bank: 0, momo: 0 },
@@ -422,11 +427,12 @@ const CashBook = () => {
         {/* v1.8.62 — true per-currency cards. Each shows its own opening
             balance + current balance, computed independently with no
             cross-currency FX conversion. Clickable to filter the ledger. */}
+        {/* v1.9.26 — gate per-currency cards on branch currency_mode. */}
         {[
-          { key: 'usd', label: 'USD ($)', defaultClass: 'green',  symbol: '$',  raw: false },
-          { key: 'fra', label: 'FRA',     defaultClass: 'purple', symbol: '',   raw: true  },
-          { key: 'k',   label: 'K',       defaultClass: 'orange', symbol: '',   raw: true  },
-        ].map(m => {
+          { key: 'usd', label: 'USD ($)', defaultClass: 'green',  symbol: '$',  raw: false, show: showUSDccy },
+          { key: 'fra', label: 'FRA',     defaultClass: 'purple', symbol: '',   raw: true,  show: showFRAccy },
+          { key: 'k',   label: 'K',       defaultClass: 'orange', symbol: '',   raw: true,  show: showKccy   },
+        ].filter(m => m.show).map(m => {
           const bal  = stats.currentByCcy?.[m.key] || 0;
           const open = stats.openingByCcy?.[m.key] || 0;
           const isNegative = bal < -0.001;
@@ -495,11 +501,12 @@ const CashBook = () => {
               <div style={{ fontSize: 12, color: '#6b7280', marginTop: 4 }}>Starting balance per currency (USD / FRA / K) — used as the base for the Cash Book.</div>
             </div>
             <div style={{ padding: 22, display: 'grid', gap: 12 }}>
+              {/* v1.9.26 — gate per-currency editors on branch currency_mode. */}
               {[
-                { key: 'usd', label: 'USD ($)', color: '#16a34a' },
-                { key: 'fra', label: 'FRA',     color: '#7c3aed' },
-                { key: 'k',   label: 'K',       color: '#ea580c' },
-              ].map(f => (
+                { key: 'usd', label: 'USD ($)', color: '#16a34a', show: showUSDccy },
+                { key: 'fra', label: 'FRA',     color: '#7c3aed', show: showFRAccy },
+                { key: 'k',   label: 'K',       color: '#ea580c', show: showKccy   },
+              ].filter(f => f.show).map(f => (
                 <div key={f.key}>
                   <label style={{ fontSize: 12, color: f.color, fontWeight: 700, textTransform: 'uppercase', marginBottom: 4, display: 'block' }}>{f.label}</label>
                   <input type="number" min="0" step="0.01"
@@ -527,12 +534,11 @@ const CashBook = () => {
           <thead>
             <tr>
               <th>{t('date')}</th><th>{t('description')}</th><th>{t('reference')}</th><th>{t('type')}</th>
-              {/* v1.8.61 — per-currency columns. Positive = inflow (green),
-                  negative = outflow (red). FRA + K columns hidden when no
-                  entry in the current date range touches them. */}
-              <th style={{ textAlign: 'right' }}>USD ($)</th>
-              <th style={{ textAlign: 'right' }}>FRA</th>
-              <th style={{ textAlign: 'right' }}>K</th>
+              {/* v1.9.26 — column visibility now follows the branch's
+                  currency_mode setting (K-only → one K column only). */}
+              {showUSDccy && <th style={{ textAlign: 'right' }}>USD ($)</th>}
+              {showFRAccy && <th style={{ textAlign: 'right' }}>FRA</th>}
+              {showKccy && <th style={{ textAlign: 'right' }}>K</th>}
               <th style={{ textAlign: 'right' }}>{t('balance')}</th>
             </tr>
           </thead>
@@ -555,9 +561,9 @@ const CashBook = () => {
                   <td style={{ fontWeight: 600 }}>{t('openingBalance')}</td>
                   <td style={{ color: '#9ca3af', fontSize: 12 }}>OB</td>
                   <td></td>
-                  <td style={{ color: obUsd ? '#16a34a' : '#cbd5e1', fontWeight: 600, textAlign: 'right' }}>{obUsd ? `${curSym}${obUsd.toLocaleString()}` : '—'}</td>
-                  <td style={{ color: obFra ? '#2563eb' : '#cbd5e1', fontWeight: 600, textAlign: 'right' }}>{obFra ? `${Math.round(obFra).toLocaleString()} FRA` : '—'}</td>
-                  <td style={{ color: obK ? '#7c3aed' : '#cbd5e1', fontWeight: 600, textAlign: 'right' }}>{obK ? `${Math.round(obK).toLocaleString()} K` : '—'}</td>
+                  {showUSDccy && <td style={{ color: obUsd ? '#16a34a' : '#cbd5e1', fontWeight: 600, textAlign: 'right' }}>{obUsd ? `${curSym}${obUsd.toLocaleString()}` : '—'}</td>}
+                  {showFRAccy && <td style={{ color: obFra ? '#2563eb' : '#cbd5e1', fontWeight: 600, textAlign: 'right' }}>{obFra ? `${Math.round(obFra).toLocaleString()} FRA` : '—'}</td>}
+                  {showKccy && <td style={{ color: obK ? '#7c3aed' : '#cbd5e1', fontWeight: 600, textAlign: 'right' }}>{obK ? `${Math.round(obK).toLocaleString()} K` : '—'}</td>}
                   <td style={{ fontWeight: 600, textAlign: 'right' }}>{fmtBalActive}</td>
                 </tr>
               );
@@ -593,15 +599,21 @@ const CashBook = () => {
                       {e.type}
                     </span>
                   </td>
-                  <td style={{ textAlign: 'right', color: usdNet > 0 ? '#16a34a' : usdNet < 0 ? '#dc2626' : '#cbd5e1', fontWeight: usdNet !== 0 ? 600 : 400 }}>
-                    {usdNet !== 0 ? `${usdNet > 0 ? '+' : '-'}${fmtUsd(Math.abs(usdNet))}` : '—'}
-                  </td>
-                  <td style={{ textAlign: 'right', color: fraNet > 0 ? '#2563eb' : fraNet < 0 ? '#dc2626' : '#cbd5e1', fontWeight: fraNet !== 0 ? 600 : 400 }}>
-                    {fraNet !== 0 ? `${fraNet > 0 ? '+' : '-'}${fmtRaw(Math.abs(fraNet))} FRA` : '—'}
-                  </td>
-                  <td style={{ textAlign: 'right', color: kNet > 0 ? '#7c3aed' : kNet < 0 ? '#dc2626' : '#cbd5e1', fontWeight: kNet !== 0 ? 600 : 400 }}>
-                    {kNet !== 0 ? `${kNet > 0 ? '+' : '-'}${fmtRaw(Math.abs(kNet))} K` : '—'}
-                  </td>
+                  {showUSDccy && (
+                    <td style={{ textAlign: 'right', color: usdNet > 0 ? '#16a34a' : usdNet < 0 ? '#dc2626' : '#cbd5e1', fontWeight: usdNet !== 0 ? 600 : 400 }}>
+                      {usdNet !== 0 ? `${usdNet > 0 ? '+' : '-'}${fmtUsd(Math.abs(usdNet))}` : '—'}
+                    </td>
+                  )}
+                  {showFRAccy && (
+                    <td style={{ textAlign: 'right', color: fraNet > 0 ? '#2563eb' : fraNet < 0 ? '#dc2626' : '#cbd5e1', fontWeight: fraNet !== 0 ? 600 : 400 }}>
+                      {fraNet !== 0 ? `${fraNet > 0 ? '+' : '-'}${fmtRaw(Math.abs(fraNet))} FRA` : '—'}
+                    </td>
+                  )}
+                  {showKccy && (
+                    <td style={{ textAlign: 'right', color: kNet > 0 ? '#7c3aed' : kNet < 0 ? '#dc2626' : '#cbd5e1', fontWeight: kNet !== 0 ? 600 : 400 }}>
+                      {kNet !== 0 ? `${kNet > 0 ? '+' : '-'}${fmtRaw(Math.abs(kNet))} K` : '—'}
+                    </td>
+                  )}
                   <td style={{ fontWeight: 600, textAlign: 'right' }}>
                     {(() => {
                       // v1.8.62 — Balance column follows the active currency
@@ -644,9 +656,9 @@ const CashBook = () => {
               return (
                 <tr style={{ background: '#f9fafb', fontWeight: 700, borderTop: '2px solid #e5e7eb' }}>
                   <td colSpan="4" style={{ textAlign: 'right' }}>TOTALS:</td>
-                  <td style={{ textAlign: 'right', color: t.usd >= 0 ? '#16a34a' : '#dc2626' }}>{t.usd >= 0 ? '+' : '-'}{fmtUsd(Math.abs(t.usd))}</td>
-                  <td style={{ textAlign: 'right', color: t.fra >= 0 ? '#2563eb' : '#dc2626' }}>{t.fra >= 0 ? '+' : '-'}{fmtRaw(Math.abs(t.fra))} FRA</td>
-                  <td style={{ textAlign: 'right', color: t.k   >= 0 ? '#7c3aed' : '#dc2626' }}>{t.k   >= 0 ? '+' : '-'}{fmtRaw(Math.abs(t.k))} K</td>
+                  {showUSDccy && <td style={{ textAlign: 'right', color: t.usd >= 0 ? '#16a34a' : '#dc2626' }}>{t.usd >= 0 ? '+' : '-'}{fmtUsd(Math.abs(t.usd))}</td>}
+                  {showFRAccy && <td style={{ textAlign: 'right', color: t.fra >= 0 ? '#2563eb' : '#dc2626' }}>{t.fra >= 0 ? '+' : '-'}{fmtRaw(Math.abs(t.fra))} FRA</td>}
+                  {showKccy && <td style={{ textAlign: 'right', color: t.k   >= 0 ? '#7c3aed' : '#dc2626' }}>{t.k   >= 0 ? '+' : '-'}{fmtRaw(Math.abs(t.k))} K</td>}
                   <td style={{ textAlign: 'right', color: closeBal >= 0 ? '#16a34a' : '#dc2626' }}>{fmtClose}</td>
                 </tr>
               );

@@ -21,6 +21,10 @@ const CurrencyContext = createContext({
   //                              (off by default since v1.3.2 lockdown)
   workflowMode: 'single_pos',
   currencyMode: 'K',
+  // v1.9.26 — third dial. 'cash_only' (Sosna multi-currency cash) vs
+  // 'cash_momo_bank' (Liquor-style). Used to gate the Pay modal columns
+  // and the Cash Report cashier panels.
+  paymentMethods: 'cash_momo_bank',
   legacyProcurementEnabled: false,
   refresh: () => {},
 });
@@ -38,6 +42,7 @@ export const CurrencyProvider = ({ children }) => {
   const [currencies, setCurrencies] = useState(DEFAULTS);
   const [workflowMode, setWorkflowMode] = useState('single_pos');
   const [currencyMode, setCurrencyMode] = useState('K');
+  const [paymentMethods, setPaymentMethods] = useState('cash_momo_bank');
   const [legacyProcurementEnabled, setLegacyProcurementEnabled] = useState(false);
 
   const refresh = useCallback(async () => {
@@ -53,6 +58,8 @@ export const CurrencyProvider = ({ children }) => {
       // v1.7.0: third value 'USD+FRA+K' enables triple-currency cash at till.
       const cm = String(biz.currency_mode || 'K').toUpperCase();
       setCurrencyMode(['USD+FRA+K', 'USD+FRA'].includes(cm) ? cm : 'K');
+      const pm = String(biz.payment_methods || 'cash_momo_bank').toLowerCase();
+      setPaymentMethods(['cash_only', 'cash_momo_bank'].includes(pm) ? pm : 'cash_momo_bank');
       setLegacyProcurementEnabled(!!parseInt(biz.legacy_procurement_enabled || 0, 10));
     } catch { /* keep defaults */ }
   }, []);
@@ -64,7 +71,7 @@ export const CurrencyProvider = ({ children }) => {
   const money = (n) => `${symbol}${parseFloat(n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
   return (
-    <CurrencyContext.Provider value={{ currencies, primary, symbol, money, workflowMode, currencyMode, legacyProcurementEnabled, refresh }}>
+    <CurrencyContext.Provider value={{ currencies, primary, symbol, money, workflowMode, currencyMode, paymentMethods, legacyProcurementEnabled, refresh }}>
       {children}
     </CurrencyContext.Provider>
   );

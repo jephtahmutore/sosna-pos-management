@@ -101,6 +101,8 @@ const SystemSettings = () => {
         defaultCrateDeposit: parseFloat(b.default_crate_deposit) || 57,
         currencyMode: ((cm => ['USD+FRA+K','USD+FRA'].includes(cm) ? cm : 'K')(String(b.currency_mode || 'K').toUpperCase())),
         workflowMode: ((wm => ['three_station','two_station'].includes(wm) ? wm : 'single_pos')(String(b.workflow_mode || 'single_pos').toLowerCase())),
+        // v1.9.26 — third dial: which payment methods the Pay modal shows.
+        paymentMethods: ((pm => ['cash_only','cash_momo_bank'].includes(pm) ? pm : 'cash_momo_bank')(String(b.payment_methods || 'cash_momo_bank').toLowerCase())),
         legacyProcurementEnabled: !!parseInt(b.legacy_procurement_enabled || 0, 10),
       });
     }).catch(() => {});
@@ -119,10 +121,45 @@ const SystemSettings = () => {
     e.preventDefault();
     setSaving(true);
     try {
+      // v1.9.26 — auto-align Primary currency to match currency_mode so
+      // "K-only mode" doesn't end up with USD as Primary (the bug that
+      // caused Mansa's till to price in $ even though the radio said K).
+      // For K-only: K becomes Primary, USD/FRA rows are dropped.
+      // For USD+FRA / USD+FRA+K: USD becomes Primary, all required rows
+      // are added if missing. Anything the user manually added beyond
+      // these is preserved.
+      let normCurrencies = (form.currencies || []).map(c => ({ ...c, is_primary: false }));
+      const upsert = (code, symbol) => {
+        if (!normCurrencies.find(c => (c.code || '').toUpperCase() === code)) {
+          normCurrencies.push({ code, symbol, is_primary: false });
+        }
+      };
+      const setPrimary = (code) => {
+        normCurrencies = normCurrencies.map(c => ({
+          ...c,
+          is_primary: (c.code || '').toUpperCase() === code,
+        }));
+      };
+      if (form.currencyMode === 'K') {
+        normCurrencies = normCurrencies.filter(c => (c.code || '').toUpperCase() === 'K');
+        upsert('K', 'K');
+        setPrimary('K');
+      } else if (form.currencyMode === 'USD+FRA') {
+        normCurrencies = normCurrencies.filter(c => ['USD', 'FRA'].includes((c.code || '').toUpperCase()));
+        upsert('USD', '$');
+        upsert('FRA', 'FRA');
+        setPrimary('USD');
+      } else if (form.currencyMode === 'USD+FRA+K') {
+        upsert('USD', '$');
+        upsert('FRA', 'FRA');
+        upsert('K',   'K');
+        setPrimary('USD');
+      }
+
       await updateBusiness({
         single_location_mode: form.singleLocationMode ? 1 : 0,
         block_oversell: form.blockOversell ? 1 : 0,
-        currencies: form.currencies,
+        currencies: normCurrencies,
         receipt_printer_type: form.receiptPrinterType,
         receipt_printer_name: form.receiptPrinterName,
         receipt_printer_ip:   form.receiptPrinterIp,
@@ -130,6 +167,7 @@ const SystemSettings = () => {
         default_crate_deposit: form.defaultCrateDeposit,
         currency_mode: form.currencyMode,
         workflow_mode: form.workflowMode,
+        payment_methods: form.paymentMethods,
         legacy_procurement_enabled: form.legacyProcurementEnabled ? 1 : 0,
       });
       refreshCurrency();
@@ -282,6 +320,40 @@ const SystemSettings = () => {
                   <input type="radio" name="workflow-mode" value={opt.val}
                          checked={form.workflowMode === opt.val}
                          onChange={() => setForm(f => ({ ...f, workflowMode: opt.val }))}
+                         style={{ marginTop: 3 }} />
+                  <div>
+                    <div style={{ fontWeight: 700, fontSize: 13, color: '#0f172a' }}>{opt.label}</div>
+                    <div style={{ fontSize: 11, color: '#64748b', marginTop: 2 }}>{opt.sub}</div>
+                  </div>
+                </label>
+              ))}
+            </div>
+          </div>
+
+          {/* ── Payment Methods (per-branch dial) ─────────────────────────── */}
+          {/* Independent of currency_mode + workflow_mode. Sosna 3-currency  */}
+          {/* cash branches (kassumbalesa1) use cash_only; Liquor-style       */}
+          {/* branches (mansa1, lusaka1) use cash_momo_bank.                  */}
+          <div className="form-section">
+            <h3 className="form-section-title"><FiDollarSign /> Payment Methods</h3>
+            <p style={{ fontSize: 13, color: '#6b7280', marginBottom: 14 }}>
+              Controls which payment columns appear on the Pay modal. Cash-only branches don't have a MoMo wallet or a bank deposit slip; multi-method branches accept all three.
+            </p>
+            <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+              {[
+                { val: 'cash_momo_bank', label: 'Cash + MoMo + Bank',  sub: 'Standard Liquor-style branches. Three payment columns at the till.' },
+                { val: 'cash_only',      label: 'Cash only',           sub: 'Sosna 3-currency cash branches. One Cash column (no MoMo, no Bank).' },
+              ].map(opt => (
+                <label key={opt.val}
+                       style={{ flex: '1 1 240px', display: 'flex', alignItems: 'flex-start', gap: 10,
+                                padding: '12px 14px',
+                                border: `1.5px solid ${form.paymentMethods === opt.val ? '#2563eb' : '#e5e7eb'}`,
+                                borderRadius: 10,
+                                background: form.paymentMethods === opt.val ? '#eff6ff' : '#fff',
+                                cursor: 'pointer' }}>
+                  <input type="radio" name="payment-methods" value={opt.val}
+                         checked={form.paymentMethods === opt.val}
+                         onChange={() => setForm(f => ({ ...f, paymentMethods: opt.val }))}
                          style={{ marginTop: 3 }} />
                   <div>
                     <div style={{ fontWeight: 700, fontSize: 13, color: '#0f172a' }}>{opt.label}</div>

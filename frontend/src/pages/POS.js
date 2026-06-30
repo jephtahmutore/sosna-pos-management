@@ -76,6 +76,11 @@ const POS = () => {
   // Currency mode (Phase 2 gate). 'K' = single Kwacha flow (lusaka1, mansa1).
   // 'USD+FRA' = dual-currency flow (kassumbalesa1) — unlocks the Cash FRA
   // receive field and the Change USD / Change FRA split on the Pay modal.
+  // v1.9.26 — payment_methods is the third dial. 'cash_only' hides the
+  // MoMo + Bank columns on the Pay modal; 'cash_momo_bank' shows all
+  // three. Independent of currency_mode + workflow_mode.
+  const [paymentMethods, setPaymentMethods] = useState('cash_momo_bank');
+  const hasMoMoBank = paymentMethods === 'cash_momo_bank';
   // Loaded from business_settings.currency_mode on mount; defaults to 'K'
   // so a fresh tenant or older API stays single-currency.
   const [currencyMode, setCurrencyMode] = useState('K');
@@ -404,6 +409,8 @@ const POS = () => {
         setCurrencyMode(['USD+FRA', 'USD+FRA+K'].includes(cm) ? cm : 'K');
         const wm = String(res.data?.business?.workflow_mode || 'single_pos').toLowerCase();
         setWorkflowMode(['three_station', 'two_station'].includes(wm) ? wm : 'single_pos');
+        const pm = String(res.data?.business?.payment_methods || 'cash_momo_bank').toLowerCase();
+        setPaymentMethods(['cash_only', 'cash_momo_bank'].includes(pm) ? pm : 'cash_momo_bank');
       } catch (err) { /* use default */ }
       try {
         const res = await getQuickItems();
@@ -1886,13 +1893,19 @@ const POS = () => {
                     </div>
                   )}
                   <div style={{ marginTop: 12 }}>
-                    <label style={{ fontSize: 12, color: '#6b7280', fontWeight: 600 }}>Paying Now (split across methods — any can be 0)</label>
-                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8, marginTop: 6 }}>
+                    {/* v1.9.26 — Cash-only branches (payment_methods='cash_only')
+                        hide the MoMo + Bank columns and the matching "Pay
+                        full in MoMo / Bank" buttons. The Cash column expands
+                        to the full row width. */}
+                    <label style={{ fontSize: 12, color: '#6b7280', fontWeight: 600 }}>
+                      {hasMoMoBank ? 'Paying Now (split across methods — any can be 0)' : 'Paying Now'}
+                    </label>
+                    <div style={{ display: 'grid', gridTemplateColumns: hasMoMoBank ? '1fr 1fr 1fr' : '1fr', gap: 8, marginTop: 6 }}>
                       {[
-                        { key: 'cash', label: 'Cash', color: '#16a34a' },
-                        { key: 'momo', label: 'MoMo', color: '#f59e0b' },
-                        { key: 'bank', label: 'Bank', color: '#2563eb' },
-                      ].map((f, i) => (
+                        { key: 'cash', label: 'Cash', color: '#16a34a', show: true },
+                        { key: 'momo', label: 'MoMo', color: '#f59e0b', show: hasMoMoBank },
+                        { key: 'bank', label: 'Bank', color: '#2563eb', show: hasMoMoBank },
+                      ].filter(f => f.show).map((f, i) => (
                         <div key={f.key}>
                           <div style={{ fontSize: 11, color: f.color, fontWeight: 700, textTransform: 'uppercase', marginBottom: 3 }}>{f.label}</div>
                           <input
@@ -1907,10 +1920,14 @@ const POS = () => {
                     <div style={{ display: 'flex', gap: 6, marginTop: 8 }}>
                       <button onClick={() => setPayModal({ ...payModal, cash: total.toFixed(2), momo: '0', bank: '0' })}
                         style={{ padding: '4px 12px', border: '1px solid #d1d5db', borderRadius: 6, background: '#fff', fontSize: 12, cursor: 'pointer' }}>Pay full in Cash</button>
-                      <button onClick={() => setPayModal({ ...payModal, cash: '0', momo: total.toFixed(2), bank: '0' })}
-                        style={{ padding: '4px 12px', border: '1px solid #d1d5db', borderRadius: 6, background: '#fff', fontSize: 12, cursor: 'pointer' }}>Pay full in MoMo</button>
-                      <button onClick={() => setPayModal({ ...payModal, cash: '0', momo: '0', bank: total.toFixed(2) })}
-                        style={{ padding: '4px 12px', border: '1px solid #d1d5db', borderRadius: 6, background: '#fff', fontSize: 12, cursor: 'pointer' }}>Pay full in Bank</button>
+                      {hasMoMoBank && (
+                        <button onClick={() => setPayModal({ ...payModal, cash: '0', momo: total.toFixed(2), bank: '0' })}
+                          style={{ padding: '4px 12px', border: '1px solid #d1d5db', borderRadius: 6, background: '#fff', fontSize: 12, cursor: 'pointer' }}>Pay full in MoMo</button>
+                      )}
+                      {hasMoMoBank && (
+                        <button onClick={() => setPayModal({ ...payModal, cash: '0', momo: '0', bank: total.toFixed(2) })}
+                          style={{ padding: '4px 12px', border: '1px solid #d1d5db', borderRadius: 6, background: '#fff', fontSize: 12, cursor: 'pointer' }}>Pay full in Bank</button>
+                      )}
                     </div>
                     {/* Cash FRA — only on dual-currency branches (kassumbalesa1).
                         Customer pays in FRA, we convert to the primary currency
