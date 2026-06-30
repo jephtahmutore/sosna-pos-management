@@ -701,12 +701,17 @@ const POS = () => {
     // Pay modal still uses legacy {cash, momo, bank}; Credit Sale uses {usd, fra, k}.
     let payNow;
     if (creditModal) {
-      const usd  = parseFloat(creditModal.usd || 0) || 0;
-      const fra  = parseFloat(creditModal.fra || 0) || 0;
-      const kAmt = parseFloat(creditModal.k   || 0) || 0;
-      const fraUSD = SELL_RATE   > 0 ? fra  / SELL_RATE   : 0;
-      const kUSD   = SELL_RATE_K > 0 ? kAmt / SELL_RATE_K : 0;
-      payNow = Math.max(0, usd + fraUSD + kUSD);
+      if (hasMoMoBank) {
+        // v1.9.30 — Liquor branches use Cash/MoMo/Bank inputs.
+        payNow = Math.max(0, (parseFloat(creditModal.cash || 0) + parseFloat(creditModal.momo || 0) + parseFloat(creditModal.bank || 0)));
+      } else {
+        const usd  = parseFloat(creditModal.usd || 0) || 0;
+        const fra  = parseFloat(creditModal.fra || 0) || 0;
+        const kAmt = parseFloat(creditModal.k   || 0) || 0;
+        const fraUSD = SELL_RATE   > 0 ? fra  / SELL_RATE   : 0;
+        const kUSD   = SELL_RATE_K > 0 ? kAmt / SELL_RATE_K : 0;
+        payNow = Math.max(0, usd + fraUSD + kUSD);
+      }
     } else {
       payNow = Math.max(0, (parseFloat(m.cash || 0) + parseFloat(m.momo || 0) + parseFloat(m.bank || 0)));
     }
@@ -746,7 +751,11 @@ const POS = () => {
       if (cart.length === 0) return;
       const initialCash = total.toFixed(2);
       if (selectedCustomer) {
-        setCreditModal({ usd: initialCash, fra: '0', k: '0' });
+        // v1.9.30 — Liquor branches initialise Credit Sale with Cash/MoMo/Bank
+        // fields (same shape as the walk-in modal). Sosna keeps USD/FRA/K.
+        setCreditModal(hasMoMoBank
+          ? { cash: initialCash, momo: '0', bank: '0', usd: '0', fra: '0', k: '0' }
+          : { usd: initialCash, fra: '0', k: '0' });
       } else {
         // cashFRA, changeUSDgiven, changeFRAgiven default to '0' so the Pay
         // modal's dual-currency section starts clean even on K-only branches
@@ -772,18 +781,33 @@ const POS = () => {
         setPayModal(null);
         handleCheckout({ cash: cashNow, momo: momoNow, bank: bankNow });
       } else if (creditModal) {
-        const usdNow = Math.max(0, parseFloat(creditModal.usd || 0));
-        const fraNow = Math.max(0, parseFloat(creditModal.fra || 0));
-        const kNow   = Math.max(0, parseFloat(creditModal.k   || 0));
-        const fraUSD = SELL_RATE   > 0 ? fraNow / SELL_RATE   : 0;
-        const kUSD   = SELL_RATE_K > 0 ? kNow   / SELL_RATE_K : 0;
-        const payNow = usdNow + fraUSD + kUSD;
+        // v1.9.30 — Liquor branches: collect via Cash/MoMo/Bank and pass the
+        // walk-in-shaped override straight through to handleCheckout (it
+        // already routes cash/momo/bank into cash_received / momo_received /
+        // bank_received columns).
+        let payNow;
+        let override;
+        if (hasMoMoBank) {
+          const cashNow = Math.max(0, parseFloat(creditModal.cash || 0));
+          const momoNow = Math.max(0, parseFloat(creditModal.momo || 0));
+          const bankNow = Math.max(0, parseFloat(creditModal.bank || 0));
+          payNow = cashNow + momoNow + bankNow;
+          override = { cash: cashNow, momo: momoNow, bank: bankNow };
+        } else {
+          const usdNow = Math.max(0, parseFloat(creditModal.usd || 0));
+          const fraNow = Math.max(0, parseFloat(creditModal.fra || 0));
+          const kNow   = Math.max(0, parseFloat(creditModal.k   || 0));
+          const fraUSD = SELL_RATE   > 0 ? fraNow / SELL_RATE   : 0;
+          const kUSD   = SELL_RATE_K > 0 ? kNow   / SELL_RATE_K : 0;
+          payNow = usdNow + fraUSD + kUSD;
+          override = { usd: usdNow, fra: fraNow, k: kNow };
+        }
         const newCredit = Math.max(0, total - payNow);
         const projected = currentOutstanding + newCredit;
         const over     = creditLimit > 0 && projected > creditLimit + 0.001;
         if (over || onHold) return;
         setCreditModal(null);
-        handleCheckout({ usd: usdNow, fra: fraNow, k: kNow });
+        handleCheckout(override);
       }
     };
     const onKey = (e) => {
@@ -1639,7 +1663,9 @@ const POS = () => {
               ) : selectedCustomer ? (
                 <button
                   className="btn-checkout"
-                  onClick={() => setCreditModal({ usd: '', fra: '', k: '' })}
+                  onClick={() => setCreditModal(hasMoMoBank
+                    ? { cash: '', momo: '', bank: '', usd: '', fra: '', k: '' }
+                    : { usd: '', fra: '', k: '' })}
                   disabled={cart.length === 0 || creditBlocked}
                   title={
                     cart.length === 0 ? 'Cart is empty'
@@ -2171,9 +2197,18 @@ const POS = () => {
                     </div>
                   )}
                   <div style={{ marginTop: 12 }}>
-                    <label style={{ fontSize: 12, color: '#6b7280', fontWeight: 600 }}>Paying Now (split across currencies — any can be 0)</label>
+                    {/* v1.9.30 — Liquor branches: Cash / MoMo / Bank inputs
+                        mirroring the walk-in Pay modal. Sosna branches keep
+                        the USD / FRA / K currency-axis inputs. */}
+                    <label style={{ fontSize: 12, color: '#6b7280', fontWeight: 600 }}>
+                      Paying Now (split across {hasMoMoBank ? 'methods' : 'currencies'} — any can be 0)
+                    </label>
                     {(() => {
-                      const fields = [
+                      const fields = hasMoMoBank ? [
+                        { key: 'cash', label: 'Cash', color: '#16a34a', step: '0.01', placeholder: '0.00', show: true },
+                        { key: 'momo', label: 'MoMo', color: '#f59e0b', step: '0.01', placeholder: '0.00', show: true },
+                        { key: 'bank', label: 'Bank', color: '#2563eb', step: '0.01', placeholder: '0.00', show: true },
+                      ] : [
                         { key: 'usd', label: 'USD', color: '#16a34a', step: '0.01', placeholder: '0.00', show: true },
                         { key: 'fra', label: 'FRA', color: '#2563eb', step: '1',    placeholder: '0',    show: isDual },
                         { key: 'k',   label: 'K',   color: '#7c3aed', step: '1',    placeholder: '0',    show: hasK   },
@@ -2196,17 +2231,32 @@ const POS = () => {
                       );
                     })()}
                     <div style={{ display: 'flex', gap: 6, marginTop: 8, flexWrap: 'wrap' }}>
-                      <button onClick={() => setCreditModal({ usd: '0', fra: '0', k: '0' })}
-                        style={{ padding: '4px 12px', border: '1px solid #d1d5db', borderRadius: 6, background: '#fff', fontSize: 12, cursor: 'pointer' }}>Pay $0 (full credit)</button>
-                      <button onClick={() => setCreditModal({ usd: total.toFixed(2), fra: '0', k: '0' })}
-                        style={{ padding: '4px 12px', border: '1px solid #d1d5db', borderRadius: 6, background: '#fff', fontSize: 12, cursor: 'pointer' }}>Pay full in USD</button>
-                      {isDual && SELL_RATE > 0 && (
-                        <button onClick={() => setCreditModal({ usd: '0', fra: (total * SELL_RATE).toFixed(0), k: '0' })}
-                          style={{ padding: '4px 12px', border: '1px solid #d1d5db', borderRadius: 6, background: '#fff', fontSize: 12, cursor: 'pointer' }}>Pay full in FRA</button>
-                      )}
-                      {hasK && (
-                        <button onClick={() => setCreditModal({ usd: '0', fra: '0', k: (total * SELL_RATE_K).toFixed(0) })}
-                          style={{ padding: '4px 12px', border: '1px solid #d1d5db', borderRadius: 6, background: '#fff', fontSize: 12, cursor: 'pointer' }}>Pay full in K</button>
+                      {hasMoMoBank ? (
+                        <>
+                          <button onClick={() => setCreditModal({ ...creditModal, cash: '0', momo: '0', bank: '0' })}
+                            style={{ padding: '4px 12px', border: '1px solid #d1d5db', borderRadius: 6, background: '#fff', fontSize: 12, cursor: 'pointer' }}>Pay {curSym}0 (full credit)</button>
+                          <button onClick={() => setCreditModal({ ...creditModal, cash: total.toFixed(2), momo: '0', bank: '0' })}
+                            style={{ padding: '4px 12px', border: '1px solid #d1d5db', borderRadius: 6, background: '#fff', fontSize: 12, cursor: 'pointer' }}>Pay full in Cash</button>
+                          <button onClick={() => setCreditModal({ ...creditModal, cash: '0', momo: total.toFixed(2), bank: '0' })}
+                            style={{ padding: '4px 12px', border: '1px solid #d1d5db', borderRadius: 6, background: '#fff', fontSize: 12, cursor: 'pointer' }}>Pay full in MoMo</button>
+                          <button onClick={() => setCreditModal({ ...creditModal, cash: '0', momo: '0', bank: total.toFixed(2) })}
+                            style={{ padding: '4px 12px', border: '1px solid #d1d5db', borderRadius: 6, background: '#fff', fontSize: 12, cursor: 'pointer' }}>Pay full in Bank</button>
+                        </>
+                      ) : (
+                        <>
+                          <button onClick={() => setCreditModal({ usd: '0', fra: '0', k: '0' })}
+                            style={{ padding: '4px 12px', border: '1px solid #d1d5db', borderRadius: 6, background: '#fff', fontSize: 12, cursor: 'pointer' }}>Pay $0 (full credit)</button>
+                          <button onClick={() => setCreditModal({ usd: total.toFixed(2), fra: '0', k: '0' })}
+                            style={{ padding: '4px 12px', border: '1px solid #d1d5db', borderRadius: 6, background: '#fff', fontSize: 12, cursor: 'pointer' }}>Pay full in USD</button>
+                          {isDual && SELL_RATE > 0 && (
+                            <button onClick={() => setCreditModal({ usd: '0', fra: (total * SELL_RATE).toFixed(0), k: '0' })}
+                              style={{ padding: '4px 12px', border: '1px solid #d1d5db', borderRadius: 6, background: '#fff', fontSize: 12, cursor: 'pointer' }}>Pay full in FRA</button>
+                          )}
+                          {hasK && (
+                            <button onClick={() => setCreditModal({ usd: '0', fra: '0', k: (total * SELL_RATE_K).toFixed(0) })}
+                              style={{ padding: '4px 12px', border: '1px solid #d1d5db', borderRadius: 6, background: '#fff', fontSize: 12, cursor: 'pointer' }}>Pay full in K</button>
+                          )}
+                        </>
                       )}
                     </div>
                     <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 8, padding: '6px 10px', background: '#fff', borderRadius: 6, fontSize: 13 }}>

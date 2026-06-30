@@ -113,6 +113,16 @@ router.get('/daily', auth, readOnlyGuard, (req, res) => {
     const fraNet = parseFloat(sumOrders('fra_received'))  - parseFloat(sumOrders('fra_change_given'));
     const kNet   = parseFloat(sumOrders('k_received'))    - parseFloat(sumOrders('k_change_given'));
 
+    // v1.9.30 — Liquor-style branches (Mansa / Lusaka) collect K via three
+    // methods (Cash / MoMo / Bank). The single-screen Pay modal writes the
+    // amounts into cash_received / momo_received / bank_received. Cash
+    // Report needs these summed per method so each counter card has the
+    // right Expected value. On Sosna branches these columns are 0 (the
+    // walk-in modal isn't used), so the sums are 0 — harmless.
+    const cashNet = parseFloat(sumOrders('cash_received'));
+    const momoNet = parseFloat(sumOrders('momo_received'));
+    const bankNet = parseFloat(sumOrders('bank_received'));
+
     // v1.8.68 — over-collections breakdown. When customer overpays and cashier
     // keeps the surplus, the over-payment lives in the drawer of the currency
     // it was paid in. Reported here so it's visible without polluting any
@@ -282,6 +292,10 @@ router.get('/daily', auth, readOnlyGuard, (req, res) => {
       usd_received: usdNet,
       fra_received: fraNet,
       k_received:   kNet,
+      // v1.9.30 — method-axis rollups for Liquor-style branches.
+      cash_net: cashNet,
+      momo_net: momoNet,
+      bank_net: bankNet,
       // v1.8.14 — per-currency expenses paid from cash drawer.
       usd_expenses: parseFloat(expensesByCcy.usd) || 0,
       fra_expenses: parseFloat(expensesByCcy.fra) || 0,

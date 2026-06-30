@@ -21,15 +21,15 @@ const getStatus = (diff) => {
 
 const CashReport = () => {
   const { user: authUser } = useAuth();
-  const { symbol: curSym, currencyMode } = useCurrency();
+  const { symbol: curSym, currencyMode, isLiquorStyle } = useCurrency();
   // v1.9.26 — currency_mode gates per-currency panels.
-  // v1.9.27 — Cash Report method-axis (Cash / MoMo / Bank counting panels
-  // for Liquor branches) deferred — needs a backend rollup of expected
-  // sales per method, currently only exposed per currency. Mansa keeps
-  // the K-only panel from v1.9.26 in the meantime.
-  const showUSDccy = currencyMode === 'USD+FRA' || currencyMode === 'USD+FRA+K';
-  const showFRAccy = currencyMode === 'USD+FRA' || currencyMode === 'USD+FRA+K';
-  const showKccy   = currencyMode === 'USD+FRA+K' || currencyMode === 'K';
+  // v1.9.30 — Cash Report method-axis lands: Liquor branches render
+  // Cash / MoMo / Bank counter panels reading the new cash_net /
+  // momo_net / bank_net rollups from /cash-reports/daily. Currency
+  // panels are hidden on Liquor branches (kept on Sosna).
+  const showUSDccy = !isLiquorStyle && (currencyMode === 'USD+FRA' || currencyMode === 'USD+FRA+K');
+  const showFRAccy = !isLiquorStyle && (currencyMode === 'USD+FRA' || currencyMode === 'USD+FRA+K');
+  const showKccy   = !isLiquorStyle && (currencyMode === 'USD+FRA+K' || currencyMode === 'K');
   const { t } = useLanguage();
   const today = new Date().toISOString().split('T')[0];
   const [date, setDate] = useState(today);
@@ -87,6 +87,10 @@ const CashReport = () => {
   // received per currency (net of change), independent of what the cashier
   // typed into the form. Difference per currency = counted − expected.
   const [expectedByCcy, setExpectedByCcy] = useState({ usd: 0, fra: 0, k: 0 });
+  // v1.9.30 — method-axis expected for Liquor-style branches (Mansa/Lusaka).
+  // Read from the new cash_net / momo_net / bank_net fields the backend
+  // returns alongside the per-currency ones.
+  const [expectedByMethod, setExpectedByMethod] = useState({ cash: 0, momo: 0, bank: 0 });
   // v1.8.68 — over-collections kept by cashier (per source currency + per-order rows).
   // v1.8.76 — also tracks under-payments (walk-in tolerance shortages, USD-equivalent).
   const [overpaidByCcy,  setOverpaidByCcy]  = useState({ usd: 0, fra: 0, k: 0 });
@@ -235,6 +239,12 @@ const CashReport = () => {
         fra: parseFloat(daily.fra_received || 0) || 0,
         k:   parseFloat(daily.k_received   || 0) || 0,
       });
+      // v1.9.30 — method-axis expected (Cash / MoMo / Bank) for Liquor branches.
+      setExpectedByMethod({
+        cash: parseFloat(daily.cash_net || 0) || 0,
+        momo: parseFloat(daily.momo_net || 0) || 0,
+        bank: parseFloat(daily.bank_net || 0) || 0,
+      });
       // v1.8.14 — per-currency expenses for that date+cashier.
       setExpensesByCcy({
         usd: parseFloat(daily.usd_expenses || 0) || 0,
@@ -267,6 +277,12 @@ const CashReport = () => {
         usd: parseFloat(saved.usd_expected || daily?.usd_received || 0) || 0,
         fra: parseFloat(saved.fra_expected || daily?.fra_received || 0) || 0,
         k:   parseFloat(saved.k_expected   || daily?.k_received   || 0) || 0,
+      });
+      // v1.9.30 — method-axis expected for Liquor branches.
+      setExpectedByMethod({
+        cash: parseFloat(daily?.cash_net || 0) || 0,
+        momo: parseFloat(daily?.momo_net || 0) || 0,
+        bank: parseFloat(daily?.bank_net || 0) || 0,
       });
       setForm({
         initial_change: saved.initial_change || '0',
@@ -380,6 +396,12 @@ const CashReport = () => {
         usd: { expected: parseFloat(all?.usd_received || 0) || 0, counted: sumCol('usd_received'), expenses: parseFloat(all?.usd_expenses || 0) || 0 },
         fra: { expected: parseFloat(all?.fra_received || 0) || 0, counted: sumCol('fra_received'), expenses: parseFloat(all?.fra_expenses || 0) || 0 },
         k:   { expected: parseFloat(all?.k_received   || 0) || 0, counted: sumCol('k_received'),   expenses: parseFloat(all?.k_expenses   || 0) || 0 },
+        // v1.9.30 — method-axis rollups for Liquor branches. Counted
+        // still 0 for now (saved cash report doesn't store per-method
+        // values yet — the proper per-method save is a later push).
+        cash: { expected: parseFloat(all?.cash_net || 0) || 0, counted: 0, expenses: 0 },
+        momo: { expected: parseFloat(all?.momo_net || 0) || 0, counted: 0, expenses: 0 },
+        bank: { expected: parseFloat(all?.bank_net || 0) || 0, counted: 0, expenses: 0 },
       });
     }).catch(() => {});
   }, [date, reports]); // eslint-disable-line
@@ -840,11 +862,15 @@ const CashReport = () => {
           aggregates POS net (expected) + sum of saved cash report counted
           per currency. */}
       <div className="no-print" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 12, marginBottom: 16 }}>
-        {/* v1.9.26 — gate per-currency panels on branch currency_mode. */}
+        {/* v1.9.30 — Liquor branches render per-method rollup cards; Sosna
+            branches render per-currency cards (gated by currency_mode). */}
         {[
-          { ccy: 'USD', symbol: '$', dec: 2, label: 'USD', color: '#16a34a', bg: 'linear-gradient(135deg,#16a34a,#15803d)', show: showUSDccy },
-          { ccy: 'FRA', symbol: '',  dec: 0, label: 'FRA', color: '#7c3aed', bg: 'linear-gradient(135deg,#7c3aed,#6d28d9)', show: showFRAccy },
-          { ccy: 'K',   symbol: '',  dec: 0, label: 'K',   color: '#ea580c', bg: 'linear-gradient(135deg,#ea580c,#c2410c)', show: showKccy },
+          { ccy: 'USD',  symbol: '$',    dec: 2, label: 'USD',  color: '#16a34a', bg: 'linear-gradient(135deg,#16a34a,#15803d)', show: showUSDccy },
+          { ccy: 'FRA',  symbol: '',     dec: 0, label: 'FRA',  color: '#7c3aed', bg: 'linear-gradient(135deg,#7c3aed,#6d28d9)', show: showFRAccy },
+          { ccy: 'K',    symbol: '',     dec: 0, label: 'K',    color: '#ea580c', bg: 'linear-gradient(135deg,#ea580c,#c2410c)', show: showKccy },
+          { ccy: 'CASH', symbol: curSym, dec: 2, label: 'Cash',         color: '#16a34a', bg: 'linear-gradient(135deg,#16a34a,#15803d)', show: isLiquorStyle },
+          { ccy: 'MOMO', symbol: curSym, dec: 2, label: 'Mobile Money', color: '#ea580c', bg: 'linear-gradient(135deg,#ea580c,#c2410c)', show: isLiquorStyle },
+          { ccy: 'BANK', symbol: curSym, dec: 2, label: 'Bank',         color: '#2563eb', bg: 'linear-gradient(135deg,#2563eb,#1d4ed8)', show: isLiquorStyle },
         ].filter(c => c.show).map(c => {
           const key      = c.ccy.toLowerCase();
           const expected = parseFloat(daySummaryByCcy[key]?.expected || 0) || 0;
@@ -942,12 +968,18 @@ const CashReport = () => {
               for that currency's expenses inside the card. No more shared
               'Expenses Paid From Drawer' row below — each card owns its
               own currency's PV view + add. */}
-          {/* v1.9.26 — gate the per-currency cash counting cards on the
-              branch's currency_mode. */}
+          {/* v1.9.30 — Liquor branches show 3 method counter cards
+              (Cash / MoMo / Bank); Sosna branches keep the per-currency
+              cards (gated by currency_mode). Counter form keys still
+              re-use the legacy *_received columns — backend repurposes
+              them as method buckets on Liquor branches. */}
           {[
-            { key: 'usd_received', label: 'USD Cash ($)',  ccy: 'USD', symbol: '$',  dec: 2, posExp: expectedByCcy.usd, exp: expensesByCcy.usd, exch: exchangeNet.usd_net, step: '0.01', color: '#16a34a', bg: '#f0fdf4', show: showUSDccy },
-            { key: 'fra_received', label: 'FRA Cash',      ccy: 'FRA', symbol: '',   dec: 0, posExp: expectedByCcy.fra, exp: expensesByCcy.fra, exch: exchangeNet.fra_net, step: '1',    color: '#7c3aed', bg: '#faf5ff', show: showFRAccy },
-            { key: 'k_received',   label: 'K Cash',        ccy: 'K',   symbol: '',   dec: 0, posExp: expectedByCcy.k,   exp: expensesByCcy.k,   exch: exchangeNet.k_net,   step: '1',    color: '#ea580c', bg: '#fff7ed', show: showKccy },
+            { key: 'usd_received', label: 'USD Cash ($)',  ccy: 'USD',  symbol: '$',     dec: 2, posExp: expectedByCcy.usd,    exp: expensesByCcy.usd, exch: exchangeNet.usd_net, step: '0.01', color: '#16a34a', bg: '#f0fdf4', show: showUSDccy },
+            { key: 'fra_received', label: 'FRA Cash',      ccy: 'FRA',  symbol: '',      dec: 0, posExp: expectedByCcy.fra,    exp: expensesByCcy.fra, exch: exchangeNet.fra_net, step: '1',    color: '#7c3aed', bg: '#faf5ff', show: showFRAccy },
+            { key: 'k_received',   label: 'K Cash',        ccy: 'K',    symbol: '',      dec: 0, posExp: expectedByCcy.k,      exp: expensesByCcy.k,   exch: exchangeNet.k_net,   step: '1',    color: '#ea580c', bg: '#fff7ed', show: showKccy   },
+            { key: 'usd_received', label: 'Cash',          ccy: 'CASH', symbol: curSym,  dec: 2, posExp: expectedByMethod.cash, exp: 0,                exch: 0,                   step: '0.01', color: '#16a34a', bg: '#f0fdf4', show: isLiquorStyle },
+            { key: 'fra_received', label: 'Mobile Money',  ccy: 'MOMO', symbol: curSym,  dec: 2, posExp: expectedByMethod.momo, exp: 0,                exch: 0,                   step: '0.01', color: '#ea580c', bg: '#fff7ed', show: isLiquorStyle },
+            { key: 'k_received',   label: 'Bank',          ccy: 'BANK', symbol: curSym,  dec: 2, posExp: expectedByMethod.bank, exp: 0,                exch: 0,                   step: '0.01', color: '#2563eb', bg: '#eff6ff', show: isLiquorStyle },
           ].filter(c => c.show).map(c => {
             const counted     = parseFloat(form[c.key] || 0) || 0;
             const exch        = parseFloat(c.exch || 0) || 0;
