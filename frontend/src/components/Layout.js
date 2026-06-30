@@ -363,83 +363,12 @@ const Layout = () => {
               {!collapsed && <span>HQ Overview</span>}
             </div>
           )}
-          {hq && (
-            <div className={`nav-item ${isActive('/hq/sales-report') ? 'active' : ''}`} onClick={() => navigate('/hq/sales-report')}>
-              <FiFileText className="nav-icon" />
-              {!collapsed && <span>HQ Sales Report</span>}
-            </div>
-          )}
-          {hq && (
-            <div className={`nav-item ${isActive('/hq/inventory-report') ? 'active' : ''}`} onClick={() => navigate('/hq/inventory-report')}>
-              <FiPackage className="nav-icon" />
-              {!collapsed && <span>HQ Inventory</span>}
-            </div>
-          )}
-          {hq && (
-            <div className={`nav-item ${isActive('/hq/cash-position') ? 'active' : ''}`} onClick={() => navigate('/hq/cash-position')}>
-              <FiDollarSign className="nav-icon" />
-              {!collapsed && <span>HQ Cash Position</span>}
-            </div>
-          )}
-          {/* HQ Products — v1.6.1 hidden. HQ now uses the standard
-              Store → Item Details page; saves push to all branches
-              automatically. Route still exists for deep-links. */}
-          {false && hq && (
-            <div className={`nav-item ${isActive('/hq/products') ? 'active' : ''}`} onClick={() => navigate('/hq/products')}>
-              <FiPackage className="nav-icon" />
-              {!collapsed && <span>HQ Products</span>}
-            </div>
-          )}
-          {/* HQ Purchases — procurement entry point. HQ logs the supplier
-              purchase per-line with a destination branch; branch enters the
-              actual qty on their Incoming Stock page (Submit GRN); HQ then
-              confirms here (Confirm GRN) — only then does branch stock
-              update + supplier AP lock in. */}
-          {hq && (
-            <div className={`nav-item ${isActive('/hq/purchases') ? 'active' : ''}`} onClick={() => navigate('/hq/purchases')}>
-              <FiClipboard className="nav-icon" />
-              {!collapsed && <span>HQ Purchases</span>}
-            </div>
-          )}
-          {hq && (
-            <div className={`nav-item ${isActive('/hq/confirm-grn') ? 'active' : ''}`} onClick={() => navigate('/hq/confirm-grn')}>
-              <FiCheckCircle className="nav-icon" />
-              {!collapsed && <span>Confirm GRN</span>}
-              {!collapsed && badges.hq_pending_grn > 0 && <SidebarBadge n={badges.hq_pending_grn} />}
-            </div>
-          )}
-          {/* v1.9.14 — HQ-wide archive of every confirmed GRN, served from
-              the master.db snapshot table. Full details fetch on demand
-              via the See Details button (reads branch tenant DB live). */}
-          {hq && (
-            <div className={`nav-item ${isActive('/hq/grn-archive') ? 'active' : ''}`} onClick={() => navigate('/hq/grn-archive')}>
-              <FiInbox className="nav-icon" />
-              {!collapsed && <span>GRN Archive</span>}
-            </div>
-          )}
-          {/* v1.8.65 — Transit Variances dashboard (HQ only). Unified view
-              of shortages / damages / losses from both Inter-Branch Transfers
-              and HQ Purchases. */}
-          {hq && (
-            <div className={`nav-item ${isActive('/hq/variances') ? 'active' : ''}`} onClick={() => navigate('/hq/variances')}>
-              <FiAlertTriangle className="nav-icon" />
-              {!collapsed && <span>Transit Variances</span>}
-            </div>
-          )}
-          {hq && (
-            <div className={`nav-item ${isActive('/hq/confirm-damages') ? 'active' : ''}`} onClick={() => navigate('/hq/confirm-damages')}>
-              <FiAlertTriangle className="nav-icon" />
-              {!collapsed && <span>Confirm Damages</span>}
-              {!collapsed && badges.hq_pending_damages > 0 && <SidebarBadge n={badges.hq_pending_damages} />}
-            </div>
-          )}
-          {/* HQ Suppliers — master list + live AP balance per supplier. */}
-          {hq && (
-            <div className={`nav-item ${isActive('/hq/suppliers') ? 'active' : ''}`} onClick={() => navigate('/hq/suppliers')}>
-              <FiUsers className="nav-icon" />
-              {!collapsed && <span>HQ Suppliers</span>}
-            </div>
-          )}
+          {/* v1.9.25 — flat HQ items relocated into the existing groups
+              (Sales / Store / Accounting / Suppliers & Customers) so the
+              sidebar reads the same on HQ and branch. HQ Overview stays
+              flat above because it's the landing dashboard, not a group
+              child. HQ Products kept hidden (replaced by Store → Item
+              Details that pushes to branches automatically). */}
 
           {/* Dashboard — only for All access users */}
           {isAllAccess() && (
@@ -449,15 +378,18 @@ const Layout = () => {
             </div>
           )}
 
-          {/* Sales Group — hidden at HQ (v1.8.9). HQ doesn't ring up sales,
-              has no till queue, and uses the dedicated HQ Sales Report. */}
-          {!hq && hasPageAccess('POS', 'Cashier', 'Dispatch', 'SalesReport', 'SalesInventory', 'CashReport', 'SalesBinCard') && (collapsed ? (
-            <div className={`nav-item ${isGroupActive(['/pos']) ? 'active' : ''}`} onClick={() => navigate('/pos')}>
+          {/* Sales Group.
+              v1.9.25 — Group now renders on HQ too so HQ Sales Report can
+              live inside it instead of as a flat top-level entry. The
+              existing branch-only children stay gated with !hq; the HQ
+              Sales Report child is gated with hq. */}
+          {(hq || hasPageAccess('POS', 'Cashier', 'Dispatch', 'SalesReport', 'SalesInventory', 'CashReport', 'SalesBinCard')) && (collapsed ? (
+            <div className={`nav-item ${isGroupActive(['/pos', '/hq/sales-report']) ? 'active' : ''}`} onClick={() => navigate(hq ? '/hq/sales-report' : '/pos')}>
               <FiShoppingCart className="nav-icon" />
             </div>
           ) : (
             <>
-              <div className={`nav-group-header ${isGroupActive(['/pos']) ? 'active' : ''}`} onClick={() => toggleGroup('pos')}>
+              <div className={`nav-group-header ${isGroupActive(['/pos', '/hq/sales-report']) ? 'active' : ''}`} onClick={() => toggleGroup('pos')}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
                   <FiShoppingCart className="nav-icon" />
                   <span>{t('sales')}</span>
@@ -466,49 +398,54 @@ const Layout = () => {
               </div>
               {openGroups.pos && (
                 <div className="nav-children">
-                  {hasPageAccess('POS') && (
+                  {/* v1.9.25 — HQ Sales Report sits inside the Sales group
+                      (HQ-only). Branch never sees this; HQ never sees the
+                      branch /pos/sales-report below. */}
+                  {hq && (
+                    <div className={`nav-item ${isActive('/hq/sales-report') ? 'active' : ''}`} onClick={() => navigate('/hq/sales-report')}>
+                      <FiFileText className="nav-icon" /> <span>HQ Sales Report</span>
+                    </div>
+                  )}
+                  {!hq && hasPageAccess('POS') && (
                     <div className={`nav-item ${isActive('/pos') ? 'active' : ''}`} onClick={() => navigate('/pos')}>
                       <FiShoppingCart className="nav-icon" /> <span>{t('pos')}</span>
                     </div>
                   )}
-                  {/* Cashier — shown for both two_station and three_station.
-                      Hidden on single_pos (one cashier does everything). */}
-                  {(workflowMode === 'three_station' || workflowMode === 'two_station') && hasPageAccess('Cashier') && (
+                  {/* v1.9.25 — all the branch-side Sales children gate on
+                      !hq so HQ only sees HQ Sales Report above. */}
+                  {!hq && (workflowMode === 'three_station' || workflowMode === 'two_station') && hasPageAccess('Cashier') && (
                     <div className={`nav-item ${isActive('/pos/cashier') ? 'active' : ''}`} onClick={() => navigate('/pos/cashier')}>
                       <FiCreditCard className="nav-icon" /> <span>Cashier</span>
                       {badges.cashier_pending > 0 && <SidebarBadge n={badges.cashier_pending} />}
                     </div>
                   )}
-                  {/* Dispatch — ONLY three_station. In two_station, stock
-                      deducts at Cashier and the order moves straight to
-                      COMPLETED — no dispatch step. */}
-                  {workflowMode === 'three_station' && hasPageAccess('Dispatch') && (
+                  {!hq && workflowMode === 'three_station' && hasPageAccess('Dispatch') && (
                     <div className={`nav-item ${isActive('/pos/dispatch') ? 'active' : ''}`} onClick={() => navigate('/pos/dispatch')}>
                       <FiPackage className="nav-icon" /> <span>Dispatch</span>
                       {badges.dispatch_pending > 0 && <SidebarBadge n={badges.dispatch_pending} />}
                     </div>
                   )}
-                  {hasPageAccess('SalesReport') && (
+                  {!hq && hasPageAccess('SalesReport') && (
                     <div className={`nav-item ${isActive('/pos/sales-report') ? 'active' : ''}`} onClick={() => navigate('/pos/sales-report')}>
                       <FiFileText className="nav-icon" /> <span>{t('salesReport')}</span>
                     </div>
                   )}
-                  {hasPageAccess('SalesInventory') && (
+                  {!hq && hasPageAccess('SalesInventory') && (
                     <div className={`nav-item ${isActive('/pos/sales-inventory') ? 'active' : ''}`} onClick={() => navigate('/pos/sales-inventory')}>
                       <FiList className="nav-icon" /> <span>{t('salesInventory')}</span>
                     </div>
                   )}
-                  {hasPageAccess('CashReport') && (
+                  {!hq && hasPageAccess('CashReport') && (
                     <div className={`nav-item ${isActive('/pos/cash-report') ? 'active' : ''}`} onClick={() => navigate('/pos/cash-report')}>
                       <FiDollarSign className="nav-icon" /> <span>{t('cashReport')}</span>
                     </div>
                   )}
-                  {hasPageAccess('SalesBinCard') && (
+                  {!hq && hasPageAccess('SalesBinCard') && (
                     <div className={`nav-item ${isActive('/pos/sales-bin-card') ? 'active' : ''}`} onClick={() => navigate('/pos/sales-bin-card')}>
                       <FiBook className="nav-icon" /> <span>Sales Bin Card</span>
                     </div>
                   )}
-                  {hasPageAccess('Inventory') && (
+                  {!hq && hasPageAccess('Inventory') && (
                     <div className={`nav-item ${isActive('/pos/sales-stock-card') ? 'active' : ''}`} onClick={() => navigate('/pos/sales-stock-card')}>
                       <FiList className="nav-icon" /> <span>Sales Stock Card</span>
                     </div>
@@ -533,6 +470,41 @@ const Layout = () => {
                   {hasPageAccess('Items') && (
                     <div className={`nav-item ${isActive('/stock/items') ? 'active' : ''}`} onClick={() => navigate('/stock/items')}>
                       <FiFileText className="nav-icon" /> <span>{t('itemDetails')}</span>
+                    </div>
+                  )}
+                  {/* v1.9.25 — HQ procurement + stock supervision children
+                      relocated from the flat top-level into the Store group.
+                      All gated with `hq`; branches never see them. */}
+                  {hq && (
+                    <div className={`nav-item ${isActive('/hq/inventory-report') ? 'active' : ''}`} onClick={() => navigate('/hq/inventory-report')}>
+                      <FiPackage className="nav-icon" /> <span>HQ Inventory</span>
+                    </div>
+                  )}
+                  {hq && (
+                    <div className={`nav-item ${isActive('/hq/purchases') ? 'active' : ''}`} onClick={() => navigate('/hq/purchases')}>
+                      <FiClipboard className="nav-icon" /> <span>HQ Purchases</span>
+                    </div>
+                  )}
+                  {hq && (
+                    <div className={`nav-item ${isActive('/hq/confirm-grn') ? 'active' : ''}`} onClick={() => navigate('/hq/confirm-grn')}>
+                      <FiCheckCircle className="nav-icon" /> <span>Confirm GRN</span>
+                      {badges.hq_pending_grn > 0 && <SidebarBadge n={badges.hq_pending_grn} />}
+                    </div>
+                  )}
+                  {hq && (
+                    <div className={`nav-item ${isActive('/hq/grn-archive') ? 'active' : ''}`} onClick={() => navigate('/hq/grn-archive')}>
+                      <FiInbox className="nav-icon" /> <span>GRN Archive</span>
+                    </div>
+                  )}
+                  {hq && (
+                    <div className={`nav-item ${isActive('/hq/variances') ? 'active' : ''}`} onClick={() => navigate('/hq/variances')}>
+                      <FiAlertTriangle className="nav-icon" /> <span>Transit Variances</span>
+                    </div>
+                  )}
+                  {hq && (
+                    <div className={`nav-item ${isActive('/hq/confirm-damages') ? 'active' : ''}`} onClick={() => navigate('/hq/confirm-damages')}>
+                      <FiAlertTriangle className="nav-icon" /> <span>Confirm Damages</span>
+                      {badges.hq_pending_damages > 0 && <SidebarBadge n={badges.hq_pending_damages} />}
                     </div>
                   )}
                   {/* v1.8.34 — Quick Price Update. Bulk selling-price editor.
@@ -646,6 +618,13 @@ const Layout = () => {
               </div>
               {openGroups.accounting && (
                 <div className="nav-children">
+                  {/* v1.9.25 — HQ Cash Position relocated from the flat
+                      top-level into the Accounting group. */}
+                  {hq && (
+                    <div className={`nav-item ${isActive('/hq/cash-position') ? 'active' : ''}`} onClick={() => navigate('/hq/cash-position')}>
+                      <FiDollarSign className="nav-icon" /> <span>HQ Cash Position</span>
+                    </div>
+                  )}
                   {/* Cash Receipt / Payment Voucher / AR / Profit Report
                       are branch-only (HQ has no per-tenant till of its own
                       besides the Cash Book mirror). */}
@@ -723,12 +702,14 @@ const Layout = () => {
             </>
           )}
 
-          {/* Suppliers & Customers Group — hidden at HQ (v1.8.9). HQ uses
-              the dedicated HQ Suppliers entry at the top; no branch
-              customers at HQ level. */}
-          {!hq && !collapsed && hasPageAccess('Suppliers', 'Customers') && (
+          {/* Suppliers & Customers Group.
+              v1.9.25 — Group now renders on HQ too so HQ Suppliers can live
+              inside it instead of as a flat top-level entry. Branch shows
+              Customers (and legacy Suppliers when enabled); HQ shows HQ
+              Suppliers. */}
+          {!collapsed && (hq || hasPageAccess('Suppliers', 'Customers')) && (
             <>
-              <div className={`nav-group-header ${isGroupActive(['/suppliers-customers']) ? 'active' : ''}`} onClick={() => toggleGroup('suppliersCustomers')}>
+              <div className={`nav-group-header ${isGroupActive(['/suppliers-customers', '/hq/suppliers']) ? 'active' : ''}`} onClick={() => toggleGroup('suppliersCustomers')}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
                   <FiUsers className="nav-icon" />
                   <span>{t('suppliersCustomers')}</span>
@@ -737,14 +718,19 @@ const Layout = () => {
               </div>
               {openGroups.suppliersCustomers && (
                 <div className="nav-children">
-                  {/* v1.8.29 — Suppliers hidden on branches per user request
-                      (HQ owns the supplier master + AP; branch doesn't see it). */}
-                  {false && showLegacyProcurement && hasPageAccess('Suppliers') && (
+                  {hq && (
+                    <div className={`nav-item ${isActive('/hq/suppliers') ? 'active' : ''}`} onClick={() => navigate('/hq/suppliers')}>
+                      <FiUsers className="nav-icon" /> <span>HQ Suppliers</span>
+                    </div>
+                  )}
+                  {/* v1.8.29 — branch Suppliers hidden per user request
+                      (HQ owns the supplier master + AP). */}
+                  {false && !hq && showLegacyProcurement && hasPageAccess('Suppliers') && (
                     <div className={`nav-item ${isActive('/suppliers-customers/suppliers') ? 'active' : ''}`} onClick={() => navigate('/suppliers-customers/suppliers')}>
                       <FiUserPlus className="nav-icon" /> <span>{t('suppliers')}</span>
                     </div>
                   )}
-                  {hasPageAccess('Customers') && (
+                  {!hq && hasPageAccess('Customers') && (
                     <div className={`nav-item ${isActive('/suppliers-customers/customers') ? 'active' : ''}`} onClick={() => navigate('/suppliers-customers/customers')}>
                       <FiUser className="nav-icon" /> <span>{t('customers')}</span>
                     </div>
