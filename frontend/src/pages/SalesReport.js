@@ -163,15 +163,17 @@ const SalesReport = () => {
     s + parseFloat(o.k_received || 0) - parseFloat(o.k_change_given || 0), 0);
 
   // v1.9.27 — method-axis totals for Liquor-style branches (Mansa/Lusaka).
-  // The single-screen Pay modal writes per-method amounts into these
-  // columns directly; the credit portion is anything billed but not
-  // collected by any of the three methods.
+  // v1.9.29 — corrected field names. POS writes the walk-in modal's per-
+  // method amounts into cash_received / momo_received / bank_received
+  // (not cash / momo / bank). On Sosna branches these same columns hold
+  // the USD/FRA-equivalent breakdown, but isLiquorStyle gates the reads
+  // so they only matter on K-only multi-method branches.
   const totalCashReceived = activeOrders.reduce((s, o) =>
-    s + parseFloat(o.cash || o.cash_amount || 0), 0);
+    s + parseFloat(o.cash_received || 0), 0);
   const totalMomoReceived = activeOrders.reduce((s, o) =>
-    s + parseFloat(o.momo || o.momo_amount || 0), 0);
+    s + parseFloat(o.momo_received || 0), 0);
   const totalBankReceived = activeOrders.reduce((s, o) =>
-    s + parseFloat(o.bank || o.bank_amount || 0), 0);
+    s + parseFloat(o.bank_received || 0), 0);
   const totalCreditByMethod = activeOrders.reduce((s, o) =>
     s + Math.max(0, parseFloat(o.total_amount || 0) - parseFloat(o.amount_received || 0)), 0);
 
@@ -1139,9 +1141,11 @@ const SalesReport = () => {
               </thead>
               <tbody>
                 {activeOrders.map(o => {
-                  const cash = parseFloat(o.cash || o.cash_amount || 0);
-                  const momo = parseFloat(o.momo || o.momo_amount || 0);
-                  const bank = parseFloat(o.bank || o.bank_amount || 0);
+                  // v1.9.29 — read cash_received / momo_received / bank_received
+                  // (the actual POS save columns), not cash/momo/bank.
+                  const cash = parseFloat(o.cash_received || 0);
+                  const momo = parseFloat(o.momo_received || 0);
+                  const bank = parseFloat(o.bank_received || 0);
                   const credit = Math.max(0, parseFloat(o.total_amount || 0) - parseFloat(o.amount_received || 0));
                   return (
                     <tr key={o.id}>
