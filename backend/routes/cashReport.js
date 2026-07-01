@@ -487,8 +487,13 @@ router.post('/', auth, (req, res) => {
     const tenantId = syncConfig.getTenantId(req);
     const { branchId, deviceId } = syncConfig.getConfig();
 
+    // v1.10.16 — include soft-deleted rows in the existence check. The
+    // UNIQUE index on (date, cashier_id) doesn't know about deleted_at, so
+    // if v1.10.9's admin delete has marked an earlier row deleted_at=<ts>,
+    // an INSERT for the same (date, cashier_id) still fails. Reuse the row:
+    // clear its deleted_at and rewrite the values.
     const existing = db.prepare(
-      'SELECT id FROM cash_reports WHERE date = ? AND cashier_id = ? AND deleted_at IS NULL'
+      'SELECT id, deleted_at FROM cash_reports WHERE date = ? AND cashier_id = ?'
     ).get(date, cashierId);
     let row;
 
@@ -501,15 +506,15 @@ router.post('/', auth, (req, res) => {
           mobile_money=0, cash=0, bank=0,
           expenses=?, pending=?, total=?,
           after_change=?, expected=?, difference=?, status=?, comment=?,
-          cashier_id=?, updated_at=datetime('now'), synced=0
-         WHERE date=? AND cashier_id=? AND deleted_at IS NULL`
+          cashier_id=?, deleted_at=NULL, updated_at=datetime('now'), synced=0
+         WHERE id = ?`
       ).run(initial_change, usdAmt, fraAmt, kAmt,
              usdExp, fraExp, kExp,
              usdExpense, fraExpense, kExpense,
              expenses, pending, total,
              after_change, expected, difference, status, comment,
-             cashierId, date, cashierId);
-      row = db.prepare('SELECT * FROM cash_reports WHERE date = ? AND cashier_id = ?').get(date, cashierId);
+             cashierId, existing.id);
+      row = db.prepare('SELECT * FROM cash_reports WHERE id = ?').get(existing.id);
     } else {
       const info = db.prepare(
         `INSERT INTO cash_reports (date, initial_change,
