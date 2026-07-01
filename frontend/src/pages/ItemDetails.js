@@ -1380,20 +1380,30 @@ const ItemDetails = () => {
                                   : null;
                               })()}
                             </label>
+                            {/* v1.10.11 — mirror Selling behaviour: store what
+                                the user typed in packagings[idx].cost so the
+                                input shows their exact value (not the rounded
+                                base×conv re-render). Base cost_price still gets
+                                updated so it drives siblings + saves correctly. */}
                             <input type="number" min="0" step="0.01"
                               value={(() => {
+                                if (p.cost !== undefined && p.cost !== '') return p.cost;
                                 const conv = parseFloat(p.conv) || 0;
-                                if (conv <= 0) return '';
                                 const base = parseFloat(form.cost_price);
-                                if (!base) return '';
+                                if (conv <= 0 || !base) return '';
                                 return (base * conv).toFixed(2);
                               })()}
                               onChange={e => {
                                 const conv = parseFloat(p.conv) || 0;
                                 if (conv <= 0) return;
-                                const entered = parseFloat(e.target.value);
+                                const raw = e.target.value;
+                                const entered = parseFloat(raw);
                                 const base = isNaN(entered) ? '' : (entered / conv);
-                                setForm(f => ({ ...f, cost_price: base === '' ? '' : base.toFixed(4) }));
+                                setForm(f => ({
+                                  ...f,
+                                  cost_price: base === '' ? '' : base.toFixed(6),
+                                  packagings: f.packagings.map((q, i) => i === idx ? { ...q, cost: raw } : q),
+                                }));
                               }}
                               placeholder="0.00" />
                           </div>
