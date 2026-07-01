@@ -199,6 +199,12 @@ router.post('/', auth, (req, res) => {
             reconciliationId, 'stock_reconciliation', `Stock reconciliation variance`,
             req.user.id, randomUUID(), tenantId, branchId, deviceId, countDate, reconciliationSyncId
           );
+          // v1.10.23 — apply variance to products.current_stock.
+          if (prod.sync_id) {
+            db.prepare(
+              `UPDATE products SET current_stock = current_stock + ?, updated_at = datetime('now'), synced = 0 WHERE sync_id = ?`
+            ).run(varianceBase, prod.sync_id);
+          }
         }
       }
 

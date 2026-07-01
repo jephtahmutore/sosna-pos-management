@@ -514,6 +514,18 @@ router.post('/sales/actual', auth, readOnlyGuard, (req, res) => {
 
         // Create reconciliation movement so POS "In Stock" reflects the actual balance
         // Step 1: delete ALL old reconciliations first (avoids stacking)
+        // v1.10.23 — roll the old reconciliations' net effect off current_stock
+        // before soft-deleting them. Otherwise a re-reconciliation double-counts.
+        const oldRec = db.prepare(
+          `SELECT COALESCE(SUM(quantity), 0) AS net FROM stock_movements
+            WHERE product_sync_id = ? AND location = 'sales'
+              AND movement_type = 'reconciliation' AND deleted_at IS NULL`
+        ).get(entryProductSyncId).net;
+        if (oldRec && Math.abs(oldRec) > 0.0001) {
+          db.prepare(
+            `UPDATE products SET current_stock = current_stock - ?, updated_at = datetime('now'), synced = 0 WHERE sync_id = ?`
+          ).run(oldRec, entryProductSyncId);
+        }
         db.prepare(
           `UPDATE stock_movements SET deleted_at = datetime('now'), updated_at = datetime('now'), synced = 0 WHERE product_sync_id = ? AND location = 'sales' AND movement_type = 'reconciliation' AND deleted_at IS NULL`
         ).run(entryProductSyncId);
@@ -528,6 +540,10 @@ router.post('/sales/actual', auth, readOnlyGuard, (req, res) => {
             VALUES (?, ?, 'sales', 'reconciliation', ?, ?, ?, ?, ?, ?, ?, 0, ?, datetime('now'))
           `).run(entry.product_id, entryProductSyncId, diff, `Reconciliation: actual balance set to ${entry.actual_balance}`, created_by,
                  randomUUID(), tenantId, branchId, deviceId, date);
+          // v1.10.23 — apply the new reconciliation delta to current_stock.
+          db.prepare(
+            `UPDATE products SET current_stock = current_stock + ?, updated_at = datetime('now'), synced = 0 WHERE sync_id = ?`
+          ).run(diff, entryProductSyncId);
         }
       }
     })();

@@ -134,18 +134,28 @@ router.post('/sessions/:id/apply', auth, (req, res) => {
         if (!prod) continue;
 
         // Check if opening_balance movement already exists for this product in store
+        // v1.10.23 — also fetch quantity so we can apply the delta to current_stock.
         const existing = db.prepare(
-          `SELECT sync_id FROM stock_movements
+          `SELECT sync_id, quantity FROM stock_movements
            WHERE product_sync_id = ? AND location = 'store' AND movement_type = 'opening' AND deleted_at IS NULL
            LIMIT 1`
         ).get(prod.sync_id);
 
         if (existing) {
+          // v1.10.23 — apply the delta between old and new counted qty to current_stock.
+          const oldQty = parseFloat(existing.quantity || 0);
+          const newQty = parseFloat(c.counted_qty || 0);
+          const delta = newQty - oldQty;
           // Update existing opening balance movement
           db.prepare(
             `UPDATE stock_movements SET quantity = ?, updated_at = datetime('now'), synced = 0
              WHERE sync_id = ?`
           ).run(c.counted_qty, existing.sync_id);
+          if (Math.abs(delta) > 0.0001 && prod.sync_id) {
+            db.prepare(
+              `UPDATE products SET current_stock = current_stock + ?, updated_at = datetime('now'), synced = 0 WHERE sync_id = ?`
+            ).run(delta, prod.sync_id);
+          }
         } else {
           // Insert new opening balance movement
           db.prepare(
@@ -153,6 +163,12 @@ router.post('/sessions/:id/apply', auth, (req, res) => {
              VALUES (?,?,'store','opening',?,?,?,?,?,?,?,?,0,datetime('now'),datetime('now'))`
           ).run(c.product_id, prod.sync_id, c.counted_qty, parseInt(req.params.id), 'stock_count',
                 req.user.id, randomUUID(), tenantId, branchId, deviceId);
+          // v1.10.23 — apply the counted qty to current_stock.
+          if (prod.sync_id) {
+            db.prepare(
+              `UPDATE products SET current_stock = current_stock + ?, updated_at = datetime('now'), synced = 0 WHERE sync_id = ?`
+            ).run(parseFloat(c.counted_qty || 0), prod.sync_id);
+          }
         }
       }
 

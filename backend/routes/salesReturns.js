@@ -161,6 +161,10 @@ function confirmDamage(db, params, req, res, body) {
     const confirmedBy = req.user.id || null;
     const confirmedByName = req.user.firstName || req.user.email || 'HQ';
 
+    // v1.10.23 — keep products.current_stock in lockstep with the sales-return movements.
+    const stockDecStmt = db.prepare(
+      `UPDATE products SET current_stock = current_stock - ?, updated_at = datetime('now'), synced = 0 WHERE sync_id = ?`
+    );
     db.transaction(() => {
       for (const it of items) {
         const prod = { unit: it.product_base_unit, alt_unit: it.alt_unit, conversion_factor: it.conversion_factor, units_json: it.units_json };
@@ -184,6 +188,7 @@ function confirmDamage(db, params, req, res, body) {
           confirmedBy, randomUUID(), tenantId, branchId, deviceId,
           ret.date, ret.sync_id
         );
+        if (it.product_sync_id) stockDecStmt.run(baseQty, it.product_sync_id);
       }
       db.prepare(`
         UPDATE sales_returns
@@ -262,6 +267,25 @@ router.put('/:id', auth, (req, res) => {
       const ret = db.prepare('SELECT * FROM sales_returns WHERE id = ? AND deleted_at IS NULL').get(id);
       if (!ret) throw Object.assign(new Error('Not found'), { status: 404 });
 
+      // v1.10.23 — roll the old movements' net effect off current_stock before
+      // we soft-delete them, then apply the new movements as we insert. Keeps
+      // the cache consistent across the update.
+      const oldMoves = db.prepare(
+        `SELECT product_sync_id, SUM(quantity) AS net
+           FROM stock_movements
+          WHERE reference_sync_id = ? AND reference_type = 'sales_return' AND deleted_at IS NULL
+          GROUP BY product_sync_id`
+      ).all(ret.sync_id);
+      const stockRollbackStmt = db.prepare(
+        `UPDATE products SET current_stock = current_stock - ?, updated_at = datetime('now'), synced = 0 WHERE sync_id = ?`
+      );
+      for (const r of oldMoves) {
+        if (r.product_sync_id) stockRollbackStmt.run(r.net, r.product_sync_id);
+      }
+      const stockDecStmt = db.prepare(
+        `UPDATE products SET current_stock = current_stock - ?, updated_at = datetime('now'), synced = 0 WHERE sync_id = ?`
+      );
+
       db.prepare("UPDATE stock_movements SET deleted_at=datetime('now'), updated_at=datetime('now'), synced=0 WHERE reference_sync_id=? AND reference_type='sales_return' AND deleted_at IS NULL").run(ret.sync_id);
       db.prepare("UPDATE sales_return_items SET deleted_at=datetime('now'), updated_at=datetime('now'), synced=0 WHERE return_sync_id=? AND deleted_at IS NULL").run(ret.sync_id);
 
@@ -279,6 +303,7 @@ router.put('/:id', auth, (req, res) => {
         // Sales Damages — sales counter only, no +store add-back (items are gone).
         db.prepare(`INSERT INTO stock_movements (product_id, product_sync_id, location, movement_type, quantity, reference_id, reference_type, notes, created_by, sync_id, tenant_id, branch_id, device_id, synced, created_at, updated_at, reference_sync_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0,?,datetime('now'),?)`)
           .run(item.product_id, productSyncId, 'sales', 'sales_return', -baseQty, id, 'sales_return', notes || null, req.user.id, randomUUID(), tenantId, branchId, deviceId, movementCreatedAt, ret.sync_id);
+        if (productSyncId) stockDecStmt.run(baseQty, productSyncId);
       }
     })();
 
@@ -295,6 +320,19 @@ router.delete('/:id', auth, (req, res) => {
     const ret = db.prepare('SELECT sync_id, date FROM sales_returns WHERE id = ? AND deleted_at IS NULL').get(req.params.id);
     if (!ret) return res.status(404).json({ error: 'Sales return not found' });
     db.transaction(() => {
+      // v1.10.23 — roll back the deleted movements' effect on current_stock.
+      const oldMoves = db.prepare(
+        `SELECT product_sync_id, SUM(quantity) AS net
+           FROM stock_movements
+          WHERE reference_sync_id = ? AND reference_type = 'sales_return' AND deleted_at IS NULL
+          GROUP BY product_sync_id`
+      ).all(ret.sync_id);
+      const stockRollbackStmt = db.prepare(
+        `UPDATE products SET current_stock = current_stock - ?, updated_at = datetime('now'), synced = 0 WHERE sync_id = ?`
+      );
+      for (const r of oldMoves) {
+        if (r.product_sync_id) stockRollbackStmt.run(r.net, r.product_sync_id);
+      }
       db.prepare("UPDATE stock_movements SET deleted_at=datetime('now'), updated_at=datetime('now'), synced=0 WHERE reference_sync_id=? AND reference_type='sales_return' AND deleted_at IS NULL").run(ret.sync_id);
       db.prepare("UPDATE sales_returns SET deleted_at=datetime('now'), updated_at=datetime('now'), synced=0 WHERE id=?").run(req.params.id);
     })();
