@@ -856,7 +856,6 @@ const ItemDetails = () => {
               <th>{t('sellingPrice')}</th>
               <th>{t('marginPct')}</th>
               <th>{t('minStock')}</th>
-              <th>{t('storeBalance')}</th>
               <th>{t('actions')}</th>
             </tr>
           </thead>
@@ -920,9 +919,6 @@ const ItemDetails = () => {
                     const m = displayInDefaultUnit(item.min_stock || 0, item);
                     return `${m.qty.toLocaleString(undefined, { maximumFractionDigits: 2 })} ${m.unit}`;
                   })()}
-                </td>
-                <td style={{ color: parseFloat(item.store_balance || 0) <= parseFloat(item.min_stock || 0) ? '#dc2626' : '#16a34a', fontWeight: 500 }}>
-                  {formatStockForProduct(item.store_balance || 0, item)}
                 </td>
                 <td>
                   <div className="action-btns">

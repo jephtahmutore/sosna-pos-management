@@ -364,17 +364,31 @@ router.put('/:id', auth, (req, res) => {
             ...defaultUnitArgs,
             (status === 'Inactive' ? 'Inactive' : 'Active'),
             req.params.id);
-      // Sync the opening stock movement with the new current_stock value
+      // v1.10.7 — Sosna is no-store: opening balance writes to 'sales' as an
+      // adjustment (reference_type='opening_balance' so re-saves can find and
+      // void it). Voids ALL prior opening rows for this product regardless of
+      // location/movement_type so legacy 'store'/'opening' rows get cleaned up
+      // on the first edit.
       const product = db.prepare('SELECT sync_id FROM products WHERE id = ?').get(req.params.id);
-      db.prepare("UPDATE stock_movements SET deleted_at=datetime('now'), updated_at=datetime('now'), synced=0 WHERE product_sync_id=? AND movement_type='opening' AND location='store' AND deleted_at IS NULL")
-        .run(product?.sync_id);
+      db.prepare(`
+        UPDATE stock_movements
+           SET deleted_at=datetime('now'),
+               updated_at=datetime('now'),
+               synced=0
+         WHERE product_sync_id = ?
+           AND deleted_at IS NULL
+           AND (
+             (movement_type = 'opening' AND location = 'store')
+             OR reference_type = 'opening_balance'
+           )
+      `).run(product?.sync_id);
       if (parseFloat(current_stock) > 0) {
         const tenantId = syncConfig.getTenantId(req);
         const { branchId, deviceId } = syncConfig.getConfig();
         db.prepare(
-          `INSERT INTO stock_movements (product_id, product_sync_id, location, movement_type, quantity, notes, sync_id, tenant_id, branch_id, device_id, synced, created_at, updated_at)
-           VALUES (?,?,?,?,?,?,?,?,?,?,0,datetime('now'),datetime('now'))`
-        ).run(req.params.id, product?.sync_id, 'store', 'opening', parseFloat(current_stock), 'Opening balance',
+          `INSERT INTO stock_movements (product_id, product_sync_id, location, movement_type, quantity, reference_type, notes, sync_id, tenant_id, branch_id, device_id, synced, created_at, updated_at)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,0,datetime('now'),datetime('now'))`
+        ).run(req.params.id, product?.sync_id, 'sales', 'adjustment', parseFloat(current_stock), 'opening_balance', 'Opening balance',
               randomUUID(), tenantId, branchId, deviceId);
       }
     })();
