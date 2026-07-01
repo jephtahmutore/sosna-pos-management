@@ -234,6 +234,28 @@ const Layout = () => {
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
+  // v1.10.8 — kill accidental value nudges on every <input type="number">.
+  // Wheel: blur the input so scrolling scrolls the page instead of changing
+  // the value. Arrow ↑/↓: swallow the keypress. Typing/paste/tab untouched.
+  useEffect(() => {
+    const stopWheel = (e) => {
+      if (e.target && e.target.type === 'number' && document.activeElement === e.target) {
+        e.target.blur();
+      }
+    };
+    const stopArrows = (e) => {
+      if (e.target && e.target.type === 'number' && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) {
+        e.preventDefault();
+      }
+    };
+    document.addEventListener('wheel', stopWheel, { passive: true });
+    document.addEventListener('keydown', stopArrows);
+    return () => {
+      document.removeEventListener('wheel', stopWheel);
+      document.removeEventListener('keydown', stopArrows);
+    };
+  }, []);
+
   useEffect(() => {
     if (!searchQuery.trim()) { setSearchResults([]); setSearchOpen(false); return; }
     const token = localStorage.getItem('token');
