@@ -234,13 +234,17 @@ const HQDeposits = () => {
           <div style={{ fontSize: 11, color: '#166534', fontWeight: 700, textTransform: 'uppercase' }}>Confirmed (USD)</div>
           <div style={{ fontSize: 22, fontWeight: 800, color: '#14532d' }}>{fmt(confirmedTotal.USD || 0)}</div>
         </div>
-        {isDual && (
+        {/* v1.10.19 — also show FRA / K cards when actual deposits exist,
+            not only when the current branch's currency_mode says so. HQ view
+            aggregates across every branch and might see K deposits from a
+            Sosna branch even while HQ's own mode is USD-only. */}
+        {(isDual || (confirmedTotal.FRA || 0) > 0) && (
           <div style={{ background: '#dbeafe', border: '1px solid #93c5fd', borderRadius: 10, padding: 14 }}>
             <div style={{ fontSize: 11, color: '#1d4ed8', fontWeight: 700, textTransform: 'uppercase' }}>Confirmed (FRA)</div>
             <div style={{ fontSize: 22, fontWeight: 800, color: '#1e3a8a' }}>FRA {fmtRaw(confirmedTotal.FRA || 0)}</div>
           </div>
         )}
-        {hasK && (
+        {(hasK || (confirmedTotal.K || 0) > 0) && (
           <div style={{ background: '#ede9fe', border: '1px solid #c4b5fd', borderRadius: 10, padding: 14 }}>
             <div style={{ fontSize: 11, color: '#6d28d9', fontWeight: 700, textTransform: 'uppercase' }}>Confirmed (K)</div>
             <div style={{ fontSize: 22, fontWeight: 800, color: '#4c1d95' }}>K {fmtRaw(confirmedTotal.K || 0)}</div>

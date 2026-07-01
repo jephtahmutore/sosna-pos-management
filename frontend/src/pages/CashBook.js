@@ -11,7 +11,15 @@ const CashBook = () => {
   const { hasPermission, user: authUser } = useAuth();
   // v1.8.6 — tab toggle between the ledger view and the Exchanges ledger.
   const [activeTab, setActiveTab] = useState('ledger');
-  const { symbol: curSym, currencyMode, isLiquorStyle } = useCurrency();
+  const { symbol: curSym, currencyMode: rawCurrencyMode, isLiquorStyle: rawIsLiquorStyle } = useCurrency();
+  // v1.10.19 — HQ (sosnazm.com) receives deposits in every currency any
+  // branch uses (USD, K, potentially FRA). HQ's own business_settings
+  // default to Liquor-style single-K which hides the other currencies.
+  // Force per-currency treatment on the HQ host so the cards + ledger
+  // separate USD / FRA / K cleanly.
+  const onHq = isHqHost();
+  const currencyMode = onHq ? 'USD+FRA+K' : rawCurrencyMode;
+  const isLiquorStyle = onHq ? false : rawIsLiquorStyle;
   // v1.9.26 — Cash Book columns + opening-balance editors gate on the
   // branch's currency_mode. K-only branches see one K column only.
   const showUSDccy = currencyMode === 'USD+FRA' || currencyMode === 'USD+FRA+K';
