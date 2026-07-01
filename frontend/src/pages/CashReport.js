@@ -1001,7 +1001,7 @@ const CashReport = () => {
             cards (3 method + Credit Sales) sit on one row on a normal
             laptop viewport. Below ~1000px content width the grid
             gracefully falls back to 2 columns. */}
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: 16, marginBottom: 16 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 260px), 1fr))', gap: 16, marginBottom: 16 }}>
           {/* v1.8.18 — per-currency reconciliation cards with view/+ icons
               for that currency's expenses inside the card. No more shared
               'Expenses Paid From Drawer' row below — each card owns its
