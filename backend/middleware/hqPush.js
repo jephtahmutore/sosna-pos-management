@@ -87,23 +87,34 @@ function pushCategoryToBranches(catRow, { listTenants, getTenantDb }) {
         continue;
       }
 
+      // v1.10.22 — resolve main_category_id (local FK) from the incoming
+      // main_category_sync_id so UPDATE re-links Crates → Beverage when HQ
+      // reassigns the parent. Previously UPDATE only refreshed the sync_id
+      // pointer, leaving the FK stale and items grouped under Uncategorized.
+      let mainCatId = null;
+      if (catRow.main_category_sync_id) {
+        const mc = db.prepare('SELECT id FROM main_categories WHERE sync_id = ? AND deleted_at IS NULL').get(catRow.main_category_sync_id);
+        mainCatId = mc?.id || null;
+      }
       const existing = db.prepare('SELECT id FROM categories WHERE sync_id = ? AND deleted_at IS NULL').get(catRow.sync_id);
       if (existing) {
         db.prepare(`
           UPDATE categories
-             SET name = ?, color = ?, main_category_sync_id = ?,
+             SET name = ?, color = ?,
+                 main_category_id = ?,
+                 main_category_sync_id = ?,
+                 tenant_id = COALESCE(NULLIF(tenant_id, ''), ?),
                  is_hq_owned = 1,
                  updated_at = datetime('now'), synced = 0
            WHERE id = ?
-        `).run(catRow.name, catRow.color || null, catRow.main_category_sync_id || null, existing.id);
+        `).run(
+          catRow.name, catRow.color || null,
+          mainCatId, catRow.main_category_sync_id || null,
+          branchTenantId,
+          existing.id
+        );
         out.updated += 1;
       } else {
-        // main_category_id is a local FK so we resolve via sync_id if present.
-        let mainCatId = null;
-        if (catRow.main_category_sync_id) {
-          const mc = db.prepare('SELECT id FROM main_categories WHERE sync_id = ? AND deleted_at IS NULL').get(catRow.main_category_sync_id);
-          mainCatId = mc?.id || null;
-        }
         db.prepare(`
           INSERT INTO categories
             (name, color, main_category_id, main_category_sync_id, is_hq_owned,
@@ -144,10 +155,12 @@ function pushMainCategoryToBranches(mcRow, { listTenants, getTenantDb }) {
       if (existing) {
         db.prepare(`
           UPDATE main_categories
-             SET name = ?, color = ?, is_hq_owned = 1,
+             SET name = ?, color = ?,
+                 tenant_id = COALESCE(NULLIF(tenant_id, ''), ?),
+                 is_hq_owned = 1,
                  updated_at = datetime('now'), synced = 0
            WHERE id = ?
-        `).run(mcRow.name, mcRow.color || null, existing.id);
+        `).run(mcRow.name, mcRow.color || null, branchTenantId, existing.id);
         out.updated += 1;
       } else {
         db.prepare(`
@@ -185,10 +198,12 @@ function pushUnitToBranches(unitRow, { listTenants, getTenantDb }) {
       if (existing) {
         db.prepare(`
           UPDATE units
-             SET name = ?, abbreviation = ?, is_hq_owned = 1,
+             SET name = ?, abbreviation = ?,
+                 tenant_id = COALESCE(NULLIF(tenant_id, ''), ?),
+                 is_hq_owned = 1,
                  updated_at = datetime('now'), synced = 0
            WHERE id = ?
-        `).run(unitRow.name, unitRow.abbreviation || null, existing.id);
+        `).run(unitRow.name, unitRow.abbreviation || null, branchTenantId, existing.id);
         out.updated += 1;
       } else {
         db.prepare(`
