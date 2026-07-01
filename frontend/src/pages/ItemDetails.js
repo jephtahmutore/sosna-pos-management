@@ -1050,9 +1050,9 @@ const ItemDetails = () => {
                   <input
                     value={form.name}
                     disabled={hqLocked}
-                    onChange={e => { setForm({ ...form, name: e.target.value }); setFormError(''); }}
-                    placeholder="Product name"
-                    style={{ border: formError && !form.name.trim() ? '1.5px solid #dc2626' : undefined }}
+                    onChange={e => { setForm({ ...form, name: e.target.value.toUpperCase() }); setFormError(''); }}
+                    placeholder="PRODUCT NAME"
+                    style={{ border: formError && !form.name.trim() ? '1.5px solid #dc2626' : undefined, textTransform: 'uppercase' }}
                   />
                 </div>
               </div>
