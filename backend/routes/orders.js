@@ -271,6 +271,11 @@ router.put('/:id/confirm-dispatch', auth, requirePagePerm('Dispatch'), (req, res
       const movSql = `INSERT INTO stock_movements (product_id, product_sync_id, location, movement_type, quantity, reference_id, reference_type, created_by, sync_id, tenant_id, branch_id, device_id, synced, created_at, updated_at, reference_sync_id)
            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,0,datetime('now'),datetime('now'),?)`;
       const movStmt = db.prepare(movSql);
+      // v1.10.21 — keep products.current_stock in lockstep with stock_movements
+      // so the cache never drifts (self-heal used to paper over this on boot).
+      const stockDecStmt = db.prepare(
+        `UPDATE products SET current_stock = current_stock - ?, updated_at = datetime('now'), synced = 0 WHERE sync_id = ?`
+      );
 
       for (const it of items) {
         const prod = db.prepare('SELECT sync_id, unit, alt_unit, conversion_factor, units_json FROM products WHERE id = ?').get(it.product_id);
@@ -283,6 +288,7 @@ router.put('/:id/confirm-dispatch', auth, requirePagePerm('Dispatch'), (req, res
           randomUUID(), tenantId, branchId, deviceId,
           order.sync_id
         );
+        if (productSyncId) stockDecStmt.run(baseQty, productSyncId);
       }
 
       // v1.9.1 — also stamp sync_id so cross-device dispatch attribution stays right.
@@ -620,6 +626,10 @@ router.post('/', auth, (req, res) => {
            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,0,${tsExpr},${tsExpr},?)`;
       const itemStmt = db.prepare(itemSql);
       const movStmt  = db.prepare(movSql);
+      // v1.10.21 — decrement products.current_stock alongside the movement.
+      const stockDecStmt = db.prepare(
+        `UPDATE products SET current_stock = current_stock - ?, updated_at = datetime('now'), synced = 0 WHERE sync_id = ?`
+      );
 
       for (const item of items) {
         const prod = db.prepare('SELECT sync_id, unit, alt_unit, conversion_factor, units_json FROM products WHERE id = ?').get(item.product_id);
@@ -643,6 +653,7 @@ router.post('/', auth, (req, res) => {
           if (overrideTs) movArgs.push(overrideTs, overrideTs);
           movArgs.push(orderSyncId);
           movStmt.run(...movArgs);
+          if (productSyncId) stockDecStmt.run(baseQty, productSyncId);
         }
       }
 
@@ -1004,6 +1015,10 @@ router.put('/:id/collect-payment', auth, requirePagePerm('Cashier'), (req, res) 
           `INSERT INTO stock_movements (product_id, product_sync_id, location, movement_type, quantity, reference_id, reference_type, created_by, sync_id, tenant_id, branch_id, device_id, synced, created_at, updated_at, reference_sync_id)
            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,0,datetime('now'),datetime('now'),?)`
         );
+        // v1.10.21 — decrement products.current_stock alongside the movement.
+        const stockDecStmt = db.prepare(
+          `UPDATE products SET current_stock = current_stock - ?, updated_at = datetime('now'), synced = 0 WHERE sync_id = ?`
+        );
         for (const it of items) {
           // v1.8.39 — look up by sync_id first (cross-device safe); fall
           // back to local integer id only if sync_id is missing. Same
@@ -1023,6 +1038,7 @@ router.put('/:id/collect-payment', auth, requirePagePerm('Cashier'), (req, res) 
             randomUUID(), tenantId, branchId, deviceId,
             order.sync_id
           );
+          if (productSyncId) stockDecStmt.run(baseQty, productSyncId);
         }
       }
 
@@ -1049,6 +1065,24 @@ router.put('/:id/reverse', auth, (req, res) => {
       if (!order) throw Object.assign(new Error('Order not found'), { status: 404 });
       if (order.status === 'Reversed') throw Object.assign(new Error('Order already reversed'), { status: 400 });
 
+      // v1.10.21 — before soft-deleting the movements, roll their net effect
+      // back on products.current_stock so the cache stays consistent with
+      // the movements ledger. Net qty per product = SUM(movements to delete);
+      // reversing that means subtracting it from current_stock (a sale
+      // movement is negative, so subtracting it adds back to stock).
+      const soonDeleted = db.prepare(
+        `SELECT product_sync_id, SUM(quantity) AS net
+           FROM stock_movements
+          WHERE reference_sync_id = ? AND location = 'sales'
+            AND movement_type IN ('sale', 'sale_reverse') AND deleted_at IS NULL
+          GROUP BY product_sync_id`
+      ).all(order.sync_id);
+      const stockRevStmt = db.prepare(
+        `UPDATE products SET current_stock = current_stock - ?, updated_at = datetime('now'), synced = 0 WHERE sync_id = ?`
+      );
+      for (const r of soonDeleted) {
+        if (r.product_sync_id) stockRevStmt.run(r.net, r.product_sync_id);
+      }
       // Soft-delete original sale movements AND any partial sale_reverse counter-movements.
       // Net effect: stock returns to exactly its pre-sale state regardless of any prior partial reversals.
       db.prepare(
@@ -1143,6 +1177,12 @@ router.put('/:id/items/:itemId/reverse', auth, (req, res) => {
       ).run(localProductId, item.product_sync_id, 'sales', 'sale_reverse', reverseBaseQty, req.params.id, 'order_reverse',
             `Partial reverse of ${reverseQty} ${reverseUnit}`, req.user.id,
             randomUUID(), tenantId, branchId, deviceId, order.sync_id);
+      // v1.10.21 — increment products.current_stock alongside the reversal movement.
+      if (item.product_sync_id) {
+        db.prepare(
+          `UPDATE products SET current_stock = current_stock + ?, updated_at = datetime('now'), synced = 0 WHERE sync_id = ?`
+        ).run(reverseBaseQty, item.product_sync_id);
+      }
 
       // Track reversed_quantity in LINE's unit (so item.quantity vs item.reversed_quantity stays consistent)
       const newReversedQty = alreadyReversedInLineUnit + reverseInLineUnit;
