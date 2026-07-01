@@ -19,6 +19,23 @@ import {
 const fmtMoney = (n) => `$${parseFloat(n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 const fmtQty   = (n) => parseFloat(n || 0).toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 });
 
+// v1.10.2 — invoices are uploaded at the branch subdomain (mansa1.sosnazm.com)
+// and served from that tenant's uploads dir. HQ (sosnazm.com) can't just link
+// to the raw path — it has to point back at the branch host. Build the full
+// URL from the current hostname + the branch slug so this works in dev too.
+function branchUploadUrl(branchSlug, path) {
+  if (!path || !branchSlug) return null;
+  const currentHost = (typeof window !== 'undefined' && window.location && window.location.hostname) || '';
+  // If we're already on the branch host (dev), just link locally.
+  if (currentHost.startsWith(`${branchSlug}.`)) return `/uploads/${path}`;
+  // Strip a leading subdomain off the current host to find the apex, then
+  // prepend the branch slug. sosnazm.com → mansa1.sosnazm.com.
+  const parts = currentHost.split('.');
+  const apex = parts.length > 2 ? parts.slice(1).join('.') : currentHost;
+  const proto = (typeof window !== 'undefined' && window.location.protocol) || 'https:';
+  return `${proto}//${branchSlug}.${apex}/uploads/${path}`;
+}
+
 export default function HqConfirmGrn() {
   const [purchases, setPurchases] = useState([]);
   const [loading, setLoading]     = useState(false);
@@ -108,7 +125,7 @@ export default function HqConfirmGrn() {
                   <td style={td}>
                     {p.supplier_invoice_number || '—'}
                     {p.invoice_attachment && (
-                      <a href={p.invoice_attachment} target="_blank" rel="noopener noreferrer"
+                      <a href={branchUploadUrl(p.confirmed_branch_slug, p.invoice_attachment)} target="_blank" rel="noopener noreferrer"
                         style={{ marginLeft: 8, color: '#1d4ed8', fontSize: 11, display: 'inline-flex', alignItems: 'center', gap: 2 }}>
                         <FiPaperclip size={11} /> view
                       </a>
@@ -229,7 +246,7 @@ function GenerateGrnModal({ purchase, items, extras, onClose, onGenerated }) {
             <p style={{ margin: '2px 0 0', fontSize: 12, color: '#6b7280' }}>
               Supplier: {purchase.supplier_name || '—'} · Invoice #: {purchase.supplier_invoice_number || '—'}
               {purchase.invoice_attachment && (
-                <> · <a href={purchase.invoice_attachment} target="_blank" rel="noopener noreferrer" style={{ color: '#1d4ed8' }}>view invoice</a></>
+                <> · <a href={branchUploadUrl(purchase.confirmed_branch_slug, purchase.invoice_attachment)} target="_blank" rel="noopener noreferrer" style={{ color: '#1d4ed8' }}>view invoice</a></>
               )}
             </p>
             <p style={{ margin: '2px 0 0', fontSize: 11, color: '#94a3b8' }}>

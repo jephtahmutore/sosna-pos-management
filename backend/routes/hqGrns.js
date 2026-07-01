@@ -75,6 +75,57 @@ router.get('/awaiting', hqAuth, (req, res) => {
   }
 });
 
+// v1.10.0 — /receipt/:syncId + /awaiting-generation are declared here so
+// they win over the wildcard /:slug/:syncId below (Express matches in
+// order — a 2-segment specific must precede a 2-segment wildcard, else
+// the wildcard swallows "receipt" as if it were a branch slug).
+router.get('/awaiting-generation', hqAuth, (req, res) => {
+  try {
+    if (!masterDb) return res.json({ purchases: [] });
+    const rows = masterDb.prepare(`
+      SELECT p.*,
+             (SELECT COUNT(*) FROM hq_purchase_items i
+               WHERE i.purchase_sync_id = p.sync_id
+                 AND i.status = 'RECEIPT_REPORTED') AS reported_count,
+             (SELECT COUNT(*) FROM hq_purchase_items i
+               WHERE i.purchase_sync_id = p.sync_id) AS items_count,
+             (SELECT COUNT(*) FROM hq_purchase_receipt_extras e
+               WHERE e.purchase_sync_id = p.sync_id) AS extras_count
+        FROM hq_purchases p
+       WHERE p.confirmed_at_branch IS NOT NULL
+         AND EXISTS (
+           SELECT 1 FROM hq_purchase_items i
+            WHERE i.purchase_sync_id = p.sync_id
+              AND i.status = 'RECEIPT_REPORTED'
+         )
+       ORDER BY p.confirmed_at_branch DESC
+    `).all();
+    res.json({ purchases: rows });
+  } catch (error) {
+    console.error('[hq.grns.awaiting-generation]', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+router.get('/receipt/:syncId', hqAuth, (req, res) => {
+  try {
+    if (!masterDb) return res.status(404).json({ error: 'master.db unavailable' });
+    const syncId = req.params.syncId;
+    const purchase = masterDb.prepare(`SELECT * FROM hq_purchases WHERE sync_id = ?`).get(syncId);
+    if (!purchase) return res.status(404).json({ error: 'PO not found.' });
+    const items = masterDb.prepare(
+      `SELECT * FROM hq_purchase_items WHERE purchase_sync_id = ? ORDER BY id ASC`
+    ).all(syncId);
+    const extras = masterDb.prepare(
+      `SELECT * FROM hq_purchase_receipt_extras WHERE purchase_sync_id = ? ORDER BY id ASC`
+    ).all(syncId);
+    res.json({ purchase, items, extras });
+  } catch (error) {
+    console.error('[hq.grns.receipt]', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // GET /api/hq/grns/:slug/:syncId
 // Full GRN doc (header + line items) for the HQ review modal. The branch
 // slug is in the path so we know which tenant DB to open without scanning
@@ -406,61 +457,8 @@ router.get('/archive', hqAuth, (req, res) => {
 });
 
 // ── v1.10.0 — HQ generates the GRN from a branch's confirmed receipt ────────
-
-// GET /api/hq/grns/awaiting-generation
-// Returns hq_purchases whose lines are all at status='RECEIPT_REPORTED'
-// (branch has confirmed received qty + supplier invoice). One row per PO
-// with summary + branch confirmation audit so HQ can fan through the queue.
-router.get('/awaiting-generation', hqAuth, (req, res) => {
-  try {
-    if (!masterDb) return res.json({ purchases: [] });
-    const rows = masterDb.prepare(`
-      SELECT p.*,
-             (SELECT COUNT(*) FROM hq_purchase_items i
-               WHERE i.purchase_sync_id = p.sync_id
-                 AND i.status = 'RECEIPT_REPORTED') AS reported_count,
-             (SELECT COUNT(*) FROM hq_purchase_items i
-               WHERE i.purchase_sync_id = p.sync_id) AS items_count,
-             (SELECT COUNT(*) FROM hq_purchase_receipt_extras e
-               WHERE e.purchase_sync_id = p.sync_id) AS extras_count
-        FROM hq_purchases p
-       WHERE p.confirmed_at_branch IS NOT NULL
-         AND EXISTS (
-           SELECT 1 FROM hq_purchase_items i
-            WHERE i.purchase_sync_id = p.sync_id
-              AND i.status = 'RECEIPT_REPORTED'
-         )
-       ORDER BY p.confirmed_at_branch DESC
-    `).all();
-    res.json({ purchases: rows });
-  } catch (error) {
-    console.error('[hq.grns.awaiting-generation]', error);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// GET /api/hq/grns/receipt/:syncId
-// Returns the full receipt-ready doc for one PO: header + lines (with
-// received_qty) + extras + branch confirmation audit. HQ uses this to
-// pre-fill the Generate GRN modal.
-router.get('/receipt/:syncId', hqAuth, (req, res) => {
-  try {
-    if (!masterDb) return res.status(404).json({ error: 'master.db unavailable' });
-    const syncId = req.params.syncId;
-    const purchase = masterDb.prepare(`SELECT * FROM hq_purchases WHERE sync_id = ?`).get(syncId);
-    if (!purchase) return res.status(404).json({ error: 'PO not found.' });
-    const items = masterDb.prepare(
-      `SELECT * FROM hq_purchase_items WHERE purchase_sync_id = ? ORDER BY id ASC`
-    ).all(syncId);
-    const extras = masterDb.prepare(
-      `SELECT * FROM hq_purchase_receipt_extras WHERE purchase_sync_id = ? ORDER BY id ASC`
-    ).all(syncId);
-    res.json({ purchase, items, extras });
-  } catch (error) {
-    console.error('[hq.grns.receipt]', error);
-    res.status(500).json({ error: error.message });
-  }
-});
+// (GET /awaiting-generation and /receipt/:syncId are declared near the top
+// of this file so they win over the /:slug/:syncId wildcard.)
 
 // POST /api/hq/grns/generate
 // Body: {
