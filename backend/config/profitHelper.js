@@ -189,6 +189,17 @@ function reapplyReconciliation(db, date, productSyncIds, tenantId, branchId, dev
       ).get(productSyncId, date);
       if (!actual) continue; // No actual balance saved — skip
 
+      // v1.10.24 — roll the old reconciliation off current_stock before deleting it.
+      const oldRec = db.prepare(
+        `SELECT COALESCE(SUM(quantity), 0) AS net FROM stock_movements
+          WHERE product_sync_id = ? AND location = 'sales'
+            AND movement_type = 'reconciliation' AND deleted_at IS NULL`
+      ).get(productSyncId).net;
+      if (oldRec && Math.abs(oldRec) > 0.0001) {
+        db.prepare(
+          `UPDATE products SET current_stock = current_stock - ?, updated_at = datetime('now'), synced = 0 WHERE sync_id = ?`
+        ).run(oldRec, productSyncId);
+      }
       // Delete old reconciliation movement
       db.prepare(
         `UPDATE stock_movements SET deleted_at = datetime('now'), updated_at = datetime('now'), synced = 0
@@ -209,6 +220,10 @@ function reapplyReconciliation(db, date, productSyncIds, tenantId, branchId, dev
         ).run(actual.product_id, productSyncId, diff,
               `Reconciliation: actual balance set to ${actual.actual_balance}`,
               userId, randomUUID(), tenantId, branchId, deviceId, date);
+        // v1.10.24 — apply new reconciliation delta to current_stock.
+        db.prepare(
+          `UPDATE products SET current_stock = current_stock + ?, updated_at = datetime('now'), synced = 0 WHERE sync_id = ?`
+        ).run(diff, productSyncId);
       }
     }
   } catch (e) {

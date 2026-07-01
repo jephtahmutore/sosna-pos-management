@@ -183,6 +183,12 @@ router.post('/', auth, (req, res) => {
           `).run(i.product_id, productSyncId, stockLocation(db, tenantId), 'credit_note', -baseQty,
                  cnId, 'credit_note', `${reason} via ${cnNumber}`, req.user.id,
                  randomUUID(), tenantId, branchId, deviceId, movementCreatedAt, cnSyncId);
+          // v1.10.24 — decrement products.current_stock alongside the movement.
+          if (productSyncId) {
+            db.prepare(
+              `UPDATE products SET current_stock = current_stock - ?, updated_at = datetime('now'), synced = 0 WHERE sync_id = ?`
+            ).run(baseQty, productSyncId);
+          }
         }
       }
 
@@ -226,6 +232,19 @@ router.put('/:id', auth, (req, res) => {
       const editDate = date || cn.date;
       const movementCreatedAt = editDate + ' ' + new Date().toTimeString().slice(0, 8);
 
+      // v1.10.24 — roll old credit_note movements off current_stock before soft-deleting.
+      const oldCnMoves = db.prepare(
+        `SELECT product_sync_id, SUM(quantity) AS net FROM stock_movements
+          WHERE reference_sync_id = ? AND reference_type = 'credit_note' AND deleted_at IS NULL
+          GROUP BY product_sync_id`
+      ).all(cn.sync_id);
+      for (const r of oldCnMoves) {
+        if (r.product_sync_id) {
+          db.prepare(
+            `UPDATE products SET current_stock = current_stock - ?, updated_at = datetime('now'), synced = 0 WHERE sync_id = ?`
+          ).run(r.net, r.product_sync_id);
+        }
+      }
       // Soft-delete previous items + movements (so sync carries the deletion).
       db.prepare("UPDATE supplier_credit_note_items SET deleted_at=datetime('now'), updated_at=datetime('now'), synced=0 WHERE credit_note_sync_id=? AND deleted_at IS NULL").run(cn.sync_id);
       db.prepare("UPDATE stock_movements SET deleted_at=datetime('now'), updated_at=datetime('now'), synced=0 WHERE reference_sync_id=? AND reference_type='credit_note' AND deleted_at IS NULL").run(cn.sync_id);
@@ -264,6 +283,12 @@ router.put('/:id', auth, (req, res) => {
           `).run(i.product_id, productSyncId, stockLocation(db, tenantId), 'credit_note', -baseQty,
                  id, 'credit_note', `${reason} via ${cn.credit_note_number}`, req.user.id,
                  randomUUID(), tenantId, branchId, deviceId, movementCreatedAt, cn.sync_id);
+          // v1.10.24 — decrement products.current_stock alongside the movement.
+          if (productSyncId) {
+            db.prepare(
+              `UPDATE products SET current_stock = current_stock - ?, updated_at = datetime('now'), synced = 0 WHERE sync_id = ?`
+            ).run(baseQty, productSyncId);
+          }
         }
       }
 
@@ -287,6 +312,19 @@ router.delete('/:id', auth, (req, res) => {
       const cn = db.prepare('SELECT sync_id, date, tenant_id FROM supplier_credit_notes WHERE id = ? AND deleted_at IS NULL').get(id);
       if (!cn) throw Object.assign(new Error('Credit note not found.'), { status: 404 });
 
+      // v1.10.24 — roll deleted credit_note movements off current_stock.
+      const oldCnDelMoves = db.prepare(
+        `SELECT product_sync_id, SUM(quantity) AS net FROM stock_movements
+          WHERE reference_sync_id = ? AND reference_type = 'credit_note' AND deleted_at IS NULL
+          GROUP BY product_sync_id`
+      ).all(cn.sync_id);
+      for (const r of oldCnDelMoves) {
+        if (r.product_sync_id) {
+          db.prepare(
+            `UPDATE products SET current_stock = current_stock - ?, updated_at = datetime('now'), synced = 0 WHERE sync_id = ?`
+          ).run(r.net, r.product_sync_id);
+        }
+      }
       db.prepare("UPDATE stock_movements SET deleted_at=datetime('now'), updated_at=datetime('now'), synced=0 WHERE reference_sync_id=? AND reference_type='credit_note' AND deleted_at IS NULL").run(cn.sync_id);
       db.prepare("UPDATE supplier_credit_note_items SET deleted_at=datetime('now'), updated_at=datetime('now'), synced=0 WHERE credit_note_sync_id=? AND deleted_at IS NULL").run(cn.sync_id);
       db.prepare("UPDATE supplier_credit_notes SET deleted_at=datetime('now'), updated_at=datetime('now'), synced=0 WHERE id=?").run(id);

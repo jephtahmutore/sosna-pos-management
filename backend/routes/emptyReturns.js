@@ -143,6 +143,12 @@ router.post('/', auth, (req, res) => {
         `).run(i.product_id, productSyncId, stockLocation(db, tenantId), 'empty_return', -qty,
                erId, 'empty_return', `Empties returned via ${returnNum}`, req.user.id,
                randomUUID(), tenantId, branchId, deviceId, movementCreatedAt, erSyncId);
+        // v1.10.24 — decrement products.current_stock alongside the movement.
+        if (productSyncId) {
+          db.prepare(
+            `UPDATE products SET current_stock = current_stock - ?, updated_at = datetime('now'), synced = 0 WHERE sync_id = ?`
+          ).run(qty, productSyncId);
+        }
       }
 
       // Phase 4A: mint a Credit Note (reason='Crate Return') instead of an
@@ -192,6 +198,19 @@ router.put('/:id', auth, (req, res) => {
       const editDate = date || er.date;
       const movementCreatedAt = editDate + ' ' + new Date().toTimeString().slice(0, 8);
 
+      // v1.10.24 — roll old empty_return movements off current_stock before soft-deleting.
+      const oldMoves = db.prepare(
+        `SELECT product_sync_id, SUM(quantity) AS net FROM stock_movements
+          WHERE reference_sync_id = ? AND reference_type = 'empty_return' AND deleted_at IS NULL
+          GROUP BY product_sync_id`
+      ).all(er.sync_id);
+      for (const r of oldMoves) {
+        if (r.product_sync_id) {
+          db.prepare(
+            `UPDATE products SET current_stock = current_stock - ?, updated_at = datetime('now'), synced = 0 WHERE sync_id = ?`
+          ).run(r.net, r.product_sync_id);
+        }
+      }
       // Wipe previous items + stock movements (cascade reverse).
       db.prepare("UPDATE empty_return_items SET deleted_at=datetime('now'), updated_at=datetime('now'), synced=0 WHERE empty_return_sync_id=? AND deleted_at IS NULL").run(er.sync_id);
       db.prepare("UPDATE stock_movements SET deleted_at=datetime('now'), updated_at=datetime('now'), synced=0 WHERE reference_sync_id=? AND reference_type='empty_return' AND deleted_at IS NULL").run(er.sync_id);
@@ -228,6 +247,12 @@ router.put('/:id', auth, (req, res) => {
         `).run(i.product_id, productSyncId, stockLocation(db, tenantId), 'empty_return', -qty,
                id, 'empty_return', `Empties returned via ${er.return_number}`, req.user.id,
                randomUUID(), tenantId, branchId, deviceId, movementCreatedAt, er.sync_id);
+        // v1.10.24 — decrement products.current_stock alongside the movement.
+        if (productSyncId) {
+          db.prepare(
+            `UPDATE products SET current_stock = current_stock - ?, updated_at = datetime('now'), synced = 0 WHERE sync_id = ?`
+          ).run(qty, productSyncId);
+        }
       }
 
       // Keep the linked AP credit in sync. New rows (Phase 4A) point to a
@@ -267,6 +292,19 @@ router.delete('/:id', auth, (req, res) => {
       const er = db.prepare('SELECT sync_id, ap_payment_sync_id, credit_note_sync_id, date, tenant_id FROM empty_returns WHERE id = ? AND deleted_at IS NULL').get(id);
       if (!er) throw Object.assign(new Error('Empty return not found.'), { status: 404 });
 
+      // v1.10.24 — roll deleted movements off current_stock.
+      const oldDelMoves = db.prepare(
+        `SELECT product_sync_id, SUM(quantity) AS net FROM stock_movements
+          WHERE reference_sync_id = ? AND reference_type = 'empty_return' AND deleted_at IS NULL
+          GROUP BY product_sync_id`
+      ).all(er.sync_id);
+      for (const r of oldDelMoves) {
+        if (r.product_sync_id) {
+          db.prepare(
+            `UPDATE products SET current_stock = current_stock - ?, updated_at = datetime('now'), synced = 0 WHERE sync_id = ?`
+          ).run(r.net, r.product_sync_id);
+        }
+      }
       db.prepare("UPDATE stock_movements SET deleted_at=datetime('now'), updated_at=datetime('now'), synced=0 WHERE reference_sync_id=? AND reference_type='empty_return' AND deleted_at IS NULL").run(er.sync_id);
       db.prepare("UPDATE empty_return_items SET deleted_at=datetime('now'), updated_at=datetime('now'), synced=0 WHERE empty_return_sync_id=? AND deleted_at IS NULL").run(er.sync_id);
       db.prepare("UPDATE empty_returns SET deleted_at=datetime('now'), updated_at=datetime('now'), synced=0 WHERE id=?").run(id);

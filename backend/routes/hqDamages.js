@@ -152,6 +152,12 @@ router.put('/:slug/:id/confirm', hqAuth, (req, res) => {
           movementCreatedBy, randomUUID(), ret.tenant_id, ret.branch_id, ret.device_id,
           ret.date, ret.sync_id
         );
+        // v1.10.24 — decrement products.current_stock alongside the damage movement.
+        if (it.product_sync_id) {
+          db.prepare(
+            `UPDATE products SET current_stock = current_stock - ?, updated_at = datetime('now'), synced = 0 WHERE sync_id = ?`
+          ).run(baseQty, it.product_sync_id);
+        }
       }
       db.prepare(`
         UPDATE sales_returns
