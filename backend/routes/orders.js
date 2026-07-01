@@ -51,7 +51,7 @@ router.get('/payment-history', auth, readOnlyGuard, (req, res) => {
        LEFT JOIN users uc ON uc.sync_id = o.cashier_user_sync_id
                           OR (o.cashier_user_sync_id IS NULL AND uc.id = o.cashier_user_id)
        WHERE o.deleted_at IS NULL
-         AND o.status IN ('PAID', 'DISPATCHED', 'COMPLETED')
+         AND o.status IN ('PAID', 'DISPATCHED', 'COMPLETED', 'Partial')
          AND o.tenant_id = ?
        ORDER BY COALESCE(o.paid_at, o.created_at) DESC
        LIMIT ?`
