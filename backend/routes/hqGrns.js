@@ -429,19 +429,71 @@ router.get('/archive', hqAuth, (req, res) => {
     if (!masterDb) return res.json({ grns: [], totals: { count: 0, subtotal: 0, cn: 0, payable: 0 } });
     const { branch, supplier, from, to } = req.query || {};
     const limit = Math.min(parseInt(req.query.limit, 10) || 500, 2000);
-    const where = ['1=1'];
-    const params = [];
-    if (branch && branch !== 'all')     { where.push('branch_slug = ?');      params.push(branch); }
-    if (supplier && supplier !== 'all') { where.push('supplier_sync_id = ?'); params.push(supplier); }
-    if (from) { where.push('date >= ?'); params.push(from); }
-    if (to)   { where.push('date <= ?'); params.push(to); }
-    const sql = `
-      SELECT * FROM hq_confirmed_grn_totals
-       WHERE ${where.join(' AND ')}
-       ORDER BY confirmed_at DESC
-       LIMIT ?
-    `;
-    const grns = masterDb.prepare(sql).all(...params, limit);
+
+    // v1.10.3 — UNION legacy + new-flow GRNs. Legacy live in
+    // hq_confirmed_grn_totals (branch-generated, HQ-confirmed); new-flow
+    // live in hq_grns (HQ-generated end-to-end). Both feed the same page.
+    const legacyWhere = ['1=1'];
+    const legacyParams = [];
+    if (branch && branch !== 'all')     { legacyWhere.push('branch_slug = ?');      legacyParams.push(branch); }
+    if (supplier && supplier !== 'all') { legacyWhere.push('supplier_sync_id = ?'); legacyParams.push(supplier); }
+    if (from) { legacyWhere.push('date >= ?'); legacyParams.push(from); }
+    if (to)   { legacyWhere.push('date <= ?'); legacyParams.push(to); }
+    const legacyRows = masterDb.prepare(`
+      SELECT
+        grn_sync_id, grn_number, branch_slug, branch_name,
+        supplier_id, supplier_sync_id, supplier_name,
+        po_sync_id, po_number, date, items_count,
+        items_subtotal, cn_total, final_payable,
+        invoice_number, NULL AS invoice_attachment,
+        confirmed_by, confirmed_by_name, confirmed_at, notes,
+        'legacy' AS source
+      FROM hq_confirmed_grn_totals
+      WHERE ${legacyWhere.join(' AND ')}
+      ORDER BY confirmed_at DESC
+      LIMIT ?
+    `).all(...legacyParams, limit);
+
+    const newWhere = ['deleted_at IS NULL'];
+    const newParams = [];
+    if (branch && branch !== 'all')     { newWhere.push('branch_slug = ?');  newParams.push(branch); }
+    // hq_grns has no supplier_sync_id column — filter by supplier_id if the
+    // caller sent an integer, else fall back to a name-match against
+    // hq_confirmed_grn_totals's supplier_name for the same sync_id.
+    if (supplier && supplier !== 'all') {
+      const supName = masterDb.prepare(`SELECT supplier_name FROM hq_confirmed_grn_totals WHERE supplier_sync_id = ? LIMIT 1`).get(supplier)?.supplier_name;
+      if (supName) { newWhere.push('supplier_name = ?'); newParams.push(supName); }
+      else         { newWhere.push('1 = 0'); }
+    }
+    if (from) { newWhere.push('date >= ?'); newParams.push(from); }
+    if (to)   { newWhere.push('date <= ?'); newParams.push(to); }
+    const newRows = masterDb.prepare(`
+      SELECT
+        g.sync_id AS grn_sync_id, g.grn_number, g.branch_slug, g.branch_name,
+        g.supplier_id, NULL AS supplier_sync_id, g.supplier_name,
+        g.po_sync_id, g.po_number, g.date,
+        (SELECT COUNT(*) FROM hq_grn_items WHERE grn_sync_id = g.sync_id) AS items_count,
+        g.items_subtotal, g.cn_total, g.final_payable,
+        g.supplier_invoice_number AS invoice_number, g.invoice_attachment,
+        g.generated_by_hq AS confirmed_by,
+        g.generated_by_hq_name AS confirmed_by_name,
+        g.generated_at AS confirmed_at,
+        g.notes,
+        'hq' AS source
+      FROM hq_grns g
+      WHERE ${newWhere.join(' AND ')}
+      ORDER BY g.generated_at DESC
+      LIMIT ?
+    `).all(...newParams, limit);
+
+    // Merge, dedupe by grn_sync_id (new-flow wins), sort by confirmed_at DESC.
+    const bySyncId = new Map();
+    for (const r of legacyRows) bySyncId.set(r.grn_sync_id, r);
+    for (const r of newRows)    bySyncId.set(r.grn_sync_id, r);
+    const grns = Array.from(bySyncId.values())
+      .sort((a, b) => String(b.confirmed_at || '').localeCompare(String(a.confirmed_at || '')))
+      .slice(0, limit);
+
     const totals = grns.reduce((acc, g) => {
       acc.count    += 1;
       acc.subtotal += parseFloat(g.items_subtotal) || 0;

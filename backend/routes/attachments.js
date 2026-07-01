@@ -14,9 +14,12 @@ const { randomUUID } = require('crypto');
 // Resolve where to drop uploaded files for the incoming request. Tenant server sets
 // X-Tenant on every request; default server has no such header.
 function resolveInvoiceDir(req) {
-  const host = (req.headers['x-tenant'] || '').toLowerCase();
+  // v1.10.3 — fall back to req.hostname when Nginx didn't pass X-Tenant. Without
+  // this, files silently landed in backend/uploads/ instead of TENANTS_DIR/<slug>/,
+  // and the tenant static handler served 404 for the recorded URL.
+  const host = (req.headers['x-tenant'] || req.hostname || '').toLowerCase();
   const slug = host.split('.')[0];
-  const TENANT_SKIP = new Set(['', 'www', 'sosna', 'localhost', 'api', '127', 'sidanitsolutions']);
+  const TENANT_SKIP = new Set(['', 'www', 'sosna', 'sosnazm', 'localhost', 'api', '127', 'sidanitsolutions']);
   if (slug && !TENANT_SKIP.has(slug)) {
     const base = process.env.TENANTS_DIR || path.join(__dirname, '..', '..', 'tenants');
     const dir = path.join(base, slug, 'uploads', 'invoices');
