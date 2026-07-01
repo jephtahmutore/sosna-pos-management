@@ -505,33 +505,82 @@ const CashBook = () => {
       {/* Activity strip — compact secondary cards. Opening Balance + period totals.
           Opening Balance is editable only when no date filter is active (i.e. after Clear) — matches Butchery behavior
           for adjusting the install-time opening. Day-to-day, opening keeps reflecting yesterday's running balance. */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12, marginBottom: 18 }}>
-        {[
-          { key: 'opening',  label: t('openingBalance'),  value: stats.openingBalance, color: '#1d4ed8', bg: '#eff6ff', border: '#bfdbfe' },
-          { key: 'receipts', label: t('receiptsCR'),      value: stats.totalReceipts,  color: '#16a34a', bg: '#f0fdf4', border: '#bbf7d0' },
-          { key: 'payments', label: t('paymentsPV'),      value: stats.totalPV,        color: '#dc2626', bg: '#fef2f2', border: '#fecaca' },
-          { key: 'ap',       label: t('supplierPaidAP'),  value: stats.totalAP,        color: '#7c3aed', bg: '#faf5ff', border: '#e9d5ff' },
-        ].map(c => {
-          const canEditOpening = c.key === 'opening' && !from && !to && hasPermission('CashBook:Edit');
-          return (
-            <div key={c.key} style={{ background: c.bg, border: `1.5px solid ${c.border}`, borderRadius: 10, padding: '10px 14px', position: 'relative' }}>
-              <div style={{ fontSize: 10.5, letterSpacing: 0.5, textTransform: 'uppercase', color: '#64748b', fontWeight: 600 }}>{c.label}</div>
-              <div style={{ fontSize: 18, fontWeight: 800, color: c.color, marginTop: 3 }}>
-                {hasPermission('CashBook:View')
-                  ? `${curSym}${parseFloat(c.value || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
-                  : 'N/A'}
-              </div>
-              {canEditOpening && (
-                <button onClick={openEditOB}
-                  title="Edit opening balances (USD / FRA / K)"
-                  style={{ position: 'absolute', top: 8, right: 8, background: '#fff', border: `1px solid ${c.border}`, borderRadius: 6, padding: '4px 6px', cursor: 'pointer', color: c.color }}>
-                  <FiEdit2 size={12} />
-                </button>
-              )}
-            </div>
-          );
-        })}
-      </div>
+      {/* v1.10.17 — on Sosna (per-currency) branches, aggregate CR / PV / AP
+          per currency from the ledger rows so the tiles show USD / FRA / K
+          separately instead of collapsing to a single USD-equivalent number
+          that mixed currencies via FX. Liquor branches keep the combined
+          $-value since they're single-currency operational. */}
+      {(() => {
+        const perCcy = entries.reduce((acc, e) => {
+          const usd_in  = parseFloat(e.usd_in  || 0) || 0;
+          const usd_out = parseFloat(e.usd_out || 0) || 0;
+          const fra_in  = parseFloat(e.fra_in  || 0) || 0;
+          const fra_out = parseFloat(e.fra_out || 0) || 0;
+          const k_in    = parseFloat(e.k_in    || 0) || 0;
+          const k_out   = parseFloat(e.k_out   || 0) || 0;
+          if (e.type === 'CR') { acc.receipts.usd += usd_in;  acc.receipts.fra += fra_in;  acc.receipts.k += k_in; }
+          if (e.type === 'PV') { acc.payments.usd += usd_out; acc.payments.fra += fra_out; acc.payments.k += k_out; }
+          if (e.type === 'AP') { acc.ap.usd       += usd_out; acc.ap.fra       += fra_out; acc.ap.k       += k_out; }
+          return acc;
+        }, {
+          receipts: { usd: 0, fra: 0, k: 0 },
+          payments: { usd: 0, fra: 0, k: 0 },
+          ap:       { usd: 0, fra: 0, k: 0 },
+        });
+        const fmtUSD = (n) => `$${(parseFloat(n) || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+        const fmtFRA = (n) => `${(parseFloat(n) || 0).toLocaleString(undefined, { maximumFractionDigits: 0 })} FRA`;
+        const fmtK   = (n) => `${(parseFloat(n) || 0).toLocaleString(undefined, { maximumFractionDigits: 0 })} K`;
+        const strip = [
+          { key: 'opening',  label: t('openingBalance'),  color: '#1d4ed8', bg: '#eff6ff', border: '#bfdbfe',
+            byCcy: stats.openingByCcy || { usd: 0, fra: 0, k: 0 },
+            single: stats.openingBalance },
+          { key: 'receipts', label: t('receiptsCR'),      color: '#16a34a', bg: '#f0fdf4', border: '#bbf7d0',
+            byCcy: perCcy.receipts, single: stats.totalReceipts },
+          { key: 'payments', label: t('paymentsPV'),      color: '#dc2626', bg: '#fef2f2', border: '#fecaca',
+            byCcy: perCcy.payments, single: stats.totalPV },
+          { key: 'ap',       label: t('supplierPaidAP'),  color: '#7c3aed', bg: '#faf5ff', border: '#e9d5ff',
+            byCcy: perCcy.ap, single: stats.totalAP },
+        ];
+        return (
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 12, marginBottom: 18 }}>
+            {strip.map(c => {
+              const canEditOpening = c.key === 'opening' && !from && !to && hasPermission('CashBook:Edit');
+              const showBreakdown  = !isLiquorStyle && hasPermission('CashBook:View');
+              return (
+                <div key={c.key} style={{ background: c.bg, border: `1.5px solid ${c.border}`, borderRadius: 10, padding: '10px 14px', position: 'relative' }}>
+                  <div style={{ fontSize: 10.5, letterSpacing: 0.5, textTransform: 'uppercase', color: '#64748b', fontWeight: 600 }}>{c.label}</div>
+                  {showBreakdown ? (
+                    <div style={{ marginTop: 3, display: 'grid', rowGap: 2 }}>
+                      {showUSDccy && (
+                        <div style={{ fontSize: 14, fontWeight: 800, color: c.color }}>{fmtUSD(c.byCcy.usd)}</div>
+                      )}
+                      {showFRAccy && (
+                        <div style={{ fontSize: 13, fontWeight: 700, color: c.color, opacity: 0.85 }}>{fmtFRA(c.byCcy.fra)}</div>
+                      )}
+                      {showKccy && (
+                        <div style={{ fontSize: 13, fontWeight: 700, color: c.color, opacity: 0.85 }}>{fmtK(c.byCcy.k)}</div>
+                      )}
+                    </div>
+                  ) : (
+                    <div style={{ fontSize: 18, fontWeight: 800, color: c.color, marginTop: 3 }}>
+                      {hasPermission('CashBook:View')
+                        ? `${curSym}${parseFloat(c.single || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+                        : 'N/A'}
+                    </div>
+                  )}
+                  {canEditOpening && (
+                    <button onClick={openEditOB}
+                      title="Edit opening balances (USD / FRA / K)"
+                      style={{ position: 'absolute', top: 8, right: 8, background: '#fff', border: `1px solid ${c.border}`, borderRadius: 6, padding: '4px 6px', cursor: 'pointer', color: c.color }}>
+                      <FiEdit2 size={12} />
+                    </button>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        );
+      })()}
 
       {/* Opening Balance editor modal — three inputs */}
       {editingOB && (
