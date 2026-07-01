@@ -633,14 +633,40 @@ export default function Cashier() {
                       </tr>
                     </thead>
                     <tbody>
-                      {(selected.items || []).map((it, i) => (
-                        <tr key={i} style={{ borderTop: '1px solid #f1f5f9' }}>
-                          <td style={tdStyle}>{it.product_name}</td>
-                          <td style={{ ...tdStyle, textAlign: 'right' }}>{parseFloat(it.quantity).toFixed(2)} {it.unit || ''}</td>
-                          <td style={{ ...tdStyle, textAlign: 'right' }}>{fmtUSD(it.unit_price)}</td>
-                          <td style={{ ...tdStyle, textAlign: 'right' }}>{fmtUSD(it.total_price)}</td>
-                        </tr>
-                      ))}
+                      {(selected.items || []).map((it, i) => {
+                        // v1.10.14 — mirror Sales Report treatment of reversed
+                        // items: full reversal → strike-through + VOID badge;
+                        // partial reversal → net qty + amber "reversed X" chip.
+                        const origQty = parseFloat(it.quantity || 0);
+                        const rq      = parseFloat(it.reversed_quantity || 0);
+                        const partial = !it.reversed && rq > 0;
+                        const netQty  = partial ? Math.max(0, origQty - rq) : origQty;
+                        const unitPx  = parseFloat(it.unit_price || 0);
+                        const netTotal = it.reversed ? 0 : unitPx * netQty;
+                        const strike = it.reversed ? { textDecoration: 'line-through' } : {};
+                        return (
+                          <tr key={i} style={{ borderTop: '1px solid #f1f5f9', opacity: it.reversed ? 0.5 : 1 }}>
+                            <td style={{ ...tdStyle, ...strike }}>
+                              {it.product_name}
+                              {!!it.reversed && (
+                                <span style={{ marginLeft: 6, fontSize: 9, fontWeight: 700, color: '#dc2626', background: '#fee2e2', borderRadius: 4, padding: '1px 6px', verticalAlign: 'middle' }}>
+                                  VOID
+                                </span>
+                              )}
+                              {partial && (
+                                <span style={{ marginLeft: 6, fontSize: 9, fontWeight: 700, color: '#b45309', background: '#fef3c7', borderRadius: 4, padding: '1px 6px', verticalAlign: 'middle' }}>
+                                  was {origQty} — reversed {rq}
+                                </span>
+                              )}
+                            </td>
+                            <td style={{ ...tdStyle, textAlign: 'right', ...strike, fontWeight: partial ? 700 : 400 }}>
+                              {netQty.toFixed(2)} {it.unit || ''}
+                            </td>
+                            <td style={{ ...tdStyle, textAlign: 'right', ...strike }}>{fmtUSD(unitPx)}</td>
+                            <td style={{ ...tdStyle, textAlign: 'right', ...strike, fontWeight: partial ? 700 : 400 }}>{fmtUSD(netTotal)}</td>
+                          </tr>
+                        );
+                      })}
                     </tbody>
                   </table>
                 </div>
