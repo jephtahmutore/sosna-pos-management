@@ -227,6 +227,8 @@ export const getHqGrnArchive   = (params) => api.get('/hq/grns/archive', { param
 // Full GRN doc (header + items) by branch slug + GRN sync_id, for the
 // review modal HQ opens before confirming.
 export const getHqGrn      = (slug, syncId)         => api.get(`/hq/grns/${slug}/${syncId}`);
+// v1.10.3 — Full doc for v1.10.0 HQ-generated GRNs (master.db only).
+export const getHqGrnDetail = (syncId)              => api.get(`/hq/grns/hq/${syncId}`);
 // Confirm: posts stock at branch location='sales', flips PO lines to
 // CONFIRMED, marks GRN hq_status='CONFIRMED'. Optional notes string.
 export const confirmHqGrn  = (slug, syncId, notes)  => api.post(`/hq/grns/${slug}/${syncId}/confirm`, { notes: notes || null });

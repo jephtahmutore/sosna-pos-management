@@ -107,6 +107,34 @@ router.get('/awaiting-generation', hqAuth, (req, res) => {
   }
 });
 
+// v1.10.3 — Full doc for a v1.10.0 HQ-generated GRN. Reads master.db only
+// (no branch DB round-trip). Declared above the /:slug/:syncId wildcard so
+// Express matches "/hq/<uuid>" here instead of treating "hq" as a slug.
+router.get('/hq/:syncId', hqAuth, (req, res) => {
+  try {
+    if (!masterDb) return res.status(404).json({ error: 'master.db unavailable' });
+    const syncId = req.params.syncId;
+    const grn = masterDb.prepare(`SELECT * FROM hq_grns WHERE sync_id = ? AND deleted_at IS NULL`).get(syncId);
+    if (!grn) return res.status(404).json({ error: 'HQ GRN not found.' });
+    const items = masterDb.prepare(
+      `SELECT * FROM hq_grn_items WHERE grn_sync_id = ? ORDER BY id ASC`
+    ).all(syncId);
+    let credit_notes = [];
+    try {
+      credit_notes = masterDb.prepare(`
+        SELECT id, credit_note_number, reason, amount, notes, date, reference
+          FROM hq_supplier_credit_notes
+         WHERE grn_sync_id = ? AND deleted_at IS NULL
+         ORDER BY id ASC
+      `).all(syncId);
+    } catch { /* table may not exist on old DBs */ }
+    res.json({ grn: { ...grn, grn_sync_id: grn.sync_id }, items, credit_notes });
+  } catch (error) {
+    console.error('[hq.grns.hq-detail]', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 router.get('/receipt/:syncId', hqAuth, (req, res) => {
   try {
     if (!masterDb) return res.status(404).json({ error: 'master.db unavailable' });

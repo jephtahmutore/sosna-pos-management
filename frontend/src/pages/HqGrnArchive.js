@@ -7,8 +7,8 @@
 // subtotal, CN total, and final payable across the filtered set so
 // HQ can spot per-supplier or per-period AP movement at a glance.
 import React, { useEffect, useState } from 'react';
-import { FiRefreshCw, FiEye, FiInbox, FiX } from 'react-icons/fi';
-import { getHqGrnArchive, getHqGrn, getHqBranches, getHqSuppliers } from '../services/api';
+import { FiRefreshCw, FiEye, FiInbox, FiX, FiPaperclip, FiUser, FiClock, FiFileText } from 'react-icons/fi';
+import { getHqGrnArchive, getHqGrn, getHqGrnDetail, getHqBranches, getHqSuppliers } from '../services/api';
 
 const fmtMoney = (n) => `$${parseFloat(n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 const todayISO = () => new Date().toISOString().slice(0, 10);
@@ -54,7 +54,11 @@ export default function HqGrnArchive() {
   const seeDetails = async (g) => {
     setViewing({ grn: g, items: [], cnRows: [], loading: true });
     try {
-      const r = await getHqGrn(g.branch_slug, g.grn_sync_id);
+      // v1.10.3 — HQ-generated GRNs live at master.db → hq_grns. Legacy
+      // ones live at the branch DB. Route to the correct detail endpoint.
+      const r = g.source === 'hq'
+        ? await getHqGrnDetail(g.grn_sync_id)
+        : await getHqGrn(g.branch_slug, g.grn_sync_id);
       setViewing({
         grn:   r.data?.grn   || g,
         items: r.data?.items || [],
@@ -186,13 +190,41 @@ function Card({ label, value, color, big }) {
   );
 }
 
-// "See Details" pulls the full GRN doc (header + items) from the branch
-// tenant DB on demand via /api/hq/grns/:slug/:syncId — the same endpoint
-// HqConfirmGrn uses. If the branch is offline, the modal shows an error
-// but the archive list still works because the snapshot lives at HQ.
+function ProvenanceField({ label, value, extra, mono }) {
+  return (
+    <div>
+      <div style={{ fontSize: 10, color: '#64748b', fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 2 }}>{label}</div>
+      <div style={{ fontSize: 13, fontWeight: 600, color: '#0f172a', fontFamily: mono ? 'monospace' : 'inherit' }}>{value}</div>
+      {extra}
+    </div>
+  );
+}
+
+// v1.10.3 — cross-subdomain URL for branch-hosted invoice photos. The
+// upload landed in TENANTS_DIR/<slug>/uploads/, so we point the browser at
+// <slug>.<apex>/uploads/<path>.
+function branchUploadUrl(branchSlug, path) {
+  if (!path || !branchSlug) return null;
+  const currentHost = (typeof window !== 'undefined' && window.location && window.location.hostname) || '';
+  if (currentHost.startsWith(`${branchSlug}.`)) return `/uploads/${path}`;
+  const parts = currentHost.split('.');
+  const apex = parts.length > 2 ? parts.slice(1).join('.') : currentHost;
+  const proto = (typeof window !== 'undefined' && window.location.protocol) || 'https:';
+  return `${proto}//${branchSlug}.${apex}/uploads/${path}`;
+}
+
+// v1.10.4 — full provenance modal. Header shows GRN #; a Provenance card
+// lays out PO, supplier, invoice # + attachment, branch confirmer,
+// HQ generator, and timestamps. Line items + credit notes + totals follow.
 function DetailsModal({ state, onClose }) {
   const { grn, items, cnRows, loading, error } = state;
   const itemsSubtotal = items.reduce((s, i) => s + (parseFloat(i.quantity) || 0) * (parseFloat(i.unit_price) || 0), 0);
+  const invoiceNumber = grn.invoice_number || grn.supplier_invoice_number;
+  const invoiceUrl    = branchUploadUrl(grn.branch_slug, grn.invoice_attachment);
+  const confirmedByBranch     = grn.confirmed_by_branch_name;
+  const confirmedAtBranch     = grn.confirmed_at_branch;
+  const generatedByHq         = grn.generated_by_hq_name || grn.confirmed_by_name;
+  const generatedAt           = grn.generated_at        || grn.confirmed_at;
   return (
     <div style={overlay} onClick={onClose}>
       <div onClick={e => e.stopPropagation()}
@@ -202,8 +234,6 @@ function DetailsModal({ state, onClose }) {
             <h3 style={{ margin: 0, fontSize: 16 }}>GRN {grn.grn_number || grn.grn_sync_id}</h3>
             <div style={{ fontSize: 12, color: '#64748b', marginTop: 3 }}>
               Branch: <strong>{grn.branch_name || grn.branch_slug}</strong>
-              {grn.po_number && <> · From PO: <strong>{grn.po_number}</strong></>}
-              {grn.supplier_name && <> · Supplier: <strong>{grn.supplier_name}</strong></>}
               {grn.date && <> · {grn.date}</>}
             </div>
           </div>
@@ -212,7 +242,7 @@ function DetailsModal({ state, onClose }) {
 
         <div style={{ padding: 16, overflowY: 'auto', flex: 1 }}>
           {loading ? (
-            <p style={{ color: '#64748b' }}>Loading from branch…</p>
+            <p style={{ color: '#64748b' }}>Loading…</p>
           ) : error ? (
             <div style={{ padding: 14, background: '#fef2f2', color: '#991b1b', border: '1px solid #fecaca', borderRadius: 8 }}>
               {error}
@@ -220,6 +250,46 @@ function DetailsModal({ state, onClose }) {
             </div>
           ) : (
             <>
+              {/* Provenance */}
+              <div style={{ padding: 14, background: '#f8fafc', border: '1px solid #e5e7eb', borderRadius: 10, marginBottom: 16, display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 12 }}>
+                <ProvenanceField label="From PO" value={grn.po_number || '—'} mono />
+                <ProvenanceField label="Supplier" value={grn.supplier_name || '—'} />
+                <ProvenanceField
+                  label="Supplier Invoice #"
+                  value={invoiceNumber || '—'}
+                  extra={invoiceUrl && (
+                    <a href={invoiceUrl} target="_blank" rel="noopener noreferrer"
+                      style={{ display: 'inline-flex', alignItems: 'center', gap: 4, marginTop: 4, color: '#1d4ed8', fontSize: 11, fontWeight: 600, textDecoration: 'none' }}>
+                      <FiPaperclip size={11} /> View attachment
+                    </a>
+                  )}
+                />
+                <ProvenanceField
+                  label={<><FiUser size={11} style={{ verticalAlign: 'middle' }}/> Confirmed at branch</>}
+                  value={confirmedByBranch || '—'}
+                  extra={confirmedAtBranch && (
+                    <div style={{ fontSize: 11, color: '#64748b', marginTop: 2 }}>
+                      <FiClock size={10} style={{ verticalAlign: 'middle' }}/> {new Date(confirmedAtBranch).toLocaleString()}
+                    </div>
+                  )}
+                />
+                <ProvenanceField
+                  label={<><FiFileText size={11} style={{ verticalAlign: 'middle' }}/> Generated at HQ</>}
+                  value={generatedByHq || '—'}
+                  extra={generatedAt && (
+                    <div style={{ fontSize: 11, color: '#64748b', marginTop: 2 }}>
+                      <FiClock size={10} style={{ verticalAlign: 'middle' }}/> {new Date(generatedAt).toLocaleString()}
+                    </div>
+                  )}
+                />
+                <ProvenanceField label="Branch" value={grn.branch_name || grn.branch_slug} />
+                {grn.notes && (
+                  <div style={{ gridColumn: '1 / -1' }}>
+                    <ProvenanceField label="Notes" value={grn.notes} />
+                  </div>
+                )}
+              </div>
+
               <h4 style={{ margin: '0 0 8px', fontSize: 13, color: '#374151' }}>Line Items</h4>
               {items.length === 0 ? (
                 <p style={{ color: '#9ca3af', fontStyle: 'italic' }}>No line items.</p>
