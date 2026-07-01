@@ -456,6 +456,8 @@ export const getSalesCashiers = (date, from, to) => {
   if (to)   params.to   = to;
   return api.get('/cash-reports/sales-cashiers', { params });
 };
+// v1.10.9 — admin-gated delete of a saved cash report row.
+export const deleteCashReport = (id) => api.delete(`/cash-reports/${id}`);
 
 // Payment Vouchers
 export const getPaymentVouchers = (params) => api.get('/payment-vouchers', { params });

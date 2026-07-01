@@ -2,11 +2,12 @@ import React, { useState, useEffect, useRef } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { useCurrency } from '../context/CurrencyContext';
 import { useLanguage } from '../context/LanguageContext';
-import { FiSave, FiCalendar, FiEdit2, FiPlus, FiPrinter, FiEye, FiX } from 'react-icons/fi';
+import { FiSave, FiCalendar, FiEdit2, FiPlus, FiPrinter, FiEye, FiX, FiTrash2 } from 'react-icons/fi';
 import Portal from '../utils/Portal';
 import useModalScrollLock from '../utils/useModalScrollLock';
 import PaymentVoucherFormModal from '../components/PaymentVoucherFormModal';
-import { getPaymentVouchers, getSettings, createCashReceipt, updateCashReceipt, checkSalesCashReceipt, getSalesCashiers, getCurrencyExchangesNet, getCurrentFxRate } from '../services/api';
+import AdminPasswordPrompt from '../components/AdminPasswordPrompt';
+import { getPaymentVouchers, getSettings, createCashReceipt, updateCashReceipt, checkSalesCashReceipt, getSalesCashiers, getCurrencyExchangesNet, getCurrentFxRate, deleteCashReport } from '../services/api';
 import CurrencyExchangePanel from '../components/CurrencyExchangePanel';
 
 const API_BASE = process.env.REACT_APP_API_URL || 'http://localhost:5300/api';
@@ -37,6 +38,10 @@ const CashReport = () => {
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState('');
   const [editMode, setEditMode] = useState(false);
+  // v1.10.9 — admin-gated delete of the saved cash report for the selected day.
+  const [savedReportId, setSavedReportId] = useState(null);
+  const [pendingDelete, setPendingDelete] = useState(null);
+  const [deleting, setDeleting] = useState(false);
 
   // Cashier selector for the form (who this report is for)
   const [selectedCashier, setSelectedCashier] = useState('');
@@ -270,6 +275,7 @@ const CashReport = () => {
     }
 
     const saved = reports.find(r => r.date && r.date.split('T')[0] === d && String(r.cashier_id ?? 0) === String(cid));
+    setSavedReportId(saved?.id || null);
     if (saved) {
       // v1.8.13 — restore the per-currency Expected snapshot stored at save
       // time. Falls back to current /daily figure for legacy rows.
@@ -959,6 +965,22 @@ const CashReport = () => {
             {!editMode && (
               <button className="btn btn-secondary" onClick={() => setEditMode(true)}>
                 <FiEdit2 /> {t('edit')}
+              </button>
+            )}
+            {/* v1.10.9 — Admin-only delete of the saved snapshot. After delete,
+                the bottom per-currency cards fall back to live daily figures. */}
+            {!editMode && savedReportId && (
+              <button
+                className="btn"
+                onClick={() => setPendingDelete({
+                  id: savedReportId,
+                  subject: `saved cash report for ${formatDate(date)}`,
+                  actionLabel: 'Delete saved report',
+                })}
+                style={{ background: '#fff', color: '#dc2626', border: '1px solid #fecaca' }}
+                title="Delete the saved snapshot — requires admin password"
+              >
+                <FiTrash2 /> Delete saved
               </button>
             )}
             {editMode && (
@@ -2154,6 +2176,30 @@ const CashReport = () => {
           }
         }
       `}</style>
+
+      {/* v1.10.9 — Admin password gate for deleting a saved cash report. */}
+      <AdminPasswordPrompt
+        open={!!pendingDelete}
+        subject={pendingDelete?.subject || ''}
+        actionLabel={pendingDelete?.actionLabel || 'Delete'}
+        onConfirm={async () => {
+          if (!pendingDelete?.id || deleting) return;
+          setDeleting(true);
+          try {
+            await deleteCashReport(pendingDelete.id);
+            setPendingDelete(null);
+            await fetchReports();
+            await loadDate(date, selectedCashier);
+            setMessage('Saved cash report deleted — Expected values are now live from POS.');
+            setTimeout(() => setMessage(''), 4000);
+          } catch (err) {
+            setMessage(err?.response?.data?.error || 'Delete failed.');
+          } finally {
+            setDeleting(false);
+          }
+        }}
+        onCancel={() => setPendingDelete(null)}
+      />
     </div>
   );
 };

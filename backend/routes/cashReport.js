@@ -539,4 +539,33 @@ router.post('/', auth, (req, res) => {
   }
 });
 
+// v1.10.9 — Admin-only delete a saved cash report so the UI falls back to
+// the live daily figure. The frontend already gates this behind
+// AdminPasswordPrompt (which re-verifies the admin credential server-side
+// via /auth/verify-admin); this handler just enforces role at the API too.
+router.delete('/:id', auth, (req, res) => {
+  try {
+    if ((req.user.role || '').toLowerCase() !== 'administrator') {
+      return res.status(403).json({ error: 'Only administrators can delete a cash report.' });
+    }
+    const id = parseInt(req.params.id, 10);
+    if (!id) return res.status(400).json({ error: 'Invalid id' });
+    const row = db.prepare('SELECT * FROM cash_reports WHERE id = ? AND deleted_at IS NULL').get(id);
+    if (!row) return res.status(404).json({ error: 'Cash report not found (or already deleted).' });
+    db.prepare(`
+      UPDATE cash_reports
+         SET deleted_at = datetime('now'),
+             updated_at = datetime('now'),
+             synced = 0
+       WHERE id = ?
+    `).run(id);
+    if (row.date && req.user.tenantId) {
+      try { recalculateDailyProfit(db, row.date, req.user.tenantId); } catch { /* non-fatal */ }
+    }
+    res.json({ ok: true, id });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 module.exports = router;
