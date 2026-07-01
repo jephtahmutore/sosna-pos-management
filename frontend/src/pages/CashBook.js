@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { getCashBook, getCashBookStats, setOpeningBalance, getSettings, getSalesRangeSummary, createCashTransfer, isHqHost, getBranchSlug } from '../services/api';
+import { getCashBook, getCashBookStats, setOpeningBalance, getSettings, getSalesRangeSummary, createCashTransfer, isHqHost, getBranchSlug, getCurrentFxRate } from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import CurrencyExchangePanel from '../components/CurrencyExchangePanel';
 import { useCurrency } from '../context/CurrencyContext';
@@ -24,6 +24,9 @@ const CashBook = () => {
     currentBalance: 0, currentByMethod: { cash: 0, bank: 0, momo: 0 },
   });
   const [entries, setEntries] = useState([]);
+  // v1.10.18 — live FX so Cash & Cash Equivalents can convert FRA + K to
+  // USD-equivalent instead of naively summing raw numbers.
+  const [fx, setFx] = useState({ buyFRA: 0, sellFRA: 0, buyK: 0, sellK: 0 });
   const [businessInfo, setBusinessInfo] = useState({});
   const [showListPrint, setShowListPrint] = useState(false);
   const [openingBal, setOpeningBal] = useState(0);
@@ -91,6 +94,16 @@ const CashBook = () => {
   useEffect(() => {
     fetchData(todayStr, todayStr);
     getSettings().then(r => setBusinessInfo(r.data?.business || {})).catch(() => {});
+    // v1.10.18 — fetch today's latest FX rate for USD-equivalent card.
+    getCurrentFxRate().then(r => {
+      const d = r.data || {};
+      setFx({
+        buyFRA:  parseFloat(d.buy_rate     ?? d.buyRate     ?? d.buy_rate_fra   ?? 0) || 0,
+        sellFRA: parseFloat(d.sell_rate    ?? d.sellRate    ?? d.sell_rate_fra  ?? 0) || 0,
+        buyK:    parseFloat(d.buy_rate_k   ?? d.buyRateK    ?? 0) || 0,
+        sellK:   parseFloat(d.sell_rate_k  ?? d.sellRateK   ?? 0) || 0,
+      });
+    }).catch(() => {});
   }, []); // eslint-disable-line
 
   const handleFilter = () => fetchData(from, to);
@@ -429,18 +442,48 @@ const CashBook = () => {
           (clears filter); USD / FRA / K cards are clickable to filter the
           ledger to that currency, with active-state highlight. */}
       <div className="stat-cards">
-        <div
-          className={`stat-card purple ${activeCcy === 'all' ? 'active-filter' : ''}`}
-          onClick={() => setActiveCcy('all')}
-          style={{ cursor: 'pointer', outline: activeCcy === 'all' ? '3px solid #fbbf24' : 'none' }}
-        >
-          <div className="stat-icon"><FiDollarSign /></div>
-          <div>
-            <div className="stat-label">{t('cashAndEquivalents')}</div>
-            <div className="stat-value">{hasPermission('CashBook:View') ? `${curSym}${(stats.currentBalance || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : 'N/A'}</div>
-            <div style={{ fontSize: 11, opacity: 0.85, marginTop: 2 }}>{t('opening')} {curSym}{(stats.openingBalance || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
-          </div>
-        </div>
+        {/* v1.10.18 — was 'Cash & Cash Equivalents' summing raw numbers across
+            currencies (nonsense). Now labelled 'USD & USD Equivalent' and
+            actually converts FRA + K to USD using today's live buy rate.
+            Falls back to raw USD only when no rate is available. */}
+        {(() => {
+          const usdNow  = stats.currentByCcy?.usd || 0;
+          const fraNow  = stats.currentByCcy?.fra || 0;
+          const kNow    = stats.currentByCcy?.k   || 0;
+          const usdOpen = stats.openingByCcy?.usd || 0;
+          const fraOpen = stats.openingByCcy?.fra || 0;
+          const kOpen   = stats.openingByCcy?.k   || 0;
+          const usdEqNow  = usdNow  + (fx.buyFRA > 0 ? fraNow  / fx.buyFRA : 0) + (fx.buyK > 0 ? kNow  / fx.buyK : 0);
+          const usdEqOpen = usdOpen + (fx.buyFRA > 0 ? fraOpen / fx.buyFRA : 0) + (fx.buyK > 0 ? kOpen / fx.buyK : 0);
+          const fmt = (n) => `$${(parseFloat(n) || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+          const rateLabel = [
+            fx.buyFRA > 0 && `1 USD = ${fx.buyFRA.toLocaleString()} FRA`,
+            fx.buyK   > 0 && `1 USD = ${fx.buyK.toLocaleString()} K`,
+          ].filter(Boolean).join(' · ');
+          return (
+            <div
+              className={`stat-card purple ${activeCcy === 'all' ? 'active-filter' : ''}`}
+              onClick={() => setActiveCcy('all')}
+              style={{ cursor: 'pointer', outline: activeCcy === 'all' ? '3px solid #fbbf24' : 'none' }}
+            >
+              <div className="stat-icon"><FiDollarSign /></div>
+              <div>
+                <div className="stat-label">USD &amp; USD Equivalent</div>
+                <div className="stat-value">
+                  {hasPermission('CashBook:View') ? `≈ ${fmt(usdEqNow)}` : 'N/A'}
+                </div>
+                <div style={{ fontSize: 11, opacity: 0.85, marginTop: 2 }}>
+                  {t('opening')} ≈ {fmt(usdEqOpen)}
+                </div>
+                {rateLabel && (
+                  <div style={{ fontSize: 10, opacity: 0.7, marginTop: 2, fontStyle: 'italic' }}>
+                    @ {rateLabel}
+                  </div>
+                )}
+              </div>
+            </div>
+          );
+        })()}
 
         {/* v1.9.27 — Liquor-style branches render Cash on Hand / Mobile
             Money / Cash at Bank cards using stats.currentByMethod (already
