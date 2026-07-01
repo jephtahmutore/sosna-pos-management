@@ -805,13 +805,26 @@ const CashBook = () => {
                   )}
                   <td style={{ fontWeight: 600, textAlign: 'right' }}>
                     {(() => {
-                      // v1.8.62 — Balance column follows the active currency
-                      // filter. 'all' falls back to the legacy USD-equivalent
-                      // balance for the umbrella view.
-                      if (activeCcy === 'usd') return `${curSym}${(parseFloat(e.balance_usd)||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}`;
-                      if (activeCcy === 'fra') return `${Math.round(parseFloat(e.balance_fra)||0).toLocaleString()} FRA`;
-                      if (activeCcy === 'k')   return `${Math.round(parseFloat(e.balance_k)||0).toLocaleString()} K`;
-                      return `${curSym}${(parseFloat(parseFloat(e.balance))||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}`;
+                      // v1.10.20 — Balance column now shows a per-currency
+                      // stack (USD-only on 'usd', FRA-only on 'fra', etc.)
+                      // instead of falling back to the naive USD+FRA_raw+K_raw
+                      // e.balance sum. On the 'all' umbrella view, stack all
+                      // three lines so every row communicates the true state
+                      // of each drawer after that entry — matches the layout
+                      // of the USD/FRA/K movement columns to the left.
+                      const fmtUsd = (n) => `${curSym}${(parseFloat(n)||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}`;
+                      const fmtRaw = (n) => Math.round(parseFloat(n)||0).toLocaleString();
+                      if (activeCcy === 'fra') return `${fmtRaw(e.balance_fra)} FRA`;
+                      if (activeCcy === 'k')   return `${fmtRaw(e.balance_k)} K`;
+                      if (activeCcy === 'usd') return fmtUsd(e.balance_usd);
+                      // 'all' — three lines, only the currencies this branch uses.
+                      return (
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 2, lineHeight: 1.25 }}>
+                          {showUSDccy && <span>{fmtUsd(e.balance_usd)}</span>}
+                          {showFRAccy && <span style={{ fontWeight: 500, color: '#2563eb' }}>{fmtRaw(e.balance_fra)} FRA</span>}
+                          {showKccy   && <span style={{ fontWeight: 500, color: '#7c3aed' }}>{fmtRaw(e.balance_k)} K</span>}
+                        </div>
+                      );
                     })()}
                   </td>
                 </tr>
@@ -835,10 +848,20 @@ const CashBook = () => {
               }, { usd: 0, fra: 0, k: 0 });
               const fmtUsd = (n) => `$${parseFloat(n||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}`;
               const fmtRaw = (n) => Math.round(parseFloat(n||0)).toLocaleString();
-              const closeBal = activeCcy === 'usd' ? (stats.currentByCcy?.usd || 0)
-                              : activeCcy === 'fra' ? (stats.currentByCcy?.fra || 0)
+              // v1.10.20 — 'all' view now stacks USD / FRA / K closing
+              // balances (matching the per-row Balance column). Filtered
+              // views (activeCcy === 'usd' / 'fra' / 'k') stay single-line.
+              // The old stats.currentBalance mixed FRA + K raw numbers with
+              // USD and missed HQ deposits, showing e.g. $226,245 when the
+              // real USD in the till was $20,555.
+              const closeBal = activeCcy === 'fra' ? (stats.currentByCcy?.fra || 0)
                               : activeCcy === 'k'   ? (stats.currentByCcy?.k   || 0)
-                              : stats.currentBalance;
+                              : (stats.currentByCcy?.usd || 0);
+              const closeAll = {
+                usd: stats.currentByCcy?.usd || 0,
+                fra: stats.currentByCcy?.fra || 0,
+                k:   stats.currentByCcy?.k   || 0,
+              };
               const fmtClose = activeCcy === 'fra' ? `${Math.round(closeBal).toLocaleString()} FRA`
                               : activeCcy === 'k'   ? `${Math.round(closeBal).toLocaleString()} K`
                               : `${curSym}${(closeBal||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}`;
@@ -863,7 +886,15 @@ const CashBook = () => {
                       {showKccy && <td style={{ textAlign: 'right', color: t.k   >= 0 ? '#7c3aed' : '#dc2626' }}>{t.k   >= 0 ? '+' : '-'}{fmtRaw(Math.abs(t.k))} K</td>}
                     </>
                   )}
-                  <td style={{ textAlign: 'right', color: closeBal >= 0 ? '#16a34a' : '#dc2626' }}>{fmtClose}</td>
+                  <td style={{ textAlign: 'right', color: closeBal >= 0 ? '#16a34a' : '#dc2626' }}>
+                    {activeCcy === 'all' ? (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 2, lineHeight: 1.25 }}>
+                        {showUSDccy && <span style={{ color: closeAll.usd >= 0 ? '#16a34a' : '#dc2626' }}>{fmtUsd(closeAll.usd)}</span>}
+                        {showFRAccy && <span style={{ color: closeAll.fra >= 0 ? '#2563eb' : '#dc2626' }}>{fmtRaw(closeAll.fra)} FRA</span>}
+                        {showKccy   && <span style={{ color: closeAll.k   >= 0 ? '#7c3aed' : '#dc2626' }}>{fmtRaw(closeAll.k)} K</span>}
+                      </div>
+                    ) : fmtClose}
+                  </td>
                 </tr>
               );
             })()}
