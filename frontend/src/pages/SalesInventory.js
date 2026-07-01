@@ -10,6 +10,7 @@ import {
 import Portal from '../utils/Portal';
 import useModalScrollLock from '../utils/useModalScrollLock';
 import printHtml from '../utils/printHtml';
+import { matchTokens } from '../utils/tokenSearch';
 // v1.8.30 — display quantities in the largest configured packaging
 // (e.g. "10 box + 4 pcs") instead of raw base-unit count.
 import { formatStockForProduct } from '../utils/unitFormat';
@@ -106,7 +107,7 @@ const SalesInventory = () => {
 
   const activeCatIds = selCatIds === null ? null : new Set(selCatIds.map(String));
   const filtered = products.filter(p => {
-    const matchSearch = !search || (p.name || '').toLowerCase().includes(search.toLowerCase());
+    const matchSearch = matchTokens(search, p.name, p.code, p.barcode);
     const matchCat = activeCatIds === null
       ? true
       : p.category_id ? activeCatIds.has(String(p.category_id)) : false;

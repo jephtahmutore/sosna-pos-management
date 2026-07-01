@@ -15,6 +15,7 @@ import {
 import Portal from '../utils/Portal';
 import useModalScrollLock from '../utils/useModalScrollLock';
 import AdminPasswordPrompt from '../components/AdminPasswordPrompt';
+import { matchTokens } from '../utils/tokenSearch';
 
 const todayStr = () => new Date().toISOString().slice(0, 10);
 // fmt() is defined inside the component now so it can read the tenant's primary currency symbol.
@@ -232,15 +233,11 @@ const AccountReceivables = () => {
 
   // Receivables tab — only customers with a balance (or who have ever transacted)
   const receivablesRows = rows.filter(r => r._sold > 0 || r._paid > 0)
-    .filter(r => !search || r.name.toLowerCase().includes(search.toLowerCase()) || (r.phone || '').includes(search))
+    .filter(r => matchTokens(search, r.name, r.phone, r.email))
     // Most negative balance first — biggest debtor at top under the flipped convention.
     .sort((a, b) => a._balance - b._balance);
 
-  const paymentsRows = payments.filter(p =>
-    !search ||
-    (p.customer_name || '').toLowerCase().includes(search.toLowerCase()) ||
-    (p.reference || '').toLowerCase().includes(search.toLowerCase())
-  );
+  const paymentsRows = payments.filter(p => matchTokens(search, p.customer_name, p.reference, p.payment_number));
 
   const openPayment = (c) => {
     // v1.8.55 — default to USD pre-filled with the customer's balance.

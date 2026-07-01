@@ -24,6 +24,7 @@ import {
 // v1.8.40 — show On Hand in the product's configured default unit
 // (e.g. Box) instead of the raw base unit (Bottle).
 import { formatStockForProduct } from '../utils/unitFormat';
+import { matchTokens } from '../utils/tokenSearch';
 
 function currentBranchSlug() {
   if (isHqHost()) return getHqBranch() || '';
@@ -384,8 +385,7 @@ function CreateTransferModal({ sourceSlug, branches, onClose, onCreated, onError
   }, [sourceSlug]);
 
   const filtered = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    return q ? products.filter(p => (p.name || '').toLowerCase().includes(q)) : products;
+    return products.filter(p => matchTokens(search, p.name, p.code, p.barcode));
   }, [products, search]);
 
   // v1.8.47 — input + cart speak the product's configured default unit

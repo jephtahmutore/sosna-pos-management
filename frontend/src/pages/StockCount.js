@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { FiPlus, FiCheckCircle, FiClock, FiSearch, FiPackage, FiPrinter, FiZap } from 'react-icons/fi';
+import { matchTokens } from '../utils/tokenSearch';
 import { useAuth } from '../context/AuthContext';
 import { useLanguage } from '../context/LanguageContext';
 import Portal from '../utils/Portal';
@@ -288,17 +289,14 @@ const StockCount = () => {
     setTimeout(() => { w.print(); w.close(); }, 300);
   };
 
-  const filteredDropdown = products.filter(p => {
-    if (!search) return false;
-    const q = search.trim().toLowerCase();
-    if (p.code && p.code.toLowerCase().includes(q)) return true;
-    return q.split(/\s+/).every(w => p.name.toLowerCase().includes(w));
-  }).slice(0, 20);
+  const filteredDropdown = products.filter(p =>
+    !!search && matchTokens(search, p.name, p.code, p.barcode)
+  ).slice(0, 20);
 
   const filteredItems = items.filter(i => {
     if (filter === 'counted' && i.counted_qty === null) return false;
     if (filter === 'uncounted' && i.counted_qty !== null) return false;
-    if (tableSearch && !tableSearch.trim().toLowerCase().split(/\s+/).every(w => i.product_name.toLowerCase().includes(w))) return false;
+    if (tableSearch && !matchTokens(tableSearch, i.product_name, i.product_code)) return false;
     return true;
   });
 

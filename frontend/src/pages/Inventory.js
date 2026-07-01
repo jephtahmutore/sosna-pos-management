@@ -9,6 +9,7 @@ import CategoryFilter from '../components/CategoryFilter';
 // displayInDefaultUnit so qty + unit are consistent (incl. negatives).
 import { displayInDefaultUnit } from '../utils/productUnits';
 import printHtml from '../utils/printHtml';
+import { matchTokens } from '../utils/tokenSearch';
 
 const getCategoryClass = (cat) => {
   const map = { 'Beef': 'category-beef', 'Chicken': 'category-chicken', 'Pork': 'category-pork', 'Lamb': 'category-lamb', 'Processed': 'category-processed' };
@@ -76,7 +77,7 @@ const Inventory = ({ viewLocation = 'store' }) => {
   const activeCatIds = selCatIds === null ? null : new Set(selCatIds.map(String));
 
   const filtered = items.filter(i => {
-    const matchSearch = !search || (i.name || '').toLowerCase().includes(search.toLowerCase()) || (i.code || '').toLowerCase().includes(search.toLowerCase());
+    const matchSearch = matchTokens(search, i.name, i.code, i.barcode);
     const matchCat = activeCatIds === null
       ? true
       : i.category_id ? activeCatIds.has(String(i.category_id)) : false;

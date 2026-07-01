@@ -7,6 +7,7 @@ import { unitsForProduct as unitsForProductFE, pickDisplayUnit } from '../utils/
 import { useCurrency } from '../context/CurrencyContext';
 import { useLanguage } from '../context/LanguageContext';
 import AdminPasswordPrompt from '../components/AdminPasswordPrompt';
+import { matchTokens } from '../utils/tokenSearch';
 
 const todayStr = () => new Date().toISOString().slice(0, 10);
 
@@ -305,7 +306,7 @@ const StockReconciliation = () => {
     });
   };
 
-  const filteredProducts = products.filter(p => !search || p.name.toLowerCase().includes(search.toLowerCase()) || (p.code || '').toLowerCase().includes(search.toLowerCase()));
+  const filteredProducts = products.filter(p => matchTokens(search, p.name, p.code, p.barcode));
   const countedCount = Object.values(counts).filter(c => c?.physical_qty !== '' && c?.physical_qty != null).length;
 
   return (

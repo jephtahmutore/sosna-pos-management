@@ -8,6 +8,7 @@ import Toast from '../components/Toast';
 import Portal from '../utils/Portal';
 import useModalScrollLock from '../utils/useModalScrollLock';
 import AdminPasswordPrompt from '../components/AdminPasswordPrompt';
+import { matchTokens } from '../utils/tokenSearch';
 
 const defaultStats = { totalSuppliers: 0, activeAccounts: 0, outstanding: 0 };
 const emptyForm = { name: '', type: '', phone: '', email: '', address: '', contact_person: '' };
@@ -111,7 +112,7 @@ const Suppliers = () => {
   };
 
   const set = (field) => (e) => setForm(prev => ({ ...prev, [field]: e.target.value }));
-  const filtered = suppliers.filter(s => !search || s.name.toLowerCase().includes(search.toLowerCase()));
+  const filtered = suppliers.filter(s => matchTokens(search, s.name, s.phone, s.email, s.address));
   const inputStyle = { width: '100%', padding: '9px 12px', border: '1px solid #e5e7eb', borderRadius: 8, fontSize: 14, boxSizing: 'border-box' };
   const labelStyle = { display: 'block', fontSize: 13, fontWeight: 600, color: '#374151', marginBottom: 6 };
 

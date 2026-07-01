@@ -8,6 +8,7 @@ import { useCurrency } from '../context/CurrencyContext';
 import { isHqHost, getHqBranch, setHqBranch, getHqBranches, getNotificationBadges } from '../services/api';
 import SyncStatus from './SyncStatus';
 import { getDiscountRequestsPendingCount } from '../services/api';
+import { matchTokens } from '../utils/tokenSearch';
 import { FiGrid, FiShoppingCart, FiPackage, FiFileText, FiDollarSign, FiUsers, FiSettings,
          FiChevronDown, FiLogOut, FiSearch, FiBell, FiMenu, FiDownload, FiUpload, FiList,
          FiBook, FiCreditCard, FiClipboard, FiUser, FiUserPlus, FiSliders, FiGlobe, FiCloud, FiTool,
@@ -235,7 +236,6 @@ const Layout = () => {
 
   useEffect(() => {
     if (!searchQuery.trim()) { setSearchResults([]); setSearchOpen(false); return; }
-    const q = searchQuery.toLowerCase();
     const token = localStorage.getItem('token');
     const headers = { Authorization: `Bearer ${token}` };
     Promise.all([
@@ -245,15 +245,15 @@ const Layout = () => {
     ]).then(([products, customers, suppliers]) => {
       const results = [];
       (Array.isArray(products) ? products : products.data || [])
-        .filter(p => (p.name || '').toLowerCase().includes(q))
+        .filter(p => matchTokens(searchQuery, p.name, p.code, p.barcode))
         .slice(0, 4)
         .forEach(p => results.push({ type: 'Product', label: p.name, sub: `K ${p.selling_price ?? ''}`, path: '/stock/items' }));
       (Array.isArray(customers) ? customers : customers.data || [])
-        .filter(c => (c.name || '').toLowerCase().includes(q))
+        .filter(c => matchTokens(searchQuery, c.name, c.phone, c.email))
         .slice(0, 3)
         .forEach(c => results.push({ type: 'Customer', label: c.name, sub: c.phone || '', path: '/suppliers-customers/customers' }));
       (Array.isArray(suppliers) ? suppliers : suppliers.data || [])
-        .filter(s => (s.name || '').toLowerCase().includes(q))
+        .filter(s => matchTokens(searchQuery, s.name, s.phone, s.email))
         .slice(0, 3)
         .forEach(s => results.push({ type: 'Supplier', label: s.name, sub: s.phone || '', path: '/suppliers-customers/suppliers' }));
       setSearchResults(results);

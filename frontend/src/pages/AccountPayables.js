@@ -6,6 +6,7 @@ import Toast from '../components/Toast';
 import Portal from '../utils/Portal';
 import useModalScrollLock from '../utils/useModalScrollLock';
 import AdminPasswordPrompt from '../components/AdminPasswordPrompt';
+import { matchTokens } from '../utils/tokenSearch';
 import { useAuth } from '../context/AuthContext';
 import { useCurrency } from '../context/CurrencyContext';
 import { useLanguage } from '../context/LanguageContext';
@@ -537,12 +538,11 @@ const AccountPayables = () => {
               </thead>
               <tbody>
                 {(() => {
-                  const rows = apPayments.filter(p =>
-                    !paymentSearch ||
-                    (p.supplier_name_resolved || p.supplier_name || '').toLowerCase().includes(paymentSearch.toLowerCase()) ||
-                    (p.payment_number || '').toLowerCase().includes(paymentSearch.toLowerCase()) ||
-                    (p.description || '').toLowerCase().includes(paymentSearch.toLowerCase())
-                  );
+                  const rows = apPayments.filter(p => matchTokens(
+                    paymentSearch,
+                    p.supplier_name_resolved, p.supplier_name,
+                    p.payment_number, p.description
+                  ));
                   if (rows.length === 0) {
                     return <tr><td colSpan="6" style={{ textAlign: 'center', color: '#9ca3af', padding: 40 }}>No payments recorded.</td></tr>;
                   }

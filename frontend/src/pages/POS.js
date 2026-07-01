@@ -8,6 +8,7 @@ import useModalScrollLock from '../utils/useModalScrollLock';
 import { formatStock, formatStockForProduct } from '../utils/unitFormat';
 import { unitsForProduct, pickDisplayUnit, displayInDefaultUnit } from '../utils/productUnits';
 import printHtml from '../utils/printHtml';
+import { matchTokens } from '../utils/tokenSearch';
 const API_BASE = process.env.REACT_APP_API_URL?.replace('/api', '') || 'http://localhost:5300';
 
 const getCategoryClass = () => 'badge-gray';
@@ -463,8 +464,7 @@ const POS = () => {
   const filteredProducts = products.filter(p => {
     const hasSalesStock = parseFloat(p.sales_balance || 0) > 0;
     const matchCategory = selectedCategory === 'All' || p.category_name === selectedCategory;
-    const words = search.toLowerCase().split(' ').filter(Boolean);
-    const matchSearch = words.length === 0 || words.every(w => p.name.toLowerCase().includes(w) || (p.code || '').toLowerCase().includes(w));
+    const matchSearch = matchTokens(search, p.name, p.code, p.barcode);
     return matchCategory && matchSearch && hasSalesStock;
   });
 

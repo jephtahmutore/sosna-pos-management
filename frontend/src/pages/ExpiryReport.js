@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import api from '../services/api';
 import { useLanguage } from '../context/LanguageContext';
 import { FiAlertTriangle, FiCheckCircle, FiClock, FiSearch } from 'react-icons/fi';
+import { matchTokens } from '../utils/tokenSearch';
 
 function daysBadge(days) {
   if (days === null || days === undefined) return null;
@@ -26,7 +27,7 @@ export default function ExpiryReport() {
   }, []);
 
   const filtered = rows.filter(r => {
-    const matchSearch = !search || r.product_name.toLowerCase().includes(search.toLowerCase()) || r.grn_number.toLowerCase().includes(search.toLowerCase());
+    const matchSearch = matchTokens(search, r.product_name, r.grn_number, r.product_code);
     const d = r.days_remaining;
     const matchFilter =
       filter === 'all'     ? true :

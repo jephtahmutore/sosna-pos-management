@@ -10,6 +10,7 @@ import { useAuth } from '../context/AuthContext';
 import { useCurrency } from '../context/CurrencyContext';
 import { FiSearch, FiEdit2, FiTrash2, FiX, FiTrendingUp, FiPlus, FiFileText } from 'react-icons/fi';
 import Portal from '../utils/Portal';
+import { matchTokens } from '../utils/tokenSearch';
 import useModalScrollLock from '../utils/useModalScrollLock';
 import AdminPasswordPrompt from '../components/AdminPasswordPrompt';
 
@@ -90,7 +91,7 @@ const Customers = () => {
   }, [fetchData]);
 
   const filtered = customers.filter(c => {
-    const matchSearch = !search || c.name.toLowerCase().includes(search.toLowerCase()) || (c.phone || '').includes(search);
+    const matchSearch = matchTokens(search, c.name, c.phone, c.email, c.address);
     const matchType = typeFilter === 'All' || c.type === typeFilter;
     return matchSearch && matchType;
   });

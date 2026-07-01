@@ -5,6 +5,7 @@ import Toast from '../components/Toast';
 import Portal from '../utils/Portal';
 import useModalScrollLock from '../utils/useModalScrollLock';
 import AdminPasswordPrompt from '../components/AdminPasswordPrompt';
+import { matchTokens } from '../utils/tokenSearch';
 
 const ROLES = ['Administrator', 'Manager', 'Cashier', 'Staff'];
 const roleColors = { Administrator: '#dc2626', Manager: '#2563eb', Cashier: '#16a34a', Staff: '#f59e0b' };
@@ -280,8 +281,7 @@ const Users = () => {
   // ──────────────────────────────────────────────────────────────
 
   const filtered = users.filter(u => {
-    const name = `${u.first_name || ''} ${u.last_name || ''}`.toLowerCase();
-    const matchSearch = !search || name.includes(search.toLowerCase()) || (u.email || '').toLowerCase().includes(search.toLowerCase());
+    const matchSearch = matchTokens(search, u.first_name, u.last_name, u.email, u.phone, u.role);
     const matchRole = roleFilter === 'All' || u.role === roleFilter;
     return matchSearch && matchRole;
   });

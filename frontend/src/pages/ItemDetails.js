@@ -11,6 +11,7 @@ import { useCurrency } from '../context/CurrencyContext';
 import Portal from '../utils/Portal';
 import useModalScrollLock from '../utils/useModalScrollLock';
 import AdminPasswordPrompt from '../components/AdminPasswordPrompt';
+import { matchTokens } from '../utils/tokenSearch';
 
 const API_BASE = process.env.REACT_APP_API_URL?.replace('/api', '') || 'http://localhost:5300';
 
@@ -247,7 +248,7 @@ const ItemDetails = () => {
 
   const activeCatIds = selCatIds === null ? null : new Set(selCatIds.map(String));
   const filtered = items.filter(i => {
-    const matchSearch = !search || (i.name || '').toLowerCase().includes(search.toLowerCase()) || (i.code || '').toLowerCase().includes(search.toLowerCase());
+    const matchSearch = matchTokens(search, i.name, i.code, i.barcode);
     const matchCat = activeCatIds === null
       ? true
       : i.category_id ? activeCatIds.has(String(i.category_id)) : false;

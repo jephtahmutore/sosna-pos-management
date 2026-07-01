@@ -8,6 +8,7 @@ import { getProducts, bulkUpdatePrices } from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import { useCurrency } from '../context/CurrencyContext';
 import { FiSearch, FiSave, FiRefreshCw } from 'react-icons/fi';
+import { matchTokens } from '../utils/tokenSearch';
 
 const fmt2 = (n) => Number(n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
@@ -94,9 +95,7 @@ const QuickPrice = () => {
   };
 
   const filteredProducts = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    if (!q) return products;
-    return products.filter(p => (p.name || '').toLowerCase().includes(q) || (p.code || '').toLowerCase().includes(q));
+    return products.filter(p => matchTokens(search, p.name, p.code, p.barcode));
   }, [products, search]);
 
   // A row is "dirty" when its current basePrice differs from the initial.

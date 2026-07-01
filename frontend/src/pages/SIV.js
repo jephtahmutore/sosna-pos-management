@@ -10,6 +10,7 @@ import Portal from '../utils/Portal';
 import useModalScrollLock from '../utils/useModalScrollLock';
 import AdminPasswordPrompt from '../components/AdminPasswordPrompt';
 import { FiPlus, FiFileText, FiCalendar, FiTrendingDown, FiClock, FiTrash2, FiX, FiPrinter, FiEye, FiEdit2, FiUpload, FiChevronDown, FiChevronRight } from 'react-icons/fi';
+import { matchTokens } from '../utils/tokenSearch';
 
 const defaultStats = { totalSIVs: 0, thisMonth: 0, totalValue: 0, pending: 0 };
 const emptyItem = () => ({ product_id: '', product_text: '', quantity: '', unit_price: '', total_price: 0, unit: '' });
@@ -1318,7 +1319,7 @@ const SIV = () => {
                                   onFocus={() => { if (editIsAuto) return; setOpenDropdownIdx(index); setHighlightedIdx(-1); }}
                                   onBlur={() => setTimeout(() => { setOpenDropdownIdx(-1); setHighlightedIdx(-1); }, 160)}
                                   onKeyDown={e => {
-                                    const filtered = products.filter(p => !items[index].product_text || p.name.toLowerCase().includes(items[index].product_text.toLowerCase()));
+                                    const filtered = products.filter(p => matchTokens(items[index].product_text, p.name, p.code, p.barcode));
                                     if (e.key === 'ArrowDown') {
                                       e.preventDefault();
                                       setOpenDropdownIdx(index);
@@ -1341,7 +1342,7 @@ const SIV = () => {
                                 {openDropdownIdx === index && (
                                   <div style={{ position: 'absolute', top: '100%', left: 0, right: 0, zIndex: 9999, background: '#fff', border: '1px solid #d1d5db', borderRadius: 8, maxHeight: '40vh', overflowY: 'auto', boxShadow: '0 8px 24px rgba(0,0,0,0.15)', marginTop: 2 }}>
                                     {products
-                                      .filter(p => !item.product_text || p.name.toLowerCase().includes(item.product_text.toLowerCase()))
+                                      .filter(p => matchTokens(item.product_text, p.name, p.code, p.barcode))
                                       .map((p, pi) => (
                                         <div
                                           key={p.id}
@@ -1355,7 +1356,7 @@ const SIV = () => {
                                         </div>
                                       ))
                                     }
-                                    {products.filter(p => !item.product_text || p.name.toLowerCase().includes(item.product_text.toLowerCase())).length === 0 && (
+                                    {products.filter(p => matchTokens(item.product_text, p.name, p.code, p.barcode)).length === 0 && (
                                       <div style={{ padding: '10px 12px', fontSize: 13, color: '#9ca3af' }}>No matching products</div>
                                     )}
                                   </div>

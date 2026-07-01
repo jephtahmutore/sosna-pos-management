@@ -10,6 +10,7 @@ import InvoiceAttachment from '../components/InvoiceAttachment';
 import AdminPasswordPrompt from '../components/AdminPasswordPrompt';
 import { unitsForProduct as unitsForProductFE } from '../utils/productUnits';
 import { FiPlus, FiFileText, FiCalendar, FiUsers, FiClock, FiX, FiTrash2, FiPrinter, FiSearch, FiChevronDown, FiChevronUp, FiPackage, FiEdit2, FiEye, FiCheckCircle } from 'react-icons/fi';
+import { matchTokens } from '../utils/tokenSearch';
 
 const defaultStats = { totalGRNs: 0, thisMonth: 0, suppliers: 0, pending: 0 };
 const emptyItem = () => ({
@@ -1884,7 +1885,7 @@ const GRN = () => {
                                 placeholder="Type or search product…"
                                 style={{ width: '100%', padding: '8px 10px', border: `1px solid ${incomplete && !item.product_id ? '#f59e0b' : '#e5e7eb'}`, borderRadius: 6, fontSize: 13, boxSizing: 'border-box' }}
                                 onKeyDown={e => {
-                                  const filtered = products.filter(p => !item.product_text || p.name.toLowerCase().includes(item.product_text.toLowerCase()));
+                                  const filtered = products.filter(p => matchTokens(item.product_text, p.name, p.code, p.barcode));
                                   if (e.key === 'ArrowDown') {
                                     e.preventDefault();
                                     setHighlightedIdx(h => Math.min(h + 1, filtered.length - 1));
@@ -1922,7 +1923,7 @@ const GRN = () => {
                               {openDropdownIdx === idx && dropdownRect && (
                                 <div style={{ position: 'fixed', top: dropdownRect.top, left: dropdownRect.left, width: dropdownRect.width, zIndex: 9999, background: '#fff', border: '1px solid #d1d5db', borderRadius: 6, maxHeight: 200, overflowY: 'auto', boxShadow: '0 6px 20px rgba(0,0,0,0.12)' }}>
                                   {products
-                                    .filter(p => !item.product_text || p.name.toLowerCase().includes(item.product_text.toLowerCase()))
+                                    .filter(p => matchTokens(item.product_text, p.name, p.code, p.barcode))
                                     .map((p, pIdx) => (
                                       <div
                                         key={p.id}
@@ -1957,7 +1958,7 @@ const GRN = () => {
                                       </div>
                                     ))
                                   }
-                                  {products.filter(p => !item.product_text || p.name.toLowerCase().includes(item.product_text.toLowerCase())).length === 0 && (
+                                  {products.filter(p => matchTokens(item.product_text, p.name, p.code, p.barcode)).length === 0 && (
                                     <div style={{ padding: '10px 12px', fontSize: 13, color: '#9ca3af' }}>No matching products</div>
                                   )}
                                 </div>

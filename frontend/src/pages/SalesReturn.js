@@ -9,6 +9,7 @@ import { unitsForProduct as unitsForProductFE } from '../utils/productUnits';
 import { useAuth } from '../context/AuthContext';
 import { useCurrency } from '../context/CurrencyContext';
 import { useLanguage } from '../context/LanguageContext';
+import { matchTokens } from '../utils/tokenSearch';
 
 const todayStr = new Date().toISOString().split('T')[0];
 
@@ -153,7 +154,7 @@ const SalesReturn = () => {
   };
 
   const filteredProducts = (s) =>
-    products.filter(p => !s || p.name.toLowerCase().includes(s.toLowerCase())).slice(0, 8);
+    products.filter(p => matchTokens(s, p.name, p.code, p.barcode)).slice(0, 8);
 
   const handleSave = async () => {
     const valid = items.filter(r => r.product_id && parseFloat(r.quantity) > 0);
