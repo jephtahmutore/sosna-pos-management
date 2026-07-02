@@ -375,7 +375,10 @@ const SalesReport = () => {
     <style>
       @page { size: 80mm auto; margin: 2mm 3mm; }
       * { box-sizing: border-box; margin: 0; padding: 0; }
-      body { width: 74mm; font-family: 'Courier New', monospace; font-size: 11px; color: #000; font-weight: 700; }
+      /* v1.10.30 — match POS.js v1.10.28: Liquor-style reprints render in
+         bold Arial so a reprint from Sales Report looks identical to the
+         paper the customer got at the till. */
+      body { width: 74mm; font-family: ${isLiquorStyle ? "Arial, Helvetica, sans-serif" : "'Courier New', monospace"}; font-size: 11px; color: #000; font-weight: 700; }
       table { width: 100%; border-collapse: collapse; font-size: 11px; }
       td { padding: 1px 0; vertical-align: top; }
       .c { text-align: center; }
