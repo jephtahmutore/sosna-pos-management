@@ -49,13 +49,24 @@ const HQDeposits = () => {
   const onHq = isHqHost();
   const isDual = currencyMode === 'USD+FRA' || currencyMode === 'USD+FRA+K';
   const hasK   = currencyMode === 'USD+FRA+K';
+  // v1.10.29 — currencies this branch can actually deposit. K-only
+  // (Liquor-style) branches must NOT be able to select USD/FRA — those
+  // drawers don't exist here. Order = display order in the dropdown.
+  const depositCcyOptions = currencyMode === 'K'
+    ? [{ value: 'K',   label: 'K (Kwacha)' }]
+    : currencyMode === 'USD+FRA'
+    ? [{ value: 'USD', label: 'USD ($)' }, { value: 'FRA', label: 'FRA' }]
+    : currencyMode === 'USD+FRA+K'
+    ? [{ value: 'USD', label: 'USD ($)' }, { value: 'FRA', label: 'FRA' }, { value: 'K', label: 'K (Kwacha)' }]
+    : [{ value: 'USD', label: 'USD ($)' }];
+  const defaultDepositCcy = depositCcyOptions[0].value;
 
   const [deposits, setDeposits] = useState([]);
   const [loading, setLoading]   = useState(false);
 
   // Send Deposit modal (branch only)
   const [showSend, setShowSend] = useState(false);
-  const [sendForm, setSendForm] = useState({ currency: 'USD', amount: '', notes: '', deposit_date: todayStr(), attachments: [] });
+  const [sendForm, setSendForm] = useState({ currency: defaultDepositCcy, amount: '', notes: '', deposit_date: todayStr(), attachments: [] });
   const [sending, setSending]   = useState(false);
   const [sendError, setSendError] = useState('');
   // v1.8.61 — multi-file upload state for the deposit slips.
@@ -93,7 +104,7 @@ const HQDeposits = () => {
   const openSendModal = () => {
     setSendError('');
     setAttError('');
-    setSendForm({ currency: 'USD', amount: '', notes: '', deposit_date: todayStr(), attachments: [] });
+    setSendForm({ currency: defaultDepositCcy, amount: '', notes: '', deposit_date: todayStr(), attachments: [] });
     setShowSend(true);
   };
 
@@ -403,9 +414,9 @@ const HQDeposits = () => {
                   <label>Currency</label>
                   <select value={sendForm.currency}
                     onChange={e => setSendForm({ ...sendForm, currency: e.target.value })}>
-                    <option value="USD">USD ($)</option>
-                    {isDual && <option value="FRA">FRA</option>}
-                    {hasK   && <option value="K">K (Kwacha)</option>}
+                    {depositCcyOptions.map(opt => (
+                      <option key={opt.value} value={opt.value}>{opt.label}</option>
+                    ))}
                   </select>
                 </div>
                 <div className="form-group">
