@@ -224,6 +224,28 @@ router.delete('/:id', auth, (req, res) => {
     db.transaction(() => {
       const sr = db.prepare('SELECT sync_id, count_date FROM stock_reconciliations WHERE id = ? AND tenant_id = ?').get(req.params.id, req.user.tenantId);
       if (!sr) throw Object.assign(new Error('Reconciliation not found'), { status: 404 });
+      // v1.10.34 — roll back products.current_stock by the NET of the variance
+      // movements about to be soft-deleted. POST applied varianceBase to
+      // current_stock (v1.10.23); deleting the reconciliation must reverse
+      // that or products stay at their post-reconciled values (e.g. Four
+      // Cousins 1.5L went from -9 → 0 on reconcile, then delete left it at 0
+      // instead of restoring -9). Must run BEFORE the soft-delete so we can
+      // still see the movement rows.
+      const movementsToRollback = db.prepare(`
+        SELECT product_sync_id, COALESCE(SUM(quantity), 0) AS net
+          FROM stock_movements
+         WHERE reference_sync_id = ?
+           AND reference_type = 'stock_reconciliation'
+           AND deleted_at IS NULL
+           AND product_sync_id IS NOT NULL
+         GROUP BY product_sync_id
+      `).all(sr.sync_id);
+      const rollbackStmt = db.prepare(
+        `UPDATE products SET current_stock = current_stock - ?, updated_at = datetime('now'), synced = 0 WHERE sync_id = ?`
+      );
+      for (const m of movementsToRollback) {
+        if (Math.abs(m.net) > 0.0001) rollbackStmt.run(m.net, m.product_sync_id);
+      }
       db.prepare("UPDATE stock_reconciliations SET deleted_at = datetime('now'), updated_at=datetime('now'), synced=0 WHERE id = ?").run(req.params.id);
       db.prepare("UPDATE stock_reconciliation_items SET deleted_at = datetime('now'), updated_at=datetime('now'), synced=0 WHERE reconciliation_id = ?").run(req.params.id);
       db.prepare(`UPDATE stock_movements SET deleted_at = datetime('now'), updated_at=datetime('now'), synced=0
