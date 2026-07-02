@@ -1015,9 +1015,14 @@ const CashReport = () => {
             { key: 'usd_received', label: 'USD Cash ($)',  ccy: 'USD',  symbol: '$',     dec: 2, posExp: expectedByCcy.usd,    exp: expensesByCcy.usd, exch: exchangeNet.usd_net, step: '0.01', color: '#16a34a', bg: '#f0fdf4', show: showUSDccy },
             { key: 'fra_received', label: 'FRA Cash',      ccy: 'FRA',  symbol: '',      dec: 0, posExp: expectedByCcy.fra,    exp: expensesByCcy.fra, exch: exchangeNet.fra_net, step: '1',    color: '#7c3aed', bg: '#faf5ff', show: showFRAccy },
             { key: 'k_received',   label: 'K Cash',        ccy: 'K',    symbol: '',      dec: 0, posExp: expectedByCcy.k,      exp: expensesByCcy.k,   exch: exchangeNet.k_net,   step: '1',    color: '#ea580c', bg: '#fff7ed', show: showKccy   },
-            { key: 'usd_received', label: 'Cash',          ccy: 'CASH', symbol: curSym,  dec: 2, posExp: expectedByMethod.cash, exp: 0,                exch: 0,                   step: '0.01', color: '#16a34a', bg: '#f0fdf4', show: isLiquorStyle },
-            { key: 'fra_received', label: 'Mobile Money',  ccy: 'MOMO', symbol: curSym,  dec: 2, posExp: expectedByMethod.momo, exp: 0,                exch: 0,                   step: '0.01', color: '#ea580c', bg: '#fff7ed', show: isLiquorStyle },
-            { key: 'k_received',   label: 'Bank',          ccy: 'BANK', symbol: curSym,  dec: 2, posExp: expectedByMethod.bank, exp: 0,                exch: 0,                   step: '0.01', color: '#2563eb', bg: '#eff6ff', show: isLiquorStyle },
+            // v1.10.31 — Liquor cards now surface expenses. Storage mapping
+            // (matches PaymentVoucherFormModal): Cash → usd_amount, MoMo →
+            // fra_amount, Bank → k_amount. Previously `exp: 0` hid every PV
+            // saved from this page from the "+ Expenses paid" line, so a
+            // cashier who registered a K5,000 expense saw nothing move.
+            { key: 'usd_received', label: 'Cash',          ccy: 'CASH', symbol: curSym,  dec: 2, posExp: expectedByMethod.cash, exp: expensesByCcy.usd, exch: 0, step: '0.01', color: '#16a34a', bg: '#f0fdf4', show: isLiquorStyle },
+            { key: 'fra_received', label: 'Mobile Money',  ccy: 'MOMO', symbol: curSym,  dec: 2, posExp: expectedByMethod.momo, exp: expensesByCcy.fra, exch: 0, step: '0.01', color: '#ea580c', bg: '#fff7ed', show: isLiquorStyle },
+            { key: 'k_received',   label: 'Bank',          ccy: 'BANK', symbol: curSym,  dec: 2, posExp: expectedByMethod.bank, exp: expensesByCcy.k,   exch: 0, step: '0.01', color: '#2563eb', bg: '#eff6ff', show: isLiquorStyle },
           ].filter(c => c.show).map(c => {
             const counted     = parseFloat(form[c.key] || 0) || 0;
             const exch        = parseFloat(c.exch || 0) || 0;

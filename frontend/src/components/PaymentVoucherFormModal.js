@@ -24,7 +24,23 @@ const PaymentVoucherFormModal = ({
                        //   (e.g. the cashier's name when opened from Cash Report).
   extraPayload,        // optional object — merged into the API payload (e.g. { cashier_id })
 }) => {
-  const { symbol: curSym } = useCurrency();
+  const { symbol: curSym, isLiquorStyle } = useCurrency();
+  // v1.10.31 — On Liquor-style branches (Lusaka, Mansa, K-only Cash/MoMo/Bank
+  // workflow) the three amount inputs are physical methods, not currencies.
+  // Storage columns stay the same (usd_amount = Cash, fra_amount = MoMo,
+  // k_amount = Bank) to match CashReport's per-method cards and avoid a DB
+  // migration. Backend paymentVouchers.js already accepts both shapes.
+  const fieldConfigs = isLiquorStyle
+    ? [
+        { key: 'usd_amount', ccy: 'CASH', label: 'Cash',         color: '#16a34a', step: '0.01', placeholder: '0.00', prefix: curSym },
+        { key: 'fra_amount', ccy: 'MOMO', label: 'Mobile Money', color: '#ea580c', step: '0.01', placeholder: '0.00', prefix: curSym },
+        { key: 'k_amount',   ccy: 'BANK', label: 'Bank',         color: '#2563eb', step: '0.01', placeholder: '0.00', prefix: curSym },
+      ]
+    : [
+        { key: 'usd_amount', ccy: 'USD',  label: 'USD ($)',      color: '#16a34a', step: '0.01', placeholder: '0.00', prefix: '$' },
+        { key: 'fra_amount', ccy: 'FRA',  label: 'FRA',          color: '#7c3aed', step: '1',    placeholder: '0',    prefix: ''  },
+        { key: 'k_amount',   ccy: 'K',    label: 'K',            color: '#ea580c', step: '1',    placeholder: '0',    prefix: ''  },
+      ];
 
   const [pvTypes, setPvTypes] = useState([]);
   // v1.8.5 — triple-currency. USD ($), FRA, K each in own currency. Legacy
@@ -89,12 +105,14 @@ const PaymentVoucherFormModal = ({
     const usd = parseFloat(form.usd_amount || 0) || 0;
     const fra = parseFloat(form.fra_amount || 0) || 0;
     const k   = parseFloat(form.k_amount   || 0) || 0;
-    // Total in USD equivalent = USD only. FRA & K need rates to convert; for
-    // the header `amount` column we keep USD as the canonical figure (the
-    // legacy reports + Cash Book read this). Per-currency amounts live in
-    // their own columns. Future: convert FRA/K via current FX rate if needed.
-    const totalUsd = usd;
-    if (usd <= 0 && fra <= 0 && k <= 0) return setError('Enter an amount in at least one currency.');
+    // Total for the header `amount` column (legacy reports + Cash Book read
+    // this). On Sosna, only USD is canonical since FRA & K would need FX;
+    // on Liquor the three slots are all the same currency (Cash/MoMo/Bank
+    // in K), so `amount` = sum of whichever slot the user filled in.
+    // v1.10.31 — was reading `usd` only, which zeroed the header amount when
+    // a Liquor cashier paid via MoMo or Bank.
+    const totalUsd = isLiquorStyle ? (usd + fra + k) : usd;
+    if (usd <= 0 && fra <= 0 && k <= 0) return setError(isLiquorStyle ? 'Enter an amount in Cash, Mobile Money, or Bank.' : 'Enter an amount in at least one currency.');
 
     if (editVoucher) {
       if (!window.confirm('Are you sure you want to update this record?')) return;
@@ -185,16 +203,11 @@ const PaymentVoucherFormModal = ({
                 Amount Paid (split across methods)
               </label>
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10 }}>
-                {[
-                  { key: 'usd_amount', ccy: 'USD', label: 'USD ($)', color: '#16a34a', step: '0.01', placeholder: '0.00' },
-                  { key: 'fra_amount', ccy: 'FRA', label: 'FRA',     color: '#7c3aed', step: '1',    placeholder: '0' },
-                  { key: 'k_amount',   ccy: 'K',   label: 'K',       color: '#ea580c', step: '1',    placeholder: '0' },
-                ].map((f) => {
+                {fieldConfigs.map((f) => {
                   const isDefault = defaultCurrency && f.ccy === defaultCurrency;
-                  // v1.8.24 — one PV = one currency. Disable an input when
-                  // ANY OTHER currency already has a value > 0. Clear the
-                  // active one to switch.
-                  const otherKeys = ['usd_amount', 'fra_amount', 'k_amount'].filter(k => k !== f.key);
+                  // v1.8.24 — one PV = one method/currency. Disable an input
+                  // when ANY OTHER already has a value > 0.
+                  const otherKeys = fieldConfigs.map(x => x.key).filter(k => k !== f.key);
                   const someoneElseHasValue = otherKeys.some(k => parseFloat(form[k] || 0) > 0);
                   const locked = someoneElseHasValue;
                   return (
@@ -206,7 +219,7 @@ const PaymentVoucherFormModal = ({
                         value={form[f.key]}
                         onChange={e => setForm(prev => ({ ...prev, [f.key]: e.target.value }))}
                         placeholder={f.placeholder}
-                        title={locked ? 'Clear the other currency to switch — one PV = one currency.' : ''}
+                        title={locked ? (isLiquorStyle ? 'Clear the other method to switch — one PV = one method.' : 'Clear the other currency to switch — one PV = one currency.') : ''}
                         style={{
                           width: '100%', padding: '8px 10px',
                           border: `2px solid ${locked ? '#e5e7eb' : (parseFloat(form[f.key] || 0) > 0 || isDefault ? f.color : '#d1d5db')}`,
@@ -222,10 +235,31 @@ const PaymentVoucherFormModal = ({
                 })}
               </div>
               <div style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 10px', background: '#f9fafb', borderRadius: 6, fontSize: 13, marginTop: 8 }}>
-                <span style={{ color: '#6b7280' }}>Header total (USD only)</span>
-                <span style={{ fontWeight: 800, color: '#1d4ed8' }}>
-                  ${(parseFloat(form.usd_amount || 0)).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                </span>
+                {(() => {
+                  // v1.10.31 — Liquor totals sum all three inputs in one currency
+                  // (only one is non-zero due to the lock, so this reads the
+                  // active method's value). Sosna keeps the USD-only header total
+                  // that the DB `amount` column tracks.
+                  if (isLiquorStyle) {
+                    const t = fieldConfigs.reduce((s, f) => s + (parseFloat(form[f.key] || 0) || 0), 0);
+                    return (
+                      <>
+                        <span style={{ color: '#6b7280' }}>Total</span>
+                        <span style={{ fontWeight: 800, color: '#1d4ed8' }}>
+                          {curSym}{t.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                        </span>
+                      </>
+                    );
+                  }
+                  return (
+                    <>
+                      <span style={{ color: '#6b7280' }}>Header total (USD only)</span>
+                      <span style={{ fontWeight: 800, color: '#1d4ed8' }}>
+                        ${(parseFloat(form.usd_amount || 0)).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      </span>
+                    </>
+                  );
+                })()}
               </div>
             </div>
 
