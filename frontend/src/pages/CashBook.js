@@ -705,13 +705,27 @@ const CashBook = () => {
               const obUsd = stats.openingByCcy?.usd || 0;
               const obFra = stats.openingByCcy?.fra || 0;
               const obK   = stats.openingByCcy?.k   || 0;
-              const balForActive = activeCcy === 'usd' ? obUsd
-                                 : activeCcy === 'fra' ? obFra
-                                 : activeCcy === 'k'   ? obK
-                                 : openingBal;
-              const fmtBalActive = activeCcy === 'fra' ? `${Math.round(balForActive).toLocaleString()} FRA`
-                                 : activeCcy === 'k'   ? `${Math.round(balForActive).toLocaleString()} K`
-                                 : `${curSym}${balForActive.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}`;
+              // v1.10.25 — Balance cell now mirrors the transaction rows
+              // below: single-line when a currency filter is active, 3-stacked
+              // (USD / FRA / K) when 'all' is selected. Previously the 'all'
+              // fallback used the legacy `openingBal` number, which lumped raw
+              // USD + FRA + K into one $-amount and disagreed with both the
+              // USD-Equivalent tile above and the per-row balances below.
+              const fmtUsd = (n) => `${curSym}${(parseFloat(n)||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}`;
+              const fmtRaw = (n) => Math.round(parseFloat(n)||0).toLocaleString();
+              const renderBalance = () => {
+                if (activeCcy === 'usd') return fmtUsd(obUsd);
+                if (activeCcy === 'fra') return `${fmtRaw(obFra)} FRA`;
+                if (activeCcy === 'k')   return `${fmtRaw(obK)} K`;
+                if (isLiquorStyle) return fmtUsd(openingBal);
+                return (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 2, lineHeight: 1.25 }}>
+                    {showUSDccy && <span>{fmtUsd(obUsd)}</span>}
+                    {showFRAccy && <span style={{ fontWeight: 500, color: '#2563eb' }}>{fmtRaw(obFra)} FRA</span>}
+                    {showKccy   && <span style={{ fontWeight: 500, color: '#7c3aed' }}>{fmtRaw(obK)} K</span>}
+                  </div>
+                );
+              };
               return (
                 <tr style={{ background: '#f0f9ff' }}>
                   <td style={{ fontWeight: 500 }}>—</td>
@@ -732,7 +746,7 @@ const CashBook = () => {
                       {showKccy && <td style={{ color: obK ? '#7c3aed' : '#cbd5e1', fontWeight: 600, textAlign: 'right' }}>{obK ? `${Math.round(obK).toLocaleString()} K` : '—'}</td>}
                     </>
                   )}
-                  <td style={{ fontWeight: 600, textAlign: 'right' }}>{fmtBalActive}</td>
+                  <td style={{ fontWeight: 600, textAlign: 'right' }}>{renderBalance()}</td>
                 </tr>
               );
             })()}

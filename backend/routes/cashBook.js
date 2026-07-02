@@ -23,7 +23,12 @@ function getOpeningByMethod(tenantId) {
     const ref = (r.reference || '').toUpperCase();
     if (ref === 'OB-BANK') out.bank += parseFloat(r.amount);
     else if (ref === 'OB-MOMO') out.momo += parseFloat(r.amount);
-    else out.cash += parseFloat(r.amount); // OB-CASH or legacy 'OB'
+    else if (ref === 'OB-CASH' || ref === 'OB') out.cash += parseFloat(r.amount);
+    // v1.10.25 — OB-USD / OB-FRA / OB-K are Sosna per-currency openings.
+    // They belong to openingByCcy only. The previous fallback lumped them
+    // all into `cash`, so on Sosna the "opening balance" became a raw
+    // USD+FRA+K sum (e.g. 23,775 + 196,000 + 3,980 = 223,755) which the
+    // ledger's Balance column then showed as a $-amount — nonsense.
   }
   return out;
 }
@@ -45,6 +50,65 @@ function getOpeningByCurrency(tenantId) {
     else if (ref === 'OB-K')   out.k   += parseFloat(r.amount);
   }
   return out;
+}
+
+// v1.10.25 — Per-currency receipts + payments for an arbitrary date clause.
+// Used to (a) roll up the "in-range" totals in /stats, and (b) fold pre-period
+// activity into openingByCcy so opening on day N equals closing on day N-1.
+// Mirrors every source that touches the multi-currency ledger:
+//   Receipts (in) — cash_receipts, POS orders (paid_at), HQ deposits IN
+//   Payments (out) — payment_vouchers, ap_payments, HQ deposits OUT
+// Capital / dividend / loan sources are USD-only and out of scope for the
+// FRA/K carry-forward — they're already in the folded openingByMethod.
+function ccyReceiptsPayments(tenantId, slug, dateClause, dateParams) {
+  const receipts = { usd: 0, fra: 0, k: 0 };
+  const payments = { usd: 0, fra: 0, k: 0 };
+  const num = (v) => parseFloat(v || 0) || 0;
+  // CR — cash_receipts.
+  receipts.usd += num(db.prepare(`SELECT COALESCE(SUM(CASE WHEN COALESCE(usd_amount,0)>0 THEN usd_amount ELSE COALESCE(cash_amount,0) END), 0) AS t FROM cash_receipts WHERE deleted_at IS NULL AND tenant_id = ?${dateClause}`).get(tenantId, ...dateParams).t);
+  receipts.fra += num(db.prepare(`SELECT COALESCE(SUM(fra_amount), 0) AS t FROM cash_receipts WHERE deleted_at IS NULL AND tenant_id = ?${dateClause}`).get(tenantId, ...dateParams).t);
+  receipts.k   += num(db.prepare(`SELECT COALESCE(SUM(k_amount), 0)   AS t FROM cash_receipts WHERE deleted_at IS NULL AND tenant_id = ?${dateClause}`).get(tenantId, ...dateParams).t);
+  // PV — payment_vouchers.
+  payments.usd += num(db.prepare(`SELECT COALESCE(SUM(CASE WHEN COALESCE(usd_amount,0)>0 THEN usd_amount ELSE COALESCE(cash_amount,0) END), 0) AS t FROM payment_vouchers WHERE deleted_at IS NULL AND tenant_id = ?${dateClause}`).get(tenantId, ...dateParams).t);
+  payments.fra += num(db.prepare(`SELECT COALESCE(SUM(fra_amount), 0) AS t FROM payment_vouchers WHERE deleted_at IS NULL AND tenant_id = ?${dateClause}`).get(tenantId, ...dateParams).t);
+  payments.k   += num(db.prepare(`SELECT COALESCE(SUM(k_amount), 0)   AS t FROM payment_vouchers WHERE deleted_at IS NULL AND tenant_id = ?${dateClause}`).get(tenantId, ...dateParams).t);
+  // AP — USD only.
+  payments.usd += num(db.prepare(`SELECT COALESCE(SUM(amount), 0) AS t FROM ap_payments WHERE deleted_at IS NULL AND tenant_id = ?${dateClause}`).get(tenantId, ...dateParams).t);
+  // POS orders — paid_at column, only PAID/DISPATCHED count as cash in the till.
+  const ordClause = dateClause.replace(/\bdate\b/g, 'paid_at');
+  receipts.usd += num(db.prepare(`SELECT COALESCE(SUM(cash_received), 0) AS t FROM orders WHERE deleted_at IS NULL AND tenant_id = ? AND (status IS NULL OR status IN ('PAID','DISPATCHED'))${ordClause}`).get(tenantId, ...dateParams).t);
+  receipts.fra += num(db.prepare(`SELECT COALESCE(SUM(fra_received), 0)  AS t FROM orders WHERE deleted_at IS NULL AND tenant_id = ? AND (status IS NULL OR status IN ('PAID','DISPATCHED'))${ordClause}`).get(tenantId, ...dateParams).t);
+  receipts.k   += num(db.prepare(`SELECT COALESCE(SUM(k_received), 0)    AS t FROM orders WHERE deleted_at IS NULL AND tenant_id = ? AND (status IS NULL OR status IN ('PAID','DISPATCHED'))${ordClause}`).get(tenantId, ...dateParams).t);
+  // HQ deposits (master.db). Branches: outgoing → payment. HQ: incoming → receipt.
+  if (masterDb && slug) {
+    try {
+      const datePred = `date(COALESCE(deposit_date, confirmed_at, created_at))`;
+      const depClause = dateClause.replace(/\bdate\b/g, datePred);
+      const outRows = masterDb.prepare(`
+        SELECT currency, COALESCE(SUM(amount), 0) AS t
+          FROM cash_deposits
+         WHERE status = 'CONFIRMED' AND from_slug = ?${depClause}
+         GROUP BY currency
+      `).all(slug, ...dateParams);
+      for (const r of outRows) {
+        const key = r.currency === 'USD' ? 'usd' : r.currency === 'FRA' ? 'fra' : 'k';
+        payments[key] += num(r.t);
+      }
+      if (HQ_INBOX_SLUGS.has(slug)) {
+        const inRows = masterDb.prepare(`
+          SELECT currency, COALESCE(SUM(amount), 0) AS t
+            FROM cash_deposits
+           WHERE status = 'CONFIRMED'${depClause}
+           GROUP BY currency
+        `).all(...dateParams);
+        for (const r of inRows) {
+          const key = r.currency === 'USD' ? 'usd' : r.currency === 'FRA' ? 'fra' : 'k';
+          receipts[key] += num(r.t);
+        }
+      }
+    } catch (_) { /* non-fatal */ }
+  }
+  return { receipts, payments };
 }
 
 // Sum a money column across all inflow/outflow tables with optional date filter.
@@ -271,7 +335,19 @@ router.get('/', auth, readOnlyGuard, (req, res) => {
     // closing USD / FRA / K balance after the row applied. The legacy
     // single-$ `balance` field stays for backwards compat (sums the
     // USD-equivalent legacy receipt/payment columns).
-    const openingByCcy = getOpeningByCurrency(req.user.tenantId);
+    // v1.10.25 — fold pre-period activity into openingByCcy so opening on
+    // day N = closing on day N-1. Previously we only folded openingByMethod,
+    // so per-currency opening stayed at the install-time seed regardless of
+    // date filter → Jul 2 showed Jul 1's opening instead of Jul 1's closing.
+    let openingByCcy = getOpeningByCurrency(tenantId);
+    if (from) {
+      const before = ccyReceiptsPayments(tenantId, slug, ' AND date < ?', [from]);
+      openingByCcy = {
+        usd: openingByCcy.usd + before.receipts.usd - before.payments.usd,
+        fra: openingByCcy.fra + before.receipts.fra - before.payments.fra,
+        k:   openingByCcy.k   + before.receipts.k   - before.payments.k,
+      };
+    }
     let balance = openingBalance;
     let bUsd = openingByCcy.usd;
     let bFra = openingByCcy.fra;
@@ -409,7 +485,19 @@ router.get('/stats', auth, readOnlyGuard, (req, res) => {
       k:   pvByCcy.k              + depOutByCcy.k,
     };
     // Per-currency closing balance = opening + receipts − payments.
-    const openingByCcy = getOpeningByCurrency(tenantId);
+    // v1.10.25 — fold pre-period activity into openingByCcy when `from`
+    // is set (mirrors what /stats already does for openingByMethod). Without
+    // this, Jul 2's opening tile still reads Jul 1's opening seed, so
+    // "Opening" and "Current" on day 2 don't reflect day 1's real close.
+    let openingByCcy = getOpeningByCurrency(tenantId);
+    if (from) {
+      const before = ccyReceiptsPayments(tenantId, slug, ' AND date < ?', [from]);
+      openingByCcy = {
+        usd: openingByCcy.usd + before.receipts.usd - before.payments.usd,
+        fra: openingByCcy.fra + before.receipts.fra - before.payments.fra,
+        k:   openingByCcy.k   + before.receipts.k   - before.payments.k,
+      };
+    }
     const currentByCcy = {
       usd: openingByCcy.usd + receiptsByCcy.usd - paymentsByCcy.usd,
       fra: openingByCcy.fra + receiptsByCcy.fra - paymentsByCcy.fra,
