@@ -2095,27 +2095,33 @@ const CashReport = () => {
                 A Cash Receipt from <strong>Sales</strong> already exists for <strong>{formatDate(date)}</strong>:
               </p>
               {/* v1.8.86 — triple-currency breakdown so the user sees what's
-                  actually being replaced per drawer, not just USD-equivalent. */}
+                  actually being replaced per drawer, not just USD-equivalent.
+                  v1.10.33 — on Liquor-style branches (Lusaka, Mansa) the three
+                  columns are physical METHODS (Cash / Mobile Money / Bank)
+                  all in the branch currency, not USD/FRA/K. Storage still
+                  uses the usd/fra/k columns — same mapping as the PV modal
+                  and the Cash Report cards. */}
               {(() => {
                 const fmtUSD = (n) => `$${parseFloat(n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
                 const fmtInt = (n) => parseFloat(n || 0).toLocaleString(undefined, { maximumFractionDigits: 0 });
-                const Row = ({ label, valueColor, usd, fra, k }) => (
-                  <div style={{ fontSize: 12, display: 'flex', flexDirection: 'column', gap: 3 }}>
-                    <div style={{ color: '#6b7280', fontSize: 11, fontWeight: 600, marginBottom: 2 }}>{label}</div>
-                    <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                      <span style={{ color: '#6b7280' }}>USD</span>
-                      <span style={{ fontWeight: 700, color: valueColor, fontFamily: 'monospace' }}>{fmtUSD(usd)}</span>
+                const fmtK   = (n) => `${curSym}${parseFloat(n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+                const rowLabels = isLiquorStyle
+                  ? [{ label: 'Cash', slot: 'usd', fmt: fmtK }, { label: 'Mobile Money', slot: 'fra', fmt: fmtK }, { label: 'Bank', slot: 'k', fmt: fmtK }]
+                  : [{ label: 'USD', slot: 'usd', fmt: fmtUSD }, { label: 'FRA', slot: 'fra', fmt: fmtInt }, { label: 'K', slot: 'k', fmt: fmtInt }];
+                const Row = ({ label, valueColor, usd, fra, k }) => {
+                  const values = { usd, fra, k };
+                  return (
+                    <div style={{ fontSize: 12, display: 'flex', flexDirection: 'column', gap: 3 }}>
+                      <div style={{ color: '#6b7280', fontSize: 11, fontWeight: 600, marginBottom: 2 }}>{label}</div>
+                      {rowLabels.map(r => (
+                        <div key={r.slot} style={{ display: 'flex', justifyContent: 'space-between' }}>
+                          <span style={{ color: '#6b7280' }}>{r.label}</span>
+                          <span style={{ fontWeight: 700, color: valueColor, fontFamily: 'monospace' }}>{r.fmt(values[r.slot])}</span>
+                        </div>
+                      ))}
                     </div>
-                    <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                      <span style={{ color: '#6b7280' }}>FRA</span>
-                      <span style={{ fontWeight: 700, color: valueColor, fontFamily: 'monospace' }}>{fmtInt(fra)}</span>
-                    </div>
-                    <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                      <span style={{ color: '#6b7280' }}>K</span>
-                      <span style={{ fontWeight: 700, color: valueColor, fontFamily: 'monospace' }}>{fmtInt(k)}</span>
-                    </div>
-                  </div>
-                );
+                  );
+                };
                 return (
                   <>
                     <div style={{ padding: '12px 16px', background: '#eff6ff', border: '1px solid #bfdbfe', borderRadius: 9, marginBottom: 16 }}>
