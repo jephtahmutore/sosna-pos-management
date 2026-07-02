@@ -53,13 +53,22 @@ function getOpeningByCurrency(tenantId) {
 }
 
 // v1.10.25 — Per-currency receipts + payments for an arbitrary date clause.
-// Used to (a) roll up the "in-range" totals in /stats, and (b) fold pre-period
-// activity into openingByCcy so opening on day N equals closing on day N-1.
-// Mirrors every source that touches the multi-currency ledger:
-//   Receipts (in) — cash_receipts, POS orders (paid_at), HQ deposits IN
-//   Payments (out) — payment_vouchers, ap_payments, HQ deposits OUT
-// Capital / dividend / loan sources are USD-only and out of scope for the
-// FRA/K carry-forward — they're already in the folded openingByMethod.
+// Used to fold pre-period activity into openingByCcy so opening on day N
+// equals closing on day N-1.
+//
+// SOURCES MUST MATCH THE LEDGER UNION in GET / — the ledger only shows
+// cash_receipts (CR), payment_vouchers (PV), ap_payments (AP) and HQ
+// deposits. It does NOT show orders.cash_received. So opening = ledger
+// closing requires this helper to skip orders too.
+//
+// v1.10.27 — Removed orders. On Sosna every POS sale creates BOTH an
+// orders row (with cash_received/fra_received/k_received) and a cash_receipt
+// row that appears in the ledger. /stats accidentally avoids double-counting
+// because its `date <= to` clause on orders' paid_at (a datetime, not date)
+// fails to match same-day rows with a time component. My earlier
+// `date < from` clause matched both → every fold double-counted every POS
+// sale, so Jul 2 opening = Jul 1 opening + Jul 1 receipts (twice) instead of
+// Jul 1 closing.
 function ccyReceiptsPayments(tenantId, slug, dateClause, dateParams) {
   const receipts = { usd: 0, fra: 0, k: 0 };
   const payments = { usd: 0, fra: 0, k: 0 };
@@ -74,11 +83,6 @@ function ccyReceiptsPayments(tenantId, slug, dateClause, dateParams) {
   payments.k   += num(db.prepare(`SELECT COALESCE(SUM(k_amount), 0)   AS t FROM payment_vouchers WHERE deleted_at IS NULL AND tenant_id = ?${dateClause}`).get(tenantId, ...dateParams).t);
   // AP — USD only.
   payments.usd += num(db.prepare(`SELECT COALESCE(SUM(amount), 0) AS t FROM ap_payments WHERE deleted_at IS NULL AND tenant_id = ?${dateClause}`).get(tenantId, ...dateParams).t);
-  // POS orders — paid_at column, only PAID/DISPATCHED count as cash in the till.
-  const ordClause = dateClause.replace(/\bdate\b/g, 'paid_at');
-  receipts.usd += num(db.prepare(`SELECT COALESCE(SUM(cash_received), 0) AS t FROM orders WHERE deleted_at IS NULL AND tenant_id = ? AND (status IS NULL OR status IN ('PAID','DISPATCHED'))${ordClause}`).get(tenantId, ...dateParams).t);
-  receipts.fra += num(db.prepare(`SELECT COALESCE(SUM(fra_received), 0)  AS t FROM orders WHERE deleted_at IS NULL AND tenant_id = ? AND (status IS NULL OR status IN ('PAID','DISPATCHED'))${ordClause}`).get(tenantId, ...dateParams).t);
-  receipts.k   += num(db.prepare(`SELECT COALESCE(SUM(k_received), 0)    AS t FROM orders WHERE deleted_at IS NULL AND tenant_id = ? AND (status IS NULL OR status IN ('PAID','DISPATCHED'))${ordClause}`).get(tenantId, ...dateParams).t);
   // HQ deposits (master.db). Branches: outgoing → payment. HQ: incoming → receipt.
   if (masterDb && slug) {
     try {
