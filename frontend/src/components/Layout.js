@@ -647,15 +647,23 @@ const Layout = () => {
                       <FiDollarSign className="nav-icon" /> <span>HQ Cash Position</span>
                     </div>
                   )}
-                  {/* Cash Receipt / Payment Voucher / AR / Profit Report
-                      are branch-only (HQ has no per-tenant till of its own
-                      besides the Cash Book mirror). */}
-                  {!hq && hasPageAccess('CashReceipt') && (
+                  {/* Cash Receipt / Payment Voucher.
+                      v1.8.9 hid these on HQ under the assumption that HQ
+                      had no till of its own — only Branch → HQ deposits.
+                      v1.10.40 — HQ does run a real till (its own opening
+                      balance, its own Cash Book with USD/FRA/K columns).
+                      CR + PV are the two entry points that FEED that
+                      Cash Book, so hiding them on HQ made it impossible
+                      to record HQ-side inflows (rent, refunds) or
+                      outflows (utilities, staff advances). Now shown on
+                      HQ too. AR + Profit Report stay branch-only for now
+                      (separate scopes; ask when needed). */}
+                  {hasPageAccess('CashReceipt') && (
                     <div className={`nav-item ${isActive('/accounting/cash-receipts') ? 'active' : ''}`} onClick={() => navigate('/accounting/cash-receipts')}>
                       <FiBook className="nav-icon" /> <span>{t('cashReceipt')}</span>
                     </div>
                   )}
-                  {!hq && hasPageAccess('PaymentVoucher') && (
+                  {hasPageAccess('PaymentVoucher') && (
                     <div className={`nav-item ${isActive('/accounting/payment-vouchers') ? 'active' : ''}`} onClick={() => navigate('/accounting/payment-vouchers')}>
                       <FiCreditCard className="nav-icon" /> <span>{t('paymentVoucher')}</span>
                     </div>
