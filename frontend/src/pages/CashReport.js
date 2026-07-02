@@ -12,6 +12,20 @@ import CurrencyExchangePanel from '../components/CurrencyExchangePanel';
 
 const API_BASE = process.env.REACT_APP_API_URL || 'http://localhost:5300/api';
 
+// v1.10.35 — mobile detection for the per-cashier reconciliation grid.
+// Same shape as POS.js's local hook so behaviour matches other pages.
+const useIsMobile = (breakpoint = 768) => {
+  const [isMobile, setIsMobile] = useState(
+    typeof window !== 'undefined' && window.innerWidth <= breakpoint
+  );
+  useEffect(() => {
+    const onResize = () => setIsMobile(window.innerWidth <= breakpoint);
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, [breakpoint]);
+  return isMobile;
+};
+
 const getStatus = (diff) => {
   if (diff === 0) return 'OK';
   if (diff > 0 && diff < 10) return 'Slight Surplus';
@@ -23,6 +37,7 @@ const getStatus = (diff) => {
 const CashReport = () => {
   const { user: authUser } = useAuth();
   const { symbol: curSym, currencyMode, isLiquorStyle } = useCurrency();
+  const isMobile = useIsMobile();
   // v1.9.26 — currency_mode gates per-currency panels.
   // v1.9.30 — Cash Report method-axis lands: Liquor branches render
   // Cash / MoMo / Bank counter panels reading the new cash_net /
@@ -1009,8 +1024,11 @@ const CashReport = () => {
         {/* v1.9.33 — lowered min-width from 320px to 240px so all four
             cards (3 method + Credit Sales) sit on one row on a normal
             laptop viewport. Below ~1000px content width the grid
-            gracefully falls back to 2 columns. */}
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 360px), 1fr))', gap: 16, marginBottom: 16 }}>
+            gracefully falls back to 2 columns.
+            v1.10.35 — force a single full-width column on mobile so
+            USD + K stop getting clipped off-screen on tri-currency
+            Sosna phones (only FRA was visibly rendering before). */}
+        <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : 'repeat(auto-fit, minmax(min(100%, 360px), 1fr))', gap: 16, marginBottom: 16 }}>
           {/* v1.8.18 — per-currency reconciliation cards with view/+ icons
               for that currency's expenses inside the card. No more shared
               'Expenses Paid From Drawer' row below — each card owns its
