@@ -83,6 +83,20 @@ function ccyReceiptsPayments(tenantId, slug, dateClause, dateParams) {
   payments.k   += num(db.prepare(`SELECT COALESCE(SUM(k_amount), 0)   AS t FROM payment_vouchers WHERE deleted_at IS NULL AND tenant_id = ?${dateClause}`).get(tenantId, ...dateParams).t);
   // AP — USD only.
   payments.usd += num(db.prepare(`SELECT COALESCE(SUM(amount), 0) AS t FROM ap_payments WHERE deleted_at IS NULL AND tenant_id = ?${dateClause}`).get(tenantId, ...dateParams).t);
+  // v1.10.42 — book-scope currency exchanges. Same shape as the ledger
+  // UNION addition: from_currency → payments, to_currency → receipts.
+  // Append-only, no deleted_at filter.
+  const exchRows = db.prepare(`
+    SELECT from_currency, from_amount, to_currency, to_amount
+      FROM currency_exchanges
+     WHERE scope = 'book' AND tenant_id = ?${dateClause}
+  `).all(tenantId, ...dateParams);
+  for (const r of exchRows) {
+    const fromKey = r.from_currency === 'USD' ? 'usd' : r.from_currency === 'FRA' ? 'fra' : 'k';
+    const toKey   = r.to_currency   === 'USD' ? 'usd' : r.to_currency   === 'FRA' ? 'fra' : 'k';
+    payments[fromKey] += num(r.from_amount);
+    receipts[toKey]   += num(r.to_amount);
+  }
   // HQ deposits (master.db). Branches: outgoing → payment. HQ: incoming → receipt.
   if (masterDb && slug) {
     try {
@@ -251,8 +265,32 @@ router.get('/', auth, readOnlyGuard, (req, res) => {
       FROM loan_transactions lt
       LEFT JOIN loans l ON l.sync_id = lt.loan_sync_id
       WHERE lt.deleted_at IS NULL AND lt.tenant_id = ?${dateFilter.replace(/date/g, 'lt.date')}
+      UNION ALL
+      -- v1.10.42 — book-scope currency exchanges. Design memo in
+      -- currencyExchanges.js:6-7 says they "affect the Cash Book running
+      -- balance per currency directly", but this UNION never queried
+      -- them. Each exchange decrements the from_currency and increments
+      -- the to_currency. Legacy USD-equivalent balance is left at 0 since
+      -- an exchange is a swap (net zero in USD-equiv terms).
+      -- Append-only table so no deleted_at filter.
+      SELECT date,
+        'EXCH' AS type,
+        'EXCH-' || id AS reference,
+        'Exchange ' || from_currency || ' ' || CAST(from_amount AS INTEGER) ||
+          ' → ' || to_currency || ' ' || CAST(to_amount AS INTEGER) ||
+          COALESCE(' (' || NULLIF(notes,'') || ')', '') AS description,
+        0 AS receipt_amount,
+        0 AS payment_amount,
+        CASE WHEN to_currency   = 'USD' THEN to_amount   ELSE 0 END AS usd_in,
+        CASE WHEN to_currency   = 'FRA' THEN to_amount   ELSE 0 END AS fra_in,
+        CASE WHEN to_currency   = 'K'   THEN to_amount   ELSE 0 END AS k_in,
+        CASE WHEN from_currency = 'USD' THEN from_amount ELSE 0 END AS usd_out,
+        CASE WHEN from_currency = 'FRA' THEN from_amount ELSE 0 END AS fra_out,
+        CASE WHEN from_currency = 'K'   THEN from_amount ELSE 0 END AS k_out
+      FROM currency_exchanges
+      WHERE scope = 'book' AND tenant_id = ?${dateFilter}
       ORDER BY date ASC, reference ASC
-    `).all(tenantId, ...dParams, tenantId, ...dParams, tenantId, ...dParams, tenantId, ...dParams, tenantId, ...dParams, tenantId, ...dParams, tenantId, ...dParams);
+    `).all(tenantId, ...dParams, tenantId, ...dParams, tenantId, ...dParams, tenantId, ...dParams, tenantId, ...dParams, tenantId, ...dParams, tenantId, ...dParams, tenantId, ...dParams);
 
     // v1.8.61 — HQ Deposit entries from master.db (cross-tenant).
     //   Branch ledger (from_slug = caller's slug)  → cash OUT  (payment_amount = amount)
@@ -477,16 +515,32 @@ router.get('/stats', auth, readOnlyGuard, (req, res) => {
       } catch (_) { /* non-fatal */ }
     }
 
+    // v1.10.42 — book-scope currency exchanges (in-range). Same convention
+    // as the ledger UNION and the fold helper: from_currency → payments,
+    // to_currency → receipts. Append-only table so no deleted_at filter.
+    const exchInRange = db.prepare(`
+      SELECT from_currency, from_amount, to_currency, to_amount
+        FROM currency_exchanges
+       WHERE scope = 'book' AND tenant_id = ?${df}
+    `).all(tenantId, ...dp);
+    const exchIn  = { usd: 0, fra: 0, k: 0 };
+    const exchOut = { usd: 0, fra: 0, k: 0 };
+    for (const r of exchInRange) {
+      const fromKey = r.from_currency === 'USD' ? 'usd' : r.from_currency === 'FRA' ? 'fra' : 'k';
+      const toKey   = r.to_currency   === 'USD' ? 'usd' : r.to_currency   === 'FRA' ? 'fra' : 'k';
+      exchOut[fromKey] += parseFloat(r.from_amount || 0);
+      exchIn[toKey]    += parseFloat(r.to_amount   || 0);
+    }
     // Per-currency receipts / payments roll-up.
     const receiptsByCcy = {
-      usd: ordersUsd + crByCcy.usd + depInByCcy.usd,
-      fra: ordersFra + crByCcy.fra + depInByCcy.fra,
-      k:   ordersK   + crByCcy.k   + depInByCcy.k,
+      usd: ordersUsd + crByCcy.usd + depInByCcy.usd + exchIn.usd,
+      fra: ordersFra + crByCcy.fra + depInByCcy.fra + exchIn.fra,
+      k:   ordersK   + crByCcy.k   + depInByCcy.k   + exchIn.k,
     };
     const paymentsByCcy = {
-      usd: pvByCcy.usd + apUsd + depOutByCcy.usd,
-      fra: pvByCcy.fra            + depOutByCcy.fra,
-      k:   pvByCcy.k              + depOutByCcy.k,
+      usd: pvByCcy.usd + apUsd + depOutByCcy.usd + exchOut.usd,
+      fra: pvByCcy.fra            + depOutByCcy.fra + exchOut.fra,
+      k:   pvByCcy.k              + depOutByCcy.k   + exchOut.k,
     };
     // Per-currency closing balance = opening + receipts − payments.
     // v1.10.25 — fold pre-period activity into openingByCcy when `from`
