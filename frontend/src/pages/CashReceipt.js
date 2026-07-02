@@ -366,10 +366,20 @@ const CashReceipt = () => {
             <thead>
               <tr>
                 <th>{t('receiptNumber')}</th><th>{t('date')}</th><th>{t('receivedFrom')}</th><th>{t('description')}</th><th>{t('paymentMethod')}</th>
-                {/* v1.8.32 — single Amount column split into 3 per-currency. */}
-                <th style={{ textAlign: 'right', color: '#16a34a' }}>USD ($)</th>
-                <th style={{ textAlign: 'right', color: '#7c3aed' }}>FRA</th>
-                <th style={{ textAlign: 'right', color: '#ea580c' }}>K</th>
+                {/* v1.8.32 — single Amount column split into 3 per-currency.
+                    v1.10.45 — on Liquor branches all three slots are the
+                    same currency, so collapse back to a single AMOUNT
+                    column that reads the receipt total. Matches the old
+                    Liquor system (Alaskal) layout the user shared. */}
+                {isLiquorStyle ? (
+                  <th style={{ textAlign: 'right', color: '#16a34a' }}>Amount</th>
+                ) : (
+                  <>
+                    <th style={{ textAlign: 'right', color: '#16a34a' }}>USD ($)</th>
+                    <th style={{ textAlign: 'right', color: '#7c3aed' }}>FRA</th>
+                    <th style={{ textAlign: 'right', color: '#ea580c' }}>K</th>
+                  </>
+                )}
                 <th></th>
               </tr>
             </thead>
@@ -379,6 +389,8 @@ const CashReceipt = () => {
                 const rf = parseFloat(r.fra_amount) > 0 ? parseFloat(r.fra_amount) : parseFloat(r.bank_amount || 0);
                 const rk = parseFloat(r.k_amount)   > 0 ? parseFloat(r.k_amount)   : parseFloat(r.momo_amount || 0);
                 const dash = <span style={{ color: '#cbd5e1' }}>—</span>;
+                // v1.10.45 — Liquor total = sum of the three slots (all K).
+                const liquorTotal = ru + rf + rk;
                 return (
                 <tr key={r.id}>
                   <td style={{ fontWeight: 500 }}>{r.receipt_number}</td>
@@ -386,9 +398,17 @@ const CashReceipt = () => {
                   <td>{r.received_from}</td>
                   <td style={{ color: '#6b7280' }}>{r.description || '—'}</td>
                   <td><span className={`badge ${getPaymentColor(r.payment_method)}`}>{r.payment_method}</span></td>
-                  <td style={{ textAlign: 'right', color: ru > 0 ? '#16a34a' : '', fontWeight: ru > 0 ? 700 : 400 }}>{ru > 0 ? `$${fmt2(ru)}` : dash}</td>
-                  <td style={{ textAlign: 'right', color: rf > 0 ? '#7c3aed' : '', fontWeight: rf > 0 ? 700 : 400 }}>{rf > 0 ? Math.round(rf).toLocaleString('en-US') : dash}</td>
-                  <td style={{ textAlign: 'right', color: rk > 0 ? '#ea580c' : '', fontWeight: rk > 0 ? 700 : 400 }}>{rk > 0 ? Math.round(rk).toLocaleString('en-US') : dash}</td>
+                  {isLiquorStyle ? (
+                    <td style={{ textAlign: 'right', color: liquorTotal > 0 ? '#16a34a' : '', fontWeight: liquorTotal > 0 ? 700 : 400 }}>
+                      {liquorTotal > 0 ? `${curSym}${fmt2(liquorTotal)}` : dash}
+                    </td>
+                  ) : (
+                    <>
+                      <td style={{ textAlign: 'right', color: ru > 0 ? '#16a34a' : '', fontWeight: ru > 0 ? 700 : 400 }}>{ru > 0 ? `$${fmt2(ru)}` : dash}</td>
+                      <td style={{ textAlign: 'right', color: rf > 0 ? '#7c3aed' : '', fontWeight: rf > 0 ? 700 : 400 }}>{rf > 0 ? Math.round(rf).toLocaleString('en-US') : dash}</td>
+                      <td style={{ textAlign: 'right', color: rk > 0 ? '#ea580c' : '', fontWeight: rk > 0 ? 700 : 400 }}>{rk > 0 ? Math.round(rk).toLocaleString('en-US') : dash}</td>
+                    </>
+                  )}
                   <td>
                     <div style={{ display: 'flex', gap: 6 }}>
                       <button
@@ -434,6 +454,13 @@ const CashReceipt = () => {
                   const tu = filteredReceipts.reduce((s, r) => s + (parseFloat(r.usd_amount) > 0 ? parseFloat(r.usd_amount) : parseFloat(r.cash_amount || 0)), 0);
                   const tf = filteredReceipts.reduce((s, r) => s + (parseFloat(r.fra_amount) > 0 ? parseFloat(r.fra_amount) : parseFloat(r.bank_amount || 0)), 0);
                   const tk = filteredReceipts.reduce((s, r) => s + (parseFloat(r.k_amount)   > 0 ? parseFloat(r.k_amount)   : parseFloat(r.momo_amount || 0)), 0);
+                  // v1.10.45 — Liquor total = sum across all three slots.
+                  if (isLiquorStyle) {
+                    return (<>
+                      <td style={{ padding: '10px 14px', textAlign: 'right', color: '#16a34a', fontWeight: 700, fontSize: 13 }}>{curSym}{fmt2(tu + tf + tk)}</td>
+                      <td></td>
+                    </>);
+                  }
                   return (<>
                     <td style={{ padding: '10px 14px', textAlign: 'right', color: '#16a34a', fontWeight: 700, fontSize: 13 }}>${fmt2(tu)}</td>
                     <td style={{ padding: '10px 14px', textAlign: 'right', color: '#7c3aed', fontWeight: 700, fontSize: 13 }}>{Math.round(tf).toLocaleString('en-US')}</td>
@@ -627,19 +654,33 @@ const CashReceipt = () => {
 
               {/* v1.8.32 — triple-currency. One CR = one currency. Disable
                   the other two inputs once any one has a value > 0; clear
-                  the active one to switch. Mirrors PV modal v1.8.24. */}
+                  the active one to switch. Mirrors PV modal v1.8.24.
+                  v1.10.45 — on Liquor branches all three slots are the
+                  same currency (K), so a receipt can legitimately span
+                  Cash + MoMo + Bank at once. No lock. Labels reflect the
+                  physical method the amount landed in; storage columns
+                  unchanged (Cash→usd_amount, MoMo→fra_amount,
+                  Bank→k_amount). */}
               <div className="form-group">
                 <label style={{ fontSize: 11, fontWeight: 700, color: '#6b7280', textTransform: 'uppercase', letterSpacing: 0.5, display: 'block', marginBottom: 8 }}>
-                  Amount Received
+                  Amount Received{isLiquorStyle ? ' (split across methods)' : ''}
                 </label>
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10 }}>
-                  {[
-                    { key: 'usd_amount', label: 'USD ($)', color: '#16a34a', step: '0.01', placeholder: '0.00' },
-                    { key: 'fra_amount', label: 'FRA',     color: '#7c3aed', step: '1',    placeholder: '0' },
-                    { key: 'k_amount',   label: 'K',       color: '#ea580c', step: '1',    placeholder: '0' },
-                  ].map((f) => {
+                  {(isLiquorStyle
+                    ? [
+                        { key: 'usd_amount', label: 'Cash',         color: '#16a34a', step: '0.01', placeholder: '0.00', prefix: curSym },
+                        { key: 'fra_amount', label: 'Mobile Money', color: '#ea580c', step: '0.01', placeholder: '0.00', prefix: curSym },
+                        { key: 'k_amount',   label: 'Bank',         color: '#2563eb', step: '0.01', placeholder: '0.00', prefix: curSym },
+                      ]
+                    : [
+                        { key: 'usd_amount', label: 'USD ($)', color: '#16a34a', step: '0.01', placeholder: '0.00', prefix: '$' },
+                        { key: 'fra_amount', label: 'FRA',     color: '#7c3aed', step: '1',    placeholder: '0',    prefix: ''  },
+                        { key: 'k_amount',   label: 'K',       color: '#ea580c', step: '1',    placeholder: '0',    prefix: ''  },
+                      ]
+                  ).map((f) => {
                     const otherKeys = ['usd_amount', 'fra_amount', 'k_amount'].filter(k => k !== f.key);
-                    const locked = otherKeys.some(k => parseFloat(form[k] || 0) > 0);
+                    // Sosna keeps the one-currency-per-CR lock. Liquor drops it.
+                    const locked = !isLiquorStyle && otherKeys.some(k => parseFloat(form[k] || 0) > 0);
                     return (
                       <div key={f.key}>
                         <label style={{ fontSize: 11, color: locked ? '#cbd5e1' : f.color, fontWeight: 700, textTransform: 'uppercase', marginBottom: 3, display: 'block' }}>{f.label}{locked && ' (locked)'}</label>
@@ -662,6 +703,20 @@ const CashReceipt = () => {
                     );
                   })}
                 </div>
+                {/* v1.10.45 — Liquor total row (all K). Sosna keeps the
+                    one-currency-per-CR model so no total row is needed. */}
+                {isLiquorStyle && (
+                  <div style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 10px', background: '#f9fafb', borderRadius: 6, fontSize: 13, marginTop: 8 }}>
+                    <span style={{ color: '#6b7280' }}>Total</span>
+                    <span style={{ fontWeight: 800, color: '#1d4ed8' }}>
+                      {curSym}{(
+                        (parseFloat(form.usd_amount || 0) || 0)
+                        + (parseFloat(form.fra_amount || 0) || 0)
+                        + (parseFloat(form.k_amount   || 0) || 0)
+                      ).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                    </span>
+                  </div>
+                )}
               </div>
 
               <div className="form-group">
