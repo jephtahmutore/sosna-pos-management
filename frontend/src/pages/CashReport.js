@@ -554,14 +554,26 @@ const CashReport = () => {
         const status = form.status || computedStatus;
         const cashier = selectedCashier !== '0' ? allUsers.find(u => String(u.id) === String(selectedCashier)) : null;
         const receivedFrom = cashier ? `Sales / ${cashier.first_name}` : 'Sales';
+        // v1.10.44 — on Liquor branches all three amount slots are the same
+        // currency (Cash → usd_amount, MoMo → fra_amount, Bank → k_amount, all
+        // in K). `amount` and the legacy method columns must reflect the
+        // FULL total, not just the Cash portion, or the Cash Book ledger
+        // shows only the Cash slice (e.g. K6,700 instead of K33,105) and
+        // its Mobile Money tile stays at K0 because momo_amount was never
+        // written. Sosna tri-currency branches keep amount=usd_only
+        // (USD-anchored, one-currency-per-CR model).
+        const totalAmt = isLiquorStyle ? (usdAmt + fraAmt + kAmt2) : usdAmt;
         const crData = {
           date,
           payment_method: paymentMethod,
           received_from: receivedFrom,
-          amount:       usdAmt,
+          amount:       totalAmt,
           usd_amount:   usdAmt,
           fra_amount:   fraAmt,
           k_amount:     kAmt2,
+          // Liquor: send explicit method splits so backend deriveCRSplits
+          // doesn't collapse everything into Cash based on payment_method.
+          ...(isLiquorStyle ? { cash_amount: usdAmt, momo_amount: fraAmt, bank_amount: kAmt2 } : {}),
           description:  form.comment ? `${status} — ${form.comment}` : status,
         };
 

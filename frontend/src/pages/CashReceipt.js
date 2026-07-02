@@ -135,17 +135,30 @@ const CashReceipt = () => {
     setSaving(true);
     try {
       // v1.8.32 — payment_method label = the currency used (since CR
-      // is one-currency-per-receipt). Backend doesn't care about the
-      // label; this is just for the list-view badge.
-      const paymentMethod = usd > 0 ? 'USD' : fra > 0 ? 'FRA' : k > 0 ? 'K' : 'Cash';
+      // is one-currency-per-receipt on Sosna). Backend doesn't care
+      // about the label; this is just for the list-view badge.
+      // v1.10.44 — on Liquor branches all three slots are the same
+      // currency (K), so a single CR can span Cash + MoMo + Bank at
+      // once. Label the receipt with whichever slot is largest so the
+      // badge is meaningful; the payload sums for amount + splits.
+      const paymentMethod = isLiquorStyle
+        ? (usd >= fra && usd >= k ? 'Cash' : fra >= k ? 'Mobile Money' : 'Bank Transfer')
+        : (usd > 0 ? 'USD' : fra > 0 ? 'FRA' : k > 0 ? 'K' : 'Cash');
+      // v1.10.44 — on Liquor amount = usd+fra+k so the Cash Book ledger
+      // sums the full receipt total (not just Cash). Sosna keeps
+      // amount=usd only.
+      const totalAmt = isLiquorStyle ? (usd + fra + k) : usd;
       const payload = {
         received_from:  form.received_from.trim(),
         description:    form.description.trim(),
         payment_method: paymentMethod,
-        amount:         usd, // legacy column = USD-equivalent only (= USD itself)
+        amount:         totalAmt,
         usd_amount:     usd,
         fra_amount:     fra,
         k_amount:       k,
+        // Liquor: send explicit method splits so backend deriveCRSplits
+        // doesn't collapse everything into the payment_method's slot.
+        ...(isLiquorStyle ? { cash_amount: usd, momo_amount: fra, bank_amount: k } : {}),
         date:           form.date,
       };
       if (editMode) {
