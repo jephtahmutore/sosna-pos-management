@@ -1027,8 +1027,29 @@ const CashReport = () => {
             gracefully falls back to 2 columns.
             v1.10.35 — force a single full-width column on mobile so
             USD + K stop getting clipped off-screen on tri-currency
-            Sosna phones (only FRA was visibly rendering before). */}
-        <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : 'repeat(auto-fit, minmax(min(100%, 360px), 1fr))', gap: 16, marginBottom: 16 }}>
+            Sosna phones (only FRA was visibly rendering before).
+            v1.10.36 — v1.10.35's JS-only breakpoint wasn't enough: some
+            ancestor was letting the grid container inherit a width
+            wider than the viewport (from horizontal-overflow content
+            elsewhere on the page), so auto-fit still committed to
+            multiple columns and USD + K were pushed off-screen inside
+            the parent's overflow. Now: className + inline media-query
+            style forces `grid-template-columns: 1fr` at <=767px, and
+            `min-width: 0` on the grid + children breaks intrinsic
+            width propagation from any wide descendant. */}
+        <style>{`
+          @media (max-width: 767px) {
+            .cash-report-cards-grid {
+              grid-template-columns: 1fr !important;
+              min-width: 0 !important;
+            }
+            .cash-report-cards-grid > * {
+              min-width: 0 !important;
+              max-width: 100% !important;
+            }
+          }
+        `}</style>
+        <div className="cash-report-cards-grid" style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : 'repeat(auto-fit, minmax(min(100%, 360px), 1fr))', gap: 16, marginBottom: 16, minWidth: 0 }}>
           {/* v1.8.18 — per-currency reconciliation cards with view/+ icons
               for that currency's expenses inside the card. No more shared
               'Expenses Paid From Drawer' row below — each card owns its
