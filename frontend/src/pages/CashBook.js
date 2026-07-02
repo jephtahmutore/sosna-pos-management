@@ -453,7 +453,11 @@ const CashBook = () => {
         {/* v1.10.18 — was 'Cash & Cash Equivalents' summing raw numbers across
             currencies (nonsense). Now labelled 'USD & USD Equivalent' and
             actually converts FRA + K to USD using today's live buy rate.
-            Falls back to raw USD only when no rate is available. */}
+            Falls back to raw USD only when no rate is available.
+            v1.10.39 — HQ (sosnazm.com) books itself in Kwacha, so the
+            "USD & USD Equivalent" anchor is the wrong question there.
+            On HQ this tile now shows "K & K Equivalent": convert USD and
+            FRA to K instead. Branches (Kassumbalesa etc.) are unchanged. */}
         {(() => {
           const usdNow  = stats.currentByCcy?.usd || 0;
           const fraNow  = stats.currentByCcy?.fra || 0;
@@ -461,6 +465,46 @@ const CashBook = () => {
           const usdOpen = stats.openingByCcy?.usd || 0;
           const fraOpen = stats.openingByCcy?.fra || 0;
           const kOpen   = stats.openingByCcy?.k   || 0;
+
+          if (onHq) {
+            // K-anchored: K + USD×sellK + FRA×(sellK / buyFRA)
+            // sellK  = 1 USD sells for X K   → USD_native × sellK  = K
+            // buyFRA = 1 USD buys  X FRA     → FRA / buyFRA         = USD, then × sellK → K
+            const usdToK = fx.sellK > 0 ? fx.sellK : 0;
+            const fraToK = (fx.sellK > 0 && fx.buyFRA > 0) ? (fx.sellK / fx.buyFRA) : 0;
+            const kEqNow  = kNow  + usdNow  * usdToK + fraNow  * fraToK;
+            const kEqOpen = kOpen + usdOpen * usdToK + fraOpen * fraToK;
+            const fmtK = (n) => `K${(parseFloat(n) || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+            const rateLabel = [
+              fx.sellK  > 0 && `1 USD = ${fx.sellK.toLocaleString()} K`,
+              fraToK    > 0 && `1 FRA ≈ ${fraToK.toFixed(4)} K`,
+            ].filter(Boolean).join(' · ');
+            return (
+              <div
+                className={`stat-card purple ${activeCcy === 'all' ? 'active-filter' : ''}`}
+                onClick={() => setActiveCcy('all')}
+                style={{ cursor: 'pointer', outline: activeCcy === 'all' ? '3px solid #fbbf24' : 'none' }}
+              >
+                <div className="stat-icon"><FiDollarSign /></div>
+                <div>
+                  <div className="stat-label">K &amp; K Equivalent</div>
+                  <div className="stat-value">
+                    {hasPermission('CashBook:View') ? `≈ ${fmtK(kEqNow)}` : 'N/A'}
+                  </div>
+                  <div style={{ fontSize: 11, opacity: 0.85, marginTop: 2 }}>
+                    {t('opening')} ≈ {fmtK(kEqOpen)}
+                  </div>
+                  {rateLabel && (
+                    <div style={{ fontSize: 10, opacity: 0.7, marginTop: 2, fontStyle: 'italic' }}>
+                      @ {rateLabel}
+                    </div>
+                  )}
+                </div>
+              </div>
+            );
+          }
+
+          // Branch (USD-anchored) — unchanged.
           const usdEqNow  = usdNow  + (fx.buyFRA > 0 ? fraNow  / fx.buyFRA : 0) + (fx.buyK > 0 ? kNow  / fx.buyK : 0);
           const usdEqOpen = usdOpen + (fx.buyFRA > 0 ? fraOpen / fx.buyFRA : 0) + (fx.buyK > 0 ? kOpen / fx.buyK : 0);
           const fmt = (n) => `$${(parseFloat(n) || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
