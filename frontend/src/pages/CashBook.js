@@ -730,8 +730,10 @@ const CashBook = () => {
                   by v1.9.26 currency_mode. */}
               {isLiquorStyle ? (
                 <>
-                  <th style={{ textAlign: 'right' }}>{t('receiptsCR') || 'Receipts'}</th>
-                  <th style={{ textAlign: 'right' }}>{t('paymentsPV') || 'Payments'}</th>
+                  {/* v1.10.47 — headers renamed to IN / OUT (simpler, and
+                      accurate now that inflow/outflow sum every column). */}
+                  <th style={{ textAlign: 'right' }}>IN</th>
+                  <th style={{ textAlign: 'right' }}>OUT</th>
                 </>
               ) : (
                 <>
@@ -827,10 +829,21 @@ const CashBook = () => {
                   </td>
                   {isLiquorStyle ? (() => {
                     // v1.9.27 — Liquor view: receipts (inflow) and
-                    // payments (outflow) as two separate columns. The
-                    // backend already aggregates these on each row.
-                    const inflow  = parseFloat(e.receipt_amount || 0) || 0;
-                    const outflow = parseFloat(e.payment_amount || 0) || 0;
+                    // payments (outflow) as two separate columns.
+                    // v1.10.47 — was reading receipt_amount/payment_amount
+                    // which the backend leaves at 0 for non-USD deposits
+                    // (cashBook.js:329). Result: K DEP-OUT / DEP-IN rows
+                    // showed "—" in the OUT / IN column even though the
+                    // running balance did drop. Now read the per-currency
+                    // in/out fields directly and sum them — on K-only
+                    // Liquor all three columns are K anyway, so the sum
+                    // is the receipt total in K.
+                    const inflow  = (parseFloat(e.usd_in  || 0) || 0)
+                                  + (parseFloat(e.fra_in  || 0) || 0)
+                                  + (parseFloat(e.k_in    || 0) || 0);
+                    const outflow = (parseFloat(e.usd_out || 0) || 0)
+                                  + (parseFloat(e.fra_out || 0) || 0)
+                                  + (parseFloat(e.k_out   || 0) || 0);
                     const fmtK = (n) => `${curSym}${parseFloat(n||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}`;
                     return (
                       <>
@@ -872,6 +885,20 @@ const CashBook = () => {
                       // of the USD/FRA/K movement columns to the left.
                       const fmtUsd = (n) => `${curSym}${(parseFloat(n)||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}`;
                       const fmtRaw = (n) => Math.round(parseFloat(n)||0).toLocaleString();
+                      // v1.10.47 — on Liquor branches all three balance
+                      // columns are K (Cash → usd_amount, MoMo → fra_amount,
+                      // Bank → k_amount by the Liquor storage mapping).
+                      // Sum them for a real running K total. Previously we
+                      // showed only balance_k which never moved for CR rows
+                      // (their amounts land in usd_amount/fra_amount), so
+                      // the ledger appeared stuck at -K41,960 after any
+                      // K DEP-OUT.
+                      if (isLiquorStyle) {
+                        const bAll = (parseFloat(e.balance_usd)||0)
+                                   + (parseFloat(e.balance_fra)||0)
+                                   + (parseFloat(e.balance_k)  ||0);
+                        return `${curSym}${bAll.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}`;
+                      }
                       if (activeCcy === 'fra') return `${fmtRaw(e.balance_fra)} FRA`;
                       if (activeCcy === 'k')   return `${fmtRaw(e.balance_k)} K`;
                       if (activeCcy === 'usd') return fmtUsd(e.balance_usd);
@@ -928,8 +955,17 @@ const CashBook = () => {
                   <td colSpan="4" style={{ textAlign: 'right' }}>TOTALS:</td>
                   {isLiquorStyle ? (() => {
                     // v1.9.27 — Liquor totals: sum receipts and payments.
-                    const totIn  = entries.reduce((a, e) => a + (parseFloat(e.receipt_amount || 0) || 0), 0);
-                    const totOut = entries.reduce((a, e) => a + (parseFloat(e.payment_amount || 0) || 0), 0);
+                    // v1.10.47 — sum per-currency in/out fields (same
+                    // reason as the row cells above — receipt_amount /
+                    // payment_amount are 0 for non-USD deposits).
+                    const totIn  = entries.reduce((a, e) => a
+                      + (parseFloat(e.usd_in  || 0) || 0)
+                      + (parseFloat(e.fra_in  || 0) || 0)
+                      + (parseFloat(e.k_in    || 0) || 0), 0);
+                    const totOut = entries.reduce((a, e) => a
+                      + (parseFloat(e.usd_out || 0) || 0)
+                      + (parseFloat(e.fra_out || 0) || 0)
+                      + (parseFloat(e.k_out   || 0) || 0), 0);
                     const fmtK = (n) => `${curSym}${parseFloat(n||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}`;
                     return (
                       <>
@@ -945,7 +981,16 @@ const CashBook = () => {
                     </>
                   )}
                   <td style={{ textAlign: 'right', color: closeBal >= 0 ? '#16a34a' : '#dc2626' }}>
-                    {activeCcy === 'all' ? (
+                    {isLiquorStyle ? (() => {
+                      // v1.10.47 — sum all three currentByCcy slots for
+                      // the Liquor closing total (all K on Liquor).
+                      const closeK = (closeAll.usd || 0) + (closeAll.fra || 0) + (closeAll.k || 0);
+                      return (
+                        <span style={{ color: closeK >= 0 ? '#16a34a' : '#dc2626' }}>
+                          {curSym}{closeK.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}
+                        </span>
+                      );
+                    })() : activeCcy === 'all' ? (
                       <div style={{ display: 'flex', flexDirection: 'column', gap: 2, lineHeight: 1.25 }}>
                         {showUSDccy && <span style={{ color: closeAll.usd >= 0 ? '#16a34a' : '#dc2626' }}>{fmtUsd(closeAll.usd)}</span>}
                         {showFRAccy && <span style={{ color: closeAll.fra >= 0 ? '#2563eb' : '#dc2626' }}>{fmtRaw(closeAll.fra)} FRA</span>}
