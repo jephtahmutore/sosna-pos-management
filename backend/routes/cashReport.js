@@ -475,6 +475,14 @@ router.post('/', auth, (req, res) => {
     const usdAmt = parseFloat(usd_received ?? cash ?? 0);
     const fraAmt = parseFloat(fra_received ?? mobile_money ?? 0);
     const kAmt   = parseFloat(k_received   ?? bank ?? 0);
+    // v1.10.32 — persist per-method counted amounts (Cash / MoMo / Bank) on
+    // Liquor-style branches. Was always zeroed, which made CashReport's
+    // "ALL CASHIERS" top bar show Short K−<expected> even after a cashier
+    // saved. Frontend sends these explicitly on Liquor. Sosna branches keep
+    // them at 0 (no method concept there).
+    const cashAmt = parseFloat(cash         ?? 0) || 0;
+    const momoAmt = parseFloat(mobile_money ?? 0) || 0;
+    const bankAmt = parseFloat(bank         ?? 0) || 0;
     const usdExp = parseFloat(usd_expected ?? 0) || 0;
     const fraExp = parseFloat(fra_expected ?? 0) || 0;
     const kExp   = parseFloat(k_expected   ?? 0) || 0;
@@ -503,7 +511,7 @@ router.post('/', auth, (req, res) => {
           initial_change=?, usd_received=?, fra_received=?, k_received=?,
           usd_expected=?, fra_expected=?, k_expected=?,
           usd_expenses=?, fra_expenses=?, k_expenses=?,
-          mobile_money=0, cash=0, bank=0,
+          mobile_money=?, cash=?, bank=?,
           expenses=?, pending=?, total=?,
           after_change=?, expected=?, difference=?, status=?, comment=?,
           cashier_id=?, deleted_at=NULL, updated_at=datetime('now'), synced=0
@@ -511,6 +519,7 @@ router.post('/', auth, (req, res) => {
       ).run(initial_change, usdAmt, fraAmt, kAmt,
              usdExp, fraExp, kExp,
              usdExpense, fraExpense, kExpense,
+             momoAmt, cashAmt, bankAmt,
              expenses, pending, total,
              after_change, expected, difference, status, comment,
              cashierId, existing.id);
@@ -525,11 +534,12 @@ router.post('/', auth, (req, res) => {
           expenses, pending, total,
           after_change, expected, difference, status, comment, cashier_id, created_by,
           sync_id, tenant_id, branch_id, device_id, synced, created_at, updated_at)
-         VALUES (?,?, ?,?,?, ?,?,?, ?,?,?, 0,0,0, ?,?,?,?,?,?,?,?,?,?, ?,?,?,?, 0,datetime('now'),datetime('now'))`
+         VALUES (?,?, ?,?,?, ?,?,?, ?,?,?, ?,?,?, ?,?,?,?,?,?,?,?,?,?, ?,?,?,?, 0,datetime('now'),datetime('now'))`
       ).run(date, initial_change,
              usdAmt, fraAmt, kAmt,
              usdExp, fraExp, kExp,
              usdExpense, fraExpense, kExpense,
+             momoAmt, cashAmt, bankAmt,
              expenses, pending, total,
              after_change, expected, difference, status, comment,
              cashierId, req.user.id,

@@ -414,12 +414,14 @@ const CashReport = () => {
         usd: { expected: parseFloat(all?.usd_received || 0) || 0, counted: sumCol('usd_received'), expenses: parseFloat(all?.usd_expenses || 0) || 0 },
         fra: { expected: parseFloat(all?.fra_received || 0) || 0, counted: sumCol('fra_received'), expenses: parseFloat(all?.fra_expenses || 0) || 0 },
         k:   { expected: parseFloat(all?.k_received   || 0) || 0, counted: sumCol('k_received'),   expenses: parseFloat(all?.k_expenses   || 0) || 0 },
-        // v1.9.30 — method-axis rollups for Liquor branches. Counted
-        // still 0 for now (saved cash report doesn't store per-method
-        // values yet — the proper per-method save is a later push).
-        cash: { expected: parseFloat(all?.cash_net || 0) || 0, counted: 0, expenses: 0 },
-        momo: { expected: parseFloat(all?.momo_net || 0) || 0, counted: 0, expenses: 0 },
-        bank: { expected: parseFloat(all?.bank_net || 0) || 0, counted: 0, expenses: 0 },
+        // v1.9.30 — method-axis rollups for Liquor branches.
+        // v1.10.32 — counted now sums the per-method columns the save
+        // handler writes (cash / mobile_money / bank). Expenses reuse
+        // the currency columns via the Liquor mapping: Cash → usd_amount
+        // (usd_expenses), MoMo → fra_amount, Bank → k_amount.
+        cash: { expected: parseFloat(all?.cash_net || 0) || 0, counted: sumCol('cash'),         expenses: parseFloat(all?.usd_expenses || 0) || 0 },
+        momo: { expected: parseFloat(all?.momo_net || 0) || 0, counted: sumCol('mobile_money'), expenses: parseFloat(all?.fra_expenses || 0) || 0 },
+        bank: { expected: parseFloat(all?.bank_net || 0) || 0, counted: sumCol('bank'),         expenses: parseFloat(all?.k_expenses   || 0) || 0 },
       });
     }).catch(() => {});
   }, [date, reports]); // eslint-disable-line
@@ -485,6 +487,13 @@ const CashReport = () => {
           usd_expenses: parseFloat(expensesByCcy.usd) || 0,
           fra_expenses: parseFloat(expensesByCcy.fra) || 0,
           k_expenses:   parseFloat(expensesByCcy.k)   || 0,
+          // v1.10.32 — on Liquor-style branches, ALSO write the per-method
+          // counted values into cash_reports.cash / mobile_money / bank so
+          // the "ALL CASHIERS" top bar can sum them across cashiers. Same
+          // mapping used everywhere else on Liquor: Cash→usd_received,
+          // MoMo→fra_received, Bank→k_received. Sosna branches send 0s
+          // (no method concept there).
+          ...(isLiquorStyle ? { cash: usd, mobile_money: fra, bank: kAmt } : { cash: 0, mobile_money: 0, bank: 0 }),
           expenses: exp,
           pending: pend,
           total,
