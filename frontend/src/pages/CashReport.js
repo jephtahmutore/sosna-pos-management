@@ -1037,11 +1037,24 @@ const CashReport = () => {
             style forces `grid-template-columns: 1fr` at <=767px, and
             `min-width: 0` on the grid + children breaks intrinsic
             width propagation from any wide descendant. */}
+        {/* v1.10.37 — real diagnosis (finally):
+            Report History table below has 13 columns, no mobile scroll
+            wrapper, forces .page-content wider than the viewport. My grid
+            inherits that oversized parent width, and `max-width: 100%`
+            from index.css:1885 caps to the OVERSIZED parent, not the
+            viewport — so auto-fit still commits to 3 columns and USD + K
+            sit off-screen inside the horizontal overflow. FRA (middle) is
+            what a phone screen happens to land on.
+            Fix: 100vw is VIEWPORT-relative, not parent-relative. It caps
+            the grid to the actual screen width no matter how wide any
+            ancestor stretches. */}
         <style>{`
           @media (max-width: 767px) {
             .cash-report-cards-grid {
               grid-template-columns: 1fr !important;
+              max-width: 100vw !important;
               min-width: 0 !important;
+              box-sizing: border-box !important;
             }
             .cash-report-cards-grid > * {
               min-width: 0 !important;
