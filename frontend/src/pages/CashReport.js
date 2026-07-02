@@ -902,54 +902,89 @@ const CashReport = () => {
           totals across ALL cashiers. Liquor-style summary but per-currency
           instead of a single $ figure. Drives off daySummaryByCcy which
           aggregates POS net (expected) + sum of saved cash report counted
-          per currency. */}
+          per currency.
+          v1.10.38 — Liquor branches (Lusaka, Mansa) collapse the three
+          per-method tiles into three roll-up totals (Total Expected /
+          Total Cash Received / Difference), matching the legacy Liquor
+          Cash Report top strip. Per-method reconciliation cards below
+          already carry the drilldown; the top tiles are now for a
+          bird's-eye view instead of duplicating the drilldown numbers. */}
       <div className="no-print" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 12, marginBottom: 16 }}>
-        {/* v1.9.30 — Liquor branches render per-method rollup cards; Sosna
-            branches render per-currency cards (gated by currency_mode). */}
-        {[
-          { ccy: 'USD',  symbol: '$',    dec: 2, label: 'USD',  color: '#16a34a', bg: 'linear-gradient(135deg,#16a34a,#15803d)', show: showUSDccy },
-          { ccy: 'FRA',  symbol: '',     dec: 0, label: 'FRA',  color: '#7c3aed', bg: 'linear-gradient(135deg,#7c3aed,#6d28d9)', show: showFRAccy },
-          { ccy: 'K',    symbol: '',     dec: 0, label: 'K',    color: '#ea580c', bg: 'linear-gradient(135deg,#ea580c,#c2410c)', show: showKccy },
-          { ccy: 'CASH', symbol: curSym, dec: 2, label: 'Cash',         color: '#16a34a', bg: 'linear-gradient(135deg,#16a34a,#15803d)', show: isLiquorStyle },
-          { ccy: 'MOMO', symbol: curSym, dec: 2, label: 'Mobile Money', color: '#ea580c', bg: 'linear-gradient(135deg,#ea580c,#c2410c)', show: isLiquorStyle },
-          { ccy: 'BANK', symbol: curSym, dec: 2, label: 'Bank',         color: '#2563eb', bg: 'linear-gradient(135deg,#2563eb,#1d4ed8)', show: isLiquorStyle },
-        ].filter(c => c.show).map(c => {
-          const key      = c.ccy.toLowerCase();
-          const expected = parseFloat(daySummaryByCcy[key]?.expected || 0) || 0;
-          const counted  = parseFloat(daySummaryByCcy[key]?.counted  || 0) || 0;
-          const expenses = parseFloat(daySummaryByCcy[key]?.expenses || 0) || 0;
-          const exch     = parseFloat(exchangeNetAll[`${key}_net`] || 0) || 0;
-          // v1.8.84 — Total cash in = Counted + Expenses − exch_net (sales-only inflow).
-          const totalIn  = counted + expenses - exch;
-          const diff     = totalIn - expected;
-          const eps      = c.dec === 2 ? 0.01 : 1;
-          const isOk     = Math.abs(diff) < eps;
-          const status   = isOk ? '✓ Balanced' : diff > 0 ? 'Over' : 'Short';
-          const fmt      = (n) => `${c.symbol}${parseFloat(n || 0).toLocaleString(undefined, { minimumFractionDigits: c.dec, maximumFractionDigits: c.dec })}`;
-          return (
-            <div key={c.ccy} style={{ borderRadius: 12, padding: '14px 18px', background: c.bg, color: '#fff', boxShadow: `0 4px 16px ${c.color}40`, position: 'relative', overflow: 'hidden' }}>
+        {isLiquorStyle ? (() => {
+          const num = (v) => parseFloat(v || 0) || 0;
+          const methods = ['cash', 'momo', 'bank'];
+          const totalIn = (m) => num(daySummaryByCcy[m]?.counted) + num(daySummaryByCcy[m]?.expenses) - num(exchangeNetAll[`${m}_net`]);
+          const totalExpected = methods.reduce((s, m) => s + num(daySummaryByCcy[m]?.expected), 0);
+          const totalReceived = methods.reduce((s, m) => s + totalIn(m), 0);
+          const diff          = totalReceived - totalExpected;
+          const isOk          = Math.abs(diff) < 0.01;
+          const status        = isOk ? '✓ Balanced' : diff > 0 ? 'Over' : 'Short';
+          const fmt           = (n) => `${curSym}${parseFloat(n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+          // Difference tile colour swaps with sign so the state reads at a glance.
+          const diffBg = isOk
+            ? 'linear-gradient(135deg,#16a34a,#15803d)'
+            : diff > 0
+              ? 'linear-gradient(135deg,#16a34a,#15803d)'
+              : 'linear-gradient(135deg,#dc2626,#b91c1c)';
+          const diffShadow = isOk || diff > 0 ? '#16a34a40' : '#dc262640';
+          const tiles = [
+            { key: 'expected', label: 'Total Expected',       big: fmt(totalExpected), sub: `Cash + MoMo + Bank`,          bg: 'linear-gradient(135deg,#2563eb,#1d4ed8)', shadow: '#2563eb40' },
+            { key: 'received', label: 'Total Cash Received',  big: fmt(totalReceived), sub: `Cash + MoMo + Bank`,          bg: 'linear-gradient(135deg,#16a34a,#15803d)', shadow: '#16a34a40' },
+            { key: 'diff',     label: 'Difference',           big: `${diff > 0 ? '+' : diff < 0 ? '-' : ''}${fmt(Math.abs(diff))}`, sub: status, bg: diffBg, shadow: diffShadow },
+          ];
+          return tiles.map(t => (
+            <div key={t.key} style={{ borderRadius: 12, padding: '14px 18px', background: t.bg, color: '#fff', boxShadow: `0 4px 16px ${t.shadow}`, position: 'relative', overflow: 'hidden' }}>
               <div style={{ position: 'absolute', right: -10, top: -10, width: 60, height: 60, borderRadius: '50%', background: 'rgba(255,255,255,0.1)' }} />
               <div style={{ fontSize: 11, fontWeight: 700, opacity: 0.85, textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 8 }}>
-                {c.label} — All Cashiers
+                {t.label}
               </div>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 13 }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
-                  <span style={{ opacity: 0.9, fontSize: 11 }}>Total cash in</span>
-                  <strong style={{ fontSize: 18, whiteSpace: 'nowrap' }}>{fmt(totalIn)}</strong>
-                </div>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', opacity: 0.75 }}>
-                  <span style={{ fontSize: 11 }}>Expected sales</span>
-                  <span style={{ fontSize: 12, fontWeight: 500, whiteSpace: 'nowrap' }}>{fmt(expected)}</span>
-                </div>
-                <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 4 }}>
-                  <strong style={{ background: 'rgba(255,255,255,0.22)', padding: '3px 10px', borderRadius: 6, fontSize: 12 }}>
-                    {status} {!isOk ? ` ${diff > 0 ? '+' : ''}${fmt(diff)}` : ''}
-                  </strong>
-                </div>
-              </div>
+              <div style={{ fontSize: 24, fontWeight: 800, whiteSpace: 'nowrap', marginBottom: 4 }}>{t.big}</div>
+              <div style={{ fontSize: 11, opacity: 0.85 }}>{t.sub}</div>
             </div>
-          );
-        })}
+          ));
+        })() : (
+          [
+            { ccy: 'USD',  symbol: '$',    dec: 2, label: 'USD',  color: '#16a34a', bg: 'linear-gradient(135deg,#16a34a,#15803d)', show: showUSDccy },
+            { ccy: 'FRA',  symbol: '',     dec: 0, label: 'FRA',  color: '#7c3aed', bg: 'linear-gradient(135deg,#7c3aed,#6d28d9)', show: showFRAccy },
+            { ccy: 'K',    symbol: '',     dec: 0, label: 'K',    color: '#ea580c', bg: 'linear-gradient(135deg,#ea580c,#c2410c)', show: showKccy },
+          ].filter(c => c.show).map(c => {
+            const key      = c.ccy.toLowerCase();
+            const expected = parseFloat(daySummaryByCcy[key]?.expected || 0) || 0;
+            const counted  = parseFloat(daySummaryByCcy[key]?.counted  || 0) || 0;
+            const expenses = parseFloat(daySummaryByCcy[key]?.expenses || 0) || 0;
+            const exch     = parseFloat(exchangeNetAll[`${key}_net`] || 0) || 0;
+            // v1.8.84 — Total cash in = Counted + Expenses − exch_net (sales-only inflow).
+            const totalIn  = counted + expenses - exch;
+            const diff     = totalIn - expected;
+            const eps      = c.dec === 2 ? 0.01 : 1;
+            const isOk     = Math.abs(diff) < eps;
+            const status   = isOk ? '✓ Balanced' : diff > 0 ? 'Over' : 'Short';
+            const fmt      = (n) => `${c.symbol}${parseFloat(n || 0).toLocaleString(undefined, { minimumFractionDigits: c.dec, maximumFractionDigits: c.dec })}`;
+            return (
+              <div key={c.ccy} style={{ borderRadius: 12, padding: '14px 18px', background: c.bg, color: '#fff', boxShadow: `0 4px 16px ${c.color}40`, position: 'relative', overflow: 'hidden' }}>
+                <div style={{ position: 'absolute', right: -10, top: -10, width: 60, height: 60, borderRadius: '50%', background: 'rgba(255,255,255,0.1)' }} />
+                <div style={{ fontSize: 11, fontWeight: 700, opacity: 0.85, textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 8 }}>
+                  {c.label} — All Cashiers
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 13 }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
+                    <span style={{ opacity: 0.9, fontSize: 11 }}>Total cash in</span>
+                    <strong style={{ fontSize: 18, whiteSpace: 'nowrap' }}>{fmt(totalIn)}</strong>
+                  </div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', opacity: 0.75 }}>
+                    <span style={{ fontSize: 11 }}>Expected sales</span>
+                    <span style={{ fontSize: 12, fontWeight: 500, whiteSpace: 'nowrap' }}>{fmt(expected)}</span>
+                  </div>
+                  <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 4 }}>
+                    <strong style={{ background: 'rgba(255,255,255,0.22)', padding: '3px 10px', borderRadius: 6, fontSize: 12 }}>
+                      {status} {!isOk ? ` ${diff > 0 ? '+' : ''}${fmt(diff)}` : ''}
+                    </strong>
+                  </div>
+                </div>
+              </div>
+            );
+          })
+        )}
       </div>
 
       {/* v1.8.11 — old single-currency Top bar disabled. */}
