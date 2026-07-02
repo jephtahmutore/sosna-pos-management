@@ -3,7 +3,7 @@
 // fields, same Types dropdown (from pv_types). Caller can lock paid_from
 // to a fixed value (e.g. "Cash Drawer" for cash-report use).
 import React, { useEffect, useState } from 'react';
-import { getPvTypes, createPaymentVoucher, updatePaymentVoucher } from '../services/api';
+import { getPvTypes, createPaymentVoucher, updatePaymentVoucher, isHqHost } from '../services/api';
 import { useCurrency } from '../context/CurrencyContext';
 import Portal from '../utils/Portal';
 import InvoiceAttachment from './InvoiceAttachment';
@@ -25,12 +25,19 @@ const PaymentVoucherFormModal = ({
   extraPayload,        // optional object — merged into the API payload (e.g. { cashier_id })
 }) => {
   const { symbol: curSym, isLiquorStyle } = useCurrency();
+  // v1.10.41 — On HQ (sosnazm.com) the local business_settings default to
+  // Liquor-style single-K (v1.10.19 memo), which is wrong for a modal that
+  // needs to record USD / FRA / K movements the branches are depositing.
+  // Same override the Cash Book page already uses: force per-currency treatment
+  // on the HQ host so the modal renders USD / FRA / K instead of
+  // Cash / MoMo / Bank.
+  const effectiveLiquorStyle = isHqHost() ? false : isLiquorStyle;
   // v1.10.31 — On Liquor-style branches (Lusaka, Mansa, K-only Cash/MoMo/Bank
   // workflow) the three amount inputs are physical methods, not currencies.
   // Storage columns stay the same (usd_amount = Cash, fra_amount = MoMo,
   // k_amount = Bank) to match CashReport's per-method cards and avoid a DB
   // migration. Backend paymentVouchers.js already accepts both shapes.
-  const fieldConfigs = isLiquorStyle
+  const fieldConfigs = effectiveLiquorStyle
     ? [
         { key: 'usd_amount', ccy: 'CASH', label: 'Cash',         color: '#16a34a', step: '0.01', placeholder: '0.00', prefix: curSym },
         { key: 'fra_amount', ccy: 'MOMO', label: 'Mobile Money', color: '#ea580c', step: '0.01', placeholder: '0.00', prefix: curSym },
@@ -111,8 +118,8 @@ const PaymentVoucherFormModal = ({
     // in K), so `amount` = sum of whichever slot the user filled in.
     // v1.10.31 — was reading `usd` only, which zeroed the header amount when
     // a Liquor cashier paid via MoMo or Bank.
-    const totalUsd = isLiquorStyle ? (usd + fra + k) : usd;
-    if (usd <= 0 && fra <= 0 && k <= 0) return setError(isLiquorStyle ? 'Enter an amount in Cash, Mobile Money, or Bank.' : 'Enter an amount in at least one currency.');
+    const totalUsd = effectiveLiquorStyle ? (usd + fra + k) : usd;
+    if (usd <= 0 && fra <= 0 && k <= 0) return setError(effectiveLiquorStyle ? 'Enter an amount in Cash, Mobile Money, or Bank.' : 'Enter an amount in at least one currency.');
 
     if (editVoucher) {
       if (!window.confirm('Are you sure you want to update this record?')) return;
@@ -219,7 +226,7 @@ const PaymentVoucherFormModal = ({
                         value={form[f.key]}
                         onChange={e => setForm(prev => ({ ...prev, [f.key]: e.target.value }))}
                         placeholder={f.placeholder}
-                        title={locked ? (isLiquorStyle ? 'Clear the other method to switch — one PV = one method.' : 'Clear the other currency to switch — one PV = one currency.') : ''}
+                        title={locked ? (effectiveLiquorStyle ? 'Clear the other method to switch — one PV = one method.' : 'Clear the other currency to switch — one PV = one currency.') : ''}
                         style={{
                           width: '100%', padding: '8px 10px',
                           border: `2px solid ${locked ? '#e5e7eb' : (parseFloat(form[f.key] || 0) > 0 || isDefault ? f.color : '#d1d5db')}`,
@@ -240,7 +247,7 @@ const PaymentVoucherFormModal = ({
                   // (only one is non-zero due to the lock, so this reads the
                   // active method's value). Sosna keeps the USD-only header total
                   // that the DB `amount` column tracks.
-                  if (isLiquorStyle) {
+                  if (effectiveLiquorStyle) {
                     const t = fieldConfigs.reduce((s, f) => s + (parseFloat(form[f.key] || 0) || 0), 0);
                     return (
                       <>
