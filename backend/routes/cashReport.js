@@ -585,6 +585,34 @@ router.delete('/:id', auth, (req, res) => {
              synced = 0
        WHERE id = ?
     `).run(id);
+    // v1.10.46 — cascade soft-delete the auto-created Cash Receipt for this
+    // cashier's day so `Delete saved` is a real reset. Without this the CR
+    // hangs behind with stale figures and the next save prompts an
+    // update-or-keep modal for a row the user thought was already gone.
+    // Match by (date, tenant, received_from) — same tuple the frontend uses
+    // to auto-create it, so manual CRs typed on the same day with a
+    // different `received_from` (e.g. "Rent income") are untouched.
+    try {
+      const cashier = row.cashier_id
+        ? db.prepare('SELECT first_name, last_name FROM users WHERE id = ?').get(row.cashier_id)
+        : null;
+      const receivedFrom = cashier ? `Sales / ${cashier.first_name}` : 'Sales';
+      const crInfo = db.prepare(`
+        UPDATE cash_receipts
+           SET deleted_at = datetime('now'),
+               updated_at = datetime('now'),
+               synced = 0
+         WHERE tenant_id = ?
+           AND date = ?
+           AND received_from = ?
+           AND deleted_at IS NULL
+      `).run(req.user.tenantId, row.date, receivedFrom);
+      if (crInfo.changes > 0) {
+        console.log(`[cash-report DELETE] cascaded soft-delete to ${crInfo.changes} auto-CR row(s) for ${receivedFrom} on ${row.date}`);
+      }
+    } catch (e) {
+      console.error('[cash-report DELETE] cascade CR delete failed:', e.message);
+    }
     if (row.date && req.user.tenantId) {
       try { recalculateDailyProfit(db, row.date, req.user.tenantId); } catch { /* non-fatal */ }
     }

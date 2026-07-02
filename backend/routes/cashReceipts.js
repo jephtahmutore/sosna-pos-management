@@ -100,7 +100,14 @@ router.post('/', auth, (req, res) => {
     const splits = sumLegacy > 0
       ? { cash: parseFloat(cash_amount) || 0, bank: parseFloat(bank_amount) || 0, momo: parseFloat(momo_amount) || 0 }
       : deriveCRSplits(payment_method, amount);
-    const totalAmount = sumCcy > 0 ? usdAmt : (sumLegacy > 0 ? sumLegacy : parseFloat(amount) || 0);
+    // v1.10.46 — trust client's amount when both column sets are populated
+    // (Liquor Cash-Report auto-CR path from v1.10.44). Otherwise fall back
+    // to the pre-v1.10.46 clamp so Sosna single-currency behaviour is
+    // unchanged.
+    const clientTotalMatchesLiquor = sumCcy > 0 && sumLegacy > 0 && parseFloat(amount) > 0;
+    const totalAmount = clientTotalMatchesLiquor
+      ? parseFloat(amount)
+      : (sumCcy > 0 ? usdAmt : (sumLegacy > 0 ? sumLegacy : parseFloat(amount) || 0));
     const info = db.prepare(
       `INSERT INTO cash_receipts (receipt_number, received_from, description, payment_method, amount,
                                   cash_amount, bank_amount, momo_amount,
@@ -142,7 +149,16 @@ router.put('/:id', auth, (req, res) => {
     const splits = sumLegacy > 0
       ? { cash: parseFloat(cash_amount) || 0, bank: parseFloat(bank_amount) || 0, momo: parseFloat(momo_amount) || 0 }
       : deriveCRSplits(payment_method, amount);
-    const totalAmount = sumCcy > 0 ? usdAmt : (sumLegacy > 0 ? sumLegacy : parseFloat(amount) || 0);
+    // v1.10.46 — when the client explicitly sends BOTH the currency columns
+    // and the method-split columns (Liquor from v1.10.44), it means all
+    // three slots are the same currency and the client's `amount` is the
+    // real total across methods. Trust it instead of clamping to usd only,
+    // which was silently truncating Liquor CRs to just the Cash portion
+    // (e.g. K33,105 stored as K6,700).
+    const clientTotalMatchesLiquor = sumCcy > 0 && sumLegacy > 0 && parseFloat(amount) > 0;
+    const totalAmount = clientTotalMatchesLiquor
+      ? parseFloat(amount)
+      : (sumCcy > 0 ? usdAmt : (sumLegacy > 0 ? sumLegacy : parseFloat(amount) || 0));
     const info = db.prepare(
       `UPDATE cash_receipts
           SET received_from=?, description=?, payment_method=?, amount=?,

@@ -385,9 +385,21 @@ const CashReceipt = () => {
             </thead>
             <tbody>
               {filteredReceipts.map(r => {
-                const ru = parseFloat(r.usd_amount) > 0 ? parseFloat(r.usd_amount) : parseFloat(r.cash_amount || 0);
-                const rf = parseFloat(r.fra_amount) > 0 ? parseFloat(r.fra_amount) : parseFloat(r.bank_amount || 0);
-                const rk = parseFloat(r.k_amount)   > 0 ? parseFloat(r.k_amount)   : parseFloat(r.momo_amount || 0);
+                // v1.10.46 — on Liquor branches read the currency columns
+                // directly (usd/fra/k). Since v1.10.44 we ALSO mirror to the
+                // legacy cash/bank/momo columns for the Cash Book tile
+                // aggregator, so the old legacy-fallback ternary here would
+                // count MoMo twice — once as `fra_amount`, once as
+                // `momo_amount` — turning a K33,105 receipt into K59,510.
+                const ru = isLiquorStyle
+                  ? parseFloat(r.usd_amount || 0)
+                  : (parseFloat(r.usd_amount) > 0 ? parseFloat(r.usd_amount) : parseFloat(r.cash_amount || 0));
+                const rf = isLiquorStyle
+                  ? parseFloat(r.fra_amount || 0)
+                  : (parseFloat(r.fra_amount) > 0 ? parseFloat(r.fra_amount) : parseFloat(r.bank_amount || 0));
+                const rk = isLiquorStyle
+                  ? parseFloat(r.k_amount || 0)
+                  : (parseFloat(r.k_amount)   > 0 ? parseFloat(r.k_amount)   : parseFloat(r.momo_amount || 0));
                 const dash = <span style={{ color: '#cbd5e1' }}>—</span>;
                 // v1.10.45 — Liquor total = sum of the three slots (all K).
                 const liquorTotal = ru + rf + rk;
@@ -451,9 +463,15 @@ const CashReceipt = () => {
                   Total ({filteredReceipts.length} receipt{filteredReceipts.length !== 1 ? 's' : ''})
                 </td>
                 {(() => {
-                  const tu = filteredReceipts.reduce((s, r) => s + (parseFloat(r.usd_amount) > 0 ? parseFloat(r.usd_amount) : parseFloat(r.cash_amount || 0)), 0);
-                  const tf = filteredReceipts.reduce((s, r) => s + (parseFloat(r.fra_amount) > 0 ? parseFloat(r.fra_amount) : parseFloat(r.bank_amount || 0)), 0);
-                  const tk = filteredReceipts.reduce((s, r) => s + (parseFloat(r.k_amount)   > 0 ? parseFloat(r.k_amount)   : parseFloat(r.momo_amount || 0)), 0);
+                  // v1.10.46 — same currency-column-direct read as the row
+                  // cell above. Without this the footer would triple-count
+                  // on Liquor (double-count per row × N rows).
+                  const pickU = (r) => isLiquorStyle ? parseFloat(r.usd_amount || 0) : (parseFloat(r.usd_amount) > 0 ? parseFloat(r.usd_amount) : parseFloat(r.cash_amount || 0));
+                  const pickF = (r) => isLiquorStyle ? parseFloat(r.fra_amount || 0) : (parseFloat(r.fra_amount) > 0 ? parseFloat(r.fra_amount) : parseFloat(r.bank_amount || 0));
+                  const pickK = (r) => isLiquorStyle ? parseFloat(r.k_amount   || 0) : (parseFloat(r.k_amount)   > 0 ? parseFloat(r.k_amount)   : parseFloat(r.momo_amount || 0));
+                  const tu = filteredReceipts.reduce((s, r) => s + pickU(r), 0);
+                  const tf = filteredReceipts.reduce((s, r) => s + pickF(r), 0);
+                  const tk = filteredReceipts.reduce((s, r) => s + pickK(r), 0);
                   // v1.10.45 — Liquor total = sum across all three slots.
                   if (isLiquorStyle) {
                     return (<>
