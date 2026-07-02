@@ -47,7 +47,12 @@ const CashReport = () => {
   const showFRAccy = !isLiquorStyle && (currencyMode === 'USD+FRA' || currencyMode === 'USD+FRA+K');
   const showKccy   = !isLiquorStyle && (currencyMode === 'USD+FRA+K' || currencyMode === 'K');
   const { t } = useLanguage();
-  const today = new Date().toISOString().split('T')[0];
+  // v1.10.43 — local-date, not UTC. Was defaulting Cash Report to UTC
+  // "today", which at 00:16 Lusaka time on Jul 3 (= 22:16 UTC Jul 2) still
+  // showed "2026-07-02" while Sales Report — using local time — was
+  // already on Jul 3. Same builder Sales Report uses (SalesReport.js:12).
+  const _t = new Date();
+  const today = `${_t.getFullYear()}-${String(_t.getMonth()+1).padStart(2,'0')}-${String(_t.getDate()).padStart(2,'0')}`;
   const [date, setDate] = useState(today);
   const [reports, setReports] = useState([]);
   const [saving, setSaving] = useState(false);
@@ -207,7 +212,16 @@ const CashReport = () => {
 
   const fetchSalesCashiers = async (d) => {
     try {
-      const res = await getSalesCashiers(d);
+      // v1.10.43 — pass the same LOCAL-day → UTC bounds we use for /daily
+      // so a cashier whose sale time crossed local midnight (e.g. 12:47 AM
+      // local Lusaka = 22:47 UTC previous day) still appears in the
+      // dropdown for their local day. Without this the /sales-cashiers
+      // endpoint's naive DATE(created_at) match drops them silently.
+      const p = (n) => String(n).padStart(2, '0');
+      const toSqliteUTC = (dt) => `${dt.getUTCFullYear()}-${p(dt.getUTCMonth() + 1)}-${p(dt.getUTCDate())} ${p(dt.getUTCHours())}:${p(dt.getUTCMinutes())}:${p(dt.getUTCSeconds())}`;
+      const fromUtc = toSqliteUTC(new Date(`${d}T00:00:00`));
+      const toUtc   = toSqliteUTC(new Date(`${d}T23:59:59`));
+      const res = await getSalesCashiers(d, null, null, fromUtc, toUtc);
       const list = res.data || [];
       setSalesCashiers(list);
       if (list.length > 0) {

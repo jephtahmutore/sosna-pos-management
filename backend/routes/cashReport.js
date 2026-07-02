@@ -52,16 +52,27 @@ router.get('/users', auth, readOnlyGuard, (req, res) => {
 // Get distinct users who made sales (optionally filtered by date)
 router.get('/sales-cashiers', auth, readOnlyGuard, (req, res) => {
   try {
-    const { date, from, to } = req.query;
+    // v1.10.43 — accept from_utc / to_utc same as /daily. orders.created_at
+    // is stored in UTC; a naive DATE() match drops any sale rung up between
+    // local midnight and UTC midnight (e.g. Lusaka +2 → a 12:47 AM local
+    // sale on Jul 2 is 22:47 UTC Jul 1, so a caller asking "who sold on
+    // Jul 2?" with date=2026-07-02 saw an empty list). The frontend already
+    // has the UTC bounds for the /daily call; just plumb them through.
+    const { date, from, to, from_utc, to_utc } = req.query;
     let query = `SELECT DISTINCT o.created_by AS id, u.first_name, u.last_name
        FROM orders o
        JOIN users u ON o.created_by = u.id
        WHERE o.deleted_at IS NULL AND o.tenant_id = ?
          AND (o.status IS NULL OR o.status != 'Reversed')`;
     const params = [req.user.tenantId];
-    if (date) { query += ' AND DATE(o.created_at) = ?';  params.push(date); }
-    if (from) { query += ' AND DATE(o.created_at) >= ?'; params.push(from); }
-    if (to)   { query += ' AND DATE(o.created_at) <= ?'; params.push(to); }
+    if (from_utc && to_utc) {
+      query += ' AND o.created_at >= ? AND o.created_at <= ?';
+      params.push(from_utc, to_utc);
+    } else {
+      if (date) { query += ' AND DATE(o.created_at) = ?';  params.push(date); }
+      if (from) { query += ' AND DATE(o.created_at) >= ?'; params.push(from); }
+      if (to)   { query += ' AND DATE(o.created_at) <= ?'; params.push(to); }
+    }
     query += ' ORDER BY u.first_name';
     const rows = db.prepare(query).all(...params);
     res.json(rows);

@@ -449,11 +449,16 @@ export const createCashReceipt = (data) => api.post('/cash-receipts', data);
 export const updateCashReceipt = (id, data) => api.put(`/cash-receipts/${id}`, data);
 export const deleteCashReceipt = (id) => api.delete(`/cash-receipts/${id}`);
 
-export const getSalesCashiers = (date, from, to) => {
+// v1.10.43 — fromUtc / toUtc: SQLite-format UTC datetime bounds
+// corresponding to the LOCAL day. Same shape /cash-reports/daily accepts.
+// When both are provided the backend uses them and ignores date/from/to.
+export const getSalesCashiers = (date, from, to, fromUtc, toUtc) => {
   const params = {};
-  if (date) params.date = date;
-  if (from) params.from = from;
-  if (to)   params.to   = to;
+  if (date)    params.date     = date;
+  if (from)    params.from     = from;
+  if (to)      params.to       = to;
+  if (fromUtc) params.from_utc = fromUtc;
+  if (toUtc)   params.to_utc   = toUtc;
   return api.get('/cash-reports/sales-cashiers', { params });
 };
 // v1.10.9 — admin-gated delete of a saved cash report row.
