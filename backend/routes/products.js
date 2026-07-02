@@ -817,7 +817,15 @@ router.post('/bulk-siv-store-to-sales', auth, (req, res) => {
 // product, updates units_json so every packaging's price = base_price × conv,
 // and updates the legacy selling_price column = base_price. Single transaction.
 //
-// Body: { updates: [{ id: 123, base_price: 1.10 }, ...] }
+// v1.10.26 — Optional per-unit overrides. Non-default units may carry a
+// distinct price without disturbing base or siblings, mirroring Item
+// Details behaviour. After deriving base × conv for every unit, any
+// packaging listed in unit_prices is overwritten with that value.
+//
+// Body: { updates: [
+//   { id: 123, base_price: 1.10 },                                    // simple cascade
+//   { id: 456, base_price: 1.10, unit_prices: { "Six Pack": 8.50 } }, // + override
+// ] }
 router.post('/bulk-update-prices', auth, (req, res) => {
   try {
     const updates = Array.isArray(req.body?.updates) ? req.body.updates : [];
@@ -838,12 +846,16 @@ router.post('/bulk-update-prices', auth, (req, res) => {
         let units = [];
         try { units = JSON.parse(row.units_json || '[]'); } catch {}
         if (!Array.isArray(units) || units.length === 0) continue;
-        const updatedUnits = units.map(unit => ({
-          ...unit,
-          price: parseFloat((basePrice * (parseFloat(unit.conv) || 1)).toFixed(4)),
-        }));
-        // alt_price = price of largest non-base unit (legacy column some
-        // reports still read). Falls back to base price when no alt unit.
+        const overrides = (u.unit_prices && typeof u.unit_prices === 'object') ? u.unit_prices : {};
+        const updatedUnits = units.map(unit => {
+          const derived = parseFloat((basePrice * (parseFloat(unit.conv) || 1)).toFixed(4));
+          const key = (unit.name || '').trim();
+          const override = overrides[key];
+          const finalPrice = (!unit.is_base && override !== undefined && override !== null && parseFloat(override) > 0)
+            ? parseFloat(parseFloat(override).toFixed(4))
+            : derived;
+          return { ...unit, price: finalPrice };
+        });
         const nonBase = updatedUnits.filter(x => !x.is_base);
         const altPrice = nonBase.length > 0
           ? nonBase.sort((a, b) => parseFloat(b.conv) - parseFloat(a.conv))[0].price
