@@ -46,7 +46,7 @@ const isNonDefaultUnit = (it) =>
 
 const POS = () => {
   const { user } = useAuth();
-  const { symbol: curSym, money } = useCurrency();
+  const { symbol: curSym, money, isLiquorStyle } = useCurrency();
   const isMobile = useIsMobile();
   // Whether the cart bottom-sheet is expanded on mobile. Desktop ignores this.
   const [mobileCartOpen, setMobileCartOpen] = useState(false);
@@ -1181,7 +1181,11 @@ const POS = () => {
     width: 80mm;
     max-width: 80mm;
     padding: 2mm 3mm;
-    font-family: 'Courier New', Courier, monospace;
+    /* v1.10.28 — Liquor-style branches use bold Arial to match the
+       thermal-printer look the user asked for (heavy strokes, uppercase-
+       friendly). Sosna multi-currency stays on Courier for backward
+       compatibility with the existing dual-currency receipt. */
+    font-family: ${isLiquorStyle ? "Arial, Helvetica, sans-serif" : "'Courier New', Courier, monospace"};
     font-size: 11px;
     color: #000;
     font-weight: 700;
