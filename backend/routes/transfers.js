@@ -408,6 +408,23 @@ router.put('/:id/receive', hqAuth, (req, res) => {
       }
     }
 
+    // v1.10.55 — WAC redesign push 3: blend delivery cost into destination
+    // avg_cost_price. Delivery CP is derived from the transfer's declared
+    // FX rate (captured at Send time in v1.10.54). Same formula as HQ GRN
+    // generate — never overwrites, always blends. Storage on items_json
+    // already has cost_price_usd pre-computed for tri-currency destinations;
+    // K-only destinations fall back to the raw cost_price (native K).
+    const trCcy  = String(row.cost_currency || '').toUpperCase();
+    const trRate = parseFloat(row.fx_rate_used || 0) || 0;
+    const toUsdT = (it) => {
+      // Prefer the pre-computed field on the item (stored by v1.10.54).
+      const preC = parseFloat(it.cost_price_usd || 0);
+      if (preC > 0) return preC;
+      const c = parseFloat(it.cost_price || 0) || 0;
+      if (c <= 0) return 0;
+      if (!trCcy || trCcy === 'USD') return c;
+      return trRate > 0 ? c / trRate : c;
+    };
     toDb.transaction(() => {
       const movStmt = toDb.prepare(`
         INSERT INTO stock_movements (product_id, product_sync_id, location, movement_type,
@@ -416,10 +433,20 @@ router.put('/:id/receive', hqAuth, (req, res) => {
                                      synced, created_at, updated_at)
         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0,datetime('now'),datetime('now'))
       `);
+      // v1.10.55 — atomic UPDATE bumps current_stock AND blends
+      // avg_cost_price in one statement (same shape as hqGrns.js /generate).
       const upd = toDb.prepare(`
-        UPDATE products SET current_stock = current_stock + ?,
-                            updated_at = datetime('now'),
-                            synced = 0
+        UPDATE products
+           SET current_stock  = current_stock + ?,
+               avg_cost_price = CASE
+                 WHEN avg_cost_price IS NULL OR current_stock <= 0
+                   THEN ?
+                 ELSE ROUND(
+                   (current_stock * avg_cost_price + ? * ?)
+                   / (current_stock + ?), 4)
+               END,
+               updated_at     = datetime('now'),
+               synced         = 0
          WHERE sync_id = ?
       `);
 
@@ -468,7 +495,18 @@ router.put('/:id/receive', hqAuth, (req, res) => {
             receivedBy,
             randomUUID(), null, null, null
           );
-          upd.run(baseQty, prod.sync_id);
+          // v1.10.55 — WAC blend at destination: baseQty × delivery_cp_usd
+          // added to the weighted mean of existing stock. cost_price on
+          // items_json is per BASE unit (transfer create normalises to base
+          // there too, or Send modal converts before submit).
+          const deliveryCpUsd = toUsdT(it);
+          upd.run(
+            baseQty,
+            deliveryCpUsd,
+            baseQty, deliveryCpUsd,
+            baseQty,
+            prod.sync_id
+          );
         }
 
         // Record the variance for HQ to investigate.

@@ -681,13 +681,41 @@ router.post('/generate', hqAuth, (req, res) => {
     })();
 
     // 4. Post stock to branch tenant DB (outside master tx — different connection)
+    // v1.10.55 — WAC redesign push 3: blend delivery cost into the branch's
+    // avg_cost_price. Delivery CP is derived from the PO's declared FX rate
+    // (captured at PO Create time in v1.10.54). Formula per user's
+    // 2026-07-03 memo:
+    //   new_wac = (existing_qty × existing_avg + received_qty × delivery_cp)
+    //             / (existing_qty + received_qty)
+    // Never overwrites — always blends. Old stock keeps its historical avg
+    // in the numerator. If existing avg is NULL (product never received
+    // any stock), we seed it with the delivery CP.
+    const poCurrency = String(purchase.cost_currency || '').toUpperCase();
+    const poRate     = parseFloat(purchase.fx_rate_used || 0) || 0;
+    const toUsd = (unitPrice) => {
+      const c = parseFloat(unitPrice || 0) || 0;
+      if (c <= 0) return 0;
+      if (!poCurrency || poCurrency === 'USD') return c;
+      return poRate > 0 ? c / poRate : c;
+    };
     try {
       const branchDb = getTenantDb(branchSlug);
       const branchMovementAt = grnDate + ' ' + new Date().toTimeString().slice(0, 8);
-      const upd = branchDb.prepare(`
-        UPDATE products SET current_stock = current_stock + ?,
-                            updated_at    = datetime('now'),
-                            synced        = 0
+      // v1.10.55 — atomic UPDATE that bumps current_stock AND blends
+      // avg_cost_price in one statement. Uses the pre-update snapshot of
+      // both fields (SQLite evaluates the row RHS before applying the SET).
+      const updWithWac = branchDb.prepare(`
+        UPDATE products
+           SET current_stock  = current_stock + ?,
+               avg_cost_price = CASE
+                 WHEN avg_cost_price IS NULL OR current_stock <= 0
+                   THEN ?
+                 ELSE ROUND(
+                   (current_stock * avg_cost_price + ? * ?)
+                   / (current_stock + ?), 4)
+               END,
+               updated_at     = datetime('now'),
+               synced         = 0
          WHERE sync_id = ?
       `);
       const insMov = branchDb.prepare(`
@@ -710,7 +738,14 @@ router.post('/generate', hqAuth, (req, res) => {
         // We use the line's qty directly as base units for v1.10.0 — the
         // branch picker writes line.unit_conv-aware values, so this matches
         // what hqGrns.confirm did in the prior flow. Tighten later if needed.
-        upd.run(qty, prod.sync_id);
+        const deliveryCpUsd = toUsd(it.unit_price);
+        updWithWac.run(
+          qty,               // current_stock += qty
+          deliveryCpUsd,     // seed value when avg was NULL or stock was 0
+          qty, deliveryCpUsd,// numerator: received_qty × delivery_cp
+          qty,               // denominator adjust: + qty
+          prod.sync_id
+        );
         insMov.run(
           prod.id, prod.sync_id, 'sales', 'grn', qty,
           null, 'hq_grn', grnSyncId,
