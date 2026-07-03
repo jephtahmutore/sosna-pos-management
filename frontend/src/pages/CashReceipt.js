@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { getCashReceipts, getCashReceiptStats, createCashReceipt, updateCashReceipt, deleteCashReceipt, getSettings } from '../services/api';
+import { getCashReceipts, getCashReceiptStats, createCashReceipt, updateCashReceipt, deleteCashReceipt, getSettings, isHqHost } from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import { useCurrency } from '../context/CurrencyContext';
 import { useLanguage } from '../context/LanguageContext';
@@ -18,7 +18,15 @@ const todayStr = new Date().toISOString().split('T')[0];
 
 const CashReceipt = () => {
   const { hasPermission } = useAuth();
-  const { symbol: curSym, isLiquorStyle } = useCurrency();
+  const { symbol: curSym, isLiquorStyle: rawLiquorStyle } = useCurrency();
+  // v1.10.68 — HQ is Sosna's Head Office, not a Liquor branch. Regardless
+  // of how its tenant settings evaluate (currency_mode='K' +
+  // payment_methods='cash_momo_bank' would flip rawLiquorStyle to true),
+  // the CR modal here must offer a K / USD / FRA choice with K default —
+  // HQ collects K by default (branch deposits, transport, etc.) but also
+  // needs USD and FRA lanes for cross-currency inflows.
+  const onHq = isHqHost();
+  const isLiquorStyle = rawLiquorStyle && !onHq;
   const { t } = useLanguage();
   // v1.8.32 — per-currency totals. Backend returns today/month/total
   // breakdowns alongside the legacy USD-only fields.
@@ -143,11 +151,15 @@ const CashReceipt = () => {
       // badge is meaningful; the payload sums for amount + splits.
       const paymentMethod = isLiquorStyle
         ? (usd >= fra && usd >= k ? 'Cash' : fra >= k ? 'Mobile Money' : 'Bank Transfer')
-        : (usd > 0 ? 'USD' : fra > 0 ? 'FRA' : k > 0 ? 'K' : 'Cash');
+        : (k > 0 && onHq ? 'K' : usd > 0 ? 'USD' : fra > 0 ? 'FRA' : k > 0 ? 'K' : 'Cash');
       // v1.10.44 — on Liquor amount = usd+fra+k so the Cash Book ledger
-      // sums the full receipt total (not just Cash). Sosna keeps
-      // amount=usd only.
-      const totalAmt = isLiquorStyle ? (usd + fra + k) : usd;
+      // sums the full receipt total (not just Cash). Sosna Kassumbalesa
+      // keeps amount=usd only (dual-currency receipts book in USD).
+      // v1.10.68 — At HQ the receipt is single-currency (lock enforced) but
+      // could be K, USD, or FRA. Sum works out to the one filled slot,
+      // giving the Cash Book stat cards the correct headline number in
+      // whatever currency was received.
+      const totalAmt = (isLiquorStyle || onHq) ? (usd + fra + k) : usd;
       const payload = {
         received_from:  form.received_from.trim(),
         description:    form.description.trim(),
@@ -690,11 +702,18 @@ const CashReceipt = () => {
                         { key: 'fra_amount', label: 'Mobile Money', color: '#ea580c', step: '0.01', placeholder: '0.00', prefix: curSym },
                         { key: 'k_amount',   label: 'Bank',         color: '#2563eb', step: '0.01', placeholder: '0.00', prefix: curSym },
                       ]
-                    : [
-                        { key: 'usd_amount', label: 'USD ($)', color: '#16a34a', step: '0.01', placeholder: '0.00', prefix: '$' },
-                        { key: 'fra_amount', label: 'FRA',     color: '#7c3aed', step: '1',    placeholder: '0',    prefix: ''  },
-                        { key: 'k_amount',   label: 'K',       color: '#ea580c', step: '1',    placeholder: '0',    prefix: ''  },
-                      ]
+                    : onHq
+                      /* v1.10.68 — HQ order: K default (leftmost), then USD, then FRA. */
+                      ? [
+                          { key: 'k_amount',   label: 'K',       color: '#ea580c', step: '1',    placeholder: '0',    prefix: ''  },
+                          { key: 'usd_amount', label: 'USD ($)', color: '#16a34a', step: '0.01', placeholder: '0.00', prefix: '$' },
+                          { key: 'fra_amount', label: 'FRA',     color: '#7c3aed', step: '1',    placeholder: '0',    prefix: ''  },
+                        ]
+                      : [
+                          { key: 'usd_amount', label: 'USD ($)', color: '#16a34a', step: '0.01', placeholder: '0.00', prefix: '$' },
+                          { key: 'fra_amount', label: 'FRA',     color: '#7c3aed', step: '1',    placeholder: '0',    prefix: ''  },
+                          { key: 'k_amount',   label: 'K',       color: '#ea580c', step: '1',    placeholder: '0',    prefix: ''  },
+                        ]
                   ).map((f) => {
                     const otherKeys = ['usd_amount', 'fra_amount', 'k_amount'].filter(k => k !== f.key);
                     // Sosna keeps the one-currency-per-CR lock. Liquor drops it.
