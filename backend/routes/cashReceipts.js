@@ -97,9 +97,19 @@ router.post('/', auth, (req, res) => {
     const kAmt   = parseFloat(k_amount)   || 0;
     const sumCcy = usdAmt + fraAmt + kAmt;
     const sumLegacy = (parseFloat(cash_amount) || 0) + (parseFloat(bank_amount) || 0) + (parseFloat(momo_amount) || 0);
+    // v1.10.69 — when the client sent per-currency columns (sumCcy > 0)
+    // but NOT legacy method columns (sumLegacy = 0), do NOT derive the
+    // cash/bank/momo split from payment_method + amount. Doing so double-
+    // stored the money: e.g. HQ K CR with amount=25000, payment_method='K'
+    // would land in cash_amount=25000 (deriveCRSplits's Cash catch-all) on
+    // top of k_amount=25000, and Cash Book's usd_in fallback surfaced the
+    // cash_amount in the USD column. Zero out legacy fields when the
+    // per-currency payload is authoritative.
     const splits = sumLegacy > 0
       ? { cash: parseFloat(cash_amount) || 0, bank: parseFloat(bank_amount) || 0, momo: parseFloat(momo_amount) || 0 }
-      : deriveCRSplits(payment_method, amount);
+      : (sumCcy > 0
+          ? { cash: 0, bank: 0, momo: 0 }
+          : deriveCRSplits(payment_method, amount));
     // v1.10.46 — trust client's amount when both column sets are populated
     // (Liquor Cash-Report auto-CR path from v1.10.44). Otherwise fall back
     // to the pre-v1.10.46 clamp so Sosna single-currency behaviour is
@@ -146,9 +156,19 @@ router.put('/:id', auth, (req, res) => {
     const kAmt   = parseFloat(k_amount)   || 0;
     const sumCcy = usdAmt + fraAmt + kAmt;
     const sumLegacy = (parseFloat(cash_amount) || 0) + (parseFloat(bank_amount) || 0) + (parseFloat(momo_amount) || 0);
+    // v1.10.69 — when the client sent per-currency columns (sumCcy > 0)
+    // but NOT legacy method columns (sumLegacy = 0), do NOT derive the
+    // cash/bank/momo split from payment_method + amount. Doing so double-
+    // stored the money: e.g. HQ K CR with amount=25000, payment_method='K'
+    // would land in cash_amount=25000 (deriveCRSplits's Cash catch-all) on
+    // top of k_amount=25000, and Cash Book's usd_in fallback surfaced the
+    // cash_amount in the USD column. Zero out legacy fields when the
+    // per-currency payload is authoritative.
     const splits = sumLegacy > 0
       ? { cash: parseFloat(cash_amount) || 0, bank: parseFloat(bank_amount) || 0, momo: parseFloat(momo_amount) || 0 }
-      : deriveCRSplits(payment_method, amount);
+      : (sumCcy > 0
+          ? { cash: 0, bank: 0, momo: 0 }
+          : deriveCRSplits(payment_method, amount));
     // v1.10.46 — when the client explicitly sends BOTH the currency columns
     // and the method-split columns (Liquor from v1.10.44), it means all
     // three slots are the same currency and the client's `amount` is the
