@@ -717,7 +717,13 @@ const CashReceipt = () => {
                   ).map((f) => {
                     const otherKeys = ['usd_amount', 'fra_amount', 'k_amount'].filter(k => k !== f.key);
                     // Sosna keeps the one-currency-per-CR lock. Liquor drops it.
-                    const locked = !isLiquorStyle && otherKeys.some(k => parseFloat(form[k] || 0) > 0);
+                    // v1.10.70 — only lock EMPTY fields when another is filled;
+                    // fields that already carry a value stay editable. Without
+                    // this, a CR that landed with values in two slots (e.g.
+                    // v1.10.68's double-store bug) opened in Edit mode with
+                    // every slot locked — nothing could be corrected.
+                    const selfHasValue = parseFloat(form[f.key] || 0) > 0;
+                    const locked = !isLiquorStyle && !selfHasValue && otherKeys.some(k => parseFloat(form[k] || 0) > 0);
                     return (
                       <div key={f.key}>
                         <label style={{ fontSize: 11, color: locked ? '#cbd5e1' : f.color, fontWeight: 700, textTransform: 'uppercase', marginBottom: 3, display: 'block' }}>{f.label}{locked && ' (locked)'}</label>
