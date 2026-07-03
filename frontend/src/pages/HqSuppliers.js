@@ -297,12 +297,18 @@ function SupplierDetail({ data, onClose, onRefresh, flash }) {
           <button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 22, color: '#64748b' }}>×</button>
         </div>
         <div style={{ padding: 16, overflowY: 'auto', flex: 1 }}>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 10, marginBottom: 16 }}>
+          {/* v1.10.57 — 4 stats row: Purchases | Payments | Credits | Balance.
+              credits_total / credit_count come from the AP rewrite (GET /:id
+              now returns them). Record Payment button drops to its own row. */}
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 10, marginBottom: 10 }}>
             <Stat label="Purchases" value={fmtMoney(s.purchases_total)} sub={`${fmtInt(s.purchase_count)} rows`} />
             <Stat label="Payments"  value={fmtMoney(s.payments_total)}  sub={`${fmtInt(s.payment_count)} rows`} />
+            <Stat label="Credits"   value={fmtMoney(s.credits_total || 0)} sub={`${fmtInt(s.credit_count || 0)} rows`} />
             <Stat label="Balance"   value={fmtMoney(s.balance)} highlight={s.balance > 0.01} />
+          </div>
+          <div style={{ marginBottom: 16 }}>
             <button onClick={() => setPayOpen(true)}
-              style={{ padding: '12px', background: 'linear-gradient(135deg,#0ea5e9,#0369a1)', color: '#fff', border: 'none', borderRadius: 8, cursor: 'pointer', fontWeight: 700, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 6 }}>
+              style={{ width: '100%', padding: '12px', background: 'linear-gradient(135deg,#0ea5e9,#0369a1)', color: '#fff', border: 'none', borderRadius: 8, cursor: 'pointer', fontWeight: 700, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 6 }}>
               <FiPlus /> Record Payment
             </button>
           </div>
@@ -351,6 +357,47 @@ function SupplierDetail({ data, onClose, onRefresh, flash }) {
                         <FiX size={14} />
                       </button>
                     </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+
+          {/* v1.10.57 — Credit Notes section. Rows carrying grn_sync_id were
+              netted into that GRN's final_payable at GRN-generate time; rows
+              without grn_sync_id are the standalone CNs that also reduce the
+              AP balance. We flag which is which so operators can tell them
+              apart. */}
+          <h4 style={{ margin: '14px 0 8px 0', fontSize: 13, color: '#0f172a' }}>Credit Notes</h4>
+          {(!data.credits || data.credits.length === 0) ? (
+            <p style={{ color: '#94a3b8', fontStyle: 'italic', fontSize: 12 }}>No credit notes.</p>
+          ) : (
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+              <thead style={{ background: '#f8fafc' }}>
+                <tr>
+                  <th style={th}>CN #</th>
+                  <th style={th}>Date</th>
+                  <th style={th}>Reason</th>
+                  <th style={th}>Reference</th>
+                  <th style={th}>Linked GRN</th>
+                  <th style={{ ...th, textAlign: 'right' }}>Amount</th>
+                </tr>
+              </thead>
+              <tbody>
+                {data.credits.map(cn => (
+                  <tr key={cn.id} style={{ borderTop: '1px solid #f1f5f9' }}>
+                    <td style={{ ...td, fontFamily: 'monospace' }}>{cn.credit_note_number}</td>
+                    <td style={td}>{cn.date}</td>
+                    <td style={td}>{cn.reason}</td>
+                    <td style={td}>{cn.reference || '—'}</td>
+                    <td style={td}>
+                      {cn.grn_sync_id ? (
+                        <span style={{ display: 'inline-block', padding: '2px 6px', background: '#dbeafe', color: '#1e40af', borderRadius: 4, fontSize: 10.5, fontWeight: 700 }}>netted in GRN</span>
+                      ) : (
+                        <span style={{ display: 'inline-block', padding: '2px 6px', background: '#fef3c7', color: '#92400e', borderRadius: 4, fontSize: 10.5, fontWeight: 700 }}>standalone</span>
+                      )}
+                    </td>
+                    <td style={{ ...td, textAlign: 'right', fontWeight: 700, color: '#b45309' }}>{fmtMoney(cn.amount)}</td>
                   </tr>
                 ))}
               </tbody>
