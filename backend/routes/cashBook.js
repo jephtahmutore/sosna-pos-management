@@ -250,12 +250,20 @@ router.get('/', auth, readOnlyGuard, (req, res) => {
             THEN COALESCE(supplier_name, '') || ' — ' || description
           ELSE COALESCE(supplier_name, 'Supplier Payment')
         END AS description,
-        0 AS receipt_amount, amount AS payment_amount,
+        0 AS receipt_amount,
+        -- v1.10.79 — payment_amount is the LEGACY USD-equivalent running-
+        -- balance driver. When the triple-currency split is present, use
+        -- usd_amount only. Prior to this the whole amount column
+        -- (K32,000 for a K-only supplier payment) got subtracted from
+        -- the USD running balance, driving it artificially negative.
+        -- Legacy rows fall back to amount for backward compat.
+        CASE WHEN (COALESCE(usd_amount,0) + COALESCE(fra_amount,0) + COALESCE(k_amount,0)) > 0
+          THEN COALESCE(usd_amount, 0)
+          ELSE amount END AS payment_amount,
         0 AS usd_in, 0 AS fra_in, 0 AS k_in,
-        -- v1.10.78 — split AP by currency when the triple-ccy columns are
-        -- populated (HQ from v1.10.78). Legacy rows (amount only, ccy
-        -- columns 0) fall back to k_out per the v1.10.77 K-primary
-        -- default for supplier payments.
+        -- v1.10.78 — split by currency when the triple-ccy columns are
+        -- populated (HQ from v1.10.78). Legacy rows fall back to k_out
+        -- per the v1.10.77 K-primary default for supplier payments.
         COALESCE(usd_amount, 0) AS usd_out,
         COALESCE(fra_amount, 0) AS fra_out,
         CASE WHEN (COALESCE(usd_amount,0) + COALESCE(fra_amount,0) + COALESCE(k_amount,0)) > 0
