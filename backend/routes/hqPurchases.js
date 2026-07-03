@@ -66,11 +66,38 @@ function destinationName(slug) {
 // branch products can be linked by passing their sync_id.
 router.post('/', hqAuth, (req, res) => {
   try {
-    const { supplier_id, supplier_name, invoice_number, date, notes, items } = req.body || {};
+    const { supplier_id, supplier_name, invoice_number, date, notes, items,
+            cost_currency, fx_rate_used } = req.body || {};
     if (!date) return res.status(400).json({ error: 'date is required' });
     if (!Array.isArray(items) || items.length === 0) {
       return res.status(400).json({ error: 'At least one item required' });
     }
+
+    // v1.10.54 — FX rate at PO Create (WAC redesign push 2).
+    // Rate is captured HERE, one rate for the whole PO, per user's
+    // 2026-07-03 design memo. Validation is soft: if the caller sends
+    // cost_currency + fx_rate_used they must both be sane, but sending
+    // neither is fine (frontend gates the requirement based on whether
+    // any destination line targets a tri-currency branch — the backend
+    // just trusts what it receives).
+    const VALID_CCY = new Set(['USD', 'FRA', 'K']);
+    const ccy  = cost_currency ? String(cost_currency).toUpperCase() : null;
+    const rate = fx_rate_used  ? parseFloat(fx_rate_used) : null;
+    if (ccy && !VALID_CCY.has(ccy)) {
+      return res.status(400).json({ error: `cost_currency must be one of USD, FRA, K` });
+    }
+    if (ccy && ccy !== 'USD' && !(rate > 0)) {
+      return res.status(400).json({ error: `fx_rate_used > 0 is required when cost_currency is ${ccy}` });
+    }
+    // Convert helper: local cost → USD equivalent, using the PO rate.
+    // USD stays 1:1. FRA/K divide by the rate. NULL rate on non-USD
+    // shouldn't happen (we validated above) but we guard with 0 → NULL.
+    const toUsd = (localCost) => {
+      const c = parseFloat(localCost || 0) || 0;
+      if (c <= 0) return 0;
+      if (!ccy || ccy === 'USD') return c;
+      return rate > 0 ? c / rate : null;
+    };
 
     // Validate items + compute total. Every line must have qty>0 and a
     // registered destination_slug — HQ can't dispatch to a non-tenant.
@@ -93,6 +120,7 @@ router.post('/', hqAuth, (req, res) => {
         unit:             it.unit || null,
         dispatched_qty:   qty,
         cost_price:       cost,
+        cost_price_usd:   toUsd(cost),
         line_total:       qty * cost,
         destination_slug: dest,
         destination_name: destinationName(dest),
@@ -108,13 +136,16 @@ router.post('/', hqAuth, (req, res) => {
     masterDb.transaction(() => {
       const insHdr = masterDb.prepare(`
         INSERT INTO hq_purchases (purchase_number, sync_id, supplier_id, supplier_name, invoice_number,
-                                  date, total_amount, notes, status, created_by, created_by_name)
-        VALUES (?,?,?,?,?,?,?,?,'OPEN',?,?)
+                                  date, total_amount, notes, status,
+                                  cost_currency, fx_rate_used,
+                                  created_by, created_by_name)
+        VALUES (?,?,?,?,?,?,?,?,'OPEN',?,?,?,?)
       `).run(
         purchaseNumber, syncId,
         supplier_id || null,
         supplier_name || null, invoice_number || null,
         date, totalAmount, notes || null,
+        ccy, rate,
         createdBy, createdByName
       );
       const purchaseId = insHdr.lastInsertRowid;
@@ -122,15 +153,15 @@ router.post('/', hqAuth, (req, res) => {
       const insItem = masterDb.prepare(`
         INSERT INTO hq_purchase_items (purchase_id, purchase_sync_id, sync_id,
                                        product_sync_id, product_name, unit,
-                                       dispatched_qty, cost_price, line_total,
+                                       dispatched_qty, cost_price, cost_price_usd, line_total,
                                        destination_slug, destination_name, status)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,'AWAITING_GRN')
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,'AWAITING_GRN')
       `);
       for (const it of clean) {
         insItem.run(
           purchaseId, syncId, randomUUID(),
           it.product_sync_id, it.product_name, it.unit,
-          it.dispatched_qty, it.cost_price, it.line_total,
+          it.dispatched_qty, it.cost_price, it.cost_price_usd, it.line_total,
           it.destination_slug, it.destination_name
         );
       }

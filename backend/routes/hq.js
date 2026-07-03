@@ -46,18 +46,30 @@ function tryGet(db, sql, params = []) {
 }
 
 // GET /api/hq/branches — list registered tenants for the HQ login picker.
-// Returns at most slug + business_name. Anything that would help an
-// attacker target a specific branch (status counts, license expiry, etc.)
-// stays out — that's tenantAdmin territory.
+// Returns at most slug + business_name + currency_mode. Anything that
+// would help an attacker target a specific branch (status counts,
+// license expiry, etc.) stays out — that's tenantAdmin territory.
+// v1.10.54 — currency_mode added so the HQ Purchase / Send Transfer
+// modals can decide whether to prompt for an FX rate. K-only branches
+// (Mansa, Lusaka) get no prompt; tri-currency (Kassumbalesa) requires
+// one rate per whole PO / transfer. Read once per branch DB, cheap.
 router.get('/branches', (req, res) => {
   try {
     const rows = listTenants();
-    res.json({
-      branches: rows.map(r => ({
+    const enriched = rows.map(r => {
+      let currencyMode = 'K';
+      try {
+        const db = getTenantDb(r.slug);
+        const s = db.prepare(`SELECT currency_mode FROM business_settings ORDER BY id ASC LIMIT 1`).get();
+        if (s?.currency_mode) currencyMode = String(s.currency_mode).toUpperCase();
+      } catch { /* branch DB unavailable — default K */ }
+      return {
         slug: r.slug,
         name: r.business_name || r.slug,
-      })),
+        currency_mode: currencyMode,
+      };
     });
+    res.json({ branches: enriched });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }

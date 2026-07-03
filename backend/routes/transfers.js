@@ -167,9 +167,32 @@ function parseItems(row) {
 // and we'll restore the stock (see /cancel below).
 router.post('/', hqAuth, (req, res) => {
   try {
-    const { from_slug, to_slug, items, notes } = req.body || {};
+    const { from_slug, to_slug, items, notes,
+            cost_currency, fx_rate_used } = req.body || {};
     const fromSlug = String(from_slug || '').toLowerCase();
     const toSlug   = String(to_slug   || '').toLowerCase();
+    // v1.10.54 — WAC redesign push 2: FX rate at Send time.
+    // One rate per whole transfer, per user's 2026-07-03 memo. Backend
+    // just accepts + stores; the frontend gates the requirement based on
+    // whether the destination is a tri-currency branch.
+    const VALID_CCY = new Set(['USD', 'FRA', 'K']);
+    const ccy  = cost_currency ? String(cost_currency).toUpperCase() : null;
+    const rate = fx_rate_used  ? parseFloat(fx_rate_used) : null;
+    if (ccy && !VALID_CCY.has(ccy)) {
+      return res.status(400).json({ error: 'cost_currency must be one of USD, FRA, K' });
+    }
+    if (ccy && ccy !== 'USD' && !(rate > 0)) {
+      return res.status(400).json({ error: `fx_rate_used > 0 is required when cost_currency is ${ccy}` });
+    }
+    // Convert helper: local cost → USD equivalent using this transfer's
+    // rate. USD stays 1:1. Stored on each item inside items_json so read
+    // paths can pull the pre-computed USD value without re-doing math.
+    const toUsd = (localCost) => {
+      const c = parseFloat(localCost || 0) || 0;
+      if (c <= 0) return 0;
+      if (!ccy || ccy === 'USD') return c;
+      return rate > 0 ? c / rate : null;
+    };
     if (!fromSlug || !toSlug) return res.status(400).json({ error: 'from_slug and to_slug are required' });
     if (fromSlug === toSlug)  return res.status(400).json({ error: 'Source and destination must differ' });
     if (!isRegistered(fromSlug)) return res.status(400).json({ error: `Source branch "${fromSlug}" not registered` });
@@ -193,6 +216,11 @@ router.post('/', hqAuth, (req, res) => {
         unit:            it.unit || null,
         quantity:        qty,
         cost_price:      cost,
+        // v1.10.54 — USD equivalent baked in at Send time so /receive
+        // can blend WAC without re-consulting rate math. Same value
+        // regardless of whether destination is tri-currency; on K-only
+        // destinations it's ignored during blend (cost stays in K).
+        cost_price_usd:  toUsd(cost),
       });
       totalValue += qty * cost;
     }
@@ -255,8 +283,9 @@ router.post('/', hqAuth, (req, res) => {
     masterDb.prepare(`
       INSERT INTO stock_transfers (transfer_number, sync_id, from_slug, from_name, to_slug, to_name,
                                    items_json, total_items, total_value, notes,
+                                   cost_currency, fx_rate_used,
                                    status, created_by, created_by_name)
-      VALUES (?,?,?,?,?,?,?,?,?,?, 'PENDING', ?, ?)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?, 'PENDING', ?, ?)
     `).run(
       transferNumber, transferSyncId,
       fromSlug, branchName(fromSlug),
@@ -265,6 +294,7 @@ router.post('/', hqAuth, (req, res) => {
       cleanItems.length,
       totalValue,
       notes || null,
+      ccy, rate,
       createdBy, createdByName
     );
 

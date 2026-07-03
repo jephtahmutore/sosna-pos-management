@@ -376,6 +376,17 @@ function CreateTransferModal({ sourceSlug, branches, onClose, onCreated, onError
   const [cart, setCart] = useState({}); // { product_sync_id: { product, qty } }
   const [notes, setNotes] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  // v1.10.54 — WAC redesign push 2: one FX rate per whole transfer.
+  // Same shape as the HQ PO modal. Required when destination is
+  // tri-currency (USD+FRA / USD+FRA+K), skipped on K-only branches.
+  const [costCurrency, setCostCurrency] = useState('');
+  const [fxRate, setFxRate] = useState('');
+  const destBranch = branches.find(b => b.slug === toSlug);
+  const destIsTriCcy = (() => {
+    const cm = String(destBranch?.currency_mode || 'K').toUpperCase();
+    return cm === 'USD+FRA' || cm === 'USD+FRA+K';
+  })();
+  useEffect(() => { setCostCurrency(''); setFxRate(''); }, [toSlug]);
 
   useEffect(() => {
     getTransferSourceProducts(sourceSlug)
@@ -425,12 +436,24 @@ function CreateTransferModal({ sourceSlug, branches, onClose, onCreated, onError
   const submit = async () => {
     if (!toSlug)          return onError('Pick a destination branch');
     if (cartItems.length === 0) return onError('Add at least one product');
+    // v1.10.54 — validate FX inputs when destination is tri-currency.
+    if (destIsTriCcy) {
+      if (!costCurrency) return onError('Pick the source cost currency (destination is tri-currency).');
+      if (costCurrency !== 'USD' && !(parseFloat(fxRate) > 0)) {
+        return onError(`Enter the FX rate: 1 USD = ? ${costCurrency}`);
+      }
+    }
     setSubmitting(true);
     try {
       await createTransfer({
         from_slug: sourceSlug,
         to_slug:   toSlug,
         notes,
+        // v1.10.54 — only send FX fields when destination is tri-currency;
+        // K-only destinations omit them so backend stores NULL.
+        ...(destIsTriCcy && costCurrency
+          ? { cost_currency: costCurrency, fx_rate_used: costCurrency === 'USD' ? 1 : parseFloat(fxRate) }
+          : {}),
         items: cartItems.map(x => ({
           product_sync_id: x.product.sync_id,
           product_name:    x.product.name,
@@ -478,6 +501,41 @@ function CreateTransferModal({ sourceSlug, branches, onClose, onCreated, onError
               <input type="text" value={notes} onChange={e => setNotes(e.target.value)} placeholder="Truck #, driver, etc." style={inp} />
             </div>
           </div>
+
+          {/* v1.10.54 — WAC redesign push 2: FX rate row.
+              Only rendered when destination is a tri-currency branch. One
+              rate applies to every line on this transfer and is used at
+              /receive time to blend delivery CP into destination WAC. */}
+          {destIsTriCcy && (
+            <div style={{ marginBottom: 14, padding: '10px 12px', background: '#fef3c7', border: '1px solid #fcd34d', borderRadius: 8 }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: '#78350f', textTransform: 'uppercase', letterSpacing: 0.4, marginBottom: 8 }}>
+                FX Rate (required — destination is tri-currency)
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+                <div>
+                  <label style={lbl}>Cost currency at source <span style={{ color: '#dc2626' }}>*</span></label>
+                  <select value={costCurrency} onChange={e => setCostCurrency(e.target.value)} style={inp}>
+                    <option value="">— currency —</option>
+                    <option value="USD">USD ($)</option>
+                    <option value="K">K (Kwacha)</option>
+                    <option value="FRA">FRA</option>
+                  </select>
+                </div>
+                <div>
+                  <label style={lbl}>1 USD = <span style={{ color: '#dc2626' }}>*</span></label>
+                  <input type="number" min="0" step="0.0001"
+                    value={fxRate}
+                    onChange={e => setFxRate(e.target.value)}
+                    disabled={!costCurrency || costCurrency === 'USD'}
+                    placeholder={costCurrency === 'USD' ? 'n/a — USD already' : costCurrency === 'K' ? 'e.g. 25' : costCurrency === 'FRA' ? 'e.g. 2250' : ''}
+                    style={{ ...inp, background: (!costCurrency || costCurrency === 'USD') ? '#f9fafb' : '#fff' }} />
+                </div>
+              </div>
+              <div style={{ fontSize: 10.5, color: '#78350f', marginTop: 6, fontStyle: 'italic' }}>
+                One rate locks the whole transfer. Used to convert source cost → USD for the destination's WAC.
+              </div>
+            </div>
+          )}
 
           <div style={{ display: 'grid', gridTemplateColumns: '1.4fr 1fr', gap: 14 }}>
             {/* Product picker */}
