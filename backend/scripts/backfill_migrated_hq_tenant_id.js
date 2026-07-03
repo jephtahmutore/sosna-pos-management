@@ -32,28 +32,43 @@ function main() {
   const hqDb = getTenantDb(hqSlug);
   if (!hqDb) { console.error(`HQ tenant DB not accessible at slug "${hqSlug}"`); process.exit(1); }
 
-  // Try to resolve tenant_id from any table that has a non-NULL row.
-  // Falls back to the tenants master row's id if nothing else has it.
-  const candidates = [
-    `SELECT tenant_id FROM cash_receipts    WHERE tenant_id IS NOT NULL LIMIT 1`,
-    `SELECT tenant_id FROM payment_vouchers WHERE tenant_id IS NOT NULL LIMIT 1`,
-    `SELECT tenant_id FROM ap_payments      WHERE tenant_id IS NOT NULL LIMIT 1`,
-    `SELECT tenant_id FROM orders           WHERE tenant_id IS NOT NULL LIMIT 1`,
-    `SELECT tenant_id FROM products         WHERE tenant_id IS NOT NULL LIMIT 1`,
-    `SELECT tenant_id FROM users            WHERE tenant_id IS NOT NULL LIMIT 1`,
-  ];
+  // v1.10.75 hotfix#2 — resolve tenant_id from THREE places:
+  // 1. sync_config table (the definitive source — routes/auth.js reads
+  //    key = "tenant:<slug>" to build the JWT's tenantId).
+  // 2. Any existing row that already has a tenant_id set.
+  // 3. Master.tenants.id for this slug as a last-resort fallback.
   let tenantId = null;
-  for (const sql of candidates) {
-    try {
-      const r = hqDb.prepare(sql).get();
-      if (r && r.tenant_id) { tenantId = r.tenant_id; break; }
-    } catch (_) { /* table may not exist yet */ }
+  try {
+    const row = hqDb.prepare(`SELECT value FROM sync_config WHERE key = ?`).get(`tenant:${hqSlug}`);
+    if (row && row.value) tenantId = row.value;
+  } catch (_) { /* sync_config may not exist */ }
+  if (!tenantId) {
+    for (const sql of [
+      `SELECT tenant_id FROM cash_receipts    WHERE tenant_id IS NOT NULL LIMIT 1`,
+      `SELECT tenant_id FROM payment_vouchers WHERE tenant_id IS NOT NULL LIMIT 1`,
+      `SELECT tenant_id FROM ap_payments      WHERE tenant_id IS NOT NULL LIMIT 1`,
+      `SELECT tenant_id FROM orders           WHERE tenant_id IS NOT NULL LIMIT 1`,
+      `SELECT tenant_id FROM products         WHERE tenant_id IS NOT NULL LIMIT 1`,
+      `SELECT tenant_id FROM users            WHERE tenant_id IS NOT NULL LIMIT 1`,
+    ]) {
+      try {
+        const r = hqDb.prepare(sql).get();
+        if (r && r.tenant_id) { tenantId = r.tenant_id; break; }
+      } catch (_) { /* table may not exist */ }
+    }
   }
   if (!tenantId) {
-    console.error('Could not resolve HQ tenant_id from any existing row.');
-    console.error('If this is a fresh HQ install with no CRs/PVs/etc.,');
-    console.error('log in once via the web UI (which stamps the JWT tenant_id');
-    console.error('onto the next write), then re-run this script.');
+    // Last resort — pull the tenant id from master.tenants for this slug.
+    try {
+      const { masterDb } = require('../config/masterDb');
+      const r = masterDb?.prepare(`SELECT id FROM tenants WHERE slug = ? LIMIT 1`).get(hqSlug);
+      if (r && r.id) tenantId = String(r.id);
+    } catch (_) { /* skip */ }
+  }
+  if (!tenantId) {
+    console.error('Could not resolve HQ tenant_id.');
+    console.error('Try: sqlite3 tenants/hq.db "SELECT * FROM sync_config WHERE key LIKE \\'tenant:%\\'"');
+    console.error('and paste the value back — we can hard-code it.');
     process.exit(1);
   }
   console.log(`HQ tenant_id resolved: ${tenantId}`);
