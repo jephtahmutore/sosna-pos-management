@@ -67,8 +67,8 @@ function main() {
   }
   if (!tenantId) {
     console.error('Could not resolve HQ tenant_id.');
-    console.error('Try: sqlite3 tenants/hq.db "SELECT * FROM sync_config WHERE key LIKE \\'tenant:%\\'"');
-    console.error('and paste the value back — we can hard-code it.');
+    console.error("Try: sqlite3 tenants/hq.db \"SELECT * FROM sync_config\"");
+    console.error('and paste the output back — we can hard-code it.');
     process.exit(1);
   }
   console.log(`HQ tenant_id resolved: ${tenantId}`);
