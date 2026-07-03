@@ -400,17 +400,23 @@ router.get('/', auth, readOnlyGuard, (req, res) => {
           const incoming = masterDb.prepare(`
             SELECT deposit_number, currency, amount,
                    COALESCE(deposit_date, date(COALESCE(confirmed_at, created_at))) AS date,
-                   from_name, notes
+                   from_slug, from_name, notes
               FROM cash_deposits
              WHERE status = 'CONFIRMED'${depDateFilter}
           `).all(...depParams);
           for (const r of incoming) {
             const amt = parseFloat(r.amount);
+            // v1.10.80 — Option A: slug in parens after the trading name.
+            // Skip the paren when name is missing or already equals the
+            // slug (avoids "lusaka1 (lusaka1)" noise).
+            const nameLbl = r.from_name && r.from_name.toLowerCase() !== String(r.from_slug || '').toLowerCase()
+              ? `${r.from_name} (${r.from_slug})`
+              : (r.from_slug || r.from_name || 'branch');
             depEntries.push({
               date: r.date,
               type: 'DEP-IN',
               reference: r.deposit_number,
-              description: `Deposit from ${r.from_name || 'branch'} — ${r.currency} ${Math.round(amt).toLocaleString()}${r.notes ? ` (${r.notes})` : ''}`,
+              description: `Deposit from ${nameLbl} — ${r.currency} ${Math.round(amt).toLocaleString()}${r.notes ? ` (${r.notes})` : ''}`,
               receipt_amount: r.currency === 'USD' ? amt : 0,
               payment_amount: 0,
               currency: r.currency,
