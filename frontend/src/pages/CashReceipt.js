@@ -403,15 +403,19 @@ const CashReceipt = () => {
                 // aggregator, so the old legacy-fallback ternary here would
                 // count MoMo twice — once as `fra_amount`, once as
                 // `momo_amount` — turning a K33,105 receipt into K59,510.
-                const ru = isLiquorStyle
-                  ? parseFloat(r.usd_amount || 0)
-                  : (parseFloat(r.usd_amount) > 0 ? parseFloat(r.usd_amount) : parseFloat(r.cash_amount || 0));
-                const rf = isLiquorStyle
-                  ? parseFloat(r.fra_amount || 0)
-                  : (parseFloat(r.fra_amount) > 0 ? parseFloat(r.fra_amount) : parseFloat(r.bank_amount || 0));
-                const rk = isLiquorStyle
-                  ? parseFloat(r.k_amount || 0)
-                  : (parseFloat(r.k_amount)   > 0 ? parseFloat(r.k_amount)   : parseFloat(r.momo_amount || 0));
+                // v1.10.74 — on Liquor, an AR-payment CR (minted by
+                // customerPayments.js) populates only legacy cash/bank/momo,
+                // not the usd/fra/k mirror — so the row would render blank
+                // if we read usd_amount alone. Fall back to the legacy
+                // columns when the mirror is empty. Manual Liquor CRs
+                // (from CashReceipt POST) fill BOTH sets, so this fallback
+                // is a no-op for them — the Cash Book aggregator's
+                // double-count fear from v1.10.46 no longer applies because
+                // we prefer the mirror when it's non-zero.
+                const pf = (v) => parseFloat(v || 0) || 0;
+                const ru = pf(r.usd_amount) > 0 ? pf(r.usd_amount) : pf(r.cash_amount);
+                const rf = pf(r.fra_amount) > 0 ? pf(r.fra_amount) : pf(isLiquorStyle ? r.momo_amount : r.bank_amount);
+                const rk = pf(r.k_amount)   > 0 ? pf(r.k_amount)   : pf(isLiquorStyle ? r.bank_amount : r.momo_amount);
                 const dash = <span style={{ color: '#cbd5e1' }}>—</span>;
                 // v1.10.45 — Liquor total = sum of the three slots (all K).
                 const liquorTotal = ru + rf + rk;
@@ -478,9 +482,14 @@ const CashReceipt = () => {
                   // v1.10.46 — same currency-column-direct read as the row
                   // cell above. Without this the footer would triple-count
                   // on Liquor (double-count per row × N rows).
-                  const pickU = (r) => isLiquorStyle ? parseFloat(r.usd_amount || 0) : (parseFloat(r.usd_amount) > 0 ? parseFloat(r.usd_amount) : parseFloat(r.cash_amount || 0));
-                  const pickF = (r) => isLiquorStyle ? parseFloat(r.fra_amount || 0) : (parseFloat(r.fra_amount) > 0 ? parseFloat(r.fra_amount) : parseFloat(r.bank_amount || 0));
-                  const pickK = (r) => isLiquorStyle ? parseFloat(r.k_amount   || 0) : (parseFloat(r.k_amount)   > 0 ? parseFloat(r.k_amount)   : parseFloat(r.momo_amount || 0));
+                  // v1.10.74 — same fallback shape as the row cells above:
+                  // prefer usd/fra/k when populated, else fall back to the
+                  // legacy cash/bank/momo columns (which is what
+                  // customerPayments.js's mintReceipt fills on Liquor AR).
+                  const pf = (v) => parseFloat(v || 0) || 0;
+                  const pickU = (r) => pf(r.usd_amount) > 0 ? pf(r.usd_amount) : pf(r.cash_amount);
+                  const pickF = (r) => pf(r.fra_amount) > 0 ? pf(r.fra_amount) : pf(isLiquorStyle ? r.momo_amount : r.bank_amount);
+                  const pickK = (r) => pf(r.k_amount)   > 0 ? pf(r.k_amount)   : pf(isLiquorStyle ? r.bank_amount : r.momo_amount);
                   const tu = filteredReceipts.reduce((s, r) => s + pickU(r), 0);
                   const tf = filteredReceipts.reduce((s, r) => s + pickF(r), 0);
                   const tk = filteredReceipts.reduce((s, r) => s + pickK(r), 0);

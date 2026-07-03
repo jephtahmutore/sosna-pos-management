@@ -267,20 +267,43 @@ const AccountReceivables = () => {
     const kAsUsd   = sellRateK > 0 ? kAmt / sellRateK : 0;
     const totalUsd = usd + fraAsUsd + kAsUsd;
     if (!(totalUsd > 0)) { showToast('Enter at least one currency > 0', 'error'); return; }
-    if (fra > 0 && !(sellRate > 0))  { showToast('FRA Sell rate is required', 'error'); return; }
-    if (kAmt > 0 && !(sellRateK > 0)){ showToast('K Sell rate is required', 'error'); return; }
+    if (!isLiquorStyle && fra > 0 && !(sellRate > 0))  { showToast('FRA Sell rate is required', 'error'); return; }
+    if (!isLiquorStyle && kAmt > 0 && !(sellRateK > 0)){ showToast('K Sell rate is required', 'error'); return; }
     try {
-      await createCustomerPayment({
-        customer_id: paymentModal.customer.id,
-        usd_amount: usd,
-        fra_amount: fra,
-        k_amount:   kAmt,
-        selling_rate_used:   isDual ? sellRate   : null,
-        selling_rate_k_used: hasK   ? sellRateK  : null,
-        payment_date: paymentForm.payment_date,
-        reference:    paymentForm.reference,
-        notes:        paymentForm.notes,
-      });
+      // v1.10.74 — on Liquor branches, the three fields ARE the payment
+      // methods (Cash / Mobile Money / Bank) in native K. Send them as
+      // legacy cash_amount / bank_amount / momo_amount so the backend
+      // labels the payment method correctly (Cash/Bank/Mobile Money
+      // instead of the wrong 'USD'/'FRA'/'K') AND the minted cash_receipt
+      // populates the columns Cash Book already reads. Sosna keeps the
+      // triple-currency shape with FX rates.
+      const payload = isLiquorStyle
+        ? {
+            customer_id: paymentModal.customer.id,
+            // Under the Liquor convention Cash → cash_amount,
+            // Mobile Money → momo_amount, Bank → bank_amount. The frontend
+            // fields still carry those values under the usd_/fra_/k_ keys
+            // (kept for schema symmetry with Sosna), but the payload maps
+            // them to legacy method columns.
+            cash_amount: usd,
+            momo_amount: fra,
+            bank_amount: kAmt,
+            payment_date: paymentForm.payment_date,
+            reference:    paymentForm.reference,
+            notes:        paymentForm.notes,
+          }
+        : {
+            customer_id: paymentModal.customer.id,
+            usd_amount: usd,
+            fra_amount: fra,
+            k_amount:   kAmt,
+            selling_rate_used:   isDual ? sellRate   : null,
+            selling_rate_k_used: hasK   ? sellRateK  : null,
+            payment_date: paymentForm.payment_date,
+            reference:    paymentForm.reference,
+            notes:        paymentForm.notes,
+          };
+      await createCustomerPayment(payload);
       setPaymentModal(null);
       await fetchAll();
       showToast('Payment recorded — Cash Receipt issued');
