@@ -33,7 +33,7 @@ const statusBadge = (status) => {
 
 const AccountReceivables = () => {
   const { hasPermission, user: authUser } = useAuth();
-  const { symbol: curSym, currencyMode } = useCurrency();
+  const { symbol: curSym, currencyMode, isLiquorStyle } = useCurrency();
   const { t } = useLanguage();
   // v1.8.55 — Sosna triple-currency gating + live FX rates for AR receipts.
   const isDual = currencyMode === 'USD+FRA' || currencyMode === 'USD+FRA+K';
@@ -576,8 +576,9 @@ const AccountReceivables = () => {
             </div>
             <div style={{ padding: 22, display: 'grid', gap: 12 }}>
               {/* v1.8.56 — per-receipt FX rate (defaults to live rate, editable).
-                  Only shown when FRA or K is enabled for this tenant. */}
-              {(isDual || hasK) && (
+                  Only shown when FRA or K is enabled for this tenant.
+                  v1.10.73 — hidden on Liquor branches (K-only, native, no FX). */}
+              {!isLiquorStyle && (isDual || hasK) && (
                 <div style={{ background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 8, padding: 12 }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
                     <div style={{ fontSize: 11, fontWeight: 700, color: '#92400e', textTransform: 'uppercase', letterSpacing: 0.4 }}>FX Rate for this receipt</div>
@@ -614,14 +615,28 @@ const AccountReceivables = () => {
                 </div>
               )}
 
-              {/* v1.8.55 — Triple-currency receipt: USD / FRA / K (no Bank/MoMo on Sosna). */}
-              <div style={{ fontSize: 11, fontWeight: 700, color: '#6b7280', textTransform: 'uppercase', letterSpacing: 0.5 }}>Amount Paid (split across currencies)</div>
+              {/* v1.8.55 — Sosna triple-currency receipt: USD / FRA / K.
+                  v1.10.73 — Liquor branches show Cash / Mobile Money / Bank
+                  instead (all in native K, no FX). Same field-to-column
+                  mapping as CashReceipt.js: Cash→usd_amount,
+                  MoMo→fra_amount, Bank→k_amount — keeps the receipt row
+                  compatible with the existing customer_payments schema and
+                  Cash Book split logic. */}
+              <div style={{ fontSize: 11, fontWeight: 700, color: '#6b7280', textTransform: 'uppercase', letterSpacing: 0.5 }}>
+                Amount Paid{isLiquorStyle ? ' (split across methods)' : ' (split across currencies)'}
+              </div>
               {(() => {
-                const fields = [
-                  { key: 'usd_amount', label: 'USD', color: '#16a34a', step: '0.01', placeholder: '0.00', show: true },
-                  { key: 'fra_amount', label: 'FRA', color: '#2563eb', step: '1',    placeholder: '0',    show: isDual },
-                  { key: 'k_amount',   label: 'K',   color: '#7c3aed', step: '1',    placeholder: '0',    show: hasK   },
-                ].filter(f => f.show);
+                const fields = isLiquorStyle
+                  ? [
+                      { key: 'usd_amount', label: 'Cash',         color: '#16a34a', step: '0.01', placeholder: '0.00', show: true },
+                      { key: 'fra_amount', label: 'Mobile Money', color: '#ea580c', step: '0.01', placeholder: '0.00', show: true },
+                      { key: 'k_amount',   label: 'Bank',         color: '#2563eb', step: '0.01', placeholder: '0.00', show: true },
+                    ]
+                  : [
+                      { key: 'usd_amount', label: 'USD', color: '#16a34a', step: '0.01', placeholder: '0.00', show: true },
+                      { key: 'fra_amount', label: 'FRA', color: '#2563eb', step: '1',    placeholder: '0',    show: isDual },
+                      { key: 'k_amount',   label: 'K',   color: '#7c3aed', step: '1',    placeholder: '0',    show: hasK   },
+                    ].filter(f => f.show);
                 const cols = `repeat(${fields.length}, 1fr)`;
                 return (
                   <div style={{ display: 'grid', gridTemplateColumns: cols, gap: 10 }}>
@@ -642,6 +657,18 @@ const AccountReceivables = () => {
                 const usd = parseFloat(paymentForm.usd_amount || 0) || 0;
                 const fra = parseFloat(paymentForm.fra_amount || 0) || 0;
                 const kAmt= parseFloat(paymentForm.k_amount   || 0) || 0;
+                // v1.10.73 — Liquor: all three fields are native K, just sum
+                // them and display with tenant symbol. Sosna: convert
+                // FRA + K → USD via the receipt's FX rate.
+                if (isLiquorStyle) {
+                  const totalK = usd + fra + kAmt;
+                  return (
+                    <div style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 10px', background: '#f9fafb', borderRadius: 6, fontSize: 13 }}>
+                      <span style={{ color: '#6b7280' }}>Total</span>
+                      <span style={{ fontWeight: 800, color: totalK > 0 ? '#1d4ed8' : '#9ca3af' }}>{fmt(totalK)}</span>
+                    </div>
+                  );
+                }
                 const sellRate  = parseFloat(paymentForm.sell_rate   || 0) || 0;
                 const sellRateK = parseFloat(paymentForm.sell_rate_k || 0) || 0;
                 const fraAsUsd = sellRate  > 0 ? fra  / sellRate  : 0;
