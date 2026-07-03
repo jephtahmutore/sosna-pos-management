@@ -468,16 +468,23 @@ const CashBook = () => {
 
           if (isLiquorStyle) {
             // v1.10.50 — Liquor branches (Mansa, Lusaka) render this as
-            // "Cash & Cash Equivalent" to match the old Liquor system
-            // (Alaskal) terminology the user asked for. Since Liquor is
-            // K-only across all three methods (Cash / MoMo / Bank), the
-            // roll-up is just the arithmetic sum — no FX conversion needed.
-            // Storage mapping (per v1.10.31): Cash → usd_amount,
-            // MoMo → fra_amount, Bank → k_amount. So currentByCcy already
-            // holds the three method balances directly, and their sum is
-            // the total K in the branch.
-            const cashEqNow  = usdNow  + fraNow  + kNow;
-            const cashEqOpen = usdOpen + fraOpen + kOpen;
+            // "Cash & Cash Equivalent" to match the old Liquor system.
+            // v1.10.51 — read currentByMethod (same source the three
+            // method tiles below use) instead of currentByCcy. On Sosna
+            // POS, every sale hits BOTH orders.cash_received and
+            // cash_receipts.usd_amount — currentByCcy counts both and
+            // double-counts POS sales, so a "no filter" view drifted
+            // above the three-tile sum by whatever the POS orders total
+            // was. currentByMethod reads only cash_receipts, matches the
+            // ledger balance exactly, and is invariant to date filter.
+            const cashNow  = stats.currentByMethod?.cash || 0;
+            const momoNow  = stats.currentByMethod?.momo || 0;
+            const bankNow  = stats.currentByMethod?.bank || 0;
+            const cashOpen = stats.openingByMethod?.cash || 0;
+            const momoOpen = stats.openingByMethod?.momo || 0;
+            const bankOpen = stats.openingByMethod?.bank || 0;
+            const cashEqNow  = cashNow  + momoNow  + bankNow;
+            const cashEqOpen = cashOpen + momoOpen + bankOpen;
             const fmtCE = (n) => `${curSym}${(parseFloat(n) || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
             return (
               <div
