@@ -201,11 +201,45 @@ function GenerateGrnModal({ purchase, items, extras, onClose, onGenerated }) {
   const [error, setError]   = useState('');
   const [saving, setSaving] = useState(false);
 
+  // v1.10.67 — inline Credit Notes. Each entry:
+  //   { reason, amount, notes, items: [ {product_sync_id, product_name, unit, quantity, unit_value} ] }
+  // items[] is populated only for stock-affecting reasons (Crate Return,
+  // Bottle Return, Goods Return); amount is server-authoritative for
+  // those (Σ qty × unit_value) but tracked in UI state for live totals.
+  const CN_REASONS = ['Discount', 'Damaged', 'Short', 'Crate Return', 'Bottle Return', 'Goods Return', 'Other'];
+  const isStockCn = (reason) => reason === 'Crate Return' || reason === 'Bottle Return' || reason === 'Goods Return';
+  const [creditNotes, setCreditNotes] = useState([]);
+  const addCn = () => setCreditNotes(prev => [...prev, { reason: 'Discount', amount: '', notes: '', items: [] }]);
+  const removeCn = (i) => setCreditNotes(prev => prev.filter((_, idx) => idx !== i));
+  const updateCn = (i, field, val) => setCreditNotes(prev => prev.map((c, idx) => idx === i ? { ...c, [field]: val } : c));
+  const addCnItem = (i) => setCreditNotes(prev => prev.map((c, idx) => idx === i
+    ? { ...c, items: [...c.items, { product_sync_id: '', product_name: '', unit: '', quantity: '', unit_value: '' }] }
+    : c));
+  const removeCnItem = (i, ii) => setCreditNotes(prev => prev.map((c, idx) => idx === i
+    ? { ...c, items: c.items.filter((_, x) => x !== ii) }
+    : c));
+  const updateCnItem = (i, ii, field, val) => setCreditNotes(prev => prev.map((c, idx) => {
+    if (idx !== i) return c;
+    return { ...c, items: c.items.map((it, x) => x === ii ? { ...it, [field]: val } : it) };
+  }));
+  // Preload the product picker options from the GRN lines (the products
+  // this PO actually delivered). Returning something NOT on this GRN
+  // isn't supported yet — do it via a standalone CN once that exists.
+  const cnProductOptions = grnLines
+    .filter(r => r.product_sync_id)
+    .map(r => ({ sync_id: r.product_sync_id, name: r.product_name, unit: r.unit || '' }));
+
+  const cnAmount = (c) => isStockCn(c.reason)
+    ? c.items.reduce((s, it) => s + (parseFloat(it.quantity) || 0) * (parseFloat(it.unit_value) || 0), 0)
+    : (Math.abs(parseFloat(c.amount || 0)) || 0);
+  const cnTotal = creditNotes.reduce((s, c) => s + cnAmount(c), 0);
+
   const updateLine = (i, field, val) => setGrnLines(prev =>
     prev.map((r, idx) => idx === i ? { ...r, [field]: val } : r));
 
   const total = grnLines.reduce((s, r) =>
     s + (parseFloat(r.quantity) || 0) * (parseFloat(r.unit_price) || 0), 0);
+  const finalPayable = Math.max(0, total - cnTotal);
 
   const handleSave = async () => {
     setError('');
@@ -227,7 +261,32 @@ function GenerateGrnModal({ purchase, items, extras, onClose, onGenerated }) {
           is_extra:        r.is_extra,
           po_expected_qty: r.po_expected_qty,
         })),
-        credit_notes: [], // v1.10.1 will surface a tabbed CN UI here
+        // v1.10.67 — CN payload. Client-side validation below drops empties.
+        credit_notes: creditNotes
+          .map(c => {
+            const stock = isStockCn(c.reason);
+            const items = stock
+              ? c.items
+                .filter(it => it.product_sync_id && (parseFloat(it.quantity) || 0) > 0)
+                .map(it => ({
+                  product_sync_id: it.product_sync_id,
+                  product_name:    it.product_name,
+                  unit:            it.unit || null,
+                  unit_conv:       parseFloat(it.unit_conv) > 0 ? parseFloat(it.unit_conv) : 1,
+                  quantity:        parseFloat(it.quantity) || 0,
+                  unit_value:      parseFloat(it.unit_value) || 0,
+                }))
+              : [];
+            return {
+              reason: c.reason,
+              amount: stock
+                ? items.reduce((s, it) => s + it.quantity * it.unit_value, 0)
+                : (Math.abs(parseFloat(c.amount || 0)) || 0),
+              notes:  c.notes || null,
+              items,
+            };
+          })
+          .filter(c => (c.amount > 0.001) && (!isStockCn(c.reason) || c.items.length > 0)),
       });
       onGenerated && onGenerated();
     } catch (err) {
@@ -309,14 +368,121 @@ function GenerateGrnModal({ purchase, items, extras, onClose, onGenerated }) {
               style={{ width: '100%', padding: '9px 12px', border: '1px solid #e5e7eb', borderRadius: 8, fontSize: 14, boxSizing: 'border-box' }} />
           </div>
 
+          {/* v1.10.67 — Credit Notes section. Mirrors routes/grn.js Liquor
+              flow: money-only reasons (Discount/Damaged/Short/Other) just
+              subtract from Final Payable; stock-affecting ones (Crate/Bottle/
+              Goods Return) also deduct branch stock. */}
+          <div style={{ border: '1px solid #e5e7eb', borderRadius: 10, padding: '14px 16px', marginBottom: 16, background: '#fafbfc' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
+              <div style={{ fontSize: 13, fontWeight: 700, color: '#0f172a' }}>Credit Notes</div>
+              <button type="button" onClick={addCn}
+                style={{ padding: '6px 12px', background: '#0ea5e9', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer', fontSize: 12, fontWeight: 600 }}>
+                + Add Credit Note
+              </button>
+            </div>
+            {creditNotes.length === 0 && (
+              <div style={{ fontSize: 12, color: '#94a3b8', fontStyle: 'italic', padding: '6px 0' }}>
+                No credit notes. Add one for discounts, damages, shorts, or returns.
+              </div>
+            )}
+            {creditNotes.map((c, ci) => {
+              const stock = isStockCn(c.reason);
+              const derivedAmt = cnAmount(c);
+              return (
+                <div key={ci} style={{ background: '#fff', border: '1px solid #e5e7eb', borderRadius: 8, padding: '12px 14px', marginBottom: 10 }}>
+                  <div style={{ display: 'grid', gridTemplateColumns: '180px 1fr 130px 30px', gap: 10, alignItems: 'center', marginBottom: stock || c.notes !== '' ? 8 : 0 }}>
+                    <select value={c.reason} onChange={e => updateCn(ci, 'reason', e.target.value)}
+                      style={{ padding: '7px 8px', border: '1px solid #d1d5db', borderRadius: 6, fontSize: 13, background: '#fff' }}>
+                      {CN_REASONS.map(r => <option key={r} value={r}>{r}</option>)}
+                    </select>
+                    <input value={c.notes} onChange={e => updateCn(ci, 'notes', e.target.value)}
+                      placeholder="Notes (optional)"
+                      style={{ padding: '7px 10px', border: '1px solid #d1d5db', borderRadius: 6, fontSize: 13 }} />
+                    <input type="number" min="0" step="0.01"
+                      value={stock ? derivedAmt.toFixed(2) : c.amount}
+                      onChange={e => updateCn(ci, 'amount', e.target.value)}
+                      disabled={stock}
+                      placeholder="Amount"
+                      style={{ padding: '7px 8px', border: '1px solid #d1d5db', borderRadius: 6, fontSize: 13, textAlign: 'right', background: stock ? '#f3f4f6' : '#fff', color: stock ? '#6b7280' : '#0f172a' }} />
+                    <button type="button" onClick={() => removeCn(ci)} title="Remove CN"
+                      style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#dc2626', fontSize: 18 }}>×</button>
+                  </div>
+                  {stock && (
+                    <div style={{ marginTop: 4, padding: '8px 10px', background: '#f8fafc', border: '1px solid #e5e7eb', borderRadius: 6 }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+                        <span style={{ fontSize: 11, fontWeight: 700, color: '#475569', textTransform: 'uppercase', letterSpacing: 0.4 }}>Items to return</span>
+                        <button type="button" onClick={() => addCnItem(ci)}
+                          style={{ padding: '3px 8px', background: '#e0e7ff', color: '#3730a3', border: 'none', borderRadius: 4, cursor: 'pointer', fontSize: 11, fontWeight: 600 }}>
+                          + Add item
+                        </button>
+                      </div>
+                      {c.items.length === 0 && (
+                        <div style={{ fontSize: 11, color: '#94a3b8', fontStyle: 'italic' }}>No items yet. Add at least one for the CN to save.</div>
+                      )}
+                      {c.items.map((it, ii) => (
+                        <div key={ii} style={{ display: 'grid', gridTemplateColumns: '1fr 80px 80px 100px 100px 30px', gap: 6, marginBottom: 6, alignItems: 'center' }}>
+                          <select value={it.product_sync_id}
+                            onChange={e => {
+                              const opt = cnProductOptions.find(o => o.sync_id === e.target.value);
+                              updateCnItem(ci, ii, 'product_sync_id', e.target.value);
+                              if (opt) {
+                                updateCnItem(ci, ii, 'product_name', opt.name);
+                                updateCnItem(ci, ii, 'unit', opt.unit);
+                              }
+                            }}
+                            style={{ padding: '5px 6px', border: '1px solid #d1d5db', borderRadius: 4, fontSize: 12 }}>
+                            <option value="">— pick product —</option>
+                            {cnProductOptions.map(o => <option key={o.sync_id} value={o.sync_id}>{o.name}</option>)}
+                          </select>
+                          <input type="number" min="0" step="any" value={it.quantity} onChange={e => updateCnItem(ci, ii, 'quantity', e.target.value)}
+                            placeholder="Qty"
+                            style={{ padding: '5px 8px', border: '1px solid #d1d5db', borderRadius: 4, fontSize: 12, textAlign: 'right' }} />
+                          <input value={it.unit} onChange={e => updateCnItem(ci, ii, 'unit', e.target.value)}
+                            placeholder="Unit"
+                            style={{ padding: '5px 8px', border: '1px solid #d1d5db', borderRadius: 4, fontSize: 12 }} />
+                          <input type="number" min="0" step="0.01" value={it.unit_value} onChange={e => updateCnItem(ci, ii, 'unit_value', e.target.value)}
+                            placeholder="Unit value"
+                            style={{ padding: '5px 8px', border: '1px solid #d1d5db', borderRadius: 4, fontSize: 12, textAlign: 'right' }} />
+                          <div style={{ padding: '5px 8px', fontSize: 12, textAlign: 'right', color: '#16a34a', fontWeight: 700 }}>
+                            {fmtMoney((parseFloat(it.quantity) || 0) * (parseFloat(it.unit_value) || 0))}
+                          </div>
+                          <button type="button" onClick={() => removeCnItem(ci, ii)} title="Remove item"
+                            style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#dc2626', fontSize: 14 }}>×</button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+            {creditNotes.length > 0 && (
+              <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 6 }}>
+                <div style={{ fontSize: 13, color: '#b45309', fontWeight: 700 }}>
+                  CN Total: −{fmtMoney(cnTotal)}
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Final payable summary — highlighted so HQ sees the true net. */}
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 32, alignItems: 'baseline', marginBottom: 12, padding: '10px 14px', background: '#ecfdf5', border: '1px solid #a7f3d0', borderRadius: 8 }}>
+            <div style={{ fontSize: 12, color: '#065f46' }}>
+              Items subtotal <strong>{fmtMoney(total)}</strong>
+              {cnTotal > 0.001 && <> · CNs <strong>−{fmtMoney(cnTotal)}</strong></>}
+            </div>
+            <div style={{ fontSize: 15, fontWeight: 800, color: '#065f46' }}>
+              Final Payable: {fmtMoney(finalPayable)}
+            </div>
+          </div>
+
           {error && (
             <div style={{ background: '#fef2f2', color: '#dc2626', padding: '10px 14px', borderRadius: 8, fontSize: 13, marginBottom: 12 }}>
               {error}
             </div>
           )}
 
-          <div style={{ fontSize: 11, color: '#92400e', background: '#fef3c7', border: '1px solid #fde68a', padding: '8px 12px', borderRadius: 8, marginBottom: 12 }}>
-            On Save: stock posts immediately to <strong>{purchase.confirmed_branch_slug}</strong>'s sales floor and supplier AP locks in. CN tabs (discount / crate return / goods return) coming in v1.10.1.
+          <div style={{ fontSize: 11, color: '#065f46', background: '#ecfdf5', border: '1px solid #a7f3d0', padding: '8px 12px', borderRadius: 8, marginBottom: 12 }}>
+            On Save: stock posts immediately to <strong>{purchase.confirmed_branch_slug}</strong>'s sales floor. Stock-affecting CNs (Crate/Bottle/Goods Return) also deduct from stock. Supplier AP locks in at the Final Payable amount.
           </div>
         </div>
 

@@ -591,13 +591,30 @@ router.post('/generate', hqAuth, (req, res) => {
     const validItems = items.filter(i => parseFloat(i.quantity) > 0);
     const itemsSubtotal = validItems.reduce((s, i) =>
       s + (parseFloat(i.quantity) || 0) * (parseFloat(i.unit_price) || 0), 0);
+    // v1.10.67 — cnTotal recomputed server-side per CN. Stock-affecting
+    // reasons ignore c.amount and use Σ qty × unit_value from items[]
+    // instead; money-only reasons take c.amount. Prevents a malformed
+    // client payload from booking a mismatched final_payable.
     const cnTotal = Array.isArray(credit_notes)
-      ? credit_notes.reduce((s, c) => s + (parseFloat(c.amount) || 0), 0)
+      ? credit_notes.reduce((s, c) => {
+          const reason = String(c?.reason || 'Other');
+          const stockR = reason === 'Crate Return' || reason === 'Bottle Return' || reason === 'Goods Return';
+          if (stockR) {
+            const items = Array.isArray(c.items) ? c.items : [];
+            return s + items.reduce((a, i) => a + (parseFloat(i.quantity) || 0) * (parseFloat(i.unit_value) || 0), 0);
+          }
+          return s + (Math.abs(parseFloat(c.amount || 0)) || 0);
+        }, 0)
       : 0;
     const finalPayable = Math.max(0, itemsSubtotal - cnTotal);
 
     const generatorId   = req.user?.id || null;
     const generatorName = req.user?.firstName || req.user?.email || 'HQ';
+
+    // v1.10.67 — filled inside the master tx below with per-CN metadata
+    // for stock-affecting reasons; walked over outside the tx to post
+    // negative stock_movements on the branch tenant DB.
+    const returnCnBundle = [];
 
     masterDb.transaction(() => {
       // 1. Insert hq_grns + hq_grn_items
@@ -656,6 +673,16 @@ router.post('/generate', hqAuth, (req, res) => {
       `).run(grnSyncId, grnNumber, generatorId, generatorName, purchase_sync_id);
 
       // 3. CNs (if any)
+      // v1.10.67 — Stock-affecting reasons (Crate Return, Bottle Return,
+      // Goods Return) now carry an items[] array; each item row goes into
+      // hq_supplier_credit_note_items and the branch tenant DB gets a
+      // negative stock_movement (posted outside the master tx below, same
+      // pattern as the main GRN item post). Money-only reasons (Discount,
+      // Damaged, Short, Other) skip item persistence and just carry
+      // cn.amount. Mirrors routes/grn.js:259-320 on the branch side.
+      // returnCnBundle (declared above the tx) collects per-CN metadata
+      // that the branch stock post walks over further down, outside the
+      // master tx.
       if (Array.isArray(credit_notes)) {
         const insCn = masterDb.prepare(`
           INSERT INTO hq_supplier_credit_notes
@@ -664,18 +691,61 @@ router.post('/generate', hqAuth, (req, res) => {
              created_by, created_by_name)
           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         `);
+        const insCnItem = masterDb.prepare(`
+          INSERT INTO hq_supplier_credit_note_items
+            (sync_id, credit_note_id, credit_note_sync_id, product_sync_id, product_name,
+             quantity, unit, unit_conv, unit_value, total_price)
+          VALUES (?,?,?,?,?,?,?,?,?,?)
+        `);
         for (const cn of credit_notes) {
-          const amt = Math.abs(parseFloat(cn?.amount || 0)) || 0;
+          const reason = String(cn?.reason || 'Other');
+          const reasonHasStock = reason === 'Crate Return' || reason === 'Bottle Return' || reason === 'Goods Return';
+          const validCnItems = reasonHasStock && Array.isArray(cn.items)
+            ? cn.items.filter(i => i.product_sync_id && parseFloat(i.quantity) > 0)
+            : [];
+          // Server-authoritative amount: for stock-affecting CNs we recompute
+          // from the items so the client can't send a mismatched total.
+          const amt = reasonHasStock
+            ? validCnItems.reduce((s, i) => s + parseFloat(i.quantity) * parseFloat(i.unit_value || 0), 0)
+            : Math.abs(parseFloat(cn?.amount || 0)) || 0;
           if (amt < 0.001) continue;
+          if (reasonHasStock && validCnItems.length === 0) continue;
           const cnNumber = `SCN-${new Date().getFullYear()}-${randomUUID().slice(0, 8).toUpperCase()}`;
-          insCn.run(
-            cnNumber, randomUUID(), grnDate,
+          const cnSyncId = randomUUID();
+          const cnInfo = insCn.run(
+            cnNumber, cnSyncId, grnDate,
             purchase.supplier_id || null, null, purchase.supplier_name || null,
-            String(cn.reason || 'Other'),
+            reason,
             grnNumber, amt, cn.notes || null,
             grnSyncId, branchSlug,
             generatorId, generatorName
           );
+          const cnId = cnInfo.lastInsertRowid;
+          if (reasonHasStock) {
+            for (const i of validCnItems) {
+              const qty = parseFloat(i.quantity) || 0;
+              const unitVal = parseFloat(i.unit_value || 0) || 0;
+              const linePrice = qty * unitVal;
+              insCnItem.run(
+                randomUUID(), cnId, cnSyncId,
+                i.product_sync_id, i.product_name || '',
+                qty, i.unit || null,
+                parseFloat(i.unit_conv) > 0 ? parseFloat(i.unit_conv) : 1,
+                unitVal, linePrice
+              );
+            }
+            returnCnBundle.push({
+              cnNumber,
+              cnSyncId,
+              reason,
+              items: validCnItems.map(i => ({
+                product_sync_id: i.product_sync_id,
+                product_name: i.product_name,
+                quantity: parseFloat(i.quantity) || 0,
+                unit: i.unit || null,
+              })),
+            });
+          }
         }
       }
     })();
@@ -763,6 +833,44 @@ router.post('/generate', hqAuth, (req, res) => {
           randomUUID(), null, null, null,
           branchMovementAt
         );
+      }
+      // v1.10.67 — negative stock movements for Crate Return / Bottle Return
+      // / Goods Return CNs. Mirrors routes/grn.js:290-317 on the branch side.
+      // WAC intentionally left alone (Option B, user 2026-07-03) — Liquor
+      // branches don't touch avg_cost_price on returns either. Consequence:
+      // if you return goods above current WAC (e.g. supplier price rose
+      // since last delivery), the residual stock keeps the pre-return WAC.
+      // Fine for typical crate/bottle returns; if this becomes a real
+      // issue we can switch to Option A later without breaking the schema.
+      for (const bundle of returnCnBundle) {
+        for (const bi of bundle.items) {
+          if (!bi.product_sync_id) continue;
+          const bqty = parseFloat(bi.quantity) || 0;
+          if (bqty <= 0) continue;
+          const bprod = branchDb.prepare(`
+            SELECT id, sync_id, unit, alt_unit, conversion_factor, units_json
+              FROM products WHERE sync_id = ? AND deleted_at IS NULL
+          `).get(bi.product_sync_id);
+          if (!bprod) continue;
+          const bconv = conversionToBase(bprod, bi.unit || bprod.unit);
+          const bBaseQty = bqty * bconv;
+          // Only decrement current_stock — WAC untouched.
+          branchDb.prepare(`
+            UPDATE products
+               SET current_stock = current_stock - ?,
+                   updated_at    = datetime('now'),
+                   synced        = 0
+             WHERE sync_id = ?
+          `).run(bBaseQty, bprod.sync_id);
+          insMov.run(
+            bprod.id, bprod.sync_id, 'sales', 'credit_note', -bBaseQty,
+            null, 'credit_note', bundle.cnSyncId,
+            `${bundle.reason} via ${bundle.cnNumber}`,
+            null,
+            randomUUID(), null, null, null,
+            branchMovementAt
+          );
+        }
       }
     } catch (err) {
       console.error('[hq.grns.generate] stock post failed:', err.message);
