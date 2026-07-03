@@ -267,12 +267,20 @@ function main() {
   console.log(`HQ tenant slug resolved: ${hqSlug}`);
   console.log('Migrating…\n');
 
+  // v1.10.75 hotfix — created_by columns reference user ids from master
+  // that don't exist in hq.db.users. Also grn_items.product_id may
+  // reference products that haven't been mirrored yet. Turn FK checks off
+  // for the historical import so the copy can complete; re-enable on
+  // exit so the running app stays strict.
+  hqDb.pragma('foreign_keys = OFF');
+
   const { nameToSyncId, nameToNewId } = migrateSuppliers(masterDb, hqDb);
   migrateGrns(masterDb, hqDb, nameToSyncId, nameToNewId);
   migrateGrnItems(masterDb, hqDb);
   migrateCreditNotes(masterDb, hqDb, nameToSyncId, nameToNewId);
   migrateCreditNoteItems(masterDb, hqDb);
 
+  hqDb.pragma('foreign_keys = ON');
   console.log('\nDone.');
 }
 

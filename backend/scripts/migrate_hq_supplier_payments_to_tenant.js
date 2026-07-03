@@ -49,6 +49,13 @@ function main() {
     process.exit(1);
   }
 
+  // v1.10.75 hotfix — historical rows carry user IDs from master.db that
+  // don't exist in hq.db.users. Disable FK checks for the migration so
+  // the historical import can complete; the created_by column will hold
+  // a stale user id but the AP display doesn't require the FK to resolve
+  // (uses a LEFT JOIN in the read paths).
+  hqDb.pragma('foreign_keys = OFF');
+
   const rows = masterDb.prepare(`
     SELECT id, payment_number, supplier_id, supplier_name,
            amount, payment_date, payment_method,
@@ -107,6 +114,7 @@ function main() {
   ).get().n;
   console.log(`After : hq.db.ap_payments HSP rows = ${afterTenant}`);
   console.log(`Inserted: ${inserted}  Skipped (already present): ${skipped}`);
+  hqDb.pragma('foreign_keys = ON');
   console.log('Done.');
 }
 
