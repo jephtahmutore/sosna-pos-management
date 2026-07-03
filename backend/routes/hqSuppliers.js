@@ -17,7 +17,22 @@
 const express = require('express');
 const router  = express.Router();
 const jwt = require('jsonwebtoken');
-const { masterDb } = require('../config/masterDb');
+const { randomUUID } = require('crypto');
+const { masterDb, listTenants } = require('../config/masterDb');
+const { getTenantDb } = require('../config/tenantDb');
+
+// v1.10.71 — Mirror HQ supplier payments into the HQ tenant DB so they
+// show up in the Cash Book (which reads from tenant DB, not master).
+// HQ's tenant slug is 'hq' by convention; falls back to a bare-host slug
+// if the deploy renamed it. Same helper cashDeposits.js uses.
+function getHqSlug() {
+  try {
+    const t = listTenants().find(t => t.slug === 'hq');
+    if (t) return 'hq';
+    const bare = listTenants().find(t => /^(sosna|sosnazm|hq)$/i.test(t.slug));
+    return bare ? bare.slug : 'hq';
+  } catch (_) { return 'hq'; }
+}
 
 function hqAuth(req, res, next) {
   try {
@@ -215,16 +230,49 @@ router.post('/:id/payments', hqAuth, (req, res) => {
     const method = ['Cash', 'Bank', 'Mobile Money'].includes(payment_method) ? payment_method : 'Cash';
     const createdBy     = req.user.id || null;
     const createdByName = req.user.firstName || req.user.email || 'HQ';
+    const paymentNum = nextPaymentNumber();
     masterDb.prepare(`
       INSERT INTO hq_supplier_payments (payment_number, supplier_id, supplier_name,
                                         amount, payment_date, payment_method,
                                         reference, notes, created_by, created_by_name)
       VALUES (?,?,?,?,?,?,?,?,?,?)
     `).run(
-      nextPaymentNumber(), s.id, s.name,
+      paymentNum, s.id, s.name,
       amt, payment_date, method, reference || null, notes || null,
       createdBy, createdByName
     );
+    // v1.10.71 — mirror-write into HQ tenant DB's ap_payments so the
+    // Cash Book (which reads from tenant DB, not master) shows this
+    // outflow. Linked back to the master row via payment_number so the
+    // DELETE handler below can remove both sides atomically.
+    try {
+      const hqSlug = getHqSlug();
+      const hqDb = getTenantDb(hqSlug);
+      if (hqDb) {
+        const cashAmt = method === 'Cash'         ? amt : 0;
+        const bankAmt = method === 'Bank'         ? amt : 0;
+        const momoAmt = method === 'Mobile Money' ? amt : 0;
+        const paidFromLabel = method; // Cash / Bank / Mobile Money — same shape ap_payments expects.
+        const description = `HQ Supplier Payment · ${s.name}` + (reference ? ` · ${reference}` : '');
+        hqDb.prepare(`
+          INSERT INTO ap_payments (payment_number, supplier_id, supplier_sync_id, supplier_name,
+                                    amount, cash_amount, bank_amount, momo_amount,
+                                    description, date, paid_from, created_by,
+                                    sync_id, tenant_id, branch_id, device_id,
+                                    synced, created_at, updated_at)
+          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,datetime('now'),datetime('now'))
+        `).run(
+          paymentNum, null, null, s.name,
+          amt, cashAmt, bankAmt, momoAmt,
+          description, payment_date, paidFromLabel, createdBy,
+          randomUUID(), null, null, null
+        );
+      }
+    } catch (mirrorErr) {
+      console.error('[hq.suppliers.payment] tenant mirror failed:', mirrorErr.message);
+      // Non-fatal — the master record is authoritative for AP calc.
+      // Cash Book will just miss this row until repaired.
+    }
     res.status(201).json({ success: true, balance: getBalances(s.id, s.name).balance });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -237,6 +285,25 @@ router.delete('/payments/:id', hqAuth, (req, res) => {
     const p = masterDb.prepare(`SELECT * FROM hq_supplier_payments WHERE id = ?`).get(req.params.id);
     if (!p) return res.status(404).json({ error: 'Payment not found' });
     masterDb.prepare(`DELETE FROM hq_supplier_payments WHERE id = ?`).run(req.params.id);
+    // v1.10.71 — also remove the HQ tenant DB mirror so Cash Book stays
+    // in sync. Soft-delete (deleted_at) rather than hard-delete so the
+    // ap_payments audit trail is preserved and Cash Book's
+    // "WHERE deleted_at IS NULL" already filters it out.
+    try {
+      const hqSlug = getHqSlug();
+      const hqDb = getTenantDb(hqSlug);
+      if (hqDb) {
+        hqDb.prepare(`
+          UPDATE ap_payments
+             SET deleted_at = datetime('now'),
+                 updated_at = datetime('now'),
+                 synced     = 0
+           WHERE payment_number = ? AND deleted_at IS NULL
+        `).run(p.payment_number);
+      }
+    } catch (mirrorErr) {
+      console.error('[hq.suppliers.payment.delete] tenant mirror failed:', mirrorErr.message);
+    }
     res.json({ success: true });
   } catch (error) {
     res.status(500).json({ error: error.message });
