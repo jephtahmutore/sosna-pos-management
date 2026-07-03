@@ -388,12 +388,14 @@ const SalesReport = () => {
 
     const html = `<!DOCTYPE html><html><head><meta charset="UTF-8">
     <style>
-      @page { size: 80mm auto; margin: 2mm 3mm; }
+      @page { size: 80mm auto; margin: 2mm 2mm; }
       * { box-sizing: border-box; margin: 0; padding: 0; }
-      /* v1.10.30 — match POS.js v1.10.28: Liquor-style reprints render in
-         bold Arial so a reprint from Sales Report looks identical to the
-         paper the customer got at the till. */
-      body { width: 74mm; font-family: ${isLiquorStyle ? "Arial, Helvetica, sans-serif" : "'Courier New', monospace"}; font-size: 11px; color: #000; font-weight: 700; }
+      /* v1.10.61 — reverted to Courier for both styles (was Arial for Liquor
+         since v1.10.30). Arial-bold @ 11px prints grey/thin on the Epson
+         TM-T88VII because its variable stroke width maps to fewer dots per
+         glyph than Courier's uniform stems. Courier matches the printer's
+         own bitmap font density. */
+      body { width: 72mm; font-family: 'Courier New', monospace; font-size: 11px; color: #000; font-weight: 700; }
       table { width: 100%; border-collapse: collapse; font-size: 11px; }
       td { padding: 1px 0; vertical-align: top; }
       .c { text-align: center; }
