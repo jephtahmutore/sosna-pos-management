@@ -605,6 +605,25 @@ try {
     console.warn('[masterDb] v1.10.0 hq_supplier_credit_notes:', e.message);
   }
 
+  // v1.10.53 — WAC redesign schema additions.
+  //
+  // Every HQ PO carries ONE FX rate for its whole batch (per user's
+  // 2026-07-03 decision — one rate per PO, not per line). Rate is
+  // captured at PO Create time (HQ side), not at Confirm Receipt.
+  // Currency label lets tri-currency branches (Kassumbalesa) declare
+  // the supplier billed in K vs USD; K-only branches leave it NULL and
+  // the code path skips the FX prompt entirely.
+  addMasterCol('hq_purchases', 'cost_currency', 'TEXT');   // 'USD' | 'FRA' | 'K' — nullable, only set when the destination is a tri-currency branch
+  addMasterCol('hq_purchases', 'fx_rate_used', 'REAL');    // e.g. 25 when 1 USD = 25 K on this PO — nullable for K-only destinations
+  addMasterCol('hq_purchase_items', 'cost_price_usd', 'REAL'); // derived at insert time = cost_price / fx_rate_used (or cost_price itself when currency=USD or rate=NULL)
+
+  // Same three fields on stock_transfers header — one rate per transfer.
+  // Transfer items live inside stock_transfers.items_json so per-line
+  // storage happens there, not in a separate table. Header rate applies
+  // to every line uniformly.
+  addMasterCol('stock_transfers', 'cost_currency', 'TEXT');
+  addMasterCol('stock_transfers', 'fx_rate_used', 'REAL');
+
   console.log('[master] Master DB ready:', masterDbPath);
 } catch (e) {
   console.warn('[master] Could not open master DB (Electron mode — VPS-only features disabled):', e.message);

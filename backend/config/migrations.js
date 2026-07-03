@@ -1647,6 +1647,19 @@ function initTenantDb(db) {
   // client can't bypass the UI lock.
   addCol('products', 'is_hq_owned', 'INTEGER NOT NULL DEFAULT 0');
 
+  // v1.10.53 — Persisted Weighted Average Cost per product per branch.
+  // Populated on:
+  //   - GRN save (supplier receipt, branch-side)
+  //   - HQ GRN generate (HQ pushes stock to branch)
+  //   - Stock Transfer receive
+  // Never overwritten by cost_price on product edit — cost_price is the
+  // catalogue's "current buy price" (typing/reference), avg_cost_price is
+  // the real weighted mean of on-hand stock. profitHelper.js COGS calc
+  // reads this column directly instead of re-scanning grn_items every day.
+  // NULL = never received any stock; profitHelper falls back to derived SUM
+  // (backward-compat during backfill window).
+  addCol('products', 'avg_cost_price', 'REAL');
+
   // v1.6.0 — Categories, main_categories and units are also HQ-owned now.
   // Same mechanism as products: HQ writes push to every branch with
   // is_hq_owned=1; branches can't edit/delete those rows.
@@ -1934,6 +1947,53 @@ function initTenantDb(db) {
     }
   } catch (e) {
     console.warn('[self-heal current_stock] skipped:', e.message);
+  }
+
+  // v1.10.53 — Seed products.avg_cost_price for rows that still have NULL.
+  // Uses the same formula profitHelper.js was computing on the fly:
+  //   avg = SUM(grn_items.total_price) / SUM(base_qty_from_units_json)
+  // Only touches products where avg_cost_price IS NULL, so subsequent
+  // shipment blends (which write back a fresh value) are preserved.
+  // If no grn_items exist for a product yet, avg_cost_price stays NULL
+  // and profitHelper's fallback chain (cost_price) kicks in.
+  try {
+    const baseQtyExpr = `(
+      CASE
+        WHEN gip.units_json IS NULL OR gip.units_json = '' THEN gi.quantity
+        WHEN json_extract(gip.units_json, '$[0].name') = gi.unit THEN gi.quantity * COALESCE(json_extract(gip.units_json, '$[0].conv'), 1)
+        WHEN json_extract(gip.units_json, '$[1].name') = gi.unit THEN gi.quantity * COALESCE(json_extract(gip.units_json, '$[1].conv'), 1)
+        WHEN json_extract(gip.units_json, '$[2].name') = gi.unit THEN gi.quantity * COALESCE(json_extract(gip.units_json, '$[2].conv'), 1)
+        WHEN json_extract(gip.units_json, '$[3].name') = gi.unit THEN gi.quantity * COALESCE(json_extract(gip.units_json, '$[3].conv'), 1)
+        ELSE gi.quantity
+      END
+    )`;
+    const result = db.prepare(`
+      UPDATE products
+         SET avg_cost_price = (
+               SELECT CASE WHEN SUM(${baseQtyExpr}) > 0
+                           THEN ROUND(SUM(gi.total_price) / SUM(${baseQtyExpr}), 4)
+                           ELSE NULL END
+                 FROM grn_items gi
+                 LEFT JOIN products gip ON gip.sync_id = gi.product_sync_id
+                WHERE gi.product_sync_id = products.sync_id
+                  AND gi.deleted_at IS NULL
+             ),
+             updated_at = datetime('now'),
+             synced     = 0
+       WHERE deleted_at IS NULL
+         AND sync_id IS NOT NULL
+         AND avg_cost_price IS NULL
+         AND EXISTS (
+               SELECT 1 FROM grn_items gi2
+                WHERE gi2.product_sync_id = products.sync_id
+                  AND gi2.deleted_at IS NULL
+             )
+    `).run();
+    if (result.changes > 0) {
+      console.log(`[seed avg_cost_price] backfilled ${result.changes} product(s) from grn_items`);
+    }
+  } catch (e) {
+    console.warn('[seed avg_cost_price] skipped:', e.message);
   }
 }
 
