@@ -1138,8 +1138,12 @@ const POS = () => {
     const div42eq = '='.repeat(42);
     const div42da = '-'.repeat(42);
 
-    // Name + qty only. Per-line PRICE/TOTAL removed per redesign — the
-    // customer sees what they're paying via Subtotal / TOTAL.
+    // v1.10.59 — Liquor style shows per-item PRICE + TOTAL in the 2-line
+    // format that the ESC/POS backend (settings.js:302-305) already prints:
+    //   Product name
+    //     qty unit                     UNITPX   GROSS
+    // Sosna style stays Name + Qty only per the earlier redesign — customer
+    // sees the amount owed only via Subtotal / TOTAL.
     let fallbackHasAltUnit = false;
     const itemsRows = data.items.map(item => {
       const isAltUnit = isNonDefaultUnit(item);
@@ -1147,6 +1151,22 @@ const POS = () => {
       const nameLabel = item.product_name + (isAltUnit ? ' **' : '');
       const qty = parseFloat(item.quantity || 0);
       const qtyStr = qty % 1 === 0 ? qty.toFixed(0) : qty.toFixed(2);
+      if (isLiquorStyle) {
+        const unitPx = parseFloat(item.unit_price || 0);
+        const gross  = qty * unitPx;
+        const lineDisc = parseFloat(item.discount || 0);
+        const lineDiscTotal = qty * lineDisc;
+        const discRow = lineDisc > 0
+          ? `<tr><td colspan="4" style="padding-left:6px;font-size:10px;">discount ${qtyStr} x -${curSym}${fmt(lineDisc)}<span style="float:right;">-${curSym}${fmt(lineDiscTotal)}</span></td></tr>`
+          : '';
+        return `<tr><td colspan="4" style="font-weight:700;padding-top:2px;">${nameLabel}</td></tr>
+          <tr>
+            <td></td>
+            <td style="text-align:right;white-space:nowrap;padding-left:8px;">${qtyStr} ${item.unit || ''}</td>
+            <td style="text-align:right;white-space:nowrap;">${curSym}${fmt(unitPx)}</td>
+            <td style="text-align:right;white-space:nowrap;">${curSym}${fmt(gross)}</td>
+          </tr>${discRow}`;
+      }
       return `<tr>
         <td>${nameLabel}</td>
         <td style="text-align:right; white-space:nowrap;">${qtyStr} ${item.unit || ''}</td>
@@ -1215,10 +1235,10 @@ const POS = () => {
   <div class="divider">${div42eq}</div>
 
   <table>
-    <tr style="font-size:10px;">
+    ${isLiquorStyle ? '' : `<tr style="font-size:10px;">
       <td style="font-weight:700;">ITEM</td>
       <td style="text-align:right;font-weight:700;">QTY</td>
-    </tr>
+    </tr>`}
     ${itemsRows}
   </table>
   <div class="divider">${div42da}</div>

@@ -45,7 +45,7 @@ export default function Cashier() {
   const { user } = useAuth();
   // v1.7.0: currency_mode='USD+FRA+K' enables a third K (Kwacha) input row.
   // 'USD+FRA' = FRA only (legacy). 'K' = USD-only at Cashier.
-  const { currencyMode } = useCurrency();
+  const { currencyMode, symbol: curSym, isLiquorStyle } = useCurrency();
   const hasFra = currencyMode === 'USD+FRA' || currencyMode === 'USD+FRA+K';
   const hasK   = currencyMode === 'USD+FRA+K';
   const [inbox, setInbox] = useState([]);
@@ -391,6 +391,8 @@ export default function Cashier() {
           buyRate:   BUY_RATE,
           sellRateK: SELL_RATE_K,
           buyRateK:  BUY_RATE_K,
+          isLiquorStyle,
+          curSym,
         }));
       } catch (_) { /* non-fatal — payment is already recorded */ }
 
@@ -1447,20 +1449,37 @@ export default function Cashier() {
 // mobile, share-sheet on Capacitor APK). FRA rows only appear when the
 // payment actually involved FRA cash or FRA change — keeps USD-only sales
 // from showing useless "FRA: 0" lines.
-function renderCashierReceipt({ biz, order, calc, cashierName, when, sellRate: _sell, buyRate: _buy, sellRateK: _sellK, buyRateK: _buyK }) {
+function renderCashierReceipt({ biz, order, calc, cashierName, when, sellRate: _sell, buyRate: _buy, sellRateK: _sellK, buyRateK: _buyK, isLiquorStyle = false, curSym = '$' }) {
   const fmt = (n) => parseFloat(n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   const fmtFra = (n) => Math.round(parseFloat(n || 0)).toLocaleString('en-US');
   const div = '='.repeat(42);
   const da  = '-'.repeat(42);
-  // Item row: NAME on the left, QTY + unit on the right. Per-line PRICE
-  // and TOTAL columns removed per Sosna's redesign — the customer only
-  // sees what they're paying via Subtotal / TOTAL DUE.
+  // v1.10.59 — Liquor style shows per-item PRICE + TOTAL in the 2-line
+  // format ESC/POS already prints; Sosna stays Name + Qty only per the
+  // dual-currency redesign.
   const itemsRows = (order.items || []).map(it => {
     const qty = parseFloat(it.quantity || 0);
     const safeName = String(it.product_name).replace(/</g, '&lt;');
+    const qtyStr = qty % 1 === 0 ? qty.toFixed(0) : qty.toFixed(2);
+    if (isLiquorStyle) {
+      const unitPx = parseFloat(it.unit_price || 0);
+      const gross  = qty * unitPx;
+      const lineDisc = parseFloat(it.discount || 0);
+      const lineDiscTotal = qty * lineDisc;
+      const discRow = lineDisc > 0
+        ? `<tr><td colspan="4" style="padding-left:6px;font-size:10px;">discount ${qtyStr} x -${curSym}${fmt(lineDisc)}<span style="float:right;">-${curSym}${fmt(lineDiscTotal)}</span></td></tr>`
+        : '';
+      return `<tr><td colspan="4" style="font-weight:700;padding-top:2px;">${safeName}</td></tr>
+        <tr>
+          <td></td>
+          <td style="text-align:right;white-space:nowrap;padding-left:8px;">${qtyStr} ${it.unit || ''}</td>
+          <td style="text-align:right;white-space:nowrap;">${curSym}${fmt(unitPx)}</td>
+          <td style="text-align:right;white-space:nowrap;">${curSym}${fmt(gross)}</td>
+        </tr>${discRow}`;
+    }
     return `<tr>
               <td>${safeName}</td>
-              <td style="text-align:right; white-space:nowrap;">${qty % 1 === 0 ? qty.toFixed(0) : qty.toFixed(2)} ${it.unit || ''}</td>
+              <td style="text-align:right; white-space:nowrap;">${qtyStr} ${it.unit || ''}</td>
             </tr>`;
   }).join('');
   const usedFra = (calc.paidFRA > 0.0001) || (calc.givenFRA > 0.0001);
@@ -1501,10 +1520,10 @@ function renderCashierReceipt({ biz, order, calc, cashierName, when, sellRate: _
   </table>
   <div class="divider">${div}</div>
   <table>
-    <tr style="font-size:10px;">
+    ${isLiquorStyle ? '' : `<tr style="font-size:10px;">
       <td style="font-weight:700;">ITEM</td>
       <td style="text-align:right;font-weight:700;">QTY</td>
-    </tr>
+    </tr>`}
     ${itemsRows}
   </table>
   <div class="divider">${da}</div>

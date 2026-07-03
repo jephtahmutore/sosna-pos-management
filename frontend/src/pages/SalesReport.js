@@ -340,6 +340,10 @@ const SalesReport = () => {
   // two paths produce identical output.
   const buildReceiptHtml = (order) => {
     const div = '='.repeat(42);
+    // v1.10.59 — Liquor style keeps its full 2-line format with PRICE and
+    // TOTAL columns (matches ESC/POS backend). Sosna style renders Name +
+    // Qty only per the dual-currency redesign — the customer sees the
+    // amount owed only via Subtotal / TOTAL.
     const itemRows = (order.items || []).map(item => {
       const origQty = parseFloat(item.quantity || 0);
       const rq      = parseFloat(item.reversed_quantity || 0);
@@ -359,12 +363,23 @@ const SalesReport = () => {
       const marker = soldInNonDefault ? ' <span style="color:#dc2626;font-weight:700">**</span>' : '';
       const rowWeight = soldInNonDefault ? 'font-weight:700;' : '';
       const nameLabel = item.product_name + (item.reversed ? ' [VOID]' : '') + marker;
+      if (!isLiquorStyle) {
+        // Sosna: Name + Qty only, single row per item.
+        const partialNoteSosna = partial ? `<tr><td colspan="2" style="font-size:9px;color:#b45309;padding-left:6px">was ${origQty} ${item.unit || ''} — reversed ${rq}</td></tr>` : '';
+        return `
+        <tr style="${rowWeight}${item.reversed ? 'text-decoration:line-through;color:#999;' : ''}">
+          <td style="font-weight:700;padding-top:4px;">${nameLabel}</td>
+          <td style="text-align:right;white-space:nowrap;padding-top:4px;">${netQty} ${item.unit || ''}</td>
+        </tr>
+        ${partialNoteSosna}`;
+      }
+      // Liquor: 2-line format — name on line 1, indented qty + unit_price + gross on line 2.
       const partialNote = partial ? `<tr><td colspan="4" style="font-size:9px;color:#b45309;padding-left:6px">was ${origQty} ${item.unit || ''} — reversed ${rq}</td></tr>` : '';
       return `
       <tr><td colspan="4" style="font-weight:700;padding-top:4px;${item.reversed ? 'text-decoration:line-through;color:#999;' : ''}">${nameLabel}</td></tr>
       <tr style="${rowWeight}${item.reversed ? 'color:#999;' : ''}">
         <td></td>
-        <td style="text-align:center;${partial ? 'font-weight:700' : ''}">${netQty} ${item.unit || ''}</td>
+        <td style="text-align:right;padding-left:8px;${partial ? 'font-weight:700' : ''}">${netQty} ${item.unit || ''}</td>
         <td style="text-align:right">${(parseFloat(unitPx)||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</td>
         <td style="text-align:right;${partial ? 'font-weight:700' : ''}">${(parseFloat(netTotal)||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</td>
       </tr>
@@ -405,7 +420,9 @@ const SalesReport = () => {
     </table>
     <div class="div">${div}</div>
     <table>
-      <tr style="font-size:10px"><td style="width:42%">ITEM</td><td style="width:18%;text-align:center">QTY</td><td style="width:20%;text-align:right">PRICE</td><td style="width:20%;text-align:right">TOTAL</td></tr>
+      ${isLiquorStyle
+        ? '' /* Liquor style has no header row — matches ESC/POS. Item name + qty/px/total format is self-explanatory. */
+        : '<tr style="font-size:10px"><td style="font-weight:700;">ITEM</td><td style="text-align:right;font-weight:700;">QTY</td></tr>'}
       ${itemRows}
     </table>
     <div class="div">${'-'.repeat(42)}</div>
