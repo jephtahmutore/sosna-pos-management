@@ -758,8 +758,10 @@ router.post('/generate', hqAuth, (req, res) => {
     // Wrapped in try/catch — failure logs but doesn't roll back the
     // master GRN; a hq.db backfill script can repair later.
     try {
-      const hqDbSlug = (listTenants().find(t => t.slug === 'hq')?.slug) || 'hq';
-      const hqDb = getTenantDb(hqDbSlug);
+      // v1.10.76 — HQ uses sosna.db (defaultDb), not tenants/hq.db.
+      // See routes/hqSuppliers.js:22-38 for the rationale.
+      const hqDb = require('../config/database').defaultDb;
+      const HQ_TENANT_ID = 'local-only';
       if (hqDb) {
         // Resolve supplier_id in hq.db (v1.10.75 migration preserved IDs
         // where possible, but fall back to name lookup for cross-tenant safety).
@@ -786,7 +788,7 @@ router.post('/generate', hqAuth, (req, res) => {
           purchase.invoice_attachment || null, purchase.supplier_invoice_number,
           generatorId, 'Completed',
           purchase_sync_id, purchase.purchase_number,
-          'CONFIRMED', grnSyncId, null, null, null
+          'CONFIRMED', grnSyncId, HQ_TENANT_ID, null, null
         );
         // 2. grn_items
         const insHqItem = hqDb.prepare(`
@@ -805,7 +807,7 @@ router.post('/generate', hqAuth, (req, res) => {
             grnSyncId, grnSyncId,
             prod?.id || null, it.product_sync_id || null,
             q, it.unit || null, p, q * p, it.expiry_date || null,
-            randomUUID(), null, null, null
+            randomUUID(), HQ_TENANT_ID, null, null
           );
         }
         // 3. supplier_credit_notes + items (for both money-only + stock-affecting).
@@ -844,7 +846,7 @@ router.post('/generate', hqAuth, (req, res) => {
               hqSupplierId, hqSupplierSyncId,
               reason, grnNumber, amt, cn.notes || null,
               grnSyncId, generatorId,
-              cnSyncId, null, null, null
+              cnSyncId, HQ_TENANT_ID, null, null
             );
             if (stockR) {
               for (const i of validCnItems) {
@@ -856,7 +858,7 @@ router.post('/generate', hqAuth, (req, res) => {
                   prod?.id || null, i.product_sync_id,
                   q, uv, q * uv, i.unit || null,
                   parseFloat(i.unit_conv) > 0 ? parseFloat(i.unit_conv) : 1,
-                  randomUUID(), null, null, null
+                  randomUUID(), HQ_TENANT_ID, null, null
                 );
               }
             }

@@ -18,21 +18,24 @@ const express = require('express');
 const router  = express.Router();
 const jwt = require('jsonwebtoken');
 const { randomUUID } = require('crypto');
-const { masterDb, listTenants } = require('../config/masterDb');
-const { getTenantDb } = require('../config/tenantDb');
+const { masterDb } = require('../config/masterDb');
+const db = require('../config/database');
 
-// v1.10.71 — Mirror HQ supplier payments into the HQ tenant DB so they
-// show up in the Cash Book (which reads from tenant DB, not master).
-// HQ's tenant slug is 'hq' by convention; falls back to a bare-host slug
-// if the deploy renamed it. Same helper cashDeposits.js uses.
-function getHqSlug() {
-  try {
-    const t = listTenants().find(t => t.slug === 'hq');
-    if (t) return 'hq';
-    const bare = listTenants().find(t => /^(sosna|sosnazm|hq)$/i.test(t.slug));
-    return bare ? bare.slug : 'hq';
-  } catch (_) { return 'hq'; }
+// v1.10.76 — On this deploy HQ runs as the single-tenant "bare host"
+// (sosnazm.com, no subdomain), which means the tenant middleware
+// doesn't fire and all HQ requests hit backend/sosna.db (the
+// defaultDb). Earlier v1.10.72–75 wrote to tenants/hq.db instead —
+// wrong file, empty on this deploy. Point every HQ tenant read/write
+// at db.defaultDb explicitly so it's stable regardless of any
+// AsyncLocalStorage routing.
+function getHqDb() {
+  return db.defaultDb;
 }
+// HQ_TENANT_ID — the tenant_id value AR / AP / Cash Book pages filter
+// by. On this deploy every existing row in sosna.db has
+// tenant_id='local-only' (auth.js falls back to that string when
+// sync_config is empty), so we use it verbatim for every new HQ row.
+const HQ_TENANT_ID = 'local-only';
 
 function hqAuth(req, res, next) {
   try {
@@ -52,7 +55,7 @@ function nextPaymentNumber() {
   // across the migration window.
   let seq = 0;
   try {
-    const hqDb = getTenantDb(getHqSlug());
+    const hqDb = getHqDb();
     if (hqDb) {
       seq = hqDb.prepare(`SELECT COUNT(*) AS n FROM ap_payments WHERE payment_number LIKE 'HSP-%'`).get()?.n || 0;
     }
@@ -82,7 +85,7 @@ function nextPaymentNumber() {
 // code path reads them here anymore. Aligns with the memoised
 // architecture: Suppliers/AP is HQ-only, HQ IS a tenant.
 function getBalances(supplierId, supplierName) {
-  const hqDb = getTenantDb(getHqSlug());
+  const hqDb = getHqDb();
   if (!hqDb) {
     return { purchase_count: 0, purchases_total: 0, payment_count: 0, payments_total: 0,
              credit_count: 0, credits_total: 0, balance: 0 };
@@ -126,7 +129,7 @@ function getBalances(supplierId, supplierName) {
 // now targets HQ's tenant DB (hq.db) so Account Payables and HQ Suppliers
 // share one source of truth.
 function requireHqDb(res) {
-  const hqDb = getTenantDb(getHqSlug());
+  const hqDb = getHqDb();
   if (!hqDb) {
     res.status(500).json({ error: 'HQ tenant DB not accessible.' });
     return null;
@@ -220,7 +223,7 @@ router.post('/', hqAuth, (req, res) => {
                               created_at, updated_at)
       VALUES (?,?,?,?,?, 'Active', ?, ?, ?, ?, 0, datetime('now'), datetime('now'))
     `).run(name.trim(), phone || null, email || null, address || null, contact_person || null,
-           randomUUID(), null, null, null);
+           randomUUID(), HQ_TENANT_ID, null, null);
     const row = hqDb.prepare(`SELECT * FROM suppliers WHERE id = ?`).get(info.lastInsertRowid);
     res.status(201).json({ ...row, ...getBalances(row.id, row.name) });
   } catch (error) {
@@ -304,7 +307,7 @@ router.post('/:id/payments', hqAuth, (req, res) => {
       paymentNum, s.id, s.sync_id, s.name,
       amt, cashAmt, bankAmt, momoAmt,
       description, payment_date, method, createdBy,
-      randomUUID(), null, null, null
+      randomUUID(), HQ_TENANT_ID, null, null
     );
     res.status(201).json({ success: true, balance: getBalances(s.id, s.name).balance });
   } catch (error) {
@@ -318,7 +321,7 @@ router.post('/:id/payments', hqAuth, (req, res) => {
 // while keeping the audit trail.
 router.delete('/payments/:id', hqAuth, (req, res) => {
   try {
-    const hqDb = getTenantDb(getHqSlug());
+    const hqDb = getHqDb();
     if (!hqDb) return res.status(500).json({ error: 'HQ tenant DB not accessible.' });
     const p = hqDb.prepare(`SELECT * FROM ap_payments WHERE id = ? AND deleted_at IS NULL`).get(req.params.id);
     if (!p) return res.status(404).json({ error: 'Payment not found' });
