@@ -554,7 +554,30 @@ router.get('/stats', auth, readOnlyGuard, (req, res) => {
     };
     const crByCcy = sumCcy('cash_receipts',    'date');
     const pvByCcy = sumCcy('payment_vouchers', 'date');
-    const apUsd   = db.prepare(`SELECT COALESCE(SUM(amount), 0) AS t FROM ap_payments WHERE deleted_at IS NULL AND tenant_id = ?${df}`).get(tenantId, ...dp).t;
+    // v1.10.79 — AP now splits by currency, matching CR/PV. Previous code
+    // lumped every ap_payments.amount into apUsd (subtracting from the USD
+    // balance card) AND never touched the K balance card. Now:
+    //   apByCcy.usd += usd_amount (or amount for legacy rows w/ no split)
+    //   apByCcy.fra += fra_amount
+    //   apByCcy.k   += k_amount   (or amount for legacy)
+    const apByCcy = (() => {
+      const row = db.prepare(`
+        SELECT
+          COALESCE(SUM(usd_amount), 0) AS usd_ccy,
+          COALESCE(SUM(fra_amount), 0) AS fra_ccy,
+          COALESCE(SUM(k_amount),   0) AS k_ccy,
+          COALESCE(SUM(CASE WHEN (COALESCE(usd_amount,0)+COALESCE(fra_amount,0)+COALESCE(k_amount,0)) = 0
+                             THEN amount ELSE 0 END), 0) AS legacy_amount
+        FROM ap_payments
+        WHERE deleted_at IS NULL AND tenant_id = ?${df}
+      `).get(tenantId, ...dp);
+      // Route legacy rows to K (matches v1.10.77 default: HQ + Liquor are K-primary).
+      return {
+        usd: parseFloat(row.usd_ccy),
+        fra: parseFloat(row.fra_ccy),
+        k:   parseFloat(row.k_ccy) + parseFloat(row.legacy_amount),
+      };
+    })();
     // POS sales — orders.cash_received / fra_received / k_received.
     const ordersUsd = db.prepare(`SELECT COALESCE(SUM(cash_received), 0) AS t FROM orders WHERE deleted_at IS NULL AND tenant_id = ? AND (status IS NULL OR status IN ('PAID','DISPATCHED'))${df.replace(/date/g, 'paid_at')}`).get(tenantId, ...dp).t;
     const ordersFra = db.prepare(`SELECT COALESCE(SUM(fra_received), 0) AS t FROM orders WHERE deleted_at IS NULL AND tenant_id = ? AND (status IS NULL OR status IN ('PAID','DISPATCHED'))${df.replace(/date/g, 'paid_at')}`).get(tenantId, ...dp).t;
@@ -645,9 +668,12 @@ router.get('/stats', auth, readOnlyGuard, (req, res) => {
       k:   ordersK   + crByCcy.k   + depInByCcy.k   + exchIn.k,
     };
     const paymentsByCcy = {
-      usd: pvByCcy.usd + apUsd + depOutByCcy.usd + exchOut.usd,
-      fra: pvByCcy.fra            + depOutByCcy.fra + exchOut.fra,
-      k:   pvByCcy.k              + depOutByCcy.k   + exchOut.k,
+      // v1.10.79 — AP now contributes per-currency (was apUsd — a single
+      // sum dumped into USD). apByCcy.k picks up the ALASKAL K32,000 so
+      // the K balance card actually drops when a supplier is paid in K.
+      usd: pvByCcy.usd + apByCcy.usd + depOutByCcy.usd + exchOut.usd,
+      fra: pvByCcy.fra + apByCcy.fra + depOutByCcy.fra + exchOut.fra,
+      k:   pvByCcy.k   + apByCcy.k   + depOutByCcy.k   + exchOut.k,
     };
     // Per-currency closing balance = opening + receipts − payments.
     // v1.10.25 — fold pre-period activity into openingByCcy when `from`
