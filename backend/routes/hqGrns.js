@@ -735,19 +735,28 @@ router.post('/generate', hqAuth, (req, res) => {
             FROM products WHERE sync_id = ? AND deleted_at IS NULL
         `).get(it.product_sync_id);
         if (!prod) continue;
-        // We use the line's qty directly as base units for v1.10.0 — the
-        // branch picker writes line.unit_conv-aware values, so this matches
-        // what hqGrns.confirm did in the prior flow. Tighten later if needed.
-        const deliveryCpUsd = toUsd(it.unit_price);
+        // v1.10.66 — convert line qty (e.g. 100 crates) into base units
+        // (bottles) using the product's units_json conversion. Prior
+        // versions posted the raw qty as if it were already in base
+        // units, which meant a "100 crates" GRN only added 100 bottles
+        // to stock and blended the WAC as $320/bottle instead of $13.33.
+        // Same helper as transfers.js /receive and routes/grn.js.
+        const conv = conversionToBase(prod, it.unit || prod.unit);
+        const baseQty = qty * conv;
+        // delivery cost is per-LINE-unit ($320/crate). Convert to per
+        // BASE unit for the WAC blend since current_stock + avg_cost_price
+        // are both denominated in base units.
+        const deliveryCpUsdPerLineUnit = toUsd(it.unit_price);
+        const deliveryCpUsdPerBase = conv > 0 ? deliveryCpUsdPerLineUnit / conv : deliveryCpUsdPerLineUnit;
         updWithWac.run(
-          qty,               // current_stock += qty
-          deliveryCpUsd,     // seed value when avg was NULL or stock was 0
-          qty, deliveryCpUsd,// numerator: received_qty × delivery_cp
-          qty,               // denominator adjust: + qty
+          baseQty,                     // current_stock += baseQty
+          deliveryCpUsdPerBase,        // seed value when avg was NULL or stock was 0
+          baseQty, deliveryCpUsdPerBase, // numerator: received_base × cp_per_base
+          baseQty,                     // denominator adjust: + baseQty
           prod.sync_id
         );
         insMov.run(
-          prod.id, prod.sync_id, 'sales', 'grn', qty,
+          prod.id, prod.sync_id, 'sales', 'grn', baseQty,
           null, 'hq_grn', grnSyncId,
           `HQ-generated GRN ${grnNumber}`,
           null,
