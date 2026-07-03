@@ -23,21 +23,34 @@ router.get('/', auth, readOnlyGuard, (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// POST /api/ap-payments — accepts split amounts (cash_amount + bank_amount + momo_amount).
+// POST /api/ap-payments — accepts split amounts (cash_amount + bank_amount + momo_amount)
+// AND the new triple-currency shape (usd_amount + fra_amount + k_amount)
+// used by HQ's AP Record Payment modal (v1.10.78).
 // Falls back to the legacy single `amount` + `paid_from` shape for older callers.
 router.post('/', auth, (req, res) => {
   try {
-    const { supplier_id, supplier_name, cash_amount, bank_amount, momo_amount, amount, description, date, paid_from, invoice_attachment } = req.body;
+    const { supplier_id, supplier_name, cash_amount, bank_amount, momo_amount,
+            usd_amount, fra_amount, k_amount,
+            amount, description, date, paid_from, invoice_attachment } = req.body;
     const cash = parseFloat(cash_amount || 0) || 0;
     const bank = parseFloat(bank_amount || 0) || 0;
     const momo = parseFloat(momo_amount || 0) || 0;
-    // Total: prefer the split sum; fall back to legacy single amount if no split was sent.
+    const usd  = parseFloat(usd_amount  || 0) || 0;
+    const fra  = parseFloat(fra_amount  || 0) || 0;
+    const kAmt = parseFloat(k_amount    || 0) || 0;
+    // v1.10.78 — total resolution priority: triple-currency sum > method sum > legacy `amount`.
+    const ccySum   = usd + fra + kAmt;
     const splitSum = cash + bank + momo;
-    const total    = splitSum > 0 ? splitSum : (parseFloat(amount || 0) || 0);
+    const total    = ccySum > 0 ? ccySum : (splitSum > 0 ? splitSum : (parseFloat(amount || 0) || 0));
     if (!(total > 0)) return res.status(400).json({ error: 'Amount is required.' });
 
     // Derive a paid_from label for display when none provided.
+    // v1.10.78 — prefer triple-currency label on HQ; fall back to method label.
     const derivedPaidFrom = paid_from || (() => {
+      if (ccySum > 0) {
+        const used = [usd > 0 && 'USD', fra > 0 && 'FRA', kAmt > 0 && 'K'].filter(Boolean);
+        return used.length === 1 ? used[0] : 'Mixed';
+      }
       const used = [cash > 0 && 'Cash', bank > 0 && 'Bank', momo > 0 && 'Mobile Money'].filter(Boolean);
       if (used.length === 0) return 'Main cashier';
       if (used.length === 1) return used[0];
@@ -47,19 +60,19 @@ router.post('/', auth, (req, res) => {
     const tenantId = syncConfig.getTenantId(req);
     const { branchId, deviceId } = syncConfig.getConfig();
     const paymentNum = syncConfig.generateNumber('APR', 'ap_payments');
-    // Prefer client-sent supplier_sync_id to avoid silent supplier swap on
-    // cross-device records.
     const supplierSyncId = req.body.supplier_sync_id
       || (supplier_id ? db.prepare('SELECT sync_id FROM suppliers WHERE id = ?').get(supplier_id)?.sync_id : null)
       || null;
     const info = db.prepare(`
       INSERT INTO ap_payments (payment_number, supplier_id, supplier_sync_id, supplier_name,
                                 amount, cash_amount, bank_amount, momo_amount,
+                                usd_amount, fra_amount, k_amount,
                                 description, date, paid_from, invoice_attachment, created_by,
                                 sync_id, tenant_id, branch_id, device_id, synced, created_at, updated_at)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,datetime('now'),datetime('now'))
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,datetime('now'),datetime('now'))
     `).run(paymentNum, supplier_id || null, supplierSyncId, supplier_name || null,
            total, cash, bank, momo,
+           usd, fra, kAmt,
            description || null, date || new Date().toISOString().split('T')[0],
            derivedPaidFrom, invoice_attachment || null, req.user.id,
            randomUUID(), tenantId, branchId, deviceId);

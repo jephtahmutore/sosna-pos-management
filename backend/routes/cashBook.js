@@ -81,11 +81,22 @@ function ccyReceiptsPayments(tenantId, slug, dateClause, dateParams) {
   payments.usd += num(db.prepare(`SELECT COALESCE(SUM(CASE WHEN COALESCE(usd_amount,0)>0 THEN usd_amount ELSE COALESCE(cash_amount,0) END), 0) AS t FROM payment_vouchers WHERE deleted_at IS NULL AND tenant_id = ?${dateClause}`).get(tenantId, ...dateParams).t);
   payments.fra += num(db.prepare(`SELECT COALESCE(SUM(fra_amount), 0) AS t FROM payment_vouchers WHERE deleted_at IS NULL AND tenant_id = ?${dateClause}`).get(tenantId, ...dateParams).t);
   payments.k   += num(db.prepare(`SELECT COALESCE(SUM(k_amount), 0)   AS t FROM payment_vouchers WHERE deleted_at IS NULL AND tenant_id = ?${dateClause}`).get(tenantId, ...dateParams).t);
-  // v1.10.77 — AP payments route to the K bucket (not USD). Suppliers
-  // are HQ-only (or legacy Liquor), both K-primary. Previous code put
-  // every ap_payments.amount into the USD bucket which made HQ Cash
-  // Book show a K32,000 supplier payment as $32,000 USD outflow.
-  payments.k += num(db.prepare(`SELECT COALESCE(SUM(amount), 0) AS t FROM ap_payments WHERE deleted_at IS NULL AND tenant_id = ?${dateClause}`).get(tenantId, ...dateParams).t);
+  // v1.10.78 — AP payments now support triple-currency (usd/fra/k) on HQ
+  // via the ap_payments columns added in the same version. Route each
+  // currency to its own bucket; rows that pre-date v1.10.78 (only
+  // amount populated, usd/fra/k = 0) fall back to k_out (legacy K-only
+  // behaviour matching v1.10.77).
+  payments.usd += num(db.prepare(`SELECT COALESCE(SUM(usd_amount), 0) AS t FROM ap_payments WHERE deleted_at IS NULL AND tenant_id = ?${dateClause}`).get(tenantId, ...dateParams).t);
+  payments.fra += num(db.prepare(`SELECT COALESCE(SUM(fra_amount), 0) AS t FROM ap_payments WHERE deleted_at IS NULL AND tenant_id = ?${dateClause}`).get(tenantId, ...dateParams).t);
+  payments.k   += num(db.prepare(`
+    SELECT COALESCE(SUM(
+      CASE WHEN (COALESCE(usd_amount,0) + COALESCE(fra_amount,0) + COALESCE(k_amount,0)) > 0
+        THEN COALESCE(k_amount, 0)
+        ELSE amount END
+    ), 0) AS t
+      FROM ap_payments
+     WHERE deleted_at IS NULL AND tenant_id = ?${dateClause}
+  `).get(tenantId, ...dateParams).t);
   // v1.10.42 — book-scope currency exchanges. Same shape as the ledger
   // UNION addition: from_currency → payments, to_currency → receipts.
   // Append-only, no deleted_at filter.
@@ -241,9 +252,15 @@ router.get('/', auth, readOnlyGuard, (req, res) => {
         END AS description,
         0 AS receipt_amount, amount AS payment_amount,
         0 AS usd_in, 0 AS fra_in, 0 AS k_in,
-        -- v1.10.77 — AP amount goes to k_out (K column), not usd_out.
-        -- Suppliers are HQ-only / legacy Liquor, both K-primary.
-        0 AS usd_out, 0 AS fra_out, amount AS k_out
+        -- v1.10.78 — split AP by currency when the triple-ccy columns are
+        -- populated (HQ from v1.10.78). Legacy rows (amount only, ccy
+        -- columns 0) fall back to k_out per the v1.10.77 K-primary
+        -- default for supplier payments.
+        COALESCE(usd_amount, 0) AS usd_out,
+        COALESCE(fra_amount, 0) AS fra_out,
+        CASE WHEN (COALESCE(usd_amount,0) + COALESCE(fra_amount,0) + COALESCE(k_amount,0)) > 0
+          THEN COALESCE(k_amount, 0)
+          ELSE amount END AS k_out
       FROM ap_payments
       WHERE deleted_at IS NULL AND tenant_id = ?${dateFilter}
         AND COALESCE(paid_from, '') != 'Empty Return'

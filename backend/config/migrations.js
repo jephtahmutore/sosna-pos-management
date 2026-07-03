@@ -835,6 +835,13 @@ function initTenantDb(db) {
   addCol('ap_payments',        'cash_amount', 'REAL NOT NULL DEFAULT 0');
   addCol('ap_payments',        'bank_amount', 'REAL NOT NULL DEFAULT 0');
   addCol('ap_payments',        'momo_amount', 'REAL NOT NULL DEFAULT 0');
+  // v1.10.78 — triple-currency columns on ap_payments so HQ can record
+  // supplier payments in USD / FRA / K just like PV does. Legacy Liquor
+  // branches keep using cash / bank / momo; the two sets coexist and
+  // the Cash Book UNION reads whichever is populated.
+  addCol('ap_payments',        'usd_amount', 'REAL NOT NULL DEFAULT 0');
+  addCol('ap_payments',        'fra_amount', 'REAL NOT NULL DEFAULT 0');
+  addCol('ap_payments',        'k_amount',   'REAL NOT NULL DEFAULT 0');
   // Same split on cash_receipts + payment_vouchers — needed for the Cash Book
   // to show current balance per method (Cash / Bank / Mobile Money).
   addCol('cash_receipts',      'cash_amount', 'REAL NOT NULL DEFAULT 0');
