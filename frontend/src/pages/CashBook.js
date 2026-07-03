@@ -466,6 +466,42 @@ const CashBook = () => {
           const fraOpen = stats.openingByCcy?.fra || 0;
           const kOpen   = stats.openingByCcy?.k   || 0;
 
+          if (isLiquorStyle) {
+            // v1.10.50 — Liquor branches (Mansa, Lusaka) render this as
+            // "Cash & Cash Equivalent" to match the old Liquor system
+            // (Alaskal) terminology the user asked for. Since Liquor is
+            // K-only across all three methods (Cash / MoMo / Bank), the
+            // roll-up is just the arithmetic sum — no FX conversion needed.
+            // Storage mapping (per v1.10.31): Cash → usd_amount,
+            // MoMo → fra_amount, Bank → k_amount. So currentByCcy already
+            // holds the three method balances directly, and their sum is
+            // the total K in the branch.
+            const cashEqNow  = usdNow  + fraNow  + kNow;
+            const cashEqOpen = usdOpen + fraOpen + kOpen;
+            const fmtCE = (n) => `${curSym}${(parseFloat(n) || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+            return (
+              <div
+                className={`stat-card purple ${activeCcy === 'all' ? 'active-filter' : ''}`}
+                onClick={() => setActiveCcy('all')}
+                style={{ cursor: 'pointer', outline: activeCcy === 'all' ? '3px solid #fbbf24' : 'none' }}
+              >
+                <div className="stat-icon"><FiDollarSign /></div>
+                <div>
+                  <div className="stat-label">Cash &amp; Cash Equivalent</div>
+                  <div className="stat-value">
+                    {hasPermission('CashBook:View') ? fmtCE(cashEqNow) : 'N/A'}
+                  </div>
+                  <div style={{ fontSize: 11, opacity: 0.85, marginTop: 2 }}>
+                    {t('opening')} {fmtCE(cashEqOpen)}
+                  </div>
+                  <div style={{ fontSize: 10, opacity: 0.7, marginTop: 2, fontStyle: 'italic' }}>
+                    Cash + Mobile Money + Bank
+                  </div>
+                </div>
+              </div>
+            );
+          }
+
           if (onHq) {
             // K-anchored: K + USD×sellK + FRA×(sellK / buyFRA)
             // sellK  = 1 USD sells for X K   → USD_native × sellK  = K
