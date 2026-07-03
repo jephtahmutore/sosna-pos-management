@@ -1206,14 +1206,11 @@ const POS = () => {
     width: 72mm;
     max-width: 72mm;
     padding: 2mm 2mm;
-    /* v1.10.61 — reverted to Courier for both styles. Arial-bold @ 11px
-       renders with variable stroke width when the browser rasterises
-       for the thermal head, which produces thin/grey letters compared
-       to the printer's own bitmap self-test font. Courier's uniform
-       thick stems match what the Epson TM-T88VII prints natively, so
-       the ink density is consistent whether the receipt goes via the
-       ESC/POS route or the browser fallback. */
-    font-family: 'Courier New', Courier, monospace;
+    /* v1.10.28 — Liquor-style branches use bold Arial to match the
+       thermal-printer look the user asked for (heavy strokes, uppercase-
+       friendly). Sosna multi-currency stays on Courier for backward
+       compatibility with the existing dual-currency receipt. */
+    font-family: ${isLiquorStyle ? "Arial, Helvetica, sans-serif" : "'Courier New', Courier, monospace"};
     font-size: 11px;
     color: #000;
     font-weight: 700;
