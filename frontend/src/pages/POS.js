@@ -171,6 +171,11 @@ const POS = () => {
   const cartListRef = useRef(null);
   const prevCartLenRef = useRef(0);
   const suppressCartBroadcast = useRef(false);
+  // v1.10.64 — refocus the search input after every Add to Cart so the
+  // cashier can type/scan the next item without reaching for the mouse.
+  // v1.8.38 kept the search text intentionally (multi-add same result),
+  // so this ref only re-focuses — clearing stays manual via the X button.
+  const searchInputRef = useRef(null);
 
   // BroadcastChannel to customer display
   useEffect(() => {
@@ -570,6 +575,14 @@ const POS = () => {
         conversion_factor: (units.find(u => !u.is_base)?.conv) ?? null,
       }];
     });
+    // v1.10.64 — after the cart update, put focus back on the search input
+    // so the cashier can type/scan the next item without touching the mouse.
+    // Deferred inside a microtask so React's cart re-render doesn't steal
+    // focus back to whatever button was clicked. Search text is left
+    // intentionally (v1.8.38) so multi-adding the same result still works.
+    if (searchInputRef.current) {
+      Promise.resolve().then(() => searchInputRef.current?.focus());
+    }
   };
 
   // Switch a cart line to a different unit. Looks up the new unit in the cart item's
@@ -1345,7 +1358,7 @@ const POS = () => {
               search is empty. */}
           <div className="search-input-container" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
             <FiSearch style={{ color: '#9ca3af' }} />
-            <input type="text" placeholder="Search products by name..." value={search} onChange={e => setSearch(e.target.value)} style={{ flex: 1 }} />
+            <input ref={searchInputRef} type="text" placeholder="Search products by name..." value={search} onChange={e => setSearch(e.target.value)} style={{ flex: 1 }} />
             {search && (
               <button onClick={() => setSearch('')} title="Clear search"
                 style={{ padding: '4px 12px', borderRadius: 8, border: '1px solid #e5e7eb', background: '#fff', color: '#6b7280', cursor: 'pointer', fontSize: 12, fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: 5 }}>
