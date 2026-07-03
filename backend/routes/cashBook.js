@@ -189,7 +189,12 @@ router.get('/', auth, readOnlyGuard, (req, res) => {
     // columns (AP / capital / dividend / loan) bucket their amount into USD.
     const entries = db.prepare(`
       SELECT date, 'CR' AS type, receipt_number AS reference,
-        COALESCE(received_from, '') || ' - ' || COALESCE(description, '') AS description,
+        -- v1.10.49 — no trailing " - " when description is empty.
+        CASE
+          WHEN COALESCE(description, '') != ''
+            THEN COALESCE(received_from, '') || ' — ' || description
+          ELSE COALESCE(received_from, '')
+        END AS description,
         amount AS receipt_amount, 0 AS payment_amount,
         CASE WHEN COALESCE(usd_amount,0) > 0 THEN usd_amount ELSE COALESCE(cash_amount,0) END AS usd_in,
         COALESCE(fra_amount, 0) AS fra_in,
@@ -199,7 +204,22 @@ router.get('/', auth, readOnlyGuard, (req, res) => {
       WHERE deleted_at IS NULL AND tenant_id = ?${dateFilter}
       UNION ALL
       SELECT date, 'PV' AS type, voucher_number AS reference,
-        COALESCE(paid_to, '') || ' - ' || COALESCE(description, '') AS description,
+        -- v1.10.49 — PV description now folds in the Type (category)
+        -- from the PV modal. Priority: description > category > (empty).
+        -- Bare " - " suffix removed. Example results:
+        --   paid_to='Edron', category='Salaries', desc='' → 'Edron · Salaries'
+        --   paid_to='Edron', desc='for July'              → 'Edron — for July'
+        --   paid_to='Edron', category='Salaries', desc='for July'
+        --     → 'Edron · Salaries — for July'
+        CASE
+          WHEN COALESCE(description, '') != '' AND COALESCE(category, '') != ''
+            THEN COALESCE(paid_to, '') || ' · ' || category || ' — ' || description
+          WHEN COALESCE(description, '') != ''
+            THEN COALESCE(paid_to, '') || ' — ' || description
+          WHEN COALESCE(category, '') != ''
+            THEN COALESCE(paid_to, '') || ' · ' || category
+          ELSE COALESCE(paid_to, '')
+        END AS description,
         0 AS receipt_amount, amount AS payment_amount,
         0 AS usd_in, 0 AS fra_in, 0 AS k_in,
         CASE WHEN COALESCE(usd_amount,0) > 0 THEN usd_amount ELSE COALESCE(cash_amount,0) END AS usd_out,
@@ -209,7 +229,13 @@ router.get('/', auth, readOnlyGuard, (req, res) => {
       WHERE deleted_at IS NULL AND tenant_id = ?${dateFilter}
       UNION ALL
       SELECT date, 'AP' AS type, payment_number AS reference,
-        COALESCE(supplier_name, '') || ' - ' || COALESCE(description, 'Supplier Payment') AS description,
+        -- v1.10.49 — same tidy-up for AP. "Supplier Payment" only kicks
+        -- in when description is genuinely blank.
+        CASE
+          WHEN COALESCE(description, '') != ''
+            THEN COALESCE(supplier_name, '') || ' — ' || description
+          ELSE COALESCE(supplier_name, 'Supplier Payment')
+        END AS description,
         0 AS receipt_amount, amount AS payment_amount,
         0 AS usd_in, 0 AS fra_in, 0 AS k_in,
         amount AS usd_out, 0 AS fra_out, 0 AS k_out
@@ -440,6 +466,27 @@ router.get('/stats', auth, readOnlyGuard, (req, res) => {
           - b.pv - b.ap - b.capOut - b.div - b.loanPrin - b.loanInt
           + b.transferNet;
       });
+      // v1.10.49 — subtract pre-period deposits per drawer so Jul-2's
+      // opening tiles reflect Jul-1's closing. Same shape as v1.10.48's
+      // current-day adjustment, applied to the fold instead. Needs
+      // masterDb + slug — read them out of the enclosing /stats scope.
+      const slugForFold = String(req.query.slug || '').toLowerCase();
+      if (masterDb && slugForFold) {
+        try {
+          const datePredFold = `date(COALESCE(deposit_date, confirmed_at, created_at))`;
+          const preDepRows = masterDb.prepare(`
+            SELECT COALESCE(from_method, 'Cash') AS m, COALESCE(SUM(amount), 0) AS t
+              FROM cash_deposits
+             WHERE status = 'CONFIRMED' AND from_slug = ?
+               AND ${datePredFold} < ?
+             GROUP BY COALESCE(from_method, 'Cash')
+          `).all(slugForFold, from);
+          for (const r of preDepRows) {
+            const key = r.m === 'Mobile Money' ? 'momo' : r.m === 'Bank' ? 'bank' : 'cash';
+            openingByMethod[key] -= parseFloat(r.t);
+          }
+        } catch (_) { /* non-fatal */ }
+      }
     }
 
     const currentByMethod = {
