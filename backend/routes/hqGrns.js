@@ -750,6 +750,121 @@ router.post('/generate', hqAuth, (req, res) => {
       }
     })();
 
+    // v1.10.75 — HQ TENANT DB MIRROR. Every GRN + CN also lives in hq.db
+    // (grn, grn_items, supplier_credit_notes, supplier_credit_note_items)
+    // so HQ Suppliers page and Account Payables page share ONE source
+    // of truth. Master tables (hq_grns / hq_grn_items / hq_supplier_*)
+    // remain as an audit trail but no code path reads them for AP anymore.
+    // Wrapped in try/catch — failure logs but doesn't roll back the
+    // master GRN; a hq.db backfill script can repair later.
+    try {
+      const hqDbSlug = (listTenants().find(t => t.slug === 'hq')?.slug) || 'hq';
+      const hqDb = getTenantDb(hqDbSlug);
+      if (hqDb) {
+        // Resolve supplier_id in hq.db (v1.10.75 migration preserved IDs
+        // where possible, but fall back to name lookup for cross-tenant safety).
+        let hqSupplierId = null;
+        let hqSupplierSyncId = null;
+        if (purchase.supplier_name) {
+          const supRow = hqDb.prepare(
+            `SELECT id, sync_id FROM suppliers WHERE LOWER(name) = LOWER(?) LIMIT 1`
+          ).get(purchase.supplier_name);
+          if (supRow) { hqSupplierId = supRow.id; hqSupplierSyncId = supRow.sync_id; }
+        }
+        // 1. grn row — total_amount = final_payable (AP-owed after CNs).
+        hqDb.prepare(`
+          INSERT INTO grn (grn_number, date, supplier_id, supplier_sync_id, supplier_name,
+                            total_items, total_amount, notes, invoice_attachment, supplier_invoice_number,
+                            created_by, status, linked_purchase_sync_id, linked_purchase_number,
+                            hq_status, sync_id, tenant_id, branch_id, device_id,
+                            synced, created_at, updated_at)
+          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,datetime('now'),datetime('now'))
+        `).run(
+          grnNumber, grnDate,
+          hqSupplierId, hqSupplierSyncId, purchase.supplier_name || null,
+          validItems.length, finalPayable, notes || null,
+          purchase.invoice_attachment || null, purchase.supplier_invoice_number,
+          generatorId, 'Completed',
+          purchase_sync_id, purchase.purchase_number,
+          'CONFIRMED', grnSyncId, null, null, null
+        );
+        // 2. grn_items
+        const insHqItem = hqDb.prepare(`
+          INSERT INTO grn_items (grn_id, grn_sync_id, product_id, product_sync_id,
+                                  quantity, unit, unit_price, total_price, expiry_date,
+                                  sync_id, tenant_id, branch_id, device_id,
+                                  synced, created_at, updated_at)
+          VALUES ((SELECT id FROM grn WHERE sync_id = ?),?,?,?,?,?,?,?,?,?,?,?,?,0,datetime('now'),datetime('now'))
+        `);
+        const findHqProduct = hqDb.prepare(`SELECT id FROM products WHERE sync_id = ? LIMIT 1`);
+        for (const it of validItems) {
+          const q = parseFloat(it.quantity) || 0;
+          const p = parseFloat(it.unit_price) || 0;
+          const prod = it.product_sync_id ? findHqProduct.get(it.product_sync_id) : null;
+          insHqItem.run(
+            grnSyncId, grnSyncId,
+            prod?.id || null, it.product_sync_id || null,
+            q, it.unit || null, p, q * p, it.expiry_date || null,
+            randomUUID(), null, null, null
+          );
+        }
+        // 3. supplier_credit_notes + items (for both money-only + stock-affecting).
+        if (Array.isArray(credit_notes) && credit_notes.length > 0) {
+          const insHqCn = hqDb.prepare(`
+            INSERT INTO supplier_credit_notes (credit_note_number, date, supplier_id, supplier_sync_id,
+                                                supplier_name, reason, reference, amount, notes,
+                                                grn_sync_id, created_by, sync_id, tenant_id, branch_id, device_id,
+                                                synced, created_at, updated_at)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,datetime('now'),datetime('now'))
+          `);
+          const insHqCnItem = hqDb.prepare(`
+            INSERT INTO supplier_credit_note_items (credit_note_id, credit_note_sync_id, product_id, product_sync_id,
+                                                     quantity, unit_value, total_price, unit, unit_conv,
+                                                     sync_id, tenant_id, branch_id, device_id,
+                                                     synced, created_at, updated_at)
+            VALUES ((SELECT id FROM supplier_credit_notes WHERE sync_id = ?),?,?,?,?,?,?,?,?,?,?,?,?,0,datetime('now'),datetime('now'))
+          `);
+          for (const cn of credit_notes) {
+            const reason = String(cn?.reason || 'Other');
+            const stockR = reason === 'Crate Return' || reason === 'Bottle Return' || reason === 'Goods Return';
+            const validCnItems = stockR && Array.isArray(cn.items)
+              ? cn.items.filter(i => i.product_sync_id && parseFloat(i.quantity) > 0)
+              : [];
+            const amt = stockR
+              ? validCnItems.reduce((s, i) => s + parseFloat(i.quantity) * parseFloat(i.unit_value || 0), 0)
+              : (Math.abs(parseFloat(cn.amount || 0)) || 0);
+            if (amt < 0.001) continue;
+            if (stockR && validCnItems.length === 0) continue;
+            const cnNumber = `SCN-${new Date().getFullYear()}-${randomUUID().slice(0, 8).toUpperCase()}`;
+            const cnSyncId = randomUUID();
+            insHqCn.run(
+              cnNumber, grnDate,
+              hqSupplierId, hqSupplierSyncId, purchase.supplier_name || null,
+              reason, grnNumber, amt, cn.notes || null,
+              grnSyncId, generatorId,
+              cnSyncId, null, null, null
+            );
+            if (stockR) {
+              for (const i of validCnItems) {
+                const q = parseFloat(i.quantity) || 0;
+                const uv = parseFloat(i.unit_value) || 0;
+                const prod = findHqProduct.get(i.product_sync_id);
+                insHqCnItem.run(
+                  cnSyncId, cnSyncId,
+                  prod?.id || null, i.product_sync_id,
+                  q, uv, q * uv, i.unit || null,
+                  parseFloat(i.unit_conv) > 0 ? parseFloat(i.unit_conv) : 1,
+                  randomUUID(), null, null, null
+                );
+              }
+            }
+          }
+        }
+      }
+    } catch (hqMirrorErr) {
+      console.error('[hq.grns.generate] hq.db mirror failed:', hqMirrorErr.message);
+    }
+
     // 4. Post stock to branch tenant DB (outside master tx — different connection)
     // v1.10.55 — WAC redesign push 3: blend delivery cost into the branch's
     // avg_cost_price. Delivery CP is derived from the PO's declared FX rate

@@ -77,42 +77,37 @@ function nextPaymentNumber() {
 // hq_grns.final_payable already nets the invoice against the GRN-time CNs,
 // but standalone CNs recorded later against the same supplier still need
 // to be deducted separately.
+// v1.10.75 — everything (purchases + payments + CNs) now reads from
+// HQ tenant DB. Master.hq_* tables kept as a frozen audit trail; no
+// code path reads them here anymore. Aligns with the memoised
+// architecture: Suppliers/AP is HQ-only, HQ IS a tenant.
 function getBalances(supplierId, supplierName) {
-  const purchases = masterDb.prepare(`
-    SELECT COALESCE(SUM(final_payable), 0) AS s, COUNT(*) AS c
-      FROM hq_grns
-     WHERE deleted_at IS NULL
-       AND (supplier_id = ? OR (supplier_id IS NULL AND LOWER(COALESCE(supplier_name,'')) = LOWER(?)))
-  `).get(supplierId, supplierName);
-  // v1.10.72 — payments now live in HQ tenant DB (hq.db.ap_payments),
-  // not master.hq_supplier_payments. Single source of truth; Cash Book
-  // reads ap_payments natively so no mirror is needed. Match by
-  // supplier_name (case-insensitive) since HQ suppliers don't have
-  // matching tenant supplier_id rows.
-  let payments = { s: 0, c: 0 };
-  try {
-    const hqDb = getTenantDb(getHqSlug());
-    if (hqDb) {
-      payments = hqDb.prepare(`
-        SELECT COALESCE(SUM(amount), 0) AS s, COUNT(*) AS c
-          FROM ap_payments
-         WHERE deleted_at IS NULL
-           AND LOWER(COALESCE(supplier_name, '')) = LOWER(?)
-      `).get(supplierName) || { s: 0, c: 0 };
-    }
-  } catch (e) {
-    console.error('[hqSuppliers.getBalances] tenant payments read failed:', e.message);
+  const hqDb = getTenantDb(getHqSlug());
+  if (!hqDb) {
+    return { purchase_count: 0, purchases_total: 0, payment_count: 0, payments_total: 0,
+             credit_count: 0, credits_total: 0, balance: 0 };
   }
-  // Standalone credit notes NOT already netted into an hq_grn.
-  // grn_sync_id IS NULL → recorded independently. Rows attached to a
-  // GRN (grn_sync_id set) are already inside hq_grns.final_payable so
-  // deducting them twice would double-count.
-  const credits = masterDb.prepare(`
+  const purchases = hqDb.prepare(`
+    SELECT COALESCE(SUM(total_amount), 0) AS s, COUNT(*) AS c
+      FROM grn
+     WHERE deleted_at IS NULL
+       AND (supplier_id = ? OR LOWER(COALESCE(supplier_name,'')) = LOWER(?))
+  `).get(supplierId, supplierName);
+  const payments = hqDb.prepare(`
     SELECT COALESCE(SUM(amount), 0) AS s, COUNT(*) AS c
-      FROM hq_supplier_credit_notes
+      FROM ap_payments
+     WHERE deleted_at IS NULL
+       AND (supplier_id = ? OR LOWER(COALESCE(supplier_name,'')) = LOWER(?))
+  `).get(supplierId, supplierName);
+  // Standalone credit notes NOT netted into a GRN — grn_sync_id IS NULL.
+  // GRN-attached CNs are already inside grn.total_amount (which was
+  // populated with hq_grns.final_payable = items_subtotal − cn_total).
+  const credits = hqDb.prepare(`
+    SELECT COALESCE(SUM(amount), 0) AS s, COUNT(*) AS c
+      FROM supplier_credit_notes
      WHERE deleted_at IS NULL
        AND grn_sync_id IS NULL
-       AND (supplier_id = ? OR (supplier_id IS NULL AND LOWER(COALESCE(supplier_name,'')) = LOWER(?)))
+       AND (supplier_id = ? OR LOWER(COALESCE(supplier_name,'')) = LOWER(?))
   `).get(supplierId, supplierName);
   return {
     purchase_count:  purchases.c,
@@ -125,12 +120,25 @@ function getBalances(supplierId, supplierName) {
   };
 }
 
+// v1.10.75 — helpers for the CRUD/list/detail routes. Every read AND write
+// now targets HQ's tenant DB (hq.db) so Account Payables and HQ Suppliers
+// share one source of truth.
+function requireHqDb(res) {
+  const hqDb = getTenantDb(getHqSlug());
+  if (!hqDb) {
+    res.status(500).json({ error: 'HQ tenant DB not accessible.' });
+    return null;
+  }
+  return hqDb;
+}
+
 // GET /api/hq/suppliers — list with AP balance per row.
-// Optional ?with_purchases=1 includes recent purchases sorted desc.
 router.get('/', hqAuth, (req, res) => {
   try {
-    const suppliers = masterDb.prepare(`
-      SELECT * FROM hq_suppliers WHERE status != 'Deleted' ORDER BY name COLLATE NOCASE ASC
+    const hqDb = requireHqDb(res); if (!hqDb) return;
+    const suppliers = hqDb.prepare(`
+      SELECT * FROM suppliers WHERE COALESCE(status, 'Active') != 'Deleted' AND deleted_at IS NULL
+       ORDER BY name COLLATE NOCASE ASC
     `).all();
     const enriched = suppliers.map(s => ({ ...s, ...getBalances(s.id, s.name) }));
     res.json({ suppliers: enriched });
@@ -139,61 +147,52 @@ router.get('/', hqAuth, (req, res) => {
   }
 });
 
-// GET /api/hq/suppliers/:id — detail with purchases + payments history.
+// GET /api/hq/suppliers/:id — detail with purchases + payments + credits history.
 router.get('/:id', hqAuth, (req, res) => {
   try {
-    const s = masterDb.prepare(`SELECT * FROM hq_suppliers WHERE id = ?`).get(req.params.id);
+    const hqDb = requireHqDb(res); if (!hqDb) return;
+    const s = hqDb.prepare(`SELECT * FROM suppliers WHERE id = ?`).get(req.params.id);
     if (!s) return res.status(404).json({ error: 'Supplier not found' });
     const balances = getBalances(s.id, s.name);
-    // v1.10.52 — purchases list now comes from hq_grns (matches the AP
-    // balance source above). Older PO rows without a linked GRN don't
-    // show up here — they were never really owed until confirmed anyway.
-    const purchases = masterDb.prepare(`
+    // Purchases list from hq.db.grn (migrated from master.hq_grns). Column
+    // aliasing preserves the frontend response shape verbatim.
+    const purchases = hqDb.prepare(`
       SELECT id, grn_number AS purchase_number, date,
-             final_payable AS total_amount,
-             'CONFIRMED' AS status,
+             total_amount,
+             COALESCE(status, 'Completed') AS status,
              supplier_invoice_number AS invoice_number,
-             generated_by_hq_name AS created_by_name,
-             po_number, items_subtotal, cn_total
-        FROM hq_grns
+             (SELECT first_name || ' ' || last_name FROM users u WHERE u.id = grn.created_by) AS created_by_name,
+             linked_purchase_number AS po_number
+        FROM grn
        WHERE deleted_at IS NULL
-         AND (supplier_id = ? OR (supplier_id IS NULL AND LOWER(COALESCE(supplier_name,'')) = LOWER(?)))
+         AND (supplier_id = ? OR LOWER(COALESCE(supplier_name,'')) = LOWER(?))
        ORDER BY date DESC, id DESC
        LIMIT 200
     `).all(s.id, s.name);
-    // v1.10.72 — payments now live in HQ tenant DB (hq.db.ap_payments).
-    // Shape-adapt the columns so the existing frontend Payments table
-    // renders without change (payment_number, amount, payment_date,
-    // payment_method, reference, notes, created_by_name).
-    let payments = [];
-    try {
-      const hqDb = getTenantDb(getHqSlug());
-      if (hqDb) {
-        payments = hqDb.prepare(`
-          SELECT id,
-                 payment_number,
-                 amount,
-                 date AS payment_date,
-                 paid_from AS payment_method,
-                 NULL AS reference,
-                 description AS notes,
-                 NULL AS created_by_name
-            FROM ap_payments
-           WHERE deleted_at IS NULL
-             AND LOWER(COALESCE(supplier_name, '')) = LOWER(?)
-           ORDER BY date DESC, id DESC
-           LIMIT 200
-        `).all(s.name);
-      }
-    } catch (e) {
-      console.error('[hqSuppliers.detail] tenant payments read failed:', e.message);
-    }
-    const credits = masterDb.prepare(`
-      SELECT id, credit_note_number, date, amount, reason, reference, notes,
-             created_by_name, grn_sync_id
-        FROM hq_supplier_credit_notes
+    // Payments list — same shape as the frontend expects (v1.10.72
+    // aliasing kept: date → payment_date, paid_from → payment_method).
+    const payments = hqDb.prepare(`
+      SELECT id,
+             payment_number,
+             amount,
+             date AS payment_date,
+             paid_from AS payment_method,
+             NULL AS reference,
+             description AS notes,
+             (SELECT first_name || ' ' || last_name FROM users u WHERE u.id = ap_payments.created_by) AS created_by_name
+        FROM ap_payments
        WHERE deleted_at IS NULL
-         AND (supplier_id = ? OR (supplier_id IS NULL AND LOWER(COALESCE(supplier_name,'')) = LOWER(?)))
+         AND (supplier_id = ? OR LOWER(COALESCE(supplier_name,'')) = LOWER(?))
+       ORDER BY date DESC, id DESC
+       LIMIT 200
+    `).all(s.id, s.name);
+    const credits = hqDb.prepare(`
+      SELECT id, credit_note_number, date, amount, reason, reference, notes,
+             (SELECT first_name || ' ' || last_name FROM users u WHERE u.id = supplier_credit_notes.created_by) AS created_by_name,
+             grn_sync_id
+        FROM supplier_credit_notes
+       WHERE deleted_at IS NULL
+         AND (supplier_id = ? OR LOWER(COALESCE(supplier_name,'')) = LOWER(?))
        ORDER BY date DESC, id DESC
        LIMIT 200
     `).all(s.id, s.name);
@@ -206,16 +205,21 @@ router.get('/:id', hqAuth, (req, res) => {
 // POST /api/hq/suppliers — create.
 router.post('/', hqAuth, (req, res) => {
   try {
+    const hqDb = requireHqDb(res); if (!hqDb) return;
     const { name, phone, email, address, contact_person, notes } = req.body || {};
     if (!name || !name.trim()) return res.status(400).json({ error: 'name is required' });
-    // Reject duplicates (case-insensitive) so the AP fallback stays unambiguous.
-    const dup = masterDb.prepare(`SELECT id FROM hq_suppliers WHERE LOWER(name) = LOWER(?) AND status != 'Deleted'`).get(name.trim());
+    const dup = hqDb.prepare(
+      `SELECT id FROM suppliers WHERE LOWER(name) = LOWER(?) AND COALESCE(status,'Active') != 'Deleted' AND deleted_at IS NULL`
+    ).get(name.trim());
     if (dup) return res.status(400).json({ error: 'A supplier with this name already exists' });
-    const info = masterDb.prepare(`
-      INSERT INTO hq_suppliers (name, phone, email, address, contact_person, notes)
-      VALUES (?,?,?,?,?,?)
-    `).run(name.trim(), phone || null, email || null, address || null, contact_person || null, notes || null);
-    const row = masterDb.prepare(`SELECT * FROM hq_suppliers WHERE id = ?`).get(info.lastInsertRowid);
+    const info = hqDb.prepare(`
+      INSERT INTO suppliers (name, phone, email, address, contact_person, status,
+                              sync_id, tenant_id, branch_id, device_id, synced,
+                              created_at, updated_at)
+      VALUES (?,?,?,?,?, 'Active', ?, ?, ?, ?, 0, datetime('now'), datetime('now'))
+    `).run(name.trim(), phone || null, email || null, address || null, contact_person || null,
+           randomUUID(), null, null, null);
+    const row = hqDb.prepare(`SELECT * FROM suppliers WHERE id = ?`).get(info.lastInsertRowid);
     res.status(201).json({ ...row, ...getBalances(row.id, row.name) });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -225,22 +229,25 @@ router.post('/', hqAuth, (req, res) => {
 // PUT /api/hq/suppliers/:id — edit.
 router.put('/:id', hqAuth, (req, res) => {
   try {
-    const s = masterDb.prepare(`SELECT * FROM hq_suppliers WHERE id = ?`).get(req.params.id);
+    const hqDb = requireHqDb(res); if (!hqDb) return;
+    const s = hqDb.prepare(`SELECT * FROM suppliers WHERE id = ?`).get(req.params.id);
     if (!s) return res.status(404).json({ error: 'Supplier not found' });
     const { name, phone, email, address, contact_person, notes, status } = req.body || {};
     if (!name || !name.trim()) return res.status(400).json({ error: 'name is required' });
     if (name.trim().toLowerCase() !== s.name.toLowerCase()) {
-      const dup = masterDb.prepare(`SELECT id FROM hq_suppliers WHERE LOWER(name) = LOWER(?) AND id != ? AND status != 'Deleted'`).get(name.trim(), req.params.id);
+      const dup = hqDb.prepare(
+        `SELECT id FROM suppliers WHERE LOWER(name) = LOWER(?) AND id != ? AND COALESCE(status,'Active') != 'Deleted' AND deleted_at IS NULL`
+      ).get(name.trim(), req.params.id);
       if (dup) return res.status(400).json({ error: 'Another supplier already uses this name' });
     }
-    masterDb.prepare(`
-      UPDATE hq_suppliers
-         SET name = ?, phone = ?, email = ?, address = ?, contact_person = ?, notes = ?,
-             status = ?, updated_at = datetime('now')
+    hqDb.prepare(`
+      UPDATE suppliers
+         SET name = ?, phone = ?, email = ?, address = ?, contact_person = ?,
+             status = ?, updated_at = datetime('now'), synced = 0
        WHERE id = ?
-    `).run(name.trim(), phone || null, email || null, address || null, contact_person || null, notes || null,
+    `).run(name.trim(), phone || null, email || null, address || null, contact_person || null,
            (status === 'Inactive' ? 'Inactive' : 'Active'), req.params.id);
-    const row = masterDb.prepare(`SELECT * FROM hq_suppliers WHERE id = ?`).get(req.params.id);
+    const row = hqDb.prepare(`SELECT * FROM suppliers WHERE id = ?`).get(req.params.id);
     res.json({ ...row, ...getBalances(row.id, row.name) });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -250,14 +257,14 @@ router.put('/:id', hqAuth, (req, res) => {
 // DELETE /api/hq/suppliers/:id — soft delete (kept for AP history).
 router.delete('/:id', hqAuth, (req, res) => {
   try {
-    const s = masterDb.prepare(`SELECT * FROM hq_suppliers WHERE id = ?`).get(req.params.id);
+    const hqDb = requireHqDb(res); if (!hqDb) return;
+    const s = hqDb.prepare(`SELECT * FROM suppliers WHERE id = ?`).get(req.params.id);
     if (!s) return res.status(404).json({ error: 'Supplier not found' });
     const bal = getBalances(s.id, s.name);
     if (bal.purchase_count > 0 || bal.payment_count > 0) {
-      // Soft delete so historical records keep their name. Hidden from list.
-      masterDb.prepare(`UPDATE hq_suppliers SET status = 'Deleted', updated_at = datetime('now') WHERE id = ?`).run(req.params.id);
+      hqDb.prepare(`UPDATE suppliers SET status = 'Deleted', deleted_at = datetime('now'), updated_at = datetime('now'), synced = 0 WHERE id = ?`).run(req.params.id);
     } else {
-      masterDb.prepare(`DELETE FROM hq_suppliers WHERE id = ?`).run(req.params.id);
+      hqDb.prepare(`DELETE FROM suppliers WHERE id = ?`).run(req.params.id);
     }
     res.json({ success: true });
   } catch (error) {
@@ -268,27 +275,16 @@ router.delete('/:id', hqAuth, (req, res) => {
 // POST /api/hq/suppliers/:id/payments — record a payment to this supplier.
 router.post('/:id/payments', hqAuth, (req, res) => {
   try {
-    const s = masterDb.prepare(`SELECT * FROM hq_suppliers WHERE id = ?`).get(req.params.id);
+    const hqDb = requireHqDb(res); if (!hqDb) return;
+    const s = hqDb.prepare(`SELECT id, name, sync_id FROM suppliers WHERE id = ?`).get(req.params.id);
     if (!s) return res.status(404).json({ error: 'Supplier not found' });
     const { amount, payment_date, payment_method, reference, notes } = req.body || {};
     const amt = parseFloat(amount);
     if (!(amt > 0)) return res.status(400).json({ error: 'amount must be > 0' });
     if (!payment_date) return res.status(400).json({ error: 'payment_date is required' });
     const method = ['Cash', 'Bank', 'Mobile Money'].includes(payment_method) ? payment_method : 'Cash';
-    const createdBy     = req.user.id || null;
-    const createdByName = req.user.firstName || req.user.email || 'HQ';
-    // v1.10.72 — payments now write DIRECTLY to HQ tenant DB
-    // (hq.db.ap_payments) as the single source of truth. No more
-    // master.hq_supplier_payments duality. Cash Book reads ap_payments
-    // natively — no mirror-write, no sync bugs. Aligns with the user's
-    // architecture: Suppliers/AP is HQ-only, and HQ IS a tenant.
-    // Fails HARD if the tenant DB isn't accessible so the operator
-    // sees a real error instead of a silently-lost payment.
+    const createdBy = req.user.id || null;
     const paymentNum = nextPaymentNumber();
-    const hqDb = getTenantDb(getHqSlug());
-    if (!hqDb) {
-      return res.status(500).json({ error: 'HQ tenant DB not accessible; cannot record payment.' });
-    }
     const cashAmt = method === 'Cash'         ? amt : 0;
     const bankAmt = method === 'Bank'         ? amt : 0;
     const momoAmt = method === 'Mobile Money' ? amt : 0;
@@ -303,7 +299,7 @@ router.post('/:id/payments', hqAuth, (req, res) => {
                                 synced, created_at, updated_at)
       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,datetime('now'),datetime('now'))
     `).run(
-      paymentNum, null, null, s.name,
+      paymentNum, s.id, s.sync_id, s.name,
       amt, cashAmt, bankAmt, momoAmt,
       description, payment_date, method, createdBy,
       randomUUID(), null, null, null
