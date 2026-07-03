@@ -45,7 +45,7 @@ const parseAttachments = (raw) => {
 };
 
 const HQDeposits = () => {
-  const { symbol: curSym, currencyMode } = useCurrency();
+  const { symbol: curSym, currencyMode, isLiquorStyle } = useCurrency();
   const onHq = isHqHost();
   const isDual = currencyMode === 'USD+FRA' || currencyMode === 'USD+FRA+K';
   const hasK   = currencyMode === 'USD+FRA+K';
@@ -66,7 +66,7 @@ const HQDeposits = () => {
 
   // Send Deposit modal (branch only)
   const [showSend, setShowSend] = useState(false);
-  const [sendForm, setSendForm] = useState({ currency: defaultDepositCcy, amount: '', notes: '', deposit_date: todayStr(), attachments: [] });
+  const [sendForm, setSendForm] = useState({ currency: defaultDepositCcy, amount: '', from_method: 'Cash', notes: '', deposit_date: todayStr(), attachments: [] });
   const [sending, setSending]   = useState(false);
   const [sendError, setSendError] = useState('');
   // v1.8.61 — multi-file upload state for the deposit slips.
@@ -104,7 +104,7 @@ const HQDeposits = () => {
   const openSendModal = () => {
     setSendError('');
     setAttError('');
-    setSendForm({ currency: defaultDepositCcy, amount: '', notes: '', deposit_date: todayStr(), attachments: [] });
+    setSendForm({ currency: defaultDepositCcy, amount: '', from_method: 'Cash', notes: '', deposit_date: todayStr(), attachments: [] });
     setShowSend(true);
   };
 
@@ -154,6 +154,11 @@ const HQDeposits = () => {
         from_slug:    slug,
         currency:     sendForm.currency,
         amount:       amt,
+        // v1.10.48 — send `from_method` only on Liquor branches so backend
+        // tags the deposit to the physical drawer (Cash/MoMo/Bank). Sosna
+        // omits it → stored as NULL → doesn't affect the per-currency
+        // deposit split logic.
+        ...(isLiquorStyle ? { from_method: sendForm.from_method } : {}),
         notes:        sendForm.notes || null,
         deposit_date: sendForm.deposit_date,
         attachment:   attachmentPayload,
@@ -426,6 +431,37 @@ const HQDeposits = () => {
                     placeholder="0.00" autoFocus />
                 </div>
               </div>
+              {/* v1.10.48 — From Drawer picker on Liquor branches so the
+                  Cash Book tiles know which physical bucket shrank. Hidden
+                  on Sosna tri-currency where deposits are currency-anchored
+                  (USD/FRA/K), not method-anchored. */}
+              {isLiquorStyle && (
+                <div className="form-group">
+                  <label>From Drawer</label>
+                  <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                    {[
+                      { value: 'Cash',         label: 'Cash on Hand',  color: '#16a34a' },
+                      { value: 'Mobile Money', label: 'Mobile Money',  color: '#ea580c' },
+                      { value: 'Bank',         label: 'Bank',          color: '#2563eb' },
+                    ].map(opt => {
+                      const active = sendForm.from_method === opt.value;
+                      return (
+                        <button key={opt.value} type="button"
+                          onClick={() => setSendForm({ ...sendForm, from_method: opt.value })}
+                          style={{
+                            flex: '1 1 130px', padding: '10px 12px', borderRadius: 8,
+                            border: `2px solid ${active ? opt.color : '#e5e7eb'}`,
+                            background: active ? `${opt.color}15` : '#fff',
+                            color: active ? opt.color : '#374151',
+                            fontWeight: active ? 700 : 500, fontSize: 13, cursor: 'pointer',
+                          }}>
+                          {opt.label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
               <div className="form-group">
                 <label>Deposit Date</label>
                 <input type="date" value={sendForm.deposit_date}

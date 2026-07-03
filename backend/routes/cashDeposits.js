@@ -67,12 +67,19 @@ function nextDepositNumber() {
 // ─── POST /cash-deposits — branch records a new deposit being sent ──────────
 router.post('/', hqAuth, (req, res) => {
   try {
-    const { from_slug, currency, amount, notes, deposit_date, attachment } = req.body;
+    const { from_slug, currency, amount, notes, deposit_date, attachment, from_method } = req.body;
     if (!from_slug || !isRegistered(from_slug)) return res.status(400).json({ error: 'Unknown source branch' });
     const ccy = String(currency || '').toUpperCase();
     if (!['USD', 'FRA', 'K'].includes(ccy)) return res.status(400).json({ error: 'currency must be USD, FRA, or K' });
     const amt = parseFloat(amount || 0) || 0;
     if (!(amt > 0)) return res.status(400).json({ error: 'amount must be > 0' });
+
+    // v1.10.48 — from_method: physical drawer on Liquor branches
+    // ('Cash' | 'Mobile Money' | 'Bank'). Optional; NULL on Sosna
+    // tri-currency deposits (they're currency-anchored). Frontend gate
+    // decides when to send it based on isLiquorStyle.
+    const VALID_METHODS = new Set(['Cash', 'Mobile Money', 'Bank']);
+    const method = VALID_METHODS.has(from_method) ? from_method : null;
 
     // v1.8.59 — no FX rate stored. Physical deposit is just raw currency;
     // any conversion at HQ is a separate Currency Exchange concern.
@@ -87,13 +94,13 @@ router.post('/', hqAuth, (req, res) => {
     masterDb.prepare(`
       INSERT INTO cash_deposits (deposit_number, sync_id, from_slug, from_name,
                                  currency, amount, amount_usd, sell_rate, notes,
-                                 deposit_date, attachment,
+                                 deposit_date, attachment, from_method,
                                  status, created_by, created_by_name)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?, 'PENDING', ?, ?)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?, 'PENDING', ?, ?)
     `).run(
       depositNumber, syncId, from_slug, fromName,
       ccy, amt, 0, null, notes || null,
-      depDate, attachment || null,
+      depDate, attachment || null, method,
       req.user.id, [req.user.first_name, req.user.last_name].filter(Boolean).join(' ') || null
     );
     const row = masterDb.prepare('SELECT * FROM cash_deposits WHERE sync_id = ?').get(syncId);

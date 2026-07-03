@@ -158,6 +158,11 @@ try {
   };
   addMasterCol('cash_deposits', 'deposit_date', 'TEXT');
   addMasterCol('cash_deposits', 'attachment',   'TEXT');
+  // v1.10.48 — from_method: which physical drawer the cash left on a Liquor
+  // branch (Cash / Mobile Money / Bank). NULL for Sosna tri-currency
+  // deposits (they're currency-anchored, not method-anchored) and for
+  // legacy Liquor rows written before this column existed.
+  addMasterCol('cash_deposits', 'from_method', 'TEXT');
 
   masterDb.exec(`
 

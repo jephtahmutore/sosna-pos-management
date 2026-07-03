@@ -309,8 +309,11 @@ router.get('/', auth, readOnlyGuard, (req, res) => {
                         : from         ? [from]
                         : to           ? [to] : [];
         // Outgoing — this branch's own deposits.
+        // v1.10.48 — also pull from_method so the ledger row description
+        // labels which physical drawer the cash left (Liquor-only; NULL on
+        // Sosna is harmless).
         const out = masterDb.prepare(`
-          SELECT deposit_number, currency, amount,
+          SELECT deposit_number, currency, amount, from_method,
                  COALESCE(deposit_date, date(COALESCE(confirmed_at, created_at))) AS date,
                  from_name, notes
             FROM cash_deposits
@@ -322,7 +325,7 @@ router.get('/', auth, readOnlyGuard, (req, res) => {
             date: r.date,
             type: 'DEP-OUT',
             reference: r.deposit_number,
-            description: `Deposit to HQ — ${r.currency} ${Math.round(amt).toLocaleString()}${r.notes ? ` (${r.notes})` : ''}`,
+            description: `Deposit to HQ — ${r.currency} ${Math.round(amt).toLocaleString()}${r.from_method ? ` from ${r.from_method}` : ''}${r.notes ? ` (${r.notes})` : ''}`,
             // Legacy fields kept for backwards-compat (USD-equivalent
             // not computed — only the native currency moves).
             receipt_amount: 0,
@@ -483,6 +486,10 @@ router.get('/stats', auth, readOnlyGuard, (req, res) => {
     // HQ Deposits from master.db.
     let depInByCcy  = { usd: 0, fra: 0, k: 0 };
     let depOutByCcy = { usd: 0, fra: 0, k: 0 };
+    // v1.10.48 — per-method Liquor rollup: which physical drawer the
+    // deposit came out of on a Liquor branch. Populated only for outgoing
+    // (branch → HQ); incoming HQ deposits stay method-less.
+    let depOutByMethod = { cash: 0, momo: 0, bank: 0 };
     if (masterDb && slug) {
       try {
         const datePred = `date(COALESCE(deposit_date, confirmed_at, created_at))`;
@@ -499,6 +506,19 @@ router.get('/stats', auth, readOnlyGuard, (req, res) => {
         for (const r of outRows) {
           const key = r.currency === 'USD' ? 'usd' : r.currency === 'FRA' ? 'fra' : 'k';
           depOutByCcy[key] += parseFloat(r.t);
+        }
+        // v1.10.48 — also aggregate per-method for Liquor tile decrement.
+        // NULL from_method (legacy rows or Sosna deposits) falls back to
+        // 'Cash' so nothing goes unaccounted for.
+        const outByMethodRows = masterDb.prepare(`
+          SELECT COALESCE(from_method, 'Cash') AS m, COALESCE(SUM(amount), 0) AS t
+            FROM cash_deposits
+           WHERE status = 'CONFIRMED' AND from_slug = ?${depDf}
+           GROUP BY COALESCE(from_method, 'Cash')
+        `).all(slug, ...depParams);
+        for (const r of outByMethodRows) {
+          const key = r.m === 'Mobile Money' ? 'momo' : r.m === 'Bank' ? 'bank' : 'cash';
+          depOutByMethod[key] += parseFloat(r.t);
         }
         if (HQ_INBOX_SLUGS.has(slug)) {
           const inRows = masterDb.prepare(`
@@ -531,6 +551,16 @@ router.get('/stats', auth, readOnlyGuard, (req, res) => {
       exchOut[fromKey] += parseFloat(r.from_amount || 0);
       exchIn[toKey]    += parseFloat(r.to_amount   || 0);
     }
+    // v1.10.48 — subtract Liquor-method deposits from the per-method tiles.
+    // currentByMethod was computed above from cash_receipts / PV / etc.
+    // without any awareness of cash_deposits; now that we've fetched
+    // depOutByMethod, apply it so the Cash on Hand / Mobile Money / Bank
+    // tiles reflect real drawer state on Liquor branches. Sosna deposits
+    // land in 'cash' by our COALESCE default — harmless because Sosna's
+    // Cash Book doesn't render per-method tiles.
+    currentByMethod.cash -= depOutByMethod.cash;
+    currentByMethod.momo -= depOutByMethod.momo;
+    currentByMethod.bank -= depOutByMethod.bank;
     // Per-currency receipts / payments roll-up.
     const receiptsByCcy = {
       usd: ordersUsd + crByCcy.usd + depInByCcy.usd + exchIn.usd,
