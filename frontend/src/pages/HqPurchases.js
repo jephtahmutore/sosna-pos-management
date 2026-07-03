@@ -189,6 +189,22 @@ function CreatePurchaseModal({ branches, onClose, onCreated, onError }) {
     if (!destinationSlug && branches.length > 0) setDestinationSlug(branches[0].slug);
   // eslint-disable-next-line
   }, [branches]);
+  // v1.10.54 — WAC redesign push 2: FX rate for tri-currency destinations.
+  // Requirement is derived, not stored: if the picked destination's
+  // currency_mode contains 'USD+FRA' or 'USD+FRA+K', the operator MUST
+  // pick a cost currency + rate before Save unlocks. K-only branches
+  // (Mansa/Lusaka: currency_mode='K') skip this block entirely — cost
+  // is native K, no conversion needed. One rate per whole PO.
+  const [costCurrency, setCostCurrency] = useState('');
+  const [fxRate, setFxRate] = useState('');
+  const destBranch = branches.find(b => b.slug === destinationSlug);
+  const destIsTriCcy = (() => {
+    const cm = String(destBranch?.currency_mode || 'K').toUpperCase();
+    return cm === 'USD+FRA' || cm === 'USD+FRA+K';
+  })();
+  // Reset FX inputs whenever destination changes — a new destination
+  // could flip us in/out of the tri-currency prompt.
+  useEffect(() => { setCostCurrency(''); setFxRate(''); }, [destinationSlug]);
   const [submitting, setSubmitting] = useState(false);
 
   // v1.9.0 — quick-add HQ supplier (same pattern as GRN page).
@@ -267,6 +283,14 @@ function CreatePurchaseModal({ branches, onClose, onCreated, onError }) {
     // line so the backend (which still validates per-line destination_slug)
     // accepts the payload unchanged.
     if (!destinationSlug) return onError('Pick a destination branch for this PO.');
+    // v1.10.54 — tri-currency destinations require a cost currency + FX rate.
+    // K-only destinations skip this — cost is native K.
+    if (destIsTriCcy) {
+      if (!costCurrency) return onError('Pick the currency the supplier billed you in (destination is tri-currency).');
+      if (costCurrency !== 'USD' && !(parseFloat(fxRate) > 0)) {
+        return onError(`Enter the FX rate: 1 USD = ? ${costCurrency}`);
+      }
+    }
     const cleaned = items.map(it => ({
       product_sync_id:  (it.product_sync_id || '').trim(),
       product_name:     (it.product_name || '').trim(),
@@ -293,6 +317,11 @@ function CreatePurchaseModal({ branches, onClose, onCreated, onError }) {
         date,
         notes: notes || null,
         items: clean,
+        // v1.10.54 — only send when destination is tri-currency; K-only
+        // destinations omit these fields so the backend stores NULL.
+        ...(destIsTriCcy && costCurrency
+          ? { cost_currency: costCurrency, fx_rate_used: costCurrency === 'USD' ? 1 : parseFloat(fxRate) }
+          : {}),
       });
       onCreated();
     } catch (err) {
@@ -376,6 +405,40 @@ function CreatePurchaseModal({ branches, onClose, onCreated, onError }) {
             </div>
             <div><label style={lbl}>Date</label><input type="date" value={date} onChange={e => setDate(e.target.value)} style={inp} /></div>
           </div>
+
+          {/* v1.10.54 — WAC redesign push 2: FX rate row.
+              Only rendered when destination is a tri-currency branch
+              (Kassumbalesa). One rate applies to every line on this PO. */}
+          {destIsTriCcy && (
+            <div style={{ marginBottom: 14, padding: '10px 12px', background: '#fef3c7', border: '1px solid #fcd34d', borderRadius: 8 }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: '#78350f', textTransform: 'uppercase', letterSpacing: 0.4, marginBottom: 8 }}>
+                FX Rate (required — destination is tri-currency)
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+                <div>
+                  <label style={lbl}>Cost billed in <span style={{ color: '#dc2626' }}>*</span></label>
+                  <select value={costCurrency} onChange={e => setCostCurrency(e.target.value)} style={inp}>
+                    <option value="">— currency —</option>
+                    <option value="USD">USD ($)</option>
+                    <option value="K">K (Kwacha)</option>
+                    <option value="FRA">FRA</option>
+                  </select>
+                </div>
+                <div>
+                  <label style={lbl}>1 USD = <span style={{ color: '#dc2626' }}>*</span></label>
+                  <input type="number" min="0" step="0.0001"
+                    value={fxRate}
+                    onChange={e => setFxRate(e.target.value)}
+                    disabled={!costCurrency || costCurrency === 'USD'}
+                    placeholder={costCurrency === 'USD' ? 'n/a — USD already' : costCurrency === 'K' ? 'e.g. 25' : costCurrency === 'FRA' ? 'e.g. 2250' : ''}
+                    style={{ ...inp, background: (!costCurrency || costCurrency === 'USD') ? '#f9fafb' : '#fff' }} />
+                </div>
+              </div>
+              <div style={{ fontSize: 10.5, color: '#78350f', marginTop: 6, fontStyle: 'italic' }}>
+                One rate locks the whole PO. USD-billed POs skip the rate — cost is used as-is.
+              </div>
+            </div>
+          )}
           <div style={{ marginBottom: 14 }}>
             <label style={lbl}>Notes</label>
             <input type="text" value={notes} onChange={e => setNotes(e.target.value)} placeholder="Truck #, driver, PO ref, etc." style={inp} />
