@@ -1494,7 +1494,7 @@ function renderCashierReceipt({ biz, order, calc, cashierName, when, sellRate: _
   @page { size: 80mm auto; margin: 0; }
   html, body { height: auto; margin: 0; padding: 0; overflow-x: hidden; }
   * { box-sizing: border-box; }
-  body { width: 80mm; max-width: 80mm; padding: 2mm 3mm; font-family: 'Courier New', Courier, monospace; font-size: 11px; color: #000; font-weight: 700; }
+  body { width: 72mm; max-width: 72mm; padding: 2mm 2mm; font-family: 'Courier New', Courier, monospace; font-size: 11px; color: #000; font-weight: 700; }
   table { width: 100%; border-collapse: collapse; font-size: 11px; }
   td { padding: 1px 0; vertical-align: top; }
   .c { text-align: center; }

@@ -245,7 +245,11 @@ router.post('/print-receipt', async (req, res) => {
       if (primary?.symbol) cur = primary.symbol;
     } catch { /* default 'K' */ }
 
-    const W = 42;
+    // v1.10.60 — Column width dropped from 42 → 40 chars to leave a safer
+    // horizontal margin on 80mm thermal printers whose mechanical printable
+    // area is ~72mm (42 chars at 12-dot Font A = 71mm, which was clipping
+    // the leftmost + rightmost characters on some units).
+    const W = 40;
     const eq = '='.repeat(W);
     const da = '-'.repeat(W);
     const center = (str) => {
@@ -352,7 +356,12 @@ router.post('/print-receipt', async (req, res) => {
     }
 
     const text = lines.join('\n') + '\n\n\n\n\n\n';
-    const ticket = CMD.INIT + CMD.DRAWER_KICK + text + CMD.CUT;
+    // v1.10.60 — BOLD_ON wraps the whole body. Without this the printer
+    // runs its head in single-strike mode, which prints thin/grey on
+    // thermal paper. ESC E 1 (BOLD_ON) tells it to double-strike each
+    // dot for solid black. BOLD_OFF closes it before the cut so it
+    // doesn't leak into whatever ticket comes next.
+    const ticket = CMD.INIT + CMD.BOLD_ON + CMD.DRAWER_KICK + text + CMD.BOLD_OFF + CMD.CUT;
     const result = await sendToPrinter(db, ticket);
     if (!result.ok) return res.status(500).json({ error: 'Failed to print: ' + (result.error || 'unknown') });
     res.json({ success: true });
@@ -367,7 +376,9 @@ router.post('/print-report', async (req, res) => {
     const { CMD, sendToPrinter } = require('../utils/escpos');
     const { businessName, dateLabel, totalOrders, filteredCount, totalRevenue, totalDiscount, products } = req.body;
 
-    const W = 42;
+    // v1.10.60 — W dropped 42 → 40 for the same safer-margin reason as
+    // /print-receipt. The product name col shrinks 20 → 18 to keep 18+6+7+9=40.
+    const W = 40;
     const eq = '='.repeat(W);
     const da = '-'.repeat(W);
     const center = (str) => {
@@ -392,7 +403,7 @@ router.post('/print-report', async (req, res) => {
     lines.push(eq);
 
     // Column headers
-    const col1W = 20, col2W = 6, col3W = 7, col4W = 9;
+    const col1W = 18, col2W = 6, col3W = 7, col4W = 9;
     lines.push('PRODUCT'.padEnd(col1W) + 'QTY'.padStart(col2W) + 'PRICE'.padStart(col3W) + 'TOTAL'.padStart(col4W));
     lines.push(da);
 
@@ -414,7 +425,9 @@ router.post('/print-report', async (req, res) => {
     lines.push(center('Printed: ' + now.toLocaleString('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: '2-digit', minute: '2-digit' })));
 
     const text = lines.join('\n') + '\n\n\n\n\n\n';
-    const ticket = CMD.INIT + text + CMD.CUT;
+    // v1.10.60 — BOLD_ON around the body so the report prints solid black
+    // instead of single-strike grey. Same fix as /print-receipt.
+    const ticket = CMD.INIT + CMD.BOLD_ON + text + CMD.BOLD_OFF + CMD.CUT;
     const result = await sendToPrinter(db, ticket);
     if (!result.ok) return res.status(500).json({ error: 'Failed to print report: ' + (result.error || 'unknown') });
     res.json({ success: true });
@@ -441,7 +454,9 @@ router.post('/print-count-worksheet', async (req, res) => {
     const businessPhone   = biz.business_phone   || '';
     const businessAddress = biz.business_address || '';
 
-    const W = 42;
+    // v1.10.60 — W dropped 42 → 40 for the same safer-margin reason as
+    // /print-receipt. Dynamic name/sku field math still works.
+    const W = 40;
     const eq = '='.repeat(W);
     const da = '-'.repeat(W);
     const center = (str) => {
@@ -541,7 +556,9 @@ router.post('/print-count-worksheet', async (req, res) => {
     })));
 
     const text = lines.join('\n') + '\n\n\n\n\n\n';
-    const ticket = CMD.INIT + text + CMD.CUT;
+    // v1.10.60 — same BOLD_ON / BOLD_OFF wrap as /print-receipt and
+    // /print-report so the worksheet prints solid black instead of grey.
+    const ticket = CMD.INIT + CMD.BOLD_ON + text + CMD.BOLD_OFF + CMD.CUT;
     const result = await sendToPrinter(db, ticket);
     if (!result.ok) return res.status(500).json({ error: 'Failed to print worksheet: ' + (result.error || 'unknown') });
     res.json({ success: true });

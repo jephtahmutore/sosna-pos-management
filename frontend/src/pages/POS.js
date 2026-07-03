@@ -960,7 +960,7 @@ const POS = () => {
   @page { size: 80mm auto; margin: 0; }
   html, body { height: auto; margin: 0; padding: 0; overflow-x: hidden; }
   * { box-sizing: border-box; }
-  body { width: 80mm; max-width: 80mm; padding: 2mm 3mm; font-family: 'Courier New', Courier, monospace; font-size: 11px; color: #000; font-weight: 700; }
+  body { width: 72mm; max-width: 72mm; padding: 2mm 2mm; font-family: 'Courier New', Courier, monospace; font-size: 11px; color: #000; font-weight: 700; }
   table { width: 100%; border-collapse: collapse; font-size: 11px; }
   td { padding: 1px 0; vertical-align: top; }
   .c { text-align: center; }
@@ -1198,9 +1198,14 @@ const POS = () => {
   html, body { height: auto; margin: 0; padding: 0; overflow-x: hidden; }
   * { box-sizing: border-box; }
   body {
-    width: 80mm;
-    max-width: 80mm;
-    padding: 2mm 3mm;
+    /* v1.10.60 — width dropped 80mm → 72mm to match the actual printable
+       area of most 80mm thermal printers (they clip ~4mm on each side).
+       Horizontal padding also trimmed 3mm → 2mm for the same reason.
+       Fixes the left+right cutoff users were seeing on browser-fallback
+       prints. SalesReport.js already used 74mm — this brings POS in line. */
+    width: 72mm;
+    max-width: 72mm;
+    padding: 2mm 2mm;
     /* v1.10.28 — Liquor-style branches use bold Arial to match the
        thermal-printer look the user asked for (heavy strokes, uppercase-
        friendly). Sosna multi-currency stays on Courier for backward
