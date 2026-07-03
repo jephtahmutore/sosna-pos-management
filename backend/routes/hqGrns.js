@@ -810,12 +810,14 @@ router.post('/generate', hqAuth, (req, res) => {
         }
         // 3. supplier_credit_notes + items (for both money-only + stock-affecting).
         if (Array.isArray(credit_notes) && credit_notes.length > 0) {
+          // Tenant supplier_credit_notes has no supplier_name column
+          // (name comes from JOIN with suppliers). Drop it from the INSERT.
           const insHqCn = hqDb.prepare(`
             INSERT INTO supplier_credit_notes (credit_note_number, date, supplier_id, supplier_sync_id,
-                                                supplier_name, reason, reference, amount, notes,
+                                                reason, reference, amount, notes,
                                                 grn_sync_id, created_by, sync_id, tenant_id, branch_id, device_id,
                                                 synced, created_at, updated_at)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,datetime('now'),datetime('now'))
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,datetime('now'),datetime('now'))
           `);
           const insHqCnItem = hqDb.prepare(`
             INSERT INTO supplier_credit_note_items (credit_note_id, credit_note_sync_id, product_id, product_sync_id,
@@ -839,7 +841,7 @@ router.post('/generate', hqAuth, (req, res) => {
             const cnSyncId = randomUUID();
             insHqCn.run(
               cnNumber, grnDate,
-              hqSupplierId, hqSupplierSyncId, purchase.supplier_name || null,
+              hqSupplierId, hqSupplierSyncId,
               reason, grnNumber, amt, cn.notes || null,
               grnSyncId, generatorId,
               cnSyncId, null, null, null

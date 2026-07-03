@@ -190,16 +190,20 @@ function migrateCreditNotes(masterDb, hqDb, nameToSyncId, nameToNewId) {
   const before = hqDb.prepare(`SELECT COUNT(*) AS n FROM supplier_credit_notes`).get().n;
 
   const findBySyncId = hqDb.prepare(`SELECT id FROM supplier_credit_notes WHERE sync_id = ? LIMIT 1`);
+  // NOTE — tenant supplier_credit_notes has NO supplier_name column; the
+  // name is JOIN'd via suppliers.id. So we drop that field from the INSERT
+  // and rely on supplier_id + supplier_sync_id resolving correctly (they
+  // point into the hq.db.suppliers rows we just migrated).
   const insCn = hqDb.prepare(`
     INSERT INTO supplier_credit_notes (id, credit_note_number, date, supplier_id, supplier_sync_id,
-                                        supplier_name, reason, reference, amount, notes,
+                                        reason, reference, amount, notes,
                                         grn_sync_id, created_by, sync_id, tenant_id, branch_id, device_id,
                                         synced, created_at, updated_at)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?,?)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?,?)
   `);
 
   let inserted = 0, skipped = 0;
-  const syncIdMap = new Map(); // master.sync_id → hq.sync_id (same value; kept for clarity)
+  const syncIdMap = new Map();
   hqDb.transaction(() => {
     for (const r of rows) {
       if (findBySyncId.get(r.sync_id)) { skipped += 1; syncIdMap.set(r.sync_id, r.sync_id); continue; }
@@ -208,7 +212,7 @@ function migrateCreditNotes(masterDb, hqDb, nameToSyncId, nameToNewId) {
       const supSid = nameToSyncId.get(nameKey) || r.supplier_sync_id || null;
       insCn.run(
         r.id, r.credit_note_number, r.date,
-        supId, supSid, r.supplier_name,
+        supId, supSid,
         r.reason, r.reference, r.amount, r.notes,
         r.grn_sync_id, r.created_by,
         r.sync_id, null, null, null,

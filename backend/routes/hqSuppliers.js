@@ -102,13 +102,15 @@ function getBalances(supplierId, supplierName) {
   // Standalone credit notes NOT netted into a GRN — grn_sync_id IS NULL.
   // GRN-attached CNs are already inside grn.total_amount (which was
   // populated with hq_grns.final_payable = items_subtotal − cn_total).
+  // Tenant supplier_credit_notes has no supplier_name column — filter
+  // by supplier_id only. Migration script always populates supplier_id.
   const credits = hqDb.prepare(`
     SELECT COALESCE(SUM(amount), 0) AS s, COUNT(*) AS c
       FROM supplier_credit_notes
      WHERE deleted_at IS NULL
        AND grn_sync_id IS NULL
-       AND (supplier_id = ? OR LOWER(COALESCE(supplier_name,'')) = LOWER(?))
-  `).get(supplierId, supplierName);
+       AND supplier_id = ?
+  `).get(supplierId);
   return {
     purchase_count:  purchases.c,
     purchases_total: purchases.s,
@@ -192,10 +194,10 @@ router.get('/:id', hqAuth, (req, res) => {
              grn_sync_id
         FROM supplier_credit_notes
        WHERE deleted_at IS NULL
-         AND (supplier_id = ? OR LOWER(COALESCE(supplier_name,'')) = LOWER(?))
+         AND supplier_id = ?
        ORDER BY date DESC, id DESC
        LIMIT 200
-    `).all(s.id, s.name);
+    `).all(s.id);
     res.json({ supplier: { ...s, ...balances }, purchases, payments, credits });
   } catch (error) {
     res.status(500).json({ error: error.message });
