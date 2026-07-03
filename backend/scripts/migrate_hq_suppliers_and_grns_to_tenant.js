@@ -271,11 +271,6 @@ function main() {
   console.log(`HQ tenant slug resolved: ${hqSlug}`);
   console.log('Migrating…\n');
 
-  // v1.10.75 hotfix — created_by columns reference user ids from master
-  // that don't exist in hq.db.users. Also grn_items.product_id may
-  // reference products that haven't been mirrored yet. Turn FK checks off
-  // for the historical import so the copy can complete; re-enable on
-  // exit so the running app stays strict.
   hqDb.pragma('foreign_keys = OFF');
 
   const { nameToSyncId, nameToNewId } = migrateSuppliers(masterDb, hqDb);
@@ -283,6 +278,32 @@ function main() {
   migrateGrnItems(masterDb, hqDb);
   migrateCreditNotes(masterDb, hqDb, nameToSyncId, nameToNewId);
   migrateCreditNoteItems(masterDb, hqDb);
+
+  // v1.10.75 hotfix — backfill tenant_id on the rows we just inserted.
+  // Account Payables page filters WHERE tenant_id = ? so a NULL leaves
+  // migrated rows invisible even though HQ Suppliers page sees them.
+  console.log('\nResolving HQ tenant_id for backfill…');
+  const rows = ['cash_receipts', 'payment_vouchers', 'ap_payments', 'orders', 'products', 'users'];
+  let tenantId = null;
+  for (const t of rows) {
+    try {
+      const r = hqDb.prepare(`SELECT tenant_id FROM ${t} WHERE tenant_id IS NOT NULL LIMIT 1`).get();
+      if (r && r.tenant_id) { tenantId = r.tenant_id; break; }
+    } catch (_) { /* skip */ }
+  }
+  if (tenantId) {
+    console.log(`  tenant_id = ${tenantId}`);
+    for (const t of ['suppliers', 'grn', 'grn_items', 'supplier_credit_notes', 'supplier_credit_note_items']) {
+      try {
+        const info = hqDb.prepare(`UPDATE ${t} SET tenant_id = ? WHERE tenant_id IS NULL`).run(tenantId);
+        console.log(`  ${t.padEnd(28)} updated ${info.changes} row(s)`);
+      } catch (e) {
+        console.error(`  ${t}: ${e.message}`);
+      }
+    }
+  } else {
+    console.log('  no non-NULL tenant_id found; run backfill_migrated_hq_tenant_id.js after your first login.');
+  }
 
   hqDb.pragma('foreign_keys = ON');
   console.log('\nDone.');

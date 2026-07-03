@@ -1,0 +1,87 @@
+/**
+ * v1.10.75 hotfix — backfill tenant_id on migrated HQ rows.
+ *
+ * The v1.10.72 + v1.10.75 migration scripts inserted rows with tenant_id
+ * = NULL. Account Payables at HQ (routes/accountPayables.js) filters
+ * WHERE s.tenant_id = ? so those migrated rows were invisible on that
+ * page, even though HQ Suppliers page (which doesn't filter by
+ * tenant_id) shows them correctly.
+ *
+ * This script resolves HQ's actual tenant_id from existing rows (users
+ * or cash_receipts — whichever has one) and updates every migrated row
+ * that still holds NULL. Idempotent + safe to re-run.
+ *
+ * HOW TO RUN:
+ *   node backend/scripts/backfill_migrated_hq_tenant_id.js
+ */
+
+const { listTenants } = require('../config/masterDb');
+const { getTenantDb } = require('../config/tenantDb');
+
+function getHqSlug() {
+  try {
+    const t = listTenants().find(t => t.slug === 'hq');
+    if (t) return 'hq';
+    const bare = listTenants().find(t => /^(sosna|sosnazm|hq)$/i.test(t.slug));
+    return bare ? bare.slug : 'hq';
+  } catch (_) { return 'hq'; }
+}
+
+function main() {
+  const hqSlug = getHqSlug();
+  const hqDb = getTenantDb(hqSlug);
+  if (!hqDb) { console.error(`HQ tenant DB not accessible at slug "${hqSlug}"`); process.exit(1); }
+
+  // Try to resolve tenant_id from any table that has a non-NULL row.
+  // Falls back to the tenants master row's id if nothing else has it.
+  const candidates = [
+    `SELECT tenant_id FROM cash_receipts    WHERE tenant_id IS NOT NULL LIMIT 1`,
+    `SELECT tenant_id FROM payment_vouchers WHERE tenant_id IS NOT NULL LIMIT 1`,
+    `SELECT tenant_id FROM ap_payments      WHERE tenant_id IS NOT NULL LIMIT 1`,
+    `SELECT tenant_id FROM orders           WHERE tenant_id IS NOT NULL LIMIT 1`,
+    `SELECT tenant_id FROM products         WHERE tenant_id IS NOT NULL LIMIT 1`,
+    `SELECT tenant_id FROM users            WHERE tenant_id IS NOT NULL LIMIT 1`,
+  ];
+  let tenantId = null;
+  for (const sql of candidates) {
+    try {
+      const r = hqDb.prepare(sql).get();
+      if (r && r.tenant_id) { tenantId = r.tenant_id; break; }
+    } catch (_) { /* table may not exist yet */ }
+  }
+  if (!tenantId) {
+    console.error('Could not resolve HQ tenant_id from any existing row.');
+    console.error('If this is a fresh HQ install with no CRs/PVs/etc.,');
+    console.error('log in once via the web UI (which stamps the JWT tenant_id');
+    console.error('onto the next write), then re-run this script.');
+    process.exit(1);
+  }
+  console.log(`HQ tenant_id resolved: ${tenantId}`);
+  console.log(`HQ tenant slug:        ${hqSlug}`);
+  console.log('Backfilling…');
+
+  const tables = [
+    'suppliers',
+    'grn',
+    'grn_items',
+    'ap_payments',
+    'supplier_credit_notes',
+    'supplier_credit_note_items',
+  ];
+
+  hqDb.pragma('foreign_keys = OFF');
+  for (const t of tables) {
+    try {
+      const before = hqDb.prepare(`SELECT COUNT(*) AS n FROM ${t} WHERE tenant_id IS NULL`).get().n;
+      hqDb.prepare(`UPDATE ${t} SET tenant_id = ? WHERE tenant_id IS NULL`).run(tenantId);
+      const after = hqDb.prepare(`SELECT COUNT(*) AS n FROM ${t} WHERE tenant_id IS NULL`).get().n;
+      console.log(`  ${t.padEnd(28)}  before(null)=${before}  after(null)=${after}`);
+    } catch (e) {
+      console.error(`  ${t}: ${e.message}`);
+    }
+  }
+  hqDb.pragma('foreign_keys = ON');
+  console.log('Done.');
+}
+
+main();

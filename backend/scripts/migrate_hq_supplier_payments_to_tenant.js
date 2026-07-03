@@ -114,6 +114,21 @@ function main() {
   ).get().n;
   console.log(`After : hq.db.ap_payments HSP rows = ${afterTenant}`);
   console.log(`Inserted: ${inserted}  Skipped (already present): ${skipped}`);
+
+  // v1.10.75 hotfix — backfill tenant_id so Cash Book + Account Payables see these.
+  const rows = ['cash_receipts', 'payment_vouchers', 'orders', 'products', 'users'];
+  let tenantId = null;
+  for (const t of rows) {
+    try {
+      const r = hqDb.prepare(`SELECT tenant_id FROM ${t} WHERE tenant_id IS NOT NULL LIMIT 1`).get();
+      if (r && r.tenant_id) { tenantId = r.tenant_id; break; }
+    } catch (_) { /* skip */ }
+  }
+  if (tenantId) {
+    const upd = hqDb.prepare(`UPDATE ap_payments SET tenant_id = ? WHERE tenant_id IS NULL AND payment_number LIKE 'HSP-%'`).run(tenantId);
+    console.log(`tenant_id backfilled on ${upd.changes} row(s)`);
+  }
+
   hqDb.pragma('foreign_keys = ON');
   console.log('Done.');
 }
