@@ -960,7 +960,7 @@ const POS = () => {
   @page { size: 80mm auto; margin: 0; }
   html, body { height: auto; margin: 0; padding: 0; overflow-x: hidden; }
   * { box-sizing: border-box; }
-  body { width: 72mm; max-width: 72mm; padding: 2mm 2mm; font-family: 'Courier New', Courier, monospace; font-size: 11px; color: #000; font-weight: 700; }
+  body { width: 72mm; max-width: 72mm; padding: 2mm 2mm 2mm 5mm; font-family: 'Courier New', Courier, monospace; font-size: 11px; color: #000; font-weight: 700; }
   table { width: 100%; border-collapse: collapse; font-size: 11px; }
   td { padding: 1px 0; vertical-align: top; }
   .c { text-align: center; }
@@ -1198,19 +1198,21 @@ const POS = () => {
   html, body { height: auto; margin: 0; padding: 0; overflow-x: hidden; }
   * { box-sizing: border-box; }
   body {
-    /* v1.10.60 — width dropped 80mm → 72mm to match the actual printable
-       area of most 80mm thermal printers (they clip ~4mm on each side).
-       Horizontal padding also trimmed 3mm → 2mm for the same reason.
-       Fixes the left+right cutoff users were seeing on browser-fallback
-       prints. SalesReport.js already used 74mm — this brings POS in line. */
+    /* v1.10.62 — asymmetric horizontal padding. User reports the printer
+       still clips on the LEFT after v1.10.60 (right is now clean) — the
+       paper feed is off-centre on this Epson unit, more margin on the
+       right than the left. Adding an extra 3mm to the left padding
+       (total 5mm) pushes content rightward to survive that offset. */
     width: 72mm;
     max-width: 72mm;
-    padding: 2mm 2mm;
-    /* v1.10.28 — Liquor-style branches use bold Arial to match the
-       thermal-printer look the user asked for (heavy strokes, uppercase-
-       friendly). Sosna multi-currency stays on Courier for backward
-       compatibility with the existing dual-currency receipt. */
-    font-family: ${isLiquorStyle ? "Arial, Helvetica, sans-serif" : "'Courier New', Courier, monospace"};
+    padding: 2mm 2mm 2mm 5mm;
+    /* v1.10.62 — Liquor style switches to Arial Black (falls back to
+       Impact then Arial). Regular Arial-bold @ 11px was rendering thin
+       on the thermal head because its variable stroke width mapped to
+       few dots per glyph — Arial Black's ~2× stroke weight keeps the
+       sans-serif look but produces solid black on paper. Sosna stays
+       on Courier for the dual-currency receipt. */
+    font-family: ${isLiquorStyle ? "'Arial Black', 'Impact', Arial, Helvetica, sans-serif" : "'Courier New', Courier, monospace"};
     font-size: 11px;
     color: #000;
     font-weight: 700;

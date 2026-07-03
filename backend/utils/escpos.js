@@ -26,6 +26,10 @@ const CMD = {
   CUT:          GS  + 'V\x41\x05',
   FEED:         ESC + 'd\x03',
   DRAWER_KICK:  ESC + 'p\x00\x19\xFA',
+  // v1.10.62 — GS L nL nH sets left margin in dots (nH*256+nL). Epson
+  // TM-T88VII prints at 180dpi, so 24 dots ≈ 3.4mm. Compensates for the
+  // physical paper feed offset that clips leftmost characters.
+  LEFT_MARGIN_24: GS + 'L\x18\x00',
 };
 
 // ── Settings helper ─────────────────────────────────────────────────────────

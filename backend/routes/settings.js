@@ -361,7 +361,7 @@ router.post('/print-receipt', async (req, res) => {
     // thermal paper. ESC E 1 (BOLD_ON) tells it to double-strike each
     // dot for solid black. BOLD_OFF closes it before the cut so it
     // doesn't leak into whatever ticket comes next.
-    const ticket = CMD.INIT + CMD.BOLD_ON + CMD.DRAWER_KICK + text + CMD.BOLD_OFF + CMD.CUT;
+    const ticket = CMD.INIT + CMD.LEFT_MARGIN_24 + CMD.BOLD_ON + CMD.DRAWER_KICK + text + CMD.BOLD_OFF + CMD.CUT;
     const result = await sendToPrinter(db, ticket);
     if (!result.ok) return res.status(500).json({ error: 'Failed to print: ' + (result.error || 'unknown') });
     res.json({ success: true });
@@ -427,7 +427,7 @@ router.post('/print-report', async (req, res) => {
     const text = lines.join('\n') + '\n\n\n\n\n\n';
     // v1.10.60 — BOLD_ON around the body so the report prints solid black
     // instead of single-strike grey. Same fix as /print-receipt.
-    const ticket = CMD.INIT + CMD.BOLD_ON + text + CMD.BOLD_OFF + CMD.CUT;
+    const ticket = CMD.INIT + CMD.LEFT_MARGIN_24 + CMD.BOLD_ON + text + CMD.BOLD_OFF + CMD.CUT;
     const result = await sendToPrinter(db, ticket);
     if (!result.ok) return res.status(500).json({ error: 'Failed to print report: ' + (result.error || 'unknown') });
     res.json({ success: true });
@@ -558,7 +558,7 @@ router.post('/print-count-worksheet', async (req, res) => {
     const text = lines.join('\n') + '\n\n\n\n\n\n';
     // v1.10.60 — same BOLD_ON / BOLD_OFF wrap as /print-receipt and
     // /print-report so the worksheet prints solid black instead of grey.
-    const ticket = CMD.INIT + CMD.BOLD_ON + text + CMD.BOLD_OFF + CMD.CUT;
+    const ticket = CMD.INIT + CMD.LEFT_MARGIN_24 + CMD.BOLD_ON + text + CMD.BOLD_OFF + CMD.CUT;
     const result = await sendToPrinter(db, ticket);
     if (!result.ok) return res.status(500).json({ error: 'Failed to print worksheet: ' + (result.error || 'unknown') });
     res.json({ success: true });
