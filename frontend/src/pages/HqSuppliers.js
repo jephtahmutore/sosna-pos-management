@@ -13,10 +13,16 @@ import {
   deleteHqSupplier, recordHqSupplierPayment, deleteHqSupplierPayment,
 } from '../services/api';
 
-const fmtMoney = (n) => {
+// v1.10.79 — money formatter is now currency-aware. `ccy` param picks
+// the prefix: K → "K", USD → "$", FRA → "" (with " FRA" suffix). Falls
+// back to $ for backward compat with older callers that don't pass ccy.
+const fmtMoney = (n, ccy) => {
   const v = parseFloat(n || 0);
-  const s = `$${Math.abs(v).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-  return v < 0 ? `-${s}` : s;
+  const c = String(ccy || 'USD').toUpperCase();
+  const digits = c === 'FRA' || c === 'K' ? 0 : 2;
+  const num = Math.abs(v).toLocaleString(undefined, { minimumFractionDigits: digits, maximumFractionDigits: digits });
+  const body = c === 'K' ? `K${num}` : c === 'FRA' ? `${num} FRA` : `$${num}`;
+  return v < 0 ? `-${body}` : body;
 };
 const fmtInt = (n) => parseFloat(n || 0).toLocaleString();
 const todayISO = () => new Date().toISOString().slice(0, 10);
@@ -46,12 +52,28 @@ export default function HqSuppliers() {
 
   useEffect(() => { refresh(); }, []);
 
-  const totals = useMemo(() => rows.reduce((acc, r) => {
-    acc.purchases += r.purchases_total || 0;
-    acc.payments  += r.payments_total  || 0;
-    acc.balance   += r.balance         || 0;
-    return acc;
-  }, { purchases: 0, payments: 0, balance: 0 }), [rows]);
+  // v1.10.79 — totals split by currency because suppliers can be in K,
+  // USD, or FRA and summing them arithmetically would be nonsense. The
+  // rollup card renders each non-zero currency on its own line.
+  const totals = useMemo(() => {
+    const byCcy = { K: {p:0,pay:0,bal:0}, USD: {p:0,pay:0,bal:0}, FRA: {p:0,pay:0,bal:0} };
+    for (const r of rows) {
+      const c = String(r.currency || 'K').toUpperCase();
+      const bucket = byCcy[c] || byCcy.K;
+      bucket.p   += r.purchases_total || 0;
+      bucket.pay += r.payments_total  || 0;
+      bucket.bal += r.balance         || 0;
+    }
+    return byCcy;
+  }, [rows]);
+  // Format a rollup value across all currencies, one line per currency.
+  const fmtRollup = (kind) => {
+    const parts = ['K', 'USD', 'FRA']
+      .map(c => ({ c, v: totals[c]?.[kind] || 0 }))
+      .filter(x => Math.abs(x.v) > 0.001)
+      .map(x => fmtMoney(x.v, x.c));
+    return parts.length === 0 ? fmtMoney(0, 'K') : parts.join(' + ');
+  };
 
   const openDetail = async (id) => {
     try {
@@ -99,9 +121,9 @@ export default function HqSuppliers() {
       {/* Rollup */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 12, marginBottom: 14 }}>
         <RollupCard icon={<FiUsers />} label="Suppliers" value={fmtInt(rows.length)} color="#0f172a" />
-        <RollupCard icon={<FiTrendingUp />} label="Total Purchases" value={fmtMoney(totals.purchases)} color="#0ea5e9" />
-        <RollupCard icon={<FiTrendingDown />} label="Total Paid"     value={fmtMoney(totals.payments)} color="#047857" />
-        <RollupCard icon={<FiDollarSign />} label="AP Outstanding"   value={fmtMoney(totals.balance)} color={totals.balance > 0.01 ? '#b91c1c' : '#0f172a'} highlight />
+        <RollupCard icon={<FiTrendingUp />} label="Total Purchases" value={fmtRollup('p')}   color="#0ea5e9" />
+        <RollupCard icon={<FiTrendingDown />} label="Total Paid"    value={fmtRollup('pay')} color="#047857" />
+        <RollupCard icon={<FiDollarSign />} label="AP Outstanding"  value={fmtRollup('bal')} color={(totals.K.bal + totals.USD.bal + totals.FRA.bal) > 0.01 ? '#b91c1c' : '#0f172a'} highlight />
       </div>
 
       <div style={{ background: '#fff', border: '1px solid #e5e7eb', borderRadius: 10, padding: 14 }}>
@@ -134,16 +156,16 @@ export default function HqSuppliers() {
                       {s.email && <div style={{ fontSize: 11, color: '#64748b' }}>{s.email}</div>}
                     </td>
                     <td style={{ ...td, textAlign: 'right' }}>
-                      <div>{fmtMoney(s.purchases_total)}</div>
+                      <div>{fmtMoney(s.purchases_total, s.currency)}</div>
                       <div style={{ fontSize: 11, color: '#94a3b8' }}>{fmtInt(s.purchase_count)} purchase{s.purchase_count === 1 ? '' : 's'}</div>
                     </td>
                     <td style={{ ...td, textAlign: 'right' }}>
-                      <div>{fmtMoney(s.payments_total)}</div>
+                      <div>{fmtMoney(s.payments_total, s.currency)}</div>
                       <div style={{ fontSize: 11, color: '#94a3b8' }}>{fmtInt(s.payment_count)} payment{s.payment_count === 1 ? '' : 's'}</div>
                     </td>
                     <td style={{ ...td, textAlign: 'right', fontWeight: 800, fontSize: 14,
                                  color: s.balance > 0.01 ? '#b91c1c' : s.balance < -0.01 ? '#047857' : '#0f172a' }}>
-                      {fmtMoney(s.balance)}
+                      {fmtMoney(s.balance, s.currency)}
                     </td>
                     <td style={{ ...td, whiteSpace: 'nowrap' }}>
                       <button onClick={() => openDetail(s.id)}
@@ -301,10 +323,10 @@ function SupplierDetail({ data, onClose, onRefresh, flash }) {
               credits_total / credit_count come from the AP rewrite (GET /:id
               now returns them). Record Payment button drops to its own row. */}
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 10, marginBottom: 10 }}>
-            <Stat label="Purchases" value={fmtMoney(s.purchases_total)} sub={`${fmtInt(s.purchase_count)} rows`} />
-            <Stat label="Payments"  value={fmtMoney(s.payments_total)}  sub={`${fmtInt(s.payment_count)} rows`} />
-            <Stat label="Credits"   value={fmtMoney(s.credits_total || 0)} sub={`${fmtInt(s.credit_count || 0)} rows`} />
-            <Stat label="Balance"   value={fmtMoney(s.balance)} highlight={s.balance > 0.01} />
+            <Stat label="Purchases" value={fmtMoney(s.purchases_total, s.currency)} sub={`${fmtInt(s.purchase_count)} rows`} />
+            <Stat label="Payments"  value={fmtMoney(s.payments_total, s.currency)}  sub={`${fmtInt(s.payment_count)} rows`} />
+            <Stat label="Credits"   value={fmtMoney(s.credits_total || 0, s.currency)} sub={`${fmtInt(s.credit_count || 0)} rows`} />
+            <Stat label="Balance"   value={fmtMoney(s.balance, s.currency)} highlight={s.balance > 0.01} />
           </div>
           <div style={{ marginBottom: 16 }}>
             <button onClick={() => setPayOpen(true)}
@@ -328,7 +350,7 @@ function SupplierDetail({ data, onClose, onRefresh, flash }) {
                     <td style={td}>{p.date}</td>
                     <td style={td}>{p.invoice_number || '—'}</td>
                     <td style={td}>{p.status}</td>
-                    <td style={{ ...td, textAlign: 'right', fontWeight: 700 }}>{fmtMoney(p.total_amount)}</td>
+                    <td style={{ ...td, textAlign: 'right', fontWeight: 700 }}>{fmtMoney(p.total_amount, p.currency || s.currency)}</td>
                   </tr>
                 ))}
               </tbody>
@@ -350,7 +372,7 @@ function SupplierDetail({ data, onClose, onRefresh, flash }) {
                     <td style={td}>{p.payment_date}</td>
                     <td style={td}>{p.payment_method}</td>
                     <td style={td}>{p.reference || '—'}</td>
-                    <td style={{ ...td, textAlign: 'right', fontWeight: 700, color: '#047857' }}>{fmtMoney(p.amount)}</td>
+                    <td style={{ ...td, textAlign: 'right', fontWeight: 700, color: '#047857' }}>{fmtMoney(p.amount, s.currency)}</td>
                     <td style={td}>
                       <button onClick={() => removePayment(p.id)}
                         style={{ background: 'none', border: 'none', color: '#dc2626', cursor: 'pointer', padding: 2 }}>
@@ -397,7 +419,7 @@ function SupplierDetail({ data, onClose, onRefresh, flash }) {
                         <span style={{ display: 'inline-block', padding: '2px 6px', background: '#fef3c7', color: '#92400e', borderRadius: 4, fontSize: 10.5, fontWeight: 700 }}>standalone</span>
                       )}
                     </td>
-                    <td style={{ ...td, textAlign: 'right', fontWeight: 700, color: '#b45309' }}>{fmtMoney(cn.amount)}</td>
+                    <td style={{ ...td, textAlign: 'right', fontWeight: 700, color: '#b45309' }}>{fmtMoney(cn.amount, s.currency)}</td>
                   </tr>
                 ))}
               </tbody>

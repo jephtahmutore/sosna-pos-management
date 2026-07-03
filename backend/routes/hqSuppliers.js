@@ -88,7 +88,7 @@ function getBalances(supplierId, supplierName) {
   const hqDb = getHqDb();
   if (!hqDb) {
     return { purchase_count: 0, purchases_total: 0, payment_count: 0, payments_total: 0,
-             credit_count: 0, credits_total: 0, balance: 0 };
+             credit_count: 0, credits_total: 0, balance: 0, currency: 'K' };
   }
   const purchases = hqDb.prepare(`
     SELECT COALESCE(SUM(total_amount), 0) AS s, COUNT(*) AS c
@@ -96,6 +96,19 @@ function getBalances(supplierId, supplierName) {
      WHERE deleted_at IS NULL
        AND (supplier_id = ? OR LOWER(COALESCE(supplier_name,'')) = LOWER(?))
   `).get(supplierId, supplierName);
+  // v1.10.79 — supplier currency = the majority cost_currency across the
+  // supplier's GRNs. NULL rows count as 'K' (legacy default from the
+  // migration script). If a supplier has no GRNs yet, default to 'K'.
+  const ccyRow = hqDb.prepare(`
+    SELECT COALESCE(NULLIF(UPPER(cost_currency), ''), 'K') AS ccy, COUNT(*) AS c
+      FROM grn
+     WHERE deleted_at IS NULL
+       AND (supplier_id = ? OR LOWER(COALESCE(supplier_name,'')) = LOWER(?))
+     GROUP BY COALESCE(NULLIF(UPPER(cost_currency), ''), 'K')
+     ORDER BY c DESC
+     LIMIT 1
+  `).get(supplierId, supplierName);
+  const currency = ccyRow ? ccyRow.ccy : 'K';
   const payments = hqDb.prepare(`
     SELECT COALESCE(SUM(amount), 0) AS s, COUNT(*) AS c
       FROM ap_payments
@@ -122,6 +135,7 @@ function getBalances(supplierId, supplierName) {
     credit_count:    credits.c,
     credits_total:   credits.s,
     balance:         purchases.s - payments.s - credits.s,
+    currency,
   };
 }
 
@@ -167,7 +181,8 @@ router.get('/:id', hqAuth, (req, res) => {
              COALESCE(status, 'Completed') AS status,
              supplier_invoice_number AS invoice_number,
              (SELECT first_name || ' ' || last_name FROM users u WHERE u.id = grn.created_by) AS created_by_name,
-             linked_purchase_number AS po_number
+             linked_purchase_number AS po_number,
+             COALESCE(NULLIF(UPPER(cost_currency), ''), 'K') AS currency
         FROM grn
        WHERE deleted_at IS NULL
          AND (supplier_id = ? OR LOWER(COALESCE(supplier_name,'')) = LOWER(?))

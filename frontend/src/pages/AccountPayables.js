@@ -488,19 +488,28 @@ const AccountPayables = () => {
                 </td>
                 <td style={{ color: '#6b7280' }}>{p.phone || '—'}</td>
                 <td style={{ textAlign: 'center' }}>{p.grn_count}</td>
-                <td>{curSym}{parseFloat(p.total_purchases).toLocaleString()}</td>
-                <td style={{ color: '#16a34a' }}>{curSym}{parseFloat(p.total_paid).toLocaleString()}</td>
-                <td style={{ color: parseFloat(p.total_credits || 0) > 0 ? '#0369a1' : '#9ca3af' }}>
-                  {parseFloat(p.total_credits || 0) > 0
-                    ? `${curSym}${parseFloat(p.total_credits).toLocaleString()}`
-                    : '—'}
-                </td>
                 {(() => {
+                  // v1.10.79 — display each supplier's totals in THEIR
+                  // currency (returned per-row by the backend). Falls
+                  // back to the tenant's primary symbol if the currency
+                  // field isn't present (older clients / edge case).
+                  const ccy = String(p.currency || '').toUpperCase();
+                  const sym = ccy === 'K' ? 'K' : ccy === 'FRA' ? '' : ccy === 'USD' ? '$' : curSym;
+                  const suffix = ccy === 'FRA' ? ' FRA' : '';
+                  const digits = ccy === 'K' || ccy === 'FRA' ? 0 : 2;
+                  const fmtCcy = (v) => `${sym}${Math.abs(v).toLocaleString(undefined, { minimumFractionDigits: digits, maximumFractionDigits: digits })}${suffix}`;
                   const bal = -parseFloat(p.balance || 0);
                   return (
-                    <td style={{ color: bal > 0.01 ? '#16a34a' : bal < -0.01 ? '#dc2626' : '#374151', fontWeight: 600 }}>
-                      {bal < 0 ? '−' : ''}{curSym}{Math.abs(bal).toLocaleString()}
-                    </td>
+                    <>
+                      <td>{fmtCcy(parseFloat(p.total_purchases))}</td>
+                      <td style={{ color: '#16a34a' }}>{fmtCcy(parseFloat(p.total_paid))}</td>
+                      <td style={{ color: parseFloat(p.total_credits || 0) > 0 ? '#0369a1' : '#9ca3af' }}>
+                        {parseFloat(p.total_credits || 0) > 0 ? fmtCcy(parseFloat(p.total_credits)) : '—'}
+                      </td>
+                      <td style={{ color: bal > 0.01 ? '#16a34a' : bal < -0.01 ? '#dc2626' : '#374151', fontWeight: 600 }}>
+                        {bal < 0 ? '−' : ''}{fmtCcy(bal)}
+                      </td>
+                    </>
                   );
                 })()}
                 <td>{formatDate(p.last_grn_date)}</td>

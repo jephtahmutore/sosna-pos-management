@@ -195,7 +195,10 @@ function CreatePurchaseModal({ branches, onClose, onCreated, onError }) {
   // pick a cost currency + rate before Save unlocks. K-only branches
   // (Mansa/Lusaka: currency_mode='K') skip this block entirely — cost
   // is native K, no conversion needed. One rate per whole PO.
-  const [costCurrency, setCostCurrency] = useState('');
+  // v1.10.79 — cost currency defaults to K (most Zambian suppliers bill in K).
+  // Only Kassumbalesa-destined POs need the FX rate; K-only destinations
+  // just store the number as K.
+  const [costCurrency, setCostCurrency] = useState('K');
   const [fxRate, setFxRate] = useState('');
   const destBranch = branches.find(b => b.slug === destinationSlug);
   const destIsTriCcy = (() => {
@@ -204,7 +207,7 @@ function CreatePurchaseModal({ branches, onClose, onCreated, onError }) {
   })();
   // Reset FX inputs whenever destination changes — a new destination
   // could flip us in/out of the tri-currency prompt.
-  useEffect(() => { setCostCurrency(''); setFxRate(''); }, [destinationSlug]);
+  useEffect(() => { setCostCurrency('K'); setFxRate(''); }, [destinationSlug]);
   const [submitting, setSubmitting] = useState(false);
 
   // v1.9.0 — quick-add HQ supplier (same pattern as GRN page).
@@ -283,13 +286,13 @@ function CreatePurchaseModal({ branches, onClose, onCreated, onError }) {
     // line so the backend (which still validates per-line destination_slug)
     // accepts the payload unchanged.
     if (!destinationSlug) return onError('Pick a destination branch for this PO.');
-    // v1.10.54 — tri-currency destinations require a cost currency + FX rate.
-    // K-only destinations skip this — cost is native K.
-    if (destIsTriCcy) {
-      if (!costCurrency) return onError('Pick the currency the supplier billed you in (destination is tri-currency).');
-      if (costCurrency !== 'USD' && !(parseFloat(fxRate) > 0)) {
-        return onError(`Enter the FX rate: 1 USD = ? ${costCurrency}`);
-      }
+    // v1.10.79 — cost_currency now required for EVERY PO (defaults to K).
+    // FX rate is only required when the destination is tri-currency AND
+    // the currency isn't USD — K-only destinations just store the
+    // amounts as-is in the picked currency (usually K).
+    if (!costCurrency) return onError('Pick the cost currency for this PO.');
+    if (destIsTriCcy && costCurrency !== 'USD' && !(parseFloat(fxRate) > 0)) {
+      return onError(`Enter the FX rate: 1 USD = ? ${costCurrency}`);
     }
     const cleaned = items.map(it => ({
       product_sync_id:  (it.product_sync_id || '').trim(),
@@ -317,11 +320,12 @@ function CreatePurchaseModal({ branches, onClose, onCreated, onError }) {
         date,
         notes: notes || null,
         items: clean,
-        // v1.10.54 — only send when destination is tri-currency; K-only
-        // destinations omit these fields so the backend stores NULL.
-        ...(destIsTriCcy && costCurrency
-          ? { cost_currency: costCurrency, fx_rate_used: costCurrency === 'USD' ? 1 : parseFloat(fxRate) }
-          : {}),
+        // v1.10.79 — cost_currency ALWAYS sent (defaults to K). fx_rate_used
+        // only meaningful on tri-currency destinations with non-USD cost.
+        cost_currency: costCurrency,
+        fx_rate_used:
+          costCurrency === 'USD' ? 1 :
+          (destIsTriCcy && parseFloat(fxRate) > 0 ? parseFloat(fxRate) : null),
       });
       onCreated();
     } catch (err) {
@@ -406,39 +410,39 @@ function CreatePurchaseModal({ branches, onClose, onCreated, onError }) {
             <div><label style={lbl}>Date</label><input type="date" value={date} onChange={e => setDate(e.target.value)} style={inp} /></div>
           </div>
 
-          {/* v1.10.54 — WAC redesign push 2: FX rate row.
-              Only rendered when destination is a tri-currency branch
-              (Kassumbalesa). One rate applies to every line on this PO. */}
-          {destIsTriCcy && (
-            <div style={{ marginBottom: 14, padding: '10px 12px', background: '#fef3c7', border: '1px solid #fcd34d', borderRadius: 8 }}>
-              <div style={{ fontSize: 11, fontWeight: 700, color: '#78350f', textTransform: 'uppercase', letterSpacing: 0.4, marginBottom: 8 }}>
-                FX Rate (required — destination is tri-currency)
+          {/* v1.10.79 — Cost currency picker is ALWAYS shown, not gated
+              by tri-currency destination. Defaults to K (most POs are
+              Zambian suppliers). FX rate input only appears when
+              cost_currency is USD or FRA. */}
+          <div style={{ marginBottom: 14, padding: '10px 12px', background: '#fef3c7', border: '1px solid #fcd34d', borderRadius: 8 }}>
+            <div style={{ fontSize: 11, fontWeight: 700, color: '#78350f', textTransform: 'uppercase', letterSpacing: 0.4, marginBottom: 8 }}>
+              Cost Currency {destIsTriCcy && '(FX rate required for tri-currency destination)'}
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+              <div>
+                <label style={lbl}>Cost billed in <span style={{ color: '#dc2626' }}>*</span></label>
+                <select value={costCurrency || 'K'} onChange={e => setCostCurrency(e.target.value)} style={inp}>
+                  <option value="K">K (Kwacha)</option>
+                  <option value="USD">USD ($)</option>
+                  <option value="FRA">FRA</option>
+                </select>
               </div>
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-                <div>
-                  <label style={lbl}>Cost billed in <span style={{ color: '#dc2626' }}>*</span></label>
-                  <select value={costCurrency} onChange={e => setCostCurrency(e.target.value)} style={inp}>
-                    <option value="">— currency —</option>
-                    <option value="USD">USD ($)</option>
-                    <option value="K">K (Kwacha)</option>
-                    <option value="FRA">FRA</option>
-                  </select>
-                </div>
-                <div>
-                  <label style={lbl}>1 USD = <span style={{ color: '#dc2626' }}>*</span></label>
-                  <input type="number" min="0" step="0.0001"
-                    value={fxRate}
-                    onChange={e => setFxRate(e.target.value)}
-                    disabled={!costCurrency || costCurrency === 'USD'}
-                    placeholder={costCurrency === 'USD' ? 'n/a — USD already' : costCurrency === 'K' ? 'e.g. 25' : costCurrency === 'FRA' ? 'e.g. 2250' : ''}
-                    style={{ ...inp, background: (!costCurrency || costCurrency === 'USD') ? '#f9fafb' : '#fff' }} />
-                </div>
-              </div>
-              <div style={{ fontSize: 10.5, color: '#78350f', marginTop: 6, fontStyle: 'italic' }}>
-                One rate locks the whole PO. USD-billed POs skip the rate — cost is used as-is.
+              <div>
+                <label style={lbl}>1 USD = {(costCurrency && costCurrency !== 'USD' && destIsTriCcy) ? <span style={{ color: '#dc2626' }}>*</span> : ''}</label>
+                <input type="number" min="0" step="0.0001"
+                  value={fxRate}
+                  onChange={e => setFxRate(e.target.value)}
+                  disabled={!costCurrency || costCurrency === 'USD' || !destIsTriCcy}
+                  placeholder={costCurrency === 'USD' ? 'n/a — USD already' : !destIsTriCcy ? 'n/a — K-only branch' : costCurrency === 'K' ? 'e.g. 25' : costCurrency === 'FRA' ? 'e.g. 2250' : ''}
+                  style={{ ...inp, background: (!costCurrency || costCurrency === 'USD' || !destIsTriCcy) ? '#f9fafb' : '#fff' }} />
               </div>
             </div>
-          )}
+            <div style={{ fontSize: 10.5, color: '#78350f', marginTop: 6, fontStyle: 'italic' }}>
+              {destIsTriCcy
+                ? 'Tri-currency destination — FX rate captures the USD equivalent for WAC. One rate locks the whole PO.'
+                : 'K-only destination — costs stay in the chosen currency; no FX conversion needed.'}
+            </div>
+          </div>
           <div style={{ marginBottom: 14 }}>
             <label style={lbl}>Notes</label>
             <input type="text" value={notes} onChange={e => setNotes(e.target.value)} placeholder="Truck #, driver, PO ref, etc." style={inp} />

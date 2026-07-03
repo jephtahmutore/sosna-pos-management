@@ -774,13 +774,18 @@ router.post('/generate', hqAuth, (req, res) => {
           if (supRow) { hqSupplierId = supRow.id; hqSupplierSyncId = supRow.sync_id; }
         }
         // 1. grn row — total_amount = final_payable (AP-owed after CNs).
+        // v1.10.79 — cost_currency (K default) propagates from the PO so
+        // the Account Payables page can render the outstanding balance in
+        // the right currency instead of the tenant's primary symbol.
+        const grnCcy = String(purchase.cost_currency || 'K').toUpperCase();
         hqDb.prepare(`
           INSERT INTO grn (grn_number, date, supplier_id, supplier_sync_id, supplier_name,
                             total_items, total_amount, notes, invoice_attachment, supplier_invoice_number,
                             created_by, status, linked_purchase_sync_id, linked_purchase_number,
                             hq_status, sync_id, tenant_id, branch_id, device_id,
+                            cost_currency,
                             synced, created_at, updated_at)
-          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,datetime('now'),datetime('now'))
+          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,datetime('now'),datetime('now'))
         `).run(
           grnNumber, grnDate,
           hqSupplierId, hqSupplierSyncId, purchase.supplier_name || null,
@@ -788,7 +793,8 @@ router.post('/generate', hqAuth, (req, res) => {
           purchase.invoice_attachment || null, purchase.supplier_invoice_number,
           generatorId, 'Completed',
           purchase_sync_id, purchase.purchase_number,
-          'CONFIRMED', grnSyncId, HQ_TENANT_ID, null, null
+          'CONFIRMED', grnSyncId, HQ_TENANT_ID, null, null,
+          grnCcy
         );
         // 2. grn_items
         const insHqItem = hqDb.prepare(`

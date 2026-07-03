@@ -23,6 +23,9 @@ router.get('/', auth, readOnlyGuard, (req, res) => {
         COALESCE(grn_totals.total_amount, 0) AS total_purchases,
         COALESCE(grn_totals.grn_count, 0)    AS grn_count,
         grn_totals.last_grn_date,
+        -- v1.10.79 — currency of the supplier's most-used cost_currency.
+        -- NULL rows count as 'K' (default from the v1.10.79 backfill).
+        COALESCE(grn_totals.currency, 'K')   AS currency,
         COALESCE(ap_totals.total_paid, 0)    AS total_paid,
         COALESCE(ap_totals.ap_count, 0)      AS pv_count,
         COALESCE(cn_totals.total_credits, 0) AS total_credits,
@@ -41,7 +44,15 @@ router.get('/', auth, readOnlyGuard, (req, res) => {
         SELECT supplier_sync_id,
           SUM(total_amount) AS total_amount,
           COUNT(*) AS grn_count,
-          MAX(date) AS last_grn_date
+          MAX(date) AS last_grn_date,
+          -- v1.10.79 — majority currency across the supplier's GRNs.
+          -- NULL / empty rows normalise to 'K'.
+          (SELECT COALESCE(NULLIF(UPPER(g2.cost_currency), ''), 'K')
+             FROM grn g2
+            WHERE g2.supplier_sync_id = grn.supplier_sync_id
+              AND g2.deleted_at IS NULL
+            GROUP BY COALESCE(NULLIF(UPPER(g2.cost_currency), ''), 'K')
+            ORDER BY COUNT(*) DESC LIMIT 1) AS currency
         FROM grn
         WHERE deleted_at IS NULL${grnDateClause}
         GROUP BY supplier_sync_id

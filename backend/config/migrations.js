@@ -842,6 +842,12 @@ function initTenantDb(db) {
   addCol('ap_payments',        'usd_amount', 'REAL NOT NULL DEFAULT 0');
   addCol('ap_payments',        'fra_amount', 'REAL NOT NULL DEFAULT 0');
   addCol('ap_payments',        'k_amount',   'REAL NOT NULL DEFAULT 0');
+  // v1.10.79 — GRN cost currency. Every HQ-generated GRN mirrored into
+  // sosna.db.grn carries the currency the invoice was denominated in
+  // ('USD' | 'FRA' | 'K'). Nullable — legacy rows fall back to K in
+  // display code. Same column on ap_payments' side (already covered by
+  // usd_amount / fra_amount / k_amount split, no change needed).
+  addCol('grn',                'cost_currency', 'TEXT');
   // Same split on cash_receipts + payment_vouchers — needed for the Cash Book
   // to show current balance per method (Cash / Bank / Mobile Money).
   addCol('cash_receipts',      'cash_amount', 'REAL NOT NULL DEFAULT 0');
