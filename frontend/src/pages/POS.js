@@ -578,8 +578,12 @@ const POS = () => {
     // v1.10.64 — after the cart update, put focus back on the search input
     // so the cashier can type/scan the next item without touching the mouse.
     // Deferred inside a microtask so React's cart re-render doesn't steal
-    // focus back to whatever button was clicked. Search text is left
-    // intentionally (v1.8.38) so multi-adding the same result still works.
+    // focus back to whatever button was clicked.
+    // v1.10.65 — also clear the search text (reverts v1.8.38). User confirmed
+    // the intended flow is scan-add-scan-add across different items, not
+    // repeated adds of the same result — so an empty search box beats
+    // manually clicking the X between items.
+    setSearch('');
     if (searchInputRef.current) {
       Promise.resolve().then(() => searchInputRef.current?.focus());
     }
