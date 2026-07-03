@@ -36,24 +36,49 @@ function nextPaymentNumber() {
   return `HSP-${yr}-${String(seq).padStart(5, '0')}`;
 }
 
-// Aggregate purchases + payments for one supplier in a single query each.
+// Aggregate purchases + payments + credit_notes for one supplier.
+// v1.10.52 — was reading `hq_purchases.total_amount` which committed AP
+// the moment HQ typed a PO — even before the branch confirmed receipt
+// and before HQ generated a GRN. It also ignored supplier credit notes.
+// Now mirrors Liquor AP (routes/accountPayables.js):
+//   purchases = SUM(hq_grns.final_payable)             ← goods actually received
+//   payments  = SUM(hq_supplier_payments.amount)
+//   credits   = SUM(hq_supplier_credit_notes.amount)   ← now included
+//   balance   = purchases − payments − credits
+// hq_grns.final_payable already nets the invoice against the GRN-time CNs,
+// but standalone CNs recorded later against the same supplier still need
+// to be deducted separately.
 function getBalances(supplierId, supplierName) {
   const purchases = masterDb.prepare(`
-    SELECT COALESCE(SUM(total_amount), 0) AS s, COUNT(*) AS c
-      FROM hq_purchases
-     WHERE (supplier_id = ? OR (supplier_id IS NULL AND LOWER(COALESCE(supplier_name,'')) = LOWER(?)))
+    SELECT COALESCE(SUM(final_payable), 0) AS s, COUNT(*) AS c
+      FROM hq_grns
+     WHERE deleted_at IS NULL
+       AND (supplier_id = ? OR (supplier_id IS NULL AND LOWER(COALESCE(supplier_name,'')) = LOWER(?)))
   `).get(supplierId, supplierName);
   const payments = masterDb.prepare(`
     SELECT COALESCE(SUM(amount), 0) AS s, COUNT(*) AS c
       FROM hq_supplier_payments
      WHERE (supplier_id = ? OR (supplier_id IS NULL AND LOWER(COALESCE(supplier_name,'')) = LOWER(?)))
   `).get(supplierId, supplierName);
+  // Standalone credit notes NOT already netted into an hq_grn.
+  // grn_sync_id IS NULL → recorded independently. Rows attached to a
+  // GRN (grn_sync_id set) are already inside hq_grns.final_payable so
+  // deducting them twice would double-count.
+  const credits = masterDb.prepare(`
+    SELECT COALESCE(SUM(amount), 0) AS s, COUNT(*) AS c
+      FROM hq_supplier_credit_notes
+     WHERE deleted_at IS NULL
+       AND grn_sync_id IS NULL
+       AND (supplier_id = ? OR (supplier_id IS NULL AND LOWER(COALESCE(supplier_name,'')) = LOWER(?)))
+  `).get(supplierId, supplierName);
   return {
-    purchase_count: purchases.c,
+    purchase_count:  purchases.c,
     purchases_total: purchases.s,
-    payment_count: payments.c,
-    payments_total: payments.s,
-    balance: purchases.s - payments.s,
+    payment_count:   payments.c,
+    payments_total:  payments.s,
+    credit_count:    credits.c,
+    credits_total:   credits.s,
+    balance:         purchases.s - payments.s - credits.s,
   };
 }
 
@@ -77,11 +102,19 @@ router.get('/:id', hqAuth, (req, res) => {
     const s = masterDb.prepare(`SELECT * FROM hq_suppliers WHERE id = ?`).get(req.params.id);
     if (!s) return res.status(404).json({ error: 'Supplier not found' });
     const balances = getBalances(s.id, s.name);
+    // v1.10.52 — purchases list now comes from hq_grns (matches the AP
+    // balance source above). Older PO rows without a linked GRN don't
+    // show up here — they were never really owed until confirmed anyway.
     const purchases = masterDb.prepare(`
-      SELECT id, purchase_number, date, total_amount, status, invoice_number,
-             created_by_name
-        FROM hq_purchases
-       WHERE supplier_id = ? OR (supplier_id IS NULL AND LOWER(COALESCE(supplier_name,'')) = LOWER(?))
+      SELECT id, grn_number AS purchase_number, date,
+             final_payable AS total_amount,
+             'CONFIRMED' AS status,
+             supplier_invoice_number AS invoice_number,
+             generated_by_hq_name AS created_by_name,
+             po_number, items_subtotal, cn_total
+        FROM hq_grns
+       WHERE deleted_at IS NULL
+         AND (supplier_id = ? OR (supplier_id IS NULL AND LOWER(COALESCE(supplier_name,'')) = LOWER(?)))
        ORDER BY date DESC, id DESC
        LIMIT 200
     `).all(s.id, s.name);
@@ -93,7 +126,16 @@ router.get('/:id', hqAuth, (req, res) => {
        ORDER BY payment_date DESC, id DESC
        LIMIT 200
     `).all(s.id, s.name);
-    res.json({ supplier: { ...s, ...balances }, purchases, payments });
+    const credits = masterDb.prepare(`
+      SELECT id, credit_note_number, date, amount, reason, reference, notes,
+             created_by_name, grn_sync_id
+        FROM hq_supplier_credit_notes
+       WHERE deleted_at IS NULL
+         AND (supplier_id = ? OR (supplier_id IS NULL AND LOWER(COALESCE(supplier_name,'')) = LOWER(?)))
+       ORDER BY date DESC, id DESC
+       LIMIT 200
+    `).all(s.id, s.name);
+    res.json({ supplier: { ...s, ...balances }, purchases, payments, credits });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
