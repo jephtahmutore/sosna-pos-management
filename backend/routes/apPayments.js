@@ -69,7 +69,7 @@ router.post('/', auth, (req, res) => {
                                 usd_amount, fra_amount, k_amount,
                                 description, date, paid_from, invoice_attachment, created_by,
                                 sync_id, tenant_id, branch_id, device_id, synced, created_at, updated_at)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,datetime('now'),datetime('now'))
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,datetime('now'),datetime('now'))
     `).run(paymentNum, supplier_id || null, supplierSyncId, supplier_name || null,
            total, cash, bank, momo,
            usd, fra, kAmt,
