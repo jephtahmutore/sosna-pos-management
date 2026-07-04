@@ -1196,8 +1196,17 @@ export default function Cashier() {
                         style={{ flex: 1, padding: '12px', background: '#fff', border: '1px solid #e5e7eb', color: '#374151', borderRadius: 8, fontSize: 14, fontWeight: 600, cursor: 'pointer' }}>
                         Cancel
                       </button>
-                      <button onClick={saveEdit} disabled={editSaving || editReason.trim().length < 3}
-                        style={{ flex: 2, padding: '12px', background: editSaving || editReason.trim().length < 3 ? '#cbd5e1' : 'linear-gradient(135deg,#f59e0b,#d97706)', border: 'none', color: '#fff', borderRadius: 8, fontSize: 14, fontWeight: 700, cursor: editSaving ? 'wait' : 'pointer' }}>
+                      {/* v1.10.94 — was missing isOverChange guard, so the
+                          Payment History "Edit Payment" flow let cashiers save
+                          change-given amounts whose USD-eq exceeded change owed
+                          by more than $0.10 (real incident on ORD-BDF6A1-0107:
+                          $40 paid on $36 due → $4 change owed → cashier saved
+                          $4 USD + FRA 9,000 = $8 total, an unrecoverable $4
+                          overpayment). Same guard the Pending-payment Save Edit
+                          button uses at line 968. */}
+                      <button onClick={saveEdit} disabled={editSaving || editReason.trim().length < 3 || isOverChange}
+                        style={{ flex: 2, padding: '12px', background: (editSaving || editReason.trim().length < 3 || isOverChange) ? '#cbd5e1' : 'linear-gradient(135deg,#f59e0b,#d97706)', border: 'none', color: '#fff', borderRadius: 8, fontSize: 14, fontWeight: 700, cursor: editSaving ? 'wait' : 'pointer' }}
+                        title={isOverChange ? 'Change returned exceeds change owed — reduce the given amounts first.' : ''}>
                         {editSaving ? 'Saving…' : 'Save Changes'}
                       </button>
                     </div>
