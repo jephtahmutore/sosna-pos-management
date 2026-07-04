@@ -280,6 +280,14 @@ router.get('/', auth, readOnlyGuard, (req, res) => {
     const CR_K_IN    = liq ? 'COALESCE(amount, 0)' : 'COALESCE(k_amount, 0)';
     const PV_USD_OUT = CR_USD_IN;
     const PV_K_OUT   = CR_K_IN;
+    // v1.10.97 — on Liquor, K_IN already reads the top-line amount column
+    // which is the full K total. fra_amount can be non-zero on rows the
+    // Liquor Cash-Report auto-CR path populated, which would double-count
+    // in the frontend's `inflow = usd_in + fra_in + k_in` sum (line
+    // CashBook.js:1048). Force FRA in/out to 0 on Liquor so amount is the
+    // sole contributor. Sosna path keeps the direct fra_amount read.
+    const CR_FRA_IN  = liq ? '0' : 'COALESCE(fra_amount, 0)';
+    const PV_FRA_OUT = CR_FRA_IN;
     const entries = db.prepare(`
       SELECT date, 'CR' AS type, receipt_number AS reference,
         -- v1.10.49 — no trailing " - " when description is empty.
@@ -290,7 +298,7 @@ router.get('/', auth, readOnlyGuard, (req, res) => {
         END AS description,
         amount AS receipt_amount, 0 AS payment_amount,
         ${CR_USD_IN} AS usd_in,
-        COALESCE(fra_amount, 0) AS fra_in,
+        ${CR_FRA_IN} AS fra_in,
         ${CR_K_IN}   AS k_in,
         0 AS usd_out, 0 AS fra_out, 0 AS k_out
       FROM cash_receipts
@@ -316,7 +324,7 @@ router.get('/', auth, readOnlyGuard, (req, res) => {
         0 AS receipt_amount, amount AS payment_amount,
         0 AS usd_in, 0 AS fra_in, 0 AS k_in,
         ${PV_USD_OUT} AS usd_out,
-        COALESCE(fra_amount, 0) AS fra_out,
+        ${PV_FRA_OUT} AS fra_out,
         ${PV_K_OUT}   AS k_out
       FROM payment_vouchers
       WHERE deleted_at IS NULL AND tenant_id = ?${dateFilter}
