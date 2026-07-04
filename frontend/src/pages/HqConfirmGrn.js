@@ -175,23 +175,37 @@ export default function HqConfirmGrn() {
 function GenerateGrnModal({ purchase, items, extras, onClose, onGenerated }) {
   // Pre-fill GRN lines from branch-confirmed PO items + extras. HQ can
   // tweak qty / price; CN tabs are deferred to v1.10.1.
-  // v1.10.103 — `damaged_quantity` per line. Defaults 0. On save, backend
-  // posts the FULL quantity to WAC (option A: supplier billed for full,
-  // WAC blends full), then immediately books damaged_quantity as a damage
-  // stock-movement so net saleable stock = quantity − damaged_quantity.
-  // Damage cost hits P&L as a separate expense, doesn't drag WAC.
+  // v1.10.103 — `damaged_quantity` per line. On save, backend posts the
+  // FULL quantity to WAC (option A: supplier billed for full, WAC blends
+  // full), then immediately books damaged_quantity as a damage stock-out
+  // so net saleable stock = quantity − damaged_quantity. Damage cost
+  // hits P&L as a separate expense, doesn't drag WAC.
+  //
+  // v1.10.104 — auto-fill both fields on modal open:
+  //   Qty      = po_expected_qty (full invoice qty, 700 in the SAVANNA
+  //              example) — supplier billed for this
+  //   Damaged  = po_expected − received_qty (2 — the shortfall the branch
+  //              flagged when they confirmed the PO items)
+  // Operator overrides either if they disagree (e.g. shortfall was a
+  // supplier short-shipment, not damage → set Damaged back to 0 and drop
+  // Qty to received_qty).
   const [grnLines, setGrnLines] = useState(() => [
-    ...items.map(it => ({
-      product_sync_id: it.product_sync_id,
-      product_name:    it.product_name,
-      unit:            it.unit,
-      quantity:        String(it.received_qty != null ? it.received_qty : it.dispatched_qty || 0),
-      damaged_quantity:'0',
-      unit_price:      String(it.cost_price || 0),
-      expiry_date:     '',
-      is_extra:        false,
-      po_expected_qty: it.dispatched_qty,
-    })),
+    ...items.map(it => {
+      const poExpected = parseFloat(it.dispatched_qty) || 0;
+      const received   = it.received_qty != null ? (parseFloat(it.received_qty) || 0) : poExpected;
+      const shortfall  = Math.max(0, poExpected - received);
+      return {
+        product_sync_id: it.product_sync_id,
+        product_name:    it.product_name,
+        unit:            it.unit,
+        quantity:        String(poExpected),
+        damaged_quantity:String(shortfall),
+        unit_price:      String(it.cost_price || 0),
+        expiry_date:     '',
+        is_extra:        false,
+        po_expected_qty: it.dispatched_qty,
+      };
+    }),
     ...extras.map(e => ({
       product_sync_id: e.product_sync_id,
       product_name:    e.product_name,
