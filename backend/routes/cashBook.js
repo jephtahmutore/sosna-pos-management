@@ -157,9 +157,27 @@ function ccyReceiptsPayments(tenantId, slug, dateClause, dateParams) {
 // Capital Drawing + Dividend + Loan Principal + Loan Interest → outflow (like PV).
 // Also computes net transfer effect for this method (in - out).
 function sumMethod(tenantId, methodCol, dateClause, dateParams) {
-  const cr = db.prepare(`SELECT COALESCE(SUM(${methodCol}), 0) AS t FROM cash_receipts    WHERE deleted_at IS NULL AND tenant_id = ?${dateClause}`).get(tenantId, ...dateParams).t;
-  const pv = db.prepare(`SELECT COALESCE(SUM(${methodCol}), 0) AS t FROM payment_vouchers WHERE deleted_at IS NULL AND tenant_id = ?${dateClause}`).get(tenantId, ...dateParams).t;
-  const ap = db.prepare(`SELECT COALESCE(SUM(${methodCol}), 0) AS t FROM ap_payments      WHERE deleted_at IS NULL AND tenant_id = ?${dateClause}`).get(tenantId, ...dateParams).t;
+  // v1.10.99 — CR / PV / AP tables carry BOTH currency columns
+  // (usd/fra/k) and method columns (cash/bank/momo). On Liquor, the
+  // modal writes drawer amounts into the currency column and leaves the
+  // method column at 0 — pre-v1.10.99 sumMethod summed only the method
+  // column, so any modern-modal Liquor PV/CR silently missed the stats
+  // card even though it appeared in the ledger. Use the same CASE
+  // fallback the ledger UNION uses so both eras count once.
+  //
+  // capital_account / dividend_account / loan_transactions never got
+  // the currency-column migration — they only have the method column.
+  // Referencing usd/fra/k there throws "no such column", so those
+  // tables keep the plain methodCol read (same as v1.10.95 hotfix).
+  const cxMap = {
+    cash_amount: 'CASE WHEN COALESCE(usd_amount, 0) > 0 THEN usd_amount ELSE COALESCE(cash_amount, 0) END',
+    bank_amount: 'CASE WHEN COALESCE(k_amount,   0) > 0 THEN k_amount   ELSE COALESCE(bank_amount, 0) END',
+    momo_amount: 'CASE WHEN COALESCE(fra_amount, 0) > 0 THEN fra_amount ELSE COALESCE(momo_amount, 0) END',
+  };
+  const exprCcy = cxMap[methodCol] || methodCol;
+  const cr = db.prepare(`SELECT COALESCE(SUM(${exprCcy}), 0) AS t FROM cash_receipts    WHERE deleted_at IS NULL AND tenant_id = ?${dateClause}`).get(tenantId, ...dateParams).t;
+  const pv = db.prepare(`SELECT COALESCE(SUM(${exprCcy}), 0) AS t FROM payment_vouchers WHERE deleted_at IS NULL AND tenant_id = ?${dateClause}`).get(tenantId, ...dateParams).t;
+  const ap = db.prepare(`SELECT COALESCE(SUM(${exprCcy}), 0) AS t FROM ap_payments      WHERE deleted_at IS NULL AND tenant_id = ?${dateClause}`).get(tenantId, ...dateParams).t;
   const capIn  = db.prepare(`SELECT COALESCE(SUM(${methodCol}), 0) AS t FROM capital_account  WHERE deleted_at IS NULL AND tenant_id = ? AND type='Injection'${dateClause}`).get(tenantId, ...dateParams).t;
   const capOut = db.prepare(`SELECT COALESCE(SUM(${methodCol}), 0) AS t FROM capital_account  WHERE deleted_at IS NULL AND tenant_id = ? AND type='Drawing'${dateClause}`).get(tenantId, ...dateParams).t;
   const div    = db.prepare(`SELECT COALESCE(SUM(${methodCol}), 0) AS t FROM dividend_account WHERE deleted_at IS NULL AND tenant_id = ?${dateClause}`).get(tenantId, ...dateParams).t;
