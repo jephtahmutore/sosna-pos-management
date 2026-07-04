@@ -69,18 +69,48 @@ function getOpeningByCurrency(tenantId) {
 // `date < from` clause matched both → every fold double-counted every POS
 // sale, so Jul 2 opening = Jul 1 opening + Jul 1 receipts (twice) instead of
 // Jul 1 closing.
+// v1.10.91 — check whether the current tenant is Liquor-style (K-only,
+// cash/momo/bank drawers) so we can route cash/momo/bank amounts into the
+// K bucket instead of leaking them into USD (cash) or dropping them
+// entirely (momo/bank). Sosna-style tenants keep the previous behaviour
+// where cash_amount is a legacy fallback for usd_amount.
+function isLiquorTenant() {
+  try {
+    const bs = db.prepare("SELECT currency_mode, payment_methods FROM business_settings LIMIT 1").get() || {};
+    return String(bs.currency_mode || '').toUpperCase() === 'K'
+        && String(bs.payment_methods || '').toLowerCase() === 'cash_momo_bank';
+  } catch (_) { return false; }
+}
+
 function ccyReceiptsPayments(tenantId, slug, dateClause, dateParams) {
   const receipts = { usd: 0, fra: 0, k: 0 };
   const payments = { usd: 0, fra: 0, k: 0 };
   const num = (v) => parseFloat(v || 0) || 0;
+  const liq = isLiquorTenant();
+
+  // v1.10.91 — column expressions. On Sosna, cash_amount is a legacy
+  // fallback for usd_amount (old CR/PV rows written before the tri-ccy
+  // split). On Liquor, cash_amount / momo_amount / bank_amount are the
+  // real drawer buckets and every one of them belongs in K (Liquor is
+  // K-only). Rolling them into the K bucket makes MoMo + Bank PVs
+  // actually count in Cash Book instead of vanishing.
+  const CR_USD = liq
+    ? 'COALESCE(usd_amount, 0)'
+    : 'CASE WHEN COALESCE(usd_amount,0)>0 THEN usd_amount ELSE COALESCE(cash_amount,0) END';
+  const CR_K = liq
+    ? 'COALESCE(k_amount, 0) + COALESCE(cash_amount, 0) + COALESCE(momo_amount, 0) + COALESCE(bank_amount, 0)'
+    : 'COALESCE(k_amount, 0)';
+  const PV_USD = CR_USD;
+  const PV_K   = CR_K;
+
   // CR — cash_receipts.
-  receipts.usd += num(db.prepare(`SELECT COALESCE(SUM(CASE WHEN COALESCE(usd_amount,0)>0 THEN usd_amount ELSE COALESCE(cash_amount,0) END), 0) AS t FROM cash_receipts WHERE deleted_at IS NULL AND tenant_id = ?${dateClause}`).get(tenantId, ...dateParams).t);
+  receipts.usd += num(db.prepare(`SELECT COALESCE(SUM(${CR_USD}), 0) AS t FROM cash_receipts WHERE deleted_at IS NULL AND tenant_id = ?${dateClause}`).get(tenantId, ...dateParams).t);
   receipts.fra += num(db.prepare(`SELECT COALESCE(SUM(fra_amount), 0) AS t FROM cash_receipts WHERE deleted_at IS NULL AND tenant_id = ?${dateClause}`).get(tenantId, ...dateParams).t);
-  receipts.k   += num(db.prepare(`SELECT COALESCE(SUM(k_amount), 0)   AS t FROM cash_receipts WHERE deleted_at IS NULL AND tenant_id = ?${dateClause}`).get(tenantId, ...dateParams).t);
+  receipts.k   += num(db.prepare(`SELECT COALESCE(SUM(${CR_K}), 0)   AS t FROM cash_receipts WHERE deleted_at IS NULL AND tenant_id = ?${dateClause}`).get(tenantId, ...dateParams).t);
   // PV — payment_vouchers.
-  payments.usd += num(db.prepare(`SELECT COALESCE(SUM(CASE WHEN COALESCE(usd_amount,0)>0 THEN usd_amount ELSE COALESCE(cash_amount,0) END), 0) AS t FROM payment_vouchers WHERE deleted_at IS NULL AND tenant_id = ?${dateClause}`).get(tenantId, ...dateParams).t);
+  payments.usd += num(db.prepare(`SELECT COALESCE(SUM(${PV_USD}), 0) AS t FROM payment_vouchers WHERE deleted_at IS NULL AND tenant_id = ?${dateClause}`).get(tenantId, ...dateParams).t);
   payments.fra += num(db.prepare(`SELECT COALESCE(SUM(fra_amount), 0) AS t FROM payment_vouchers WHERE deleted_at IS NULL AND tenant_id = ?${dateClause}`).get(tenantId, ...dateParams).t);
-  payments.k   += num(db.prepare(`SELECT COALESCE(SUM(k_amount), 0)   AS t FROM payment_vouchers WHERE deleted_at IS NULL AND tenant_id = ?${dateClause}`).get(tenantId, ...dateParams).t);
+  payments.k   += num(db.prepare(`SELECT COALESCE(SUM(${PV_K}), 0)   AS t FROM payment_vouchers WHERE deleted_at IS NULL AND tenant_id = ?${dateClause}`).get(tenantId, ...dateParams).t);
   // v1.10.78 — AP payments now support triple-currency (usd/fra/k) on HQ
   // via the ap_payments columns added in the same version. Route each
   // currency to its own bucket; rows that pre-date v1.10.78 (only
@@ -201,6 +231,18 @@ router.get('/', auth, readOnlyGuard, (req, res) => {
     // CR / PV / customer_payments tables have usd_amount/fra_amount/k_amount;
     // legacy cash_amount falls back to USD. Sources without per-currency
     // columns (AP / capital / dividend / loan) bucket their amount into USD.
+    //
+    // v1.10.91 — on Liquor tenants (K-only, cash/momo/bank drawers) route
+    // cash + momo + bank into k_in / k_out. Previously momo_amount and
+    // bank_amount had nowhere to land (k_out = k_amount only), so MoMo /
+    // Bank PVs appeared in the ledger with a blank Payments cell and the
+    // per-currency K balance ignored them. Cash also stops leaking into
+    // the USD bucket on Liquor.
+    const liq = isLiquorTenant();
+    const CR_USD_IN  = liq ? 'COALESCE(usd_amount, 0)' : 'CASE WHEN COALESCE(usd_amount,0) > 0 THEN usd_amount ELSE COALESCE(cash_amount,0) END';
+    const CR_K_IN    = liq ? 'COALESCE(k_amount, 0) + COALESCE(cash_amount, 0) + COALESCE(momo_amount, 0) + COALESCE(bank_amount, 0)' : 'COALESCE(k_amount, 0)';
+    const PV_USD_OUT = CR_USD_IN;
+    const PV_K_OUT   = CR_K_IN;
     const entries = db.prepare(`
       SELECT date, 'CR' AS type, receipt_number AS reference,
         -- v1.10.49 — no trailing " - " when description is empty.
@@ -210,9 +252,9 @@ router.get('/', auth, readOnlyGuard, (req, res) => {
           ELSE COALESCE(received_from, '')
         END AS description,
         amount AS receipt_amount, 0 AS payment_amount,
-        CASE WHEN COALESCE(usd_amount,0) > 0 THEN usd_amount ELSE COALESCE(cash_amount,0) END AS usd_in,
+        ${CR_USD_IN} AS usd_in,
         COALESCE(fra_amount, 0) AS fra_in,
-        COALESCE(k_amount,   0) AS k_in,
+        ${CR_K_IN}   AS k_in,
         0 AS usd_out, 0 AS fra_out, 0 AS k_out
       FROM cash_receipts
       WHERE deleted_at IS NULL AND tenant_id = ?${dateFilter}
@@ -236,9 +278,9 @@ router.get('/', auth, readOnlyGuard, (req, res) => {
         END AS description,
         0 AS receipt_amount, amount AS payment_amount,
         0 AS usd_in, 0 AS fra_in, 0 AS k_in,
-        CASE WHEN COALESCE(usd_amount,0) > 0 THEN usd_amount ELSE COALESCE(cash_amount,0) END AS usd_out,
+        ${PV_USD_OUT} AS usd_out,
         COALESCE(fra_amount, 0) AS fra_out,
-        COALESCE(k_amount,   0) AS k_out
+        ${PV_K_OUT}   AS k_out
       FROM payment_vouchers
       WHERE deleted_at IS NULL AND tenant_id = ?${dateFilter}
       UNION ALL

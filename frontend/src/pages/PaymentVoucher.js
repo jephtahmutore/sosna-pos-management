@@ -512,20 +512,44 @@ const PaymentVoucher = () => {
               <tr>
                 <th>{t('voucherNumber')}</th><th>{t('date')}</th><th>{t('paidFrom')}</th><th>{t('paidTo')}</th>
                 <th>{t('description')}</th><th>{t('category')}</th>
-                {/* v1.8.25 — split Amount into 3 per-currency columns. */}
-                <th style={{ textAlign: 'right', color: '#16a34a' }}>USD ($)</th>
-                <th style={{ textAlign: 'right', color: '#7c3aed' }}>FRA</th>
-                <th style={{ textAlign: 'right', color: '#ea580c' }}>K</th>
+                {/* v1.8.25 — split Amount into 3 columns.
+                    v1.10.91 — headers depend on tenant profile:
+                      - Sosna tri-currency: USD ($) / FRA / K
+                      - Liquor K-only:      Cash / Mobile Money / Bank
+                    Previously Liquor rows displayed cash as USD, bank as
+                    FRA, momo as K (nonsense — a K200 cash PV showed as
+                    "$200 USD"). */}
+                {isLiquorStyle ? (
+                  <>
+                    <th style={{ textAlign: 'right', color: '#16a34a' }}>CASH</th>
+                    <th style={{ textAlign: 'right', color: '#7c3aed' }}>MOBILE MONEY</th>
+                    <th style={{ textAlign: 'right', color: '#ea580c' }}>BANK</th>
+                  </>
+                ) : (
+                  <>
+                    <th style={{ textAlign: 'right', color: '#16a34a' }}>USD ($)</th>
+                    <th style={{ textAlign: 'right', color: '#7c3aed' }}>FRA</th>
+                    <th style={{ textAlign: 'right', color: '#ea580c' }}>K</th>
+                  </>
+                )}
                 <th>{t('actions')}</th>
               </tr>
             </thead>
             <tbody>
               {filteredVouchers.map(v => {
-                // Prefer new usd/fra/k columns, fall back to legacy cash/bank/momo.
-                const vu = parseFloat(v.usd_amount) > 0 ? parseFloat(v.usd_amount) : parseFloat(v.cash_amount || 0);
-                const vf = parseFloat(v.fra_amount) > 0 ? parseFloat(v.fra_amount) : parseFloat(v.bank_amount || 0);
-                const vk = parseFloat(v.k_amount)   > 0 ? parseFloat(v.k_amount)   : parseFloat(v.momo_amount || 0);
+                // v1.10.91 — Liquor reads its own three columns straight;
+                // Sosna reads usd/fra/k with a legacy fallback to cash/bank/momo
+                // (for old Sosna rows written before v1.8.25 split them).
+                const va = isLiquorStyle ? parseFloat(v.cash_amount || 0)
+                                         : (parseFloat(v.usd_amount) > 0 ? parseFloat(v.usd_amount) : parseFloat(v.cash_amount || 0));
+                const vb = isLiquorStyle ? parseFloat(v.momo_amount || 0)
+                                         : (parseFloat(v.fra_amount) > 0 ? parseFloat(v.fra_amount) : parseFloat(v.bank_amount || 0));
+                const vc = isLiquorStyle ? parseFloat(v.bank_amount || 0)
+                                         : (parseFloat(v.k_amount)   > 0 ? parseFloat(v.k_amount)   : parseFloat(v.momo_amount || 0));
                 const dash = <span style={{ color: '#cbd5e1' }}>—</span>;
+                const fmtA = (n) => isLiquorStyle ? `K${fmt2(n)}` : `$${fmt2(n)}`;
+                const fmtB = (n) => isLiquorStyle ? `K${fmt2(n)}` : Math.round(n).toLocaleString('en-US');
+                const fmtC = (n) => isLiquorStyle ? `K${fmt2(n)}` : Math.round(n).toLocaleString('en-US');
                 return (
                 <tr key={v.id}>
                   <td style={{ fontWeight: 500 }}>{v.voucher_number}</td>
@@ -543,9 +567,9 @@ const PaymentVoucher = () => {
                   <td>{v.paid_to}</td>
                   <td style={{ color: '#6b7280' }}>{v.description || '—'}</td>
                   <td><span className={`badge ${getCategoryColor(v.category)}`}>{v.category}</span></td>
-                  <td style={{ textAlign: 'right', color: vu > 0 ? '#16a34a' : '', fontWeight: vu > 0 ? 700 : 400 }}>{vu > 0 ? `$${fmt2(vu)}` : dash}</td>
-                  <td style={{ textAlign: 'right', color: vf > 0 ? '#7c3aed' : '', fontWeight: vf > 0 ? 700 : 400 }}>{vf > 0 ? Math.round(vf).toLocaleString('en-US') : dash}</td>
-                  <td style={{ textAlign: 'right', color: vk > 0 ? '#ea580c' : '', fontWeight: vk > 0 ? 700 : 400 }}>{vk > 0 ? Math.round(vk).toLocaleString('en-US') : dash}</td>
+                  <td style={{ textAlign: 'right', color: va > 0 ? '#16a34a' : '', fontWeight: va > 0 ? 700 : 400 }}>{va > 0 ? fmtA(va) : dash}</td>
+                  <td style={{ textAlign: 'right', color: vb > 0 ? '#7c3aed' : '', fontWeight: vb > 0 ? 700 : 400 }}>{vb > 0 ? fmtB(vb) : dash}</td>
+                  <td style={{ textAlign: 'right', color: vc > 0 ? '#ea580c' : '', fontWeight: vc > 0 ? 700 : 400 }}>{vc > 0 ? fmtC(vc) : dash}</td>
                   <td style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
                     <button
                       onClick={() => setViewVoucher(v)}
@@ -602,13 +626,23 @@ const PaymentVoucher = () => {
                   Total ({filteredVouchers.length} voucher{filteredVouchers.length !== 1 ? 's' : ''})
                 </td>
                 {(() => {
-                  const tu = filteredVouchers.reduce((s, v) => s + (parseFloat(v.usd_amount) > 0 ? parseFloat(v.usd_amount) : parseFloat(v.cash_amount || 0)), 0);
-                  const tf = filteredVouchers.reduce((s, v) => s + (parseFloat(v.fra_amount) > 0 ? parseFloat(v.fra_amount) : parseFloat(v.bank_amount || 0)), 0);
-                  const tk = filteredVouchers.reduce((s, v) => s + (parseFloat(v.k_amount)   > 0 ? parseFloat(v.k_amount)   : parseFloat(v.momo_amount || 0)), 0);
+                  // v1.10.91 — per-bucket totals mirror the row logic above.
+                  const ta = filteredVouchers.reduce((s, v) => s + (isLiquorStyle
+                    ? parseFloat(v.cash_amount || 0)
+                    : (parseFloat(v.usd_amount) > 0 ? parseFloat(v.usd_amount) : parseFloat(v.cash_amount || 0))), 0);
+                  const tb = filteredVouchers.reduce((s, v) => s + (isLiquorStyle
+                    ? parseFloat(v.momo_amount || 0)
+                    : (parseFloat(v.fra_amount) > 0 ? parseFloat(v.fra_amount) : parseFloat(v.bank_amount || 0))), 0);
+                  const tc = filteredVouchers.reduce((s, v) => s + (isLiquorStyle
+                    ? parseFloat(v.bank_amount || 0)
+                    : (parseFloat(v.k_amount)   > 0 ? parseFloat(v.k_amount)   : parseFloat(v.momo_amount || 0))), 0);
+                  const fmtA = (n) => isLiquorStyle ? `K${fmt2(n)}` : `$${fmt2(n)}`;
+                  const fmtB = (n) => isLiquorStyle ? `K${fmt2(n)}` : Math.round(n).toLocaleString('en-US');
+                  const fmtC = (n) => isLiquorStyle ? `K${fmt2(n)}` : Math.round(n).toLocaleString('en-US');
                   return (<>
-                    <td style={{ padding: '10px 14px', textAlign: 'right', color: '#16a34a', fontWeight: 700, fontSize: 13 }}>${fmt2(tu)}</td>
-                    <td style={{ padding: '10px 14px', textAlign: 'right', color: '#7c3aed', fontWeight: 700, fontSize: 13 }}>{Math.round(tf).toLocaleString('en-US')}</td>
-                    <td style={{ padding: '10px 14px', textAlign: 'right', color: '#ea580c', fontWeight: 700, fontSize: 13 }}>{Math.round(tk).toLocaleString('en-US')}</td>
+                    <td style={{ padding: '10px 14px', textAlign: 'right', color: '#16a34a', fontWeight: 700, fontSize: 13 }}>{fmtA(ta)}</td>
+                    <td style={{ padding: '10px 14px', textAlign: 'right', color: '#7c3aed', fontWeight: 700, fontSize: 13 }}>{fmtB(tb)}</td>
+                    <td style={{ padding: '10px 14px', textAlign: 'right', color: '#ea580c', fontWeight: 700, fontSize: 13 }}>{fmtC(tc)}</td>
                     <td></td>
                   </>);
                 })()}
