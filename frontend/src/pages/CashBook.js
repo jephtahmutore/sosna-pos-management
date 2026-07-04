@@ -185,91 +185,255 @@ const CashBook = () => {
   }), { receipts: 0, payments: 0 });
 
   const handlePrint = () => {
-    const fmt = (v) => parseFloat(v || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-    const profit = (stats.totalReceipts || 0) - (stats.totalPV || 0) - (stats.totalAP || 0);
+    const fmt2 = (v) => parseFloat(v || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    const fmt0 = (v) => parseFloat(v || 0).toLocaleString(undefined, { maximumFractionDigits: 0 });
+    const fmtUSD = (v) => `$${fmt2(v)}`;
+    const fmtFRA = (v) => `F ${fmt0(v)}`;
+    const fmtK   = (v) => `K ${fmt0(v)}`;
+
     const printedAt = new Date().toLocaleString('en-US', { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
     const dateLabel = from && to && from !== to ? `${formatDate(from)} — ${formatDate(to)}` : from ? formatDate(from) : 'All Dates';
     const biz = businessInfo.business_name || 'Business Name';
     const addr = [businessInfo.business_address, businessInfo.business_phone].filter(Boolean).join('  |  ');
-    const chip = (label, value, bg, color, border) =>
-      `<div style="padding:12px 16px;border-radius:10px;background:${bg};border:1.5px solid ${border};text-align:center">
-        <div style="font-size:9.5px;letter-spacing:0.8px;text-transform:uppercase;color:#64748b;font-weight:600;margin-bottom:6px">${label}</div>
-        <div style="font-size:16px;font-weight:800;color:${color}">${value}</div>
-      </div>`;
-    const chips = [
-      chip('Opening Balance',    curSym+fmt(openingBal),          '#eff6ff','#1d4ed8','#bfdbfe'),
-      chip('Total Receipts (CR)',curSym+fmt(stats.totalReceipts), '#f0fdf4','#16a34a','#bbf7d0'),
-      chip('Total Payments (PV)',curSym+fmt(stats.totalPV),       '#fef2f2','#dc2626','#fecaca'),
-      chip('Total AP (COGS)',    curSym+fmt(stats.totalAP),       '#faf5ff','#7c3aed','#e9d5ff'),
-      chip('Profit',             curSym+fmt(profit),              profit>=0?'#f0fdf4':'#fef2f2', profit>=0?'#16a34a':'#dc2626', profit>=0?'#bbf7d0':'#fecaca'),
-      chip('Current Balance',    curSym+fmt(stats.currentBalance),'#f8fafc','#374151','#e2e8f0'),
-    ].join('');
-    const obRow = `<tr style="border-bottom:1px solid #f1f5f9;background:#eff6ff">
-      <td style="padding:8px 12px;color:#6b7280">—</td>
-      <td style="padding:8px 12px;font-weight:700">Opening Balance</td>
-      <td style="padding:8px 12px;color:#9ca3af;font-size:10px">OB</td>
-      <td style="padding:8px 12px;font-weight:700;color:#1d4ed8">OB</td>
-      <td style="padding:8px 12px;text-align:right;font-weight:700;color:#1d4ed8">${curSym}${fmt(openingBal)}</td>
-      <td style="padding:8px 12px"></td>
-      <td style="padding:8px 12px;text-align:right;font-weight:700">${curSym}${fmt(openingBal)}</td>
-    </tr>`;
-    const rows = entries.map((e, idx) => {
-      const isAP = e.type==='AP', isPV = e.type==='PV';
-      const tc = isAP?'#7c3aed':isPV?'#dc2626':'#16a34a';
-      return `<tr style="border-bottom:1px solid #f1f5f9;background:${idx%2===1?'#fafafa':'#fff'}">
-        <td style="padding:8px 12px;color:#374151">${formatDate(e.date)}</td>
-        <td style="padding:8px 12px">${e.description||''}</td>
-        <td style="padding:8px 12px;color:#9ca3af;font-size:10px">${e.reference||''}</td>
-        <td style="padding:8px 12px;font-weight:700;color:${tc}">${e.type}</td>
-        <td style="padding:8px 12px;text-align:right;color:#16a34a;font-weight:500">${parseFloat(e.receipt_amount)>0?curSym+fmt(e.receipt_amount):''}</td>
-        <td style="padding:8px 12px;text-align:right;color:#dc2626;font-weight:500">${parseFloat(e.payment_amount)>0?curSym+fmt(e.payment_amount):''}</td>
-        <td style="padding:8px 12px;text-align:right;font-weight:600">${curSym}${fmt(e.balance)}</td>
+
+    // v1.10.85 — multi-currency print. HQ (and any USD+FRA / USD+FRA+K
+    // tenant) shows per-currency stat cards + a Ccy-tagged ledger with
+    // per-currency running balances. Single-currency tenants (K-only
+    // Liquor, USD-only Sirak) fall through to the previous layout so
+    // nothing changes for them.
+    const ccyList = [
+      showUSDccy && { key: 'usd', label: 'USD', fmt: fmtUSD },
+      showFRAccy && { key: 'fra', label: 'FRA', fmt: fmtFRA },
+      showKccy   && { key: 'k',   label: 'K',   fmt: fmtK },
+    ].filter(Boolean);
+    const isMultiCcy = ccyList.length > 1;
+
+    let html;
+    if (isMultiCcy) {
+      // Per-currency roll-ups — same reduce shape the on-screen chip strip
+      // uses at line 651-667 so print totals match what the operator sees.
+      const openingByCcy = stats.openingByCcy || { usd: 0, fra: 0, k: 0 };
+      const perCcy = entries.reduce((acc, e) => {
+        const usd_in  = parseFloat(e.usd_in  || 0) || 0;
+        const usd_out = parseFloat(e.usd_out || 0) || 0;
+        const fra_in  = parseFloat(e.fra_in  || 0) || 0;
+        const fra_out = parseFloat(e.fra_out || 0) || 0;
+        const k_in    = parseFloat(e.k_in    || 0) || 0;
+        const k_out   = parseFloat(e.k_out   || 0) || 0;
+        if (e.type === 'CR') { acc.receipts.usd += usd_in;  acc.receipts.fra += fra_in;  acc.receipts.k += k_in; }
+        if (e.type === 'PV') { acc.payments.usd += usd_out; acc.payments.fra += fra_out; acc.payments.k += k_out; }
+        if (e.type === 'AP') { acc.ap.usd       += usd_out; acc.ap.fra       += fra_out; acc.ap.k       += k_out; }
+        return acc;
+      }, { receipts: { usd: 0, fra: 0, k: 0 }, payments: { usd: 0, fra: 0, k: 0 }, ap: { usd: 0, fra: 0, k: 0 } });
+      const profitByCcy = {
+        usd: perCcy.receipts.usd - perCcy.payments.usd - perCcy.ap.usd,
+        fra: perCcy.receipts.fra - perCcy.payments.fra - perCcy.ap.fra,
+        k:   perCcy.receipts.k   - perCcy.payments.k   - perCcy.ap.k,
+      };
+      const currentByCcy = {
+        usd: openingByCcy.usd + profitByCcy.usd,
+        fra: openingByCcy.fra + profitByCcy.fra,
+        k:   openingByCcy.k   + profitByCcy.k,
+      };
+
+      // Six stat cards, each stacked USD / FRA / K.
+      const cards = [
+        { label: 'Opening Balance',     bg: '#eff6ff', color: '#1d4ed8', border: '#bfdbfe', data: openingByCcy },
+        { label: 'Total Receipts (CR)', bg: '#f0fdf4', color: '#16a34a', border: '#bbf7d0', data: perCcy.receipts },
+        { label: 'Total Payments (PV)', bg: '#fef2f2', color: '#dc2626', border: '#fecaca', data: perCcy.payments },
+        { label: 'Total AP (COGS)',     bg: '#faf5ff', color: '#7c3aed', border: '#e9d5ff', data: perCcy.ap },
+        { label: 'Profit',              bg: '#f8fafc', color: '#111827', border: '#e2e8f0', data: profitByCcy, signColor: true },
+        { label: 'Current Balance',     bg: '#f8fafc', color: '#111827', border: '#e2e8f0', data: currentByCcy },
+      ];
+      const chips = cards.map(c => {
+        const lines = ccyList.map(ccy => {
+          const v = c.data[ccy.key];
+          const clr = c.signColor ? (v >= 0 ? '#16a34a' : '#dc2626') : c.color;
+          return `<div style="font-size:13.5px;font-weight:700;color:${clr};line-height:1.35">${ccy.fmt(v)}</div>`;
+        }).join('');
+        return `<div style="padding:10px 14px;border-radius:10px;background:${c.bg};border:1.5px solid ${c.border}">
+          <div style="font-size:9.5px;letter-spacing:0.8px;text-transform:uppercase;color:#64748b;font-weight:600;margin-bottom:6px">${c.label}</div>
+          ${lines}
+        </div>`;
+      }).join('');
+
+      // Running per-currency balance walks the entries; each entry emits
+      // one sub-row per currency that has activity (usually just one).
+      const balance = { usd: openingByCcy.usd, fra: openingByCcy.fra, k: openingByCcy.k };
+      const totIn   = { usd: 0, fra: 0, k: 0 };
+      const totOut  = { usd: 0, fra: 0, k: 0 };
+      const obRows = ccyList.map(ccy => `<tr style="background:#eff6ff">
+        <td style="padding:6px 10px;color:#6b7280;border-top:1px solid #e5e7eb">—</td>
+        <td style="padding:6px 10px;font-weight:700;border-top:1px solid #e5e7eb">Opening Balance</td>
+        <td style="padding:6px 10px;color:#9ca3af;font-size:10px;border-top:1px solid #e5e7eb"></td>
+        <td style="padding:6px 10px;font-weight:700;color:#1d4ed8;border-top:1px solid #e5e7eb">OB</td>
+        <td style="padding:6px 10px;text-align:center;color:#374151;font-weight:600;border-top:1px solid #e5e7eb">${ccy.label}</td>
+        <td style="padding:6px 10px;text-align:right;color:#1d4ed8;font-weight:700;border-top:1px solid #e5e7eb">${ccy.fmt(openingByCcy[ccy.key])}</td>
+        <td style="padding:6px 10px;border-top:1px solid #e5e7eb"></td>
+        <td style="padding:6px 10px;text-align:right;font-weight:700;border-top:1px solid #e5e7eb">${ccy.fmt(openingByCcy[ccy.key])}</td>
+      </tr>`).join('');
+
+      const rows = entries.map((e, idx) => {
+        const isAP = e.type === 'AP', isPV = e.type === 'PV';
+        const tc = isAP ? '#7c3aed' : isPV ? '#dc2626' : '#16a34a';
+        const bg = idx % 2 === 1 ? '#fafafa' : '#fff';
+        const subs = [];
+        for (const ccy of ccyList) {
+          const inv  = parseFloat(e[`${ccy.key}_in`]  || 0) || 0;
+          const outv = parseFloat(e[`${ccy.key}_out`] || 0) || 0;
+          if (inv === 0 && outv === 0) continue;
+          balance[ccy.key] += inv - outv;
+          totIn[ccy.key]  += inv;
+          totOut[ccy.key] += outv;
+          subs.push(`<tr style="background:${bg}">
+            <td style="padding:6px 10px;color:#374151;border-top:1px solid #f1f5f9">${formatDate(e.date)}</td>
+            <td style="padding:6px 10px;border-top:1px solid #f1f5f9">${e.description || ''}</td>
+            <td style="padding:6px 10px;color:#9ca3af;font-size:10px;border-top:1px solid #f1f5f9">${e.reference || ''}</td>
+            <td style="padding:6px 10px;font-weight:700;color:${tc};border-top:1px solid #f1f5f9">${e.type}</td>
+            <td style="padding:6px 10px;text-align:center;color:#374151;font-weight:600;border-top:1px solid #f1f5f9">${ccy.label}</td>
+            <td style="padding:6px 10px;text-align:right;color:#16a34a;font-weight:500;border-top:1px solid #f1f5f9">${inv > 0 ? ccy.fmt(inv) : ''}</td>
+            <td style="padding:6px 10px;text-align:right;color:#dc2626;font-weight:500;border-top:1px solid #f1f5f9">${outv > 0 ? ccy.fmt(outv) : ''}</td>
+            <td style="padding:6px 10px;text-align:right;font-weight:600;border-top:1px solid #f1f5f9">${ccy.fmt(balance[ccy.key])}</td>
+          </tr>`);
+        }
+        return subs.join('');
+      }).join('');
+
+      const totalRows = ccyList.map((ccy, i) => `<tr style="background:#eff6ff;${i === 0 ? 'border-top:2px solid #bfdbfe' : ''}">
+        <td colspan="4" style="padding:8px 10px;font-weight:700;font-size:11.5px;color:#1d4ed8">${i === 0 ? 'TOTALS' : ''}</td>
+        <td style="padding:8px 10px;text-align:center;color:#1d4ed8;font-weight:700">${ccy.label}</td>
+        <td style="padding:8px 10px;text-align:right;font-weight:800;font-size:12.5px;color:#16a34a">${ccy.fmt(totIn[ccy.key])}</td>
+        <td style="padding:8px 10px;text-align:right;font-weight:800;font-size:12.5px;color:#dc2626">${ccy.fmt(totOut[ccy.key])}</td>
+        <td style="padding:8px 10px;text-align:right;font-weight:800;font-size:12.5px">${ccy.fmt(balance[ccy.key])}</td>
+      </tr>`).join('');
+
+      html = `<!DOCTYPE html><html><head><meta charset="utf-8"><style>
+        @page{size:A4 portrait;margin:0}*{box-sizing:border-box;margin:0;padding:0}
+        body{font-family:"Segoe UI",Arial,sans-serif;font-size:12px;color:#1a1a2e}
+      </style></head><body><div style="width:794px;margin:0 auto">
+        <div style="background:linear-gradient(135deg,#1e3a5f 0%,#1d4ed8 100%);padding:28px 44px 22px;color:#fff;display:flex;justify-content:space-between;align-items:flex-start">
+          <div>
+            <div style="font-size:21px;font-weight:800;letter-spacing:0.3px;margin-bottom:5px">${biz}</div>
+            <div style="font-size:11px;opacity:0.75">${addr}</div>
+          </div>
+          <div style="text-align:right">
+            <div style="font-size:10px;letter-spacing:2px;text-transform:uppercase;opacity:0.65;margin-bottom:6px">Cash Book</div>
+            <div style="font-size:15px;font-weight:700">${dateLabel}</div>
+            <div style="font-size:10px;opacity:0.6;margin-top:4px">Printed: ${printedAt}</div>
+          </div>
+        </div>
+        <div style="height:4px;background:linear-gradient(90deg,#f59e0b,#1d4ed8,#a855f7)"></div>
+        <div style="padding:26px 44px 36px">
+          <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:24px">${chips}</div>
+          <div style="border:1px solid #e2e8f0;border-radius:10px;overflow:hidden;margin-bottom:20px">
+            <table style="width:100%;border-collapse:collapse;font-size:10.5px">
+              <thead><tr style="background:#eff6ff">
+                <th style="padding:8px 10px;text-align:left;font-weight:600;color:#1d4ed8;border-bottom:1px solid #bfdbfe;font-size:10px">Date</th>
+                <th style="padding:8px 10px;text-align:left;font-weight:600;color:#1d4ed8;border-bottom:1px solid #bfdbfe;font-size:10px">Description</th>
+                <th style="padding:8px 10px;text-align:left;font-weight:600;color:#1d4ed8;border-bottom:1px solid #bfdbfe;font-size:10px">Reference</th>
+                <th style="padding:8px 10px;text-align:left;font-weight:600;color:#1d4ed8;border-bottom:1px solid #bfdbfe;font-size:10px">Type</th>
+                <th style="padding:8px 10px;text-align:center;font-weight:600;color:#1d4ed8;border-bottom:1px solid #bfdbfe;font-size:10px">Ccy</th>
+                <th style="padding:8px 10px;text-align:right;font-weight:600;color:#1d4ed8;border-bottom:1px solid #bfdbfe;font-size:10px">Receipts</th>
+                <th style="padding:8px 10px;text-align:right;font-weight:600;color:#1d4ed8;border-bottom:1px solid #bfdbfe;font-size:10px">Payments</th>
+                <th style="padding:8px 10px;text-align:right;font-weight:600;color:#1d4ed8;border-bottom:1px solid #bfdbfe;font-size:10px">Balance</th>
+              </tr></thead>
+              <tbody>${obRows}${rows}</tbody>
+              <tfoot>${totalRows}</tfoot>
+            </table>
+          </div>
+          <div style="border-top:1px solid #f1f5f9;padding-top:12px;display:flex;justify-content:space-between">
+            <span style="font-size:9.5px;color:#cbd5e1">${biz} — Confidential</span>
+            <span style="font-size:9.5px;color:#cbd5e1">Printed: ${printedAt}</span>
+          </div>
+        </div>
+      </div></body></html>`;
+    } else {
+      // Single-currency layout — unchanged from prior (used by Liquor
+      // K-only and USD-only tenants where per-currency splitting adds no
+      // information).
+      const fmt = fmt2;
+      const profit = (stats.totalReceipts || 0) - (stats.totalPV || 0) - (stats.totalAP || 0);
+      const chip = (label, value, bg, color, border) =>
+        `<div style="padding:12px 16px;border-radius:10px;background:${bg};border:1.5px solid ${border};text-align:center">
+          <div style="font-size:9.5px;letter-spacing:0.8px;text-transform:uppercase;color:#64748b;font-weight:600;margin-bottom:6px">${label}</div>
+          <div style="font-size:16px;font-weight:800;color:${color}">${value}</div>
+        </div>`;
+      const chips = [
+        chip('Opening Balance',    curSym+fmt(openingBal),          '#eff6ff','#1d4ed8','#bfdbfe'),
+        chip('Total Receipts (CR)',curSym+fmt(stats.totalReceipts), '#f0fdf4','#16a34a','#bbf7d0'),
+        chip('Total Payments (PV)',curSym+fmt(stats.totalPV),       '#fef2f2','#dc2626','#fecaca'),
+        chip('Total AP (COGS)',    curSym+fmt(stats.totalAP),       '#faf5ff','#7c3aed','#e9d5ff'),
+        chip('Profit',             curSym+fmt(profit),              profit>=0?'#f0fdf4':'#fef2f2', profit>=0?'#16a34a':'#dc2626', profit>=0?'#bbf7d0':'#fecaca'),
+        chip('Current Balance',    curSym+fmt(stats.currentBalance),'#f8fafc','#374151','#e2e8f0'),
+      ].join('');
+      const obRow = `<tr style="border-bottom:1px solid #f1f5f9;background:#eff6ff">
+        <td style="padding:8px 12px;color:#6b7280">—</td>
+        <td style="padding:8px 12px;font-weight:700">Opening Balance</td>
+        <td style="padding:8px 12px;color:#9ca3af;font-size:10px">OB</td>
+        <td style="padding:8px 12px;font-weight:700;color:#1d4ed8">OB</td>
+        <td style="padding:8px 12px;text-align:right;font-weight:700;color:#1d4ed8">${curSym}${fmt(openingBal)}</td>
+        <td style="padding:8px 12px"></td>
+        <td style="padding:8px 12px;text-align:right;font-weight:700">${curSym}${fmt(openingBal)}</td>
       </tr>`;
-    }).join('');
-    const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><style>
-      @page{size:A4 portrait;margin:0}*{box-sizing:border-box;margin:0;padding:0}
-      body{font-family:"Segoe UI",Arial,sans-serif;font-size:12px;color:#1a1a2e}
-    </style></head><body><div style="width:794px;margin:0 auto">
-      <div style="background:linear-gradient(135deg,#1e3a5f 0%,#1d4ed8 100%);padding:28px 44px 22px;color:#fff;display:flex;justify-content:space-between;align-items:flex-start">
-        <div>
-          <div style="font-size:21px;font-weight:800;letter-spacing:0.3px;margin-bottom:5px">${biz}</div>
-          <div style="font-size:11px;opacity:0.75">${addr}</div>
+      const rows = entries.map((e, idx) => {
+        const isAP = e.type==='AP', isPV = e.type==='PV';
+        const tc = isAP?'#7c3aed':isPV?'#dc2626':'#16a34a';
+        return `<tr style="border-bottom:1px solid #f1f5f9;background:${idx%2===1?'#fafafa':'#fff'}">
+          <td style="padding:8px 12px;color:#374151">${formatDate(e.date)}</td>
+          <td style="padding:8px 12px">${e.description||''}</td>
+          <td style="padding:8px 12px;color:#9ca3af;font-size:10px">${e.reference||''}</td>
+          <td style="padding:8px 12px;font-weight:700;color:${tc}">${e.type}</td>
+          <td style="padding:8px 12px;text-align:right;color:#16a34a;font-weight:500">${parseFloat(e.receipt_amount)>0?curSym+fmt(e.receipt_amount):''}</td>
+          <td style="padding:8px 12px;text-align:right;color:#dc2626;font-weight:500">${parseFloat(e.payment_amount)>0?curSym+fmt(e.payment_amount):''}</td>
+          <td style="padding:8px 12px;text-align:right;font-weight:600">${curSym}${fmt(e.balance)}</td>
+        </tr>`;
+      }).join('');
+      html = `<!DOCTYPE html><html><head><meta charset="utf-8"><style>
+        @page{size:A4 portrait;margin:0}*{box-sizing:border-box;margin:0;padding:0}
+        body{font-family:"Segoe UI",Arial,sans-serif;font-size:12px;color:#1a1a2e}
+      </style></head><body><div style="width:794px;margin:0 auto">
+        <div style="background:linear-gradient(135deg,#1e3a5f 0%,#1d4ed8 100%);padding:28px 44px 22px;color:#fff;display:flex;justify-content:space-between;align-items:flex-start">
+          <div>
+            <div style="font-size:21px;font-weight:800;letter-spacing:0.3px;margin-bottom:5px">${biz}</div>
+            <div style="font-size:11px;opacity:0.75">${addr}</div>
+          </div>
+          <div style="text-align:right">
+            <div style="font-size:10px;letter-spacing:2px;text-transform:uppercase;opacity:0.65;margin-bottom:6px">Cash Book</div>
+            <div style="font-size:15px;font-weight:700">${dateLabel}</div>
+            <div style="font-size:10px;opacity:0.6;margin-top:4px">Printed: ${printedAt}</div>
+          </div>
         </div>
-        <div style="text-align:right">
-          <div style="font-size:10px;letter-spacing:2px;text-transform:uppercase;opacity:0.65;margin-bottom:6px">Cash Book</div>
-          <div style="font-size:15px;font-weight:700">${dateLabel}</div>
-          <div style="font-size:10px;opacity:0.6;margin-top:4px">Printed: ${printedAt}</div>
+        <div style="height:4px;background:linear-gradient(90deg,#f59e0b,#1d4ed8,#a855f7)"></div>
+        <div style="padding:26px 44px 36px">
+          <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:24px">${chips}</div>
+          <div style="border:1px solid #e2e8f0;border-radius:10px;overflow:hidden;margin-bottom:20px">
+            <table style="width:100%;border-collapse:collapse;font-size:11.5px">
+              <thead><tr style="background:#eff6ff">
+                <th style="padding:8px 12px;text-align:left;font-weight:600;color:#1d4ed8;border-bottom:1px solid #bfdbfe;font-size:10.5px">Date</th>
+                <th style="padding:8px 12px;text-align:left;font-weight:600;color:#1d4ed8;border-bottom:1px solid #bfdbfe;font-size:10.5px">Description</th>
+                <th style="padding:8px 12px;text-align:left;font-weight:600;color:#1d4ed8;border-bottom:1px solid #bfdbfe;font-size:10.5px">Reference</th>
+                <th style="padding:8px 12px;text-align:left;font-weight:600;color:#1d4ed8;border-bottom:1px solid #bfdbfe;font-size:10.5px">Type</th>
+                <th style="padding:8px 12px;text-align:right;font-weight:600;color:#1d4ed8;border-bottom:1px solid #bfdbfe;font-size:10.5px">Receipts</th>
+                <th style="padding:8px 12px;text-align:right;font-weight:600;color:#1d4ed8;border-bottom:1px solid #bfdbfe;font-size:10.5px">Payments</th>
+                <th style="padding:8px 12px;text-align:right;font-weight:600;color:#1d4ed8;border-bottom:1px solid #bfdbfe;font-size:10.5px">Balance</th>
+              </tr></thead>
+              <tbody>${obRow}${rows}</tbody>
+              <tfoot><tr style="background:#eff6ff;border-top:2px solid #bfdbfe">
+                <td colspan="4" style="padding:10px 12px;font-weight:700;font-size:11.5px;color:#1d4ed8">TOTALS</td>
+                <td style="padding:10px 12px;text-align:right;font-weight:800;font-size:13px;color:#16a34a">${curSym}${fmt(totals.receipts)}</td>
+                <td style="padding:10px 12px;text-align:right;font-weight:800;font-size:13px;color:#dc2626">${curSym}${fmt(totals.payments)}</td>
+                <td style="padding:10px 12px;text-align:right;font-weight:800;font-size:13px">${curSym}${fmt(stats.currentBalance)}</td>
+              </tr></tfoot>
+            </table>
+          </div>
+          <div style="border-top:1px solid #f1f5f9;padding-top:12px;display:flex;justify-content:space-between">
+            <span style="font-size:9.5px;color:#cbd5e1">${biz} — Confidential</span>
+            <span style="font-size:9.5px;color:#cbd5e1">Printed: ${printedAt}</span>
+          </div>
         </div>
-      </div>
-      <div style="height:4px;background:linear-gradient(90deg,#f59e0b,#1d4ed8,#a855f7)"></div>
-      <div style="padding:26px 44px 36px">
-        <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:24px">${chips}</div>
-        <div style="border:1px solid #e2e8f0;border-radius:10px;overflow:hidden;margin-bottom:20px">
-          <table style="width:100%;border-collapse:collapse;font-size:11.5px">
-            <thead><tr style="background:#eff6ff">
-              <th style="padding:8px 12px;text-align:left;font-weight:600;color:#1d4ed8;border-bottom:1px solid #bfdbfe;font-size:10.5px">Date</th>
-              <th style="padding:8px 12px;text-align:left;font-weight:600;color:#1d4ed8;border-bottom:1px solid #bfdbfe;font-size:10.5px">Description</th>
-              <th style="padding:8px 12px;text-align:left;font-weight:600;color:#1d4ed8;border-bottom:1px solid #bfdbfe;font-size:10.5px">Reference</th>
-              <th style="padding:8px 12px;text-align:left;font-weight:600;color:#1d4ed8;border-bottom:1px solid #bfdbfe;font-size:10.5px">Type</th>
-              <th style="padding:8px 12px;text-align:right;font-weight:600;color:#1d4ed8;border-bottom:1px solid #bfdbfe;font-size:10.5px">Receipts</th>
-              <th style="padding:8px 12px;text-align:right;font-weight:600;color:#1d4ed8;border-bottom:1px solid #bfdbfe;font-size:10.5px">Payments</th>
-              <th style="padding:8px 12px;text-align:right;font-weight:600;color:#1d4ed8;border-bottom:1px solid #bfdbfe;font-size:10.5px">Balance</th>
-            </tr></thead>
-            <tbody>${obRow}${rows}</tbody>
-            <tfoot><tr style="background:#eff6ff;border-top:2px solid #bfdbfe">
-              <td colspan="4" style="padding:10px 12px;font-weight:700;font-size:11.5px;color:#1d4ed8">TOTALS</td>
-              <td style="padding:10px 12px;text-align:right;font-weight:800;font-size:13px;color:#16a34a">${curSym}${fmt(totals.receipts)}</td>
-              <td style="padding:10px 12px;text-align:right;font-weight:800;font-size:13px;color:#dc2626">${curSym}${fmt(totals.payments)}</td>
-              <td style="padding:10px 12px;text-align:right;font-weight:800;font-size:13px">${curSym}${fmt(stats.currentBalance)}</td>
-            </tr></tfoot>
-          </table>
-        </div>
-        <div style="border-top:1px solid #f1f5f9;padding-top:12px;display:flex;justify-content:space-between">
-          <span style="font-size:9.5px;color:#cbd5e1">${biz} — Confidential</span>
-          <span style="font-size:9.5px;color:#cbd5e1">Printed: ${printedAt}</span>
-        </div>
-      </div>
-    </div></body></html>`;
+      </div></body></html>`;
+    }
+
     const w = window.open('', '_blank');
     if (!w) return;
     w.document.write(html); w.document.close(); w.focus();
