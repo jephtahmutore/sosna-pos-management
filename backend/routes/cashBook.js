@@ -187,20 +187,29 @@ function ccyReceiptsPayments(tenantId, slug, dateClause, dateParams) {
 // Capital Drawing + Dividend + Loan Principal + Loan Interest → outflow (like PV).
 // Also computes net transfer effect for this method (in - out).
 function sumMethod(tenantId, methodCol, dateClause, dateParams) {
-  // v1.10.93 — on Liquor tenants, PVs / CRs store drawer amounts in the
-  // currency columns (usd_amount = Cash, fra_amount = MoMo, k_amount =
-  // Bank) per PaymentVoucherFormModal's "avoid DB migration" note. Legacy
-  // pre-v1.8.5 rows still use cash_amount / momo_amount / bank_amount.
-  // Sum both so both eras count. Sosna keeps the single-column sum.
+  // v1.10.93 — on Liquor tenants, PVs / CRs / AP store drawer amounts
+  // in the currency columns (usd_amount = Cash, fra_amount = MoMo,
+  // k_amount = Bank) per PaymentVoucherFormModal's "avoid DB migration"
+  // note. Legacy pre-v1.8.5 rows still use cash_amount / momo_amount /
+  // bank_amount. Sum both so both eras count.
+  //
+  // v1.10.95 hotfix — the currency columns only exist on tables that
+  // went through the tri-currency migration: cash_receipts,
+  // payment_vouchers, ap_payments. capital_account / dividend_account /
+  // loan_transactions were never migrated (they're single-currency by
+  // design), so referencing usd_amount there throws "no such column"
+  // and the endpoint returns empty. Use exprCcy only for the three
+  // migrated tables; fall back to methodCol for the rest.
   const liq = isLiquorTenant();
-  const expr = !liq ? methodCol
-             : methodCol === 'cash_amount' ? 'COALESCE(cash_amount, 0) + COALESCE(usd_amount, 0)'
-             : methodCol === 'bank_amount' ? 'COALESCE(bank_amount, 0) + COALESCE(k_amount,   0)'
-             : methodCol === 'momo_amount' ? 'COALESCE(momo_amount, 0) + COALESCE(fra_amount, 0)'
-             : methodCol;
-  const cr = db.prepare(`SELECT COALESCE(SUM(${expr}), 0) AS t FROM cash_receipts    WHERE deleted_at IS NULL AND tenant_id = ?${dateClause}`).get(tenantId, ...dateParams).t;
-  const pv = db.prepare(`SELECT COALESCE(SUM(${expr}), 0) AS t FROM payment_vouchers WHERE deleted_at IS NULL AND tenant_id = ?${dateClause}`).get(tenantId, ...dateParams).t;
-  const ap = db.prepare(`SELECT COALESCE(SUM(${expr}), 0) AS t FROM ap_payments      WHERE deleted_at IS NULL AND tenant_id = ?${dateClause}`).get(tenantId, ...dateParams).t;
+  const exprCcy = !liq ? methodCol
+                : methodCol === 'cash_amount' ? 'COALESCE(cash_amount, 0) + COALESCE(usd_amount, 0)'
+                : methodCol === 'bank_amount' ? 'COALESCE(bank_amount, 0) + COALESCE(k_amount,   0)'
+                : methodCol === 'momo_amount' ? 'COALESCE(momo_amount, 0) + COALESCE(fra_amount, 0)'
+                : methodCol;
+  const expr = methodCol; // single-currency tables — the untouched one
+  const cr = db.prepare(`SELECT COALESCE(SUM(${exprCcy}), 0) AS t FROM cash_receipts    WHERE deleted_at IS NULL AND tenant_id = ?${dateClause}`).get(tenantId, ...dateParams).t;
+  const pv = db.prepare(`SELECT COALESCE(SUM(${exprCcy}), 0) AS t FROM payment_vouchers WHERE deleted_at IS NULL AND tenant_id = ?${dateClause}`).get(tenantId, ...dateParams).t;
+  const ap = db.prepare(`SELECT COALESCE(SUM(${exprCcy}), 0) AS t FROM ap_payments      WHERE deleted_at IS NULL AND tenant_id = ?${dateClause}`).get(tenantId, ...dateParams).t;
   const capIn  = db.prepare(`SELECT COALESCE(SUM(${expr}), 0) AS t FROM capital_account  WHERE deleted_at IS NULL AND tenant_id = ? AND type='Injection'${dateClause}`).get(tenantId, ...dateParams).t;
   const capOut = db.prepare(`SELECT COALESCE(SUM(${expr}), 0) AS t FROM capital_account  WHERE deleted_at IS NULL AND tenant_id = ? AND type='Drawing'${dateClause}`).get(tenantId, ...dateParams).t;
   const div    = db.prepare(`SELECT COALESCE(SUM(${expr}), 0) AS t FROM dividend_account WHERE deleted_at IS NULL AND tenant_id = ?${dateClause}`).get(tenantId, ...dateParams).t;
