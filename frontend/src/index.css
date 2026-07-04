@@ -61,6 +61,21 @@ body {
   --radius-lg: 12px;
 }
 
+/* v1.10.86 — HQ palette: Executive Purple.
+   Toggled by App.js when isHqHost() returns true — every CSS var
+   consumer (buttons, sidebar, cards, page headers) shifts to purple
+   without touching individual pages. Amber accent stays as the highlight
+   colour, which complements deep purple. Branches keep the base slate
+   scheme above, so at a glance the operator knows which side they're on. */
+body.hq-theme {
+  --primary:        #6d28d9;                     /* deep purple — buttons, borders */
+  --primary-dark:   #4c1d95;                     /* darker purple — button hover, gradients */
+  --primary-light:  #ede9fe;                     /* light purple — soft backgrounds */
+  --sidebar-bg:     #2e1065;                     /* very dark purple sidebar */
+  --sidebar-hover:  #4c1d95;                     /* purple hover */
+  --sidebar-active: rgba(245,158,11,0.20);       /* keep amber accent for active row */
+}
+
 /* Layout */
 .app-layout {
   display: flex;

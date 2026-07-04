@@ -344,6 +344,14 @@ function AppRoutes() {
 }
 
 function App() {
+  // v1.10.86 — HQ gets its own purple palette so operators can tell at a
+  // glance they're on HQ vs a branch. Host doesn't change at runtime, so
+  // a one-shot class toggle on mount is enough; CSS variable overrides
+  // under `body.hq-theme` in index.css swing --primary/--sidebar-* etc.
+  useEffect(() => {
+    document.body.classList.toggle('hq-theme', isHqHost());
+  }, []);
+
   // Render customer display immediately — no auth, no sync check, no license check
   if (window.location.pathname === '/customer-display') {
     return <CustomerDisplay />;
