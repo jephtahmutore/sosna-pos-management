@@ -76,6 +76,13 @@ body.hq-theme {
   --sidebar-active: rgba(245,158,11,0.20);       /* keep amber accent for active row */
 }
 
+/* v1.10.87 — .sidebar hardcodes its slate gradient at line 88 rather
+   than reading var(--sidebar-bg), so the var override alone doesn't
+   touch it. Repeat the same gradient shape in purple for HQ. */
+body.hq-theme .sidebar {
+  background: linear-gradient(180deg, #4c1d95 0%, #2e1065 50%, #1a0637 100%);
+}
+
 /* Layout */
 .app-layout {
   display: flex;
