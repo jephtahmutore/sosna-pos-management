@@ -69,63 +69,27 @@ function getOpeningByCurrency(tenantId) {
 // `date < from` clause matched both → every fold double-counted every POS
 // sale, so Jul 2 opening = Jul 1 opening + Jul 1 receipts (twice) instead of
 // Jul 1 closing.
-// v1.10.91 — check whether the current tenant is Liquor-style (K-only,
-// cash/momo/bank drawers) so we can route cash/momo/bank amounts into the
-// K bucket instead of leaking them into USD (cash) or dropping them
-// entirely (momo/bank). Sosna-style tenants keep the previous behaviour
-// where cash_amount is a legacy fallback for usd_amount.
-function isLiquorTenant() {
-  try {
-    const bs = db.prepare("SELECT currency_mode, payment_methods FROM business_settings LIMIT 1").get() || {};
-    return String(bs.currency_mode || '').toUpperCase() === 'K'
-        && String(bs.payment_methods || '').toLowerCase() === 'cash_momo_bank';
-  } catch (_) { return false; }
-}
+// v1.10.98 — reverted the isLiquorTenant() helper introduced in v1.10.91.
+// The Liquor-specific column swaps in ccyReceiptsPayments / sumMethod /
+// /ledger UNION produced doubled stats (Payments (PV) K120 vs actual K60)
+// and mis-anchored per-currency balances (ledger jump K78,360 on a
+// K36,395 DEP-OUT). Pre-v1.10.91 behaviour was correct because Liquor
+// writes drawer amounts to usd_amount, and the single-column reads
+// captured them cleanly. Keeping the frontend PaymentVoucher.js v1.10.91
+// column-header fix (that one is safe — it only affects display).
 
 function ccyReceiptsPayments(tenantId, slug, dateClause, dateParams) {
   const receipts = { usd: 0, fra: 0, k: 0 };
   const payments = { usd: 0, fra: 0, k: 0 };
   const num = (v) => parseFloat(v || 0) || 0;
-  const liq = isLiquorTenant();
-
-  // v1.10.91 / v1.10.93 — column expressions.
-  //
-  // Sosna path: usd = usd_amount OR legacy cash_amount, k = k_amount.
-  //
-  // Liquor path: per PaymentVoucherFormModal.js comment "Storage columns
-  // stay the same (usd_amount = Cash, fra_amount = MoMo, k_amount = Bank)
-  // to avoid a DB migration", Liquor writes drawer amounts into the
-  // currency columns. So every column potentially holds K-denominated
-  // money on Liquor (usd/fra/k for post-v1.8.5 rows, cash/bank/momo for
-  // pre-v1.8.5 legacy rows). Sum all six into K, and USD = 0 (no USD leg).
-  //
-  // v1.10.91 mistakenly summed only cash+momo+bank on Liquor, missing
-  // the actual usd_amount + fra_amount + k_amount where the drawer
-  // amounts are stored — hence "K & K Equivalent" and per-currency
-  // views ignored every MoMo/Bank PV.
-  // v1.10.96 quick fix — v1.10.93's "sum all six columns" over-counted
-  // whenever a row had the same amount mirrored across multiple columns
-  // (e.g. CR-EBD2A7-0005 K36,535 showing +K104,585 in Cash Book because
-  // amount was replicated across usd/cash/other columns). Liquor is
-  // K-only so the top-line `amount` column IS the K total — read that
-  // directly instead of summing per-currency splits.
-  const CR_USD = liq
-    ? '0'
-    : 'CASE WHEN COALESCE(usd_amount,0)>0 THEN usd_amount ELSE COALESCE(cash_amount,0) END';
-  const CR_K = liq
-    ? 'COALESCE(amount, 0)'
-    : 'COALESCE(k_amount, 0)';
-  const PV_USD = CR_USD;
-  const PV_K   = CR_K;
-
   // CR — cash_receipts.
-  receipts.usd += num(db.prepare(`SELECT COALESCE(SUM(${CR_USD}), 0) AS t FROM cash_receipts WHERE deleted_at IS NULL AND tenant_id = ?${dateClause}`).get(tenantId, ...dateParams).t);
+  receipts.usd += num(db.prepare(`SELECT COALESCE(SUM(CASE WHEN COALESCE(usd_amount,0)>0 THEN usd_amount ELSE COALESCE(cash_amount,0) END), 0) AS t FROM cash_receipts WHERE deleted_at IS NULL AND tenant_id = ?${dateClause}`).get(tenantId, ...dateParams).t);
   receipts.fra += num(db.prepare(`SELECT COALESCE(SUM(fra_amount), 0) AS t FROM cash_receipts WHERE deleted_at IS NULL AND tenant_id = ?${dateClause}`).get(tenantId, ...dateParams).t);
-  receipts.k   += num(db.prepare(`SELECT COALESCE(SUM(${CR_K}), 0)   AS t FROM cash_receipts WHERE deleted_at IS NULL AND tenant_id = ?${dateClause}`).get(tenantId, ...dateParams).t);
+  receipts.k   += num(db.prepare(`SELECT COALESCE(SUM(k_amount), 0)   AS t FROM cash_receipts WHERE deleted_at IS NULL AND tenant_id = ?${dateClause}`).get(tenantId, ...dateParams).t);
   // PV — payment_vouchers.
-  payments.usd += num(db.prepare(`SELECT COALESCE(SUM(${PV_USD}), 0) AS t FROM payment_vouchers WHERE deleted_at IS NULL AND tenant_id = ?${dateClause}`).get(tenantId, ...dateParams).t);
+  payments.usd += num(db.prepare(`SELECT COALESCE(SUM(CASE WHEN COALESCE(usd_amount,0)>0 THEN usd_amount ELSE COALESCE(cash_amount,0) END), 0) AS t FROM payment_vouchers WHERE deleted_at IS NULL AND tenant_id = ?${dateClause}`).get(tenantId, ...dateParams).t);
   payments.fra += num(db.prepare(`SELECT COALESCE(SUM(fra_amount), 0) AS t FROM payment_vouchers WHERE deleted_at IS NULL AND tenant_id = ?${dateClause}`).get(tenantId, ...dateParams).t);
-  payments.k   += num(db.prepare(`SELECT COALESCE(SUM(${PV_K}), 0)   AS t FROM payment_vouchers WHERE deleted_at IS NULL AND tenant_id = ?${dateClause}`).get(tenantId, ...dateParams).t);
+  payments.k   += num(db.prepare(`SELECT COALESCE(SUM(k_amount), 0)   AS t FROM payment_vouchers WHERE deleted_at IS NULL AND tenant_id = ?${dateClause}`).get(tenantId, ...dateParams).t);
   // v1.10.78 — AP payments now support triple-currency (usd/fra/k) on HQ
   // via the ap_payments columns added in the same version. Route each
   // currency to its own bucket; rows that pre-date v1.10.78 (only
@@ -193,35 +157,15 @@ function ccyReceiptsPayments(tenantId, slug, dateClause, dateParams) {
 // Capital Drawing + Dividend + Loan Principal + Loan Interest → outflow (like PV).
 // Also computes net transfer effect for this method (in - out).
 function sumMethod(tenantId, methodCol, dateClause, dateParams) {
-  // v1.10.93 — on Liquor tenants, PVs / CRs / AP store drawer amounts
-  // in the currency columns (usd_amount = Cash, fra_amount = MoMo,
-  // k_amount = Bank) per PaymentVoucherFormModal's "avoid DB migration"
-  // note. Legacy pre-v1.8.5 rows still use cash_amount / momo_amount /
-  // bank_amount. Sum both so both eras count.
-  //
-  // v1.10.95 hotfix — the currency columns only exist on tables that
-  // went through the tri-currency migration: cash_receipts,
-  // payment_vouchers, ap_payments. capital_account / dividend_account /
-  // loan_transactions were never migrated (they're single-currency by
-  // design), so referencing usd_amount there throws "no such column"
-  // and the endpoint returns empty. Use exprCcy only for the three
-  // migrated tables; fall back to methodCol for the rest.
-  const liq = isLiquorTenant();
-  const exprCcy = !liq ? methodCol
-                : methodCol === 'cash_amount' ? 'COALESCE(cash_amount, 0) + COALESCE(usd_amount, 0)'
-                : methodCol === 'bank_amount' ? 'COALESCE(bank_amount, 0) + COALESCE(k_amount,   0)'
-                : methodCol === 'momo_amount' ? 'COALESCE(momo_amount, 0) + COALESCE(fra_amount, 0)'
-                : methodCol;
-  const expr = methodCol; // single-currency tables — the untouched one
-  const cr = db.prepare(`SELECT COALESCE(SUM(${exprCcy}), 0) AS t FROM cash_receipts    WHERE deleted_at IS NULL AND tenant_id = ?${dateClause}`).get(tenantId, ...dateParams).t;
-  const pv = db.prepare(`SELECT COALESCE(SUM(${exprCcy}), 0) AS t FROM payment_vouchers WHERE deleted_at IS NULL AND tenant_id = ?${dateClause}`).get(tenantId, ...dateParams).t;
-  const ap = db.prepare(`SELECT COALESCE(SUM(${exprCcy}), 0) AS t FROM ap_payments      WHERE deleted_at IS NULL AND tenant_id = ?${dateClause}`).get(tenantId, ...dateParams).t;
-  const capIn  = db.prepare(`SELECT COALESCE(SUM(${expr}), 0) AS t FROM capital_account  WHERE deleted_at IS NULL AND tenant_id = ? AND type='Injection'${dateClause}`).get(tenantId, ...dateParams).t;
-  const capOut = db.prepare(`SELECT COALESCE(SUM(${expr}), 0) AS t FROM capital_account  WHERE deleted_at IS NULL AND tenant_id = ? AND type='Drawing'${dateClause}`).get(tenantId, ...dateParams).t;
-  const div    = db.prepare(`SELECT COALESCE(SUM(${expr}), 0) AS t FROM dividend_account WHERE deleted_at IS NULL AND tenant_id = ?${dateClause}`).get(tenantId, ...dateParams).t;
-  const loanIn   = db.prepare(`SELECT COALESCE(SUM(${expr}), 0) AS t FROM loan_transactions WHERE deleted_at IS NULL AND tenant_id = ? AND type='Disbursement'${dateClause}`).get(tenantId, ...dateParams).t;
-  const loanPrin = db.prepare(`SELECT COALESCE(SUM(${expr}), 0) AS t FROM loan_transactions WHERE deleted_at IS NULL AND tenant_id = ? AND type='Principal'${dateClause}`).get(tenantId, ...dateParams).t;
-  const loanInt  = db.prepare(`SELECT COALESCE(SUM(${expr}), 0) AS t FROM loan_transactions WHERE deleted_at IS NULL AND tenant_id = ? AND type='Interest'${dateClause}`).get(tenantId, ...dateParams).t;
+  const cr = db.prepare(`SELECT COALESCE(SUM(${methodCol}), 0) AS t FROM cash_receipts    WHERE deleted_at IS NULL AND tenant_id = ?${dateClause}`).get(tenantId, ...dateParams).t;
+  const pv = db.prepare(`SELECT COALESCE(SUM(${methodCol}), 0) AS t FROM payment_vouchers WHERE deleted_at IS NULL AND tenant_id = ?${dateClause}`).get(tenantId, ...dateParams).t;
+  const ap = db.prepare(`SELECT COALESCE(SUM(${methodCol}), 0) AS t FROM ap_payments      WHERE deleted_at IS NULL AND tenant_id = ?${dateClause}`).get(tenantId, ...dateParams).t;
+  const capIn  = db.prepare(`SELECT COALESCE(SUM(${methodCol}), 0) AS t FROM capital_account  WHERE deleted_at IS NULL AND tenant_id = ? AND type='Injection'${dateClause}`).get(tenantId, ...dateParams).t;
+  const capOut = db.prepare(`SELECT COALESCE(SUM(${methodCol}), 0) AS t FROM capital_account  WHERE deleted_at IS NULL AND tenant_id = ? AND type='Drawing'${dateClause}`).get(tenantId, ...dateParams).t;
+  const div    = db.prepare(`SELECT COALESCE(SUM(${methodCol}), 0) AS t FROM dividend_account WHERE deleted_at IS NULL AND tenant_id = ?${dateClause}`).get(tenantId, ...dateParams).t;
+  const loanIn   = db.prepare(`SELECT COALESCE(SUM(${methodCol}), 0) AS t FROM loan_transactions WHERE deleted_at IS NULL AND tenant_id = ? AND type='Disbursement'${dateClause}`).get(tenantId, ...dateParams).t;
+  const loanPrin = db.prepare(`SELECT COALESCE(SUM(${methodCol}), 0) AS t FROM loan_transactions WHERE deleted_at IS NULL AND tenant_id = ? AND type='Principal'${dateClause}`).get(tenantId, ...dateParams).t;
+  const loanInt  = db.prepare(`SELECT COALESCE(SUM(${methodCol}), 0) AS t FROM loan_transactions WHERE deleted_at IS NULL AND tenant_id = ? AND type='Interest'${dateClause}`).get(tenantId, ...dateParams).t;
   // Net cash transfer effect on this method = inflow (to_method) - outflow (from_method)
   const methodName = methodCol === 'cash_amount' ? 'Cash' : methodCol === 'bank_amount' ? 'Bank' : 'Mobile Money';
   const trIn  = db.prepare(`SELECT COALESCE(SUM(amount), 0) AS t FROM cash_transfers WHERE deleted_at IS NULL AND tenant_id = ? AND to_method   = ?${dateClause}`).get(tenantId, methodName, ...dateParams).t;
@@ -267,27 +211,9 @@ router.get('/', auth, readOnlyGuard, (req, res) => {
     // legacy cash_amount falls back to USD. Sources without per-currency
     // columns (AP / capital / dividend / loan) bucket their amount into USD.
     //
-    // v1.10.93 — Liquor stores drawer amounts in usd/fra/k columns
-    // (see PaymentVoucherFormModal comment). Legacy pre-v1.8.5 rows may
-    // still have cash/momo/bank. Both are K-denominated on Liquor, so
-    // fold ALL six into k_in / k_out, and set usd = 0 (Liquor has no
-    // USD leg). Sosna keeps the previous logic.
-    // v1.10.96 quick fix — same double-count bug as ccyReceiptsPayments.
-    // On Liquor, read the top-line `amount` column (which IS the K total
-    // for a K-only tenant) instead of summing per-currency splits.
-    const liq = isLiquorTenant();
-    const CR_USD_IN  = liq ? '0' : 'CASE WHEN COALESCE(usd_amount,0) > 0 THEN usd_amount ELSE COALESCE(cash_amount,0) END';
-    const CR_K_IN    = liq ? 'COALESCE(amount, 0)' : 'COALESCE(k_amount, 0)';
-    const PV_USD_OUT = CR_USD_IN;
-    const PV_K_OUT   = CR_K_IN;
-    // v1.10.97 — on Liquor, K_IN already reads the top-line amount column
-    // which is the full K total. fra_amount can be non-zero on rows the
-    // Liquor Cash-Report auto-CR path populated, which would double-count
-    // in the frontend's `inflow = usd_in + fra_in + k_in` sum (line
-    // CashBook.js:1048). Force FRA in/out to 0 on Liquor so amount is the
-    // sole contributor. Sosna path keeps the direct fra_amount read.
-    const CR_FRA_IN  = liq ? '0' : 'COALESCE(fra_amount, 0)';
-    const PV_FRA_OUT = CR_FRA_IN;
+    // v1.10.98 — reverted the v1.10.91→97 Liquor SQL branching. Same code
+    // path for every tenant now, matching pre-v1.10.91 behaviour that
+    // worked cleanly on both Sosna and Liquor.
     const entries = db.prepare(`
       SELECT date, 'CR' AS type, receipt_number AS reference,
         -- v1.10.49 — no trailing " - " when description is empty.
@@ -297,9 +223,9 @@ router.get('/', auth, readOnlyGuard, (req, res) => {
           ELSE COALESCE(received_from, '')
         END AS description,
         amount AS receipt_amount, 0 AS payment_amount,
-        ${CR_USD_IN} AS usd_in,
-        ${CR_FRA_IN} AS fra_in,
-        ${CR_K_IN}   AS k_in,
+        CASE WHEN COALESCE(usd_amount,0) > 0 THEN usd_amount ELSE COALESCE(cash_amount,0) END AS usd_in,
+        COALESCE(fra_amount, 0) AS fra_in,
+        COALESCE(k_amount,   0) AS k_in,
         0 AS usd_out, 0 AS fra_out, 0 AS k_out
       FROM cash_receipts
       WHERE deleted_at IS NULL AND tenant_id = ?${dateFilter}
@@ -323,9 +249,9 @@ router.get('/', auth, readOnlyGuard, (req, res) => {
         END AS description,
         0 AS receipt_amount, amount AS payment_amount,
         0 AS usd_in, 0 AS fra_in, 0 AS k_in,
-        ${PV_USD_OUT} AS usd_out,
-        ${PV_FRA_OUT} AS fra_out,
-        ${PV_K_OUT}   AS k_out
+        CASE WHEN COALESCE(usd_amount,0) > 0 THEN usd_amount ELSE COALESCE(cash_amount,0) END AS usd_out,
+        COALESCE(fra_amount, 0) AS fra_out,
+        COALESCE(k_amount,   0) AS k_out
       FROM payment_vouchers
       WHERE deleted_at IS NULL AND tenant_id = ?${dateFilter}
       UNION ALL
