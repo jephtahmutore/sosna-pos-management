@@ -103,11 +103,17 @@ function ccyReceiptsPayments(tenantId, slug, dateClause, dateParams) {
   // the actual usd_amount + fra_amount + k_amount where the drawer
   // amounts are stored — hence "K & K Equivalent" and per-currency
   // views ignored every MoMo/Bank PV.
+  // v1.10.96 quick fix — v1.10.93's "sum all six columns" over-counted
+  // whenever a row had the same amount mirrored across multiple columns
+  // (e.g. CR-EBD2A7-0005 K36,535 showing +K104,585 in Cash Book because
+  // amount was replicated across usd/cash/other columns). Liquor is
+  // K-only so the top-line `amount` column IS the K total — read that
+  // directly instead of summing per-currency splits.
   const CR_USD = liq
     ? '0'
     : 'CASE WHEN COALESCE(usd_amount,0)>0 THEN usd_amount ELSE COALESCE(cash_amount,0) END';
   const CR_K = liq
-    ? 'COALESCE(usd_amount, 0) + COALESCE(fra_amount, 0) + COALESCE(k_amount, 0) + COALESCE(cash_amount, 0) + COALESCE(momo_amount, 0) + COALESCE(bank_amount, 0)'
+    ? 'COALESCE(amount, 0)'
     : 'COALESCE(k_amount, 0)';
   const PV_USD = CR_USD;
   const PV_K   = CR_K;
@@ -266,9 +272,12 @@ router.get('/', auth, readOnlyGuard, (req, res) => {
     // still have cash/momo/bank. Both are K-denominated on Liquor, so
     // fold ALL six into k_in / k_out, and set usd = 0 (Liquor has no
     // USD leg). Sosna keeps the previous logic.
+    // v1.10.96 quick fix — same double-count bug as ccyReceiptsPayments.
+    // On Liquor, read the top-line `amount` column (which IS the K total
+    // for a K-only tenant) instead of summing per-currency splits.
     const liq = isLiquorTenant();
     const CR_USD_IN  = liq ? '0' : 'CASE WHEN COALESCE(usd_amount,0) > 0 THEN usd_amount ELSE COALESCE(cash_amount,0) END';
-    const CR_K_IN    = liq ? 'COALESCE(usd_amount, 0) + COALESCE(fra_amount, 0) + COALESCE(k_amount, 0) + COALESCE(cash_amount, 0) + COALESCE(momo_amount, 0) + COALESCE(bank_amount, 0)' : 'COALESCE(k_amount, 0)';
+    const CR_K_IN    = liq ? 'COALESCE(amount, 0)' : 'COALESCE(k_amount, 0)';
     const PV_USD_OUT = CR_USD_IN;
     const PV_K_OUT   = CR_K_IN;
     const entries = db.prepare(`
