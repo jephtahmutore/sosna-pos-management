@@ -1737,19 +1737,37 @@ function initTenantDb(db) {
   addCol('orders',   'overpaid_kept_ccy',  'TEXT');   // 'USD' | 'FRA' | 'K' | NULL
   addCol('orders',   'overpaid_kept_amt',  'REAL NOT NULL DEFAULT 0'); // in source ccy
 
-  // Backfill historical rows: pre-v1.8.68 change_amount stored the
-  // USD-equivalent of cashier-returned change, so seed usd_change_given
-  // with it (preserves existing Cash Report numbers). The new code paths
-  // write to usd_change_given directly going forward.
+  // v1.10.109 — REMOVED the v1.8.68 backfill block that copied
+  // change_amount → usd_change_given on every startup. It was carried
+  // over from Liquor's migrations.js when Sosna was forked, but Sosna's
+  // DBs are all fresh (bootstrapped 2026-06-13, schema already includes
+  // fra_change_given / k_change_given), so it had no legitimate legacy
+  // rows to touch. Instead, it corrupted new orders where the cashier
+  // gave change entirely in FRA (usd_change_given=0, fra_change_given>0,
+  // change_amount>0 → block wrote usd_change_given = change_amount on
+  // next restart, doubling the recorded change). Real incident: 12
+  // Kassumbalesa orders inflated by $30 USD total (fingerprint below).
+  //
+  // v1.10.109 — one-shot phantom-repair for orders already inflated by
+  // the removed backfill. Matches by fingerprint (usd_change_given
+  // exactly equals change_amount AND FRA change was given), so it works
+  // on any tenant DB regardless of how many rows are affected. Idempotent:
+  // once zeroed, the row no longer matches, so re-runs are no-ops.
   try {
-    db.prepare(`
+    const r = db.prepare(`
       UPDATE orders
-         SET usd_change_given = COALESCE(change_amount, 0)
-       WHERE usd_change_given = 0
-         AND COALESCE(change_amount, 0) > 0
-         AND deleted_at IS NULL
+         SET usd_change_given = 0,
+             synced           = 0,
+             updated_at       = datetime('now')
+       WHERE deleted_at IS NULL
+         AND ABS(COALESCE(usd_change_given, 0) - COALESCE(change_amount, 0)) < 0.01
+         AND COALESCE(fra_change_given, 0) > 0
+         AND COALESCE(change_amount, 0)    > 0
     `).run();
-  } catch { /* fresh DB */ }
+    if (r.changes > 0) {
+      console.log(`[phantom-repair v1.10.109] zeroed usd_change_given on ${r.changes} order(s)`);
+    }
+  } catch (e) { /* columns not yet present */ }
 
   // v1.8.77 — SELF-HEALING fix for orders confirmed before v1.8.74 when the
   // backend defaulted overpaid_kept_ccy='USD' any time the customer paid some
