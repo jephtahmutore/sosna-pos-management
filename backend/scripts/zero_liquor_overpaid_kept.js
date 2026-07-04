@@ -55,6 +55,29 @@ function main() {
   }
   console.log('Confirmed Liquor tenant.\n');
 
+  // v1.10.81 hotfix — some Liquor tenant DBs never had these columns
+  // added (daily_profit_summary was created before v1.8.68 introduced
+  // overpaid_kept). If any column is missing, there's nothing to clean
+  // up — exit cleanly.
+  const cols = new Set(
+    db.prepare(`PRAGMA table_info(daily_profit_summary)`).all().map(r => r.name)
+  );
+  const needed = ['usd_overpaid_kept', 'fra_overpaid_kept', 'k_overpaid_kept'];
+  const missing = needed.filter(c => !cols.has(c));
+  if (missing.length === needed.length) {
+    console.log('No overpaid_kept columns exist on this DB — nothing to clean.');
+    console.log('(v1.10.81 backend fix will prevent them from being added going forward.)');
+    process.exit(0);
+  }
+  if (missing.length > 0) {
+    console.log(`Partial columns present. Missing: ${missing.join(', ')}`);
+    console.log('Will only zero the columns that do exist.');
+  }
+  const present = needed.filter(c => cols.has(c));
+  const sumExpr   = present.map(c => `COALESCE(${c}, 0)`).join(' + ');
+  const sumSelect = present.map(c => `COALESCE(SUM(${c}), 0) AS ${c.replace('_overpaid_kept', '')}`).join(', ');
+  const setClause = present.map(c => `${c} = 0`).join(', ');
+
   // BEFORE
   const before = db.prepare(`
     SELECT

@@ -25,6 +25,7 @@ import {
 import { useCurrency } from '../context/CurrencyContext';
 import Portal from '../utils/Portal';
 import useModalScrollLock from '../utils/useModalScrollLock';
+import AdminPasswordPrompt from '../components/AdminPasswordPrompt';
 
 const todayStr = () => new Date().toISOString().slice(0, 10);
 
@@ -78,6 +79,11 @@ const HQDeposits = () => {
   // Reject reason modal (HQ only)
   const [rejectingId, setRejectingId]   = useState(null);
   const [rejectReason, setRejectReason] = useState('');
+
+  // v1.10.83 — admin-password gate when confirming with a changed date.
+  // Non-null value = the AdminPasswordPrompt is open; { deposit, newDate }
+  // are the details we'll POST once the password check passes.
+  const [pendingDateChange, setPendingDateChange] = useState(null);
 
   // Filters
   const [statusFilter, setStatusFilter] = useState('ALL');
@@ -186,8 +192,30 @@ const HQDeposits = () => {
     const trimmed = String(input).trim();
     const dateOk = /^\d{4}-\d{2}-\d{2}$/.test(trimmed);
     if (trimmed && !dateOk) { alert('Date must be YYYY-MM-DD.'); return; }
+
+    // v1.10.83 — moving a deposit to a different accounting date shifts
+    // where it lands in the Cash Book. That's a sensitive edit, so it
+    // needs admin authorization. Unchanged date = fast-path, no prompt.
+    if (dateOk && trimmed !== d.deposit_date) {
+      setPendingDateChange({ deposit: d, newDate: trimmed });
+      return;
+    }
+
     try {
-      await confirmCashDeposit(d.id, dateOk && trimmed !== d.deposit_date ? { deposit_date: trimmed } : undefined);
+      await confirmCashDeposit(d.id);
+      await fetchDeposits();
+    } catch (err) {
+      alert(err?.response?.data?.error || 'Failed to confirm deposit');
+    }
+  };
+
+  // v1.10.83 — runs after admin authorises the date change.
+  const finishConfirmWithDate = async () => {
+    if (!pendingDateChange) return;
+    const { deposit, newDate } = pendingDateChange;
+    setPendingDateChange(null);
+    try {
+      await confirmCashDeposit(deposit.id, { deposit_date: newDate });
       await fetchDeposits();
     } catch (err) {
       alert(err?.response?.data?.error || 'Failed to confirm deposit');
@@ -595,6 +623,14 @@ const HQDeposits = () => {
         </div>
         </Portal>
       )}
+
+      {/* v1.10.83 — admin password gate for date-change confirms */}
+      <AdminPasswordPrompt
+        open={!!pendingDateChange}
+        actionLabel="Approve Date Change"
+        onConfirm={finishConfirmWithDate}
+        onCancel={() => setPendingDateChange(null)}
+      />
     </div>
   );
 };
