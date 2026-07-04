@@ -83,6 +83,34 @@ body.hq-theme .sidebar {
   background: linear-gradient(180deg, #4c1d95 0%, #2e1065 50%, #1a0637 100%);
 }
 
+/* v1.10.88 — Login page also hardcodes slate+navy gradients (background,
+   logo tile, Sign In button). Swap them to purple for HQ. Amber accent
+   blob (::before) stays — it complements purple nicely. */
+body.hq-theme .login-page {
+  background:
+    radial-gradient(ellipse 60% 70% at top left, rgba(245, 158, 11, 0.32), transparent 60%),
+    radial-gradient(ellipse 55% 65% at bottom right, rgba(26, 6, 55, 0.85), transparent 55%),
+    linear-gradient(135deg, #1a0637 0%, #2e1065 45%, #4c1d95 100%);
+}
+body.hq-theme .login-logo {
+  background: linear-gradient(135deg, #4c1d95 0%, #2e1065 100%);
+  box-shadow:
+    0 14px 32px rgba(46, 16, 101, 0.55),
+    inset 0 0 0 1px rgba(245, 158, 11, 0.45),
+    inset 0 -3px 8px rgba(0, 0, 0, 0.25);
+}
+body.hq-theme .login-form input:focus {
+  border-color: #6d28d9;
+  box-shadow: 0 0 0 4px rgba(109, 40, 217, 0.15);
+}
+body.hq-theme .login-form .btn-primary {
+  background: linear-gradient(135deg, #6d28d9 0%, #3b0764 100%);
+  box-shadow: 0 12px 28px rgba(76, 29, 149, 0.45);
+}
+body.hq-theme .login-form .btn-primary:hover:not(:disabled) {
+  box-shadow: 0 16px 36px rgba(76, 29, 149, 0.55);
+}
+
 /* Layout */
 .app-layout {
   display: flex;
