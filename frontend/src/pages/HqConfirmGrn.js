@@ -16,7 +16,19 @@ import {
   getAwaitingGeneration, getHqReceipt, generateHqGrn,
 } from '../services/api';
 
-const fmtMoney = (n) => `$${parseFloat(n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+// v1.10.105 — currency-aware money formatter. HQ POs can be billed in
+// USD, K, or FRA; the modal was hardcoding `$` and lying on K/FRA POs.
+// Prefix by the currency argument.
+const fmtMoneyCcy = (n, ccy) => {
+  const num = parseFloat(n || 0);
+  const c = String(ccy || 'USD').toUpperCase();
+  if (c === 'K')   return `K${num.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  if (c === 'FRA') return `F ${num.toLocaleString(undefined, { maximumFractionDigits: 0 })}`;
+  return `$${num.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+};
+// Kept for any legacy caller. New code should use fmtMoneyCcy or the
+// modal-scoped fmtMoney which closes over purchase.cost_currency.
+const fmtMoney = (n) => fmtMoneyCcy(n, 'USD');
 const fmtQty   = (n) => parseFloat(n || 0).toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 });
 
 // v1.10.2 — invoices are uploaded at the branch subdomain (mansa1.sosnazm.com)
@@ -173,6 +185,14 @@ export default function HqConfirmGrn() {
 
 // ── GRN generation modal (HQ side, minimal v1.10.0) ─────────────────────────
 function GenerateGrnModal({ purchase, items, extras, onClose, onGenerated }) {
+  // v1.10.105 — shadow the module-level fmtMoney with a currency-aware
+  // version that uses this PO's cost_currency. The whole modal is scoped
+  // to one purchase, so closing over its currency once means every
+  // downstream call site (subtotals, line totals, damage values, CN
+  // totals, final payable) renders in K / FRA / $ correctly with no
+  // per-call-site changes.
+  // eslint-disable-next-line no-shadow
+  const fmtMoney = (n) => fmtMoneyCcy(n, purchase?.cost_currency);
   // Pre-fill GRN lines from branch-confirmed PO items + extras. HQ can
   // tweak qty / price; CN tabs are deferred to v1.10.1.
   // v1.10.103 — `damaged_quantity` per line. On save, backend posts the
