@@ -491,7 +491,13 @@ const AccountReceivables = () => {
                       <span style={{ padding: '2px 10px', borderRadius: 10, fontSize: 11, fontWeight: 700, background: s.bg, color: s.fg }}>{r._status === 'OnHold' ? 'On Hold' : r._status}</span>
                     </td>
                     <td style={{ padding: '8px 12px', textAlign: 'right' }}>
-                      {hasPermission('Customers:Edit') !== false && (
+                      {/* v1.10.92 — Pay / Down Payment button now gates on
+                          AccountReceivables:Add (recording a payment IS an AR
+                          add operation) with a Customers:Edit fallback so
+                          pre-v1.10.92 grants keep working. Previously only
+                          Customers:Edit was checked, which meant granting
+                          full AR perms did NOT reveal the Pay button. */}
+                      {(hasPermission('AccountReceivables:Add') !== false || hasPermission('Customers:Edit') !== false) && (
                         <button onClick={() => openPayment(r)}
                           style={{
                             padding: '5px 14px',
