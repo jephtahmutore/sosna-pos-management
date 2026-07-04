@@ -537,14 +537,18 @@ const PaymentVoucher = () => {
             </thead>
             <tbody>
               {filteredVouchers.map(v => {
-                // v1.10.91 — Liquor reads its own three columns straight;
-                // Sosna reads usd/fra/k with a legacy fallback to cash/bank/momo
-                // (for old Sosna rows written before v1.8.25 split them).
-                const va = isLiquorStyle ? parseFloat(v.cash_amount || 0)
+                // v1.10.93 — Liquor stores Cash in usd_amount, MoMo in
+                // fra_amount, Bank in k_amount (see PaymentVoucherFormModal
+                // "storage columns stay the same to avoid a DB migration").
+                // v1.10.91 mistakenly read cash/momo/bank on Liquor, which
+                // are always 0 under the current write path, hence the
+                // dashes. Now: read the actual storage columns with a
+                // legacy fallback for pre-v1.8.5 rows.
+                const va = isLiquorStyle ? parseFloat(v.usd_amount || v.cash_amount || 0)
                                          : (parseFloat(v.usd_amount) > 0 ? parseFloat(v.usd_amount) : parseFloat(v.cash_amount || 0));
-                const vb = isLiquorStyle ? parseFloat(v.momo_amount || 0)
+                const vb = isLiquorStyle ? parseFloat(v.fra_amount || v.momo_amount || 0)
                                          : (parseFloat(v.fra_amount) > 0 ? parseFloat(v.fra_amount) : parseFloat(v.bank_amount || 0));
-                const vc = isLiquorStyle ? parseFloat(v.bank_amount || 0)
+                const vc = isLiquorStyle ? parseFloat(v.k_amount   || v.bank_amount || 0)
                                          : (parseFloat(v.k_amount)   > 0 ? parseFloat(v.k_amount)   : parseFloat(v.momo_amount || 0));
                 const dash = <span style={{ color: '#cbd5e1' }}>—</span>;
                 const fmtA = (n) => isLiquorStyle ? `K${fmt2(n)}` : `$${fmt2(n)}`;
@@ -626,15 +630,15 @@ const PaymentVoucher = () => {
                   Total ({filteredVouchers.length} voucher{filteredVouchers.length !== 1 ? 's' : ''})
                 </td>
                 {(() => {
-                  // v1.10.91 — per-bucket totals mirror the row logic above.
+                  // v1.10.93 — per-bucket totals mirror the row logic above.
                   const ta = filteredVouchers.reduce((s, v) => s + (isLiquorStyle
-                    ? parseFloat(v.cash_amount || 0)
+                    ? parseFloat(v.usd_amount || v.cash_amount || 0)
                     : (parseFloat(v.usd_amount) > 0 ? parseFloat(v.usd_amount) : parseFloat(v.cash_amount || 0))), 0);
                   const tb = filteredVouchers.reduce((s, v) => s + (isLiquorStyle
-                    ? parseFloat(v.momo_amount || 0)
+                    ? parseFloat(v.fra_amount || v.momo_amount || 0)
                     : (parseFloat(v.fra_amount) > 0 ? parseFloat(v.fra_amount) : parseFloat(v.bank_amount || 0))), 0);
                   const tc = filteredVouchers.reduce((s, v) => s + (isLiquorStyle
-                    ? parseFloat(v.bank_amount || 0)
+                    ? parseFloat(v.k_amount   || v.bank_amount || 0)
                     : (parseFloat(v.k_amount)   > 0 ? parseFloat(v.k_amount)   : parseFloat(v.momo_amount || 0))), 0);
                   const fmtA = (n) => isLiquorStyle ? `K${fmt2(n)}` : `$${fmt2(n)}`;
                   const fmtB = (n) => isLiquorStyle ? `K${fmt2(n)}` : Math.round(n).toLocaleString('en-US');
