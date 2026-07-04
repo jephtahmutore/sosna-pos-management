@@ -175,12 +175,18 @@ export default function HqConfirmGrn() {
 function GenerateGrnModal({ purchase, items, extras, onClose, onGenerated }) {
   // Pre-fill GRN lines from branch-confirmed PO items + extras. HQ can
   // tweak qty / price; CN tabs are deferred to v1.10.1.
+  // v1.10.103 — `damaged_quantity` per line. Defaults 0. On save, backend
+  // posts the FULL quantity to WAC (option A: supplier billed for full,
+  // WAC blends full), then immediately books damaged_quantity as a damage
+  // stock-movement so net saleable stock = quantity − damaged_quantity.
+  // Damage cost hits P&L as a separate expense, doesn't drag WAC.
   const [grnLines, setGrnLines] = useState(() => [
     ...items.map(it => ({
       product_sync_id: it.product_sync_id,
       product_name:    it.product_name,
       unit:            it.unit,
       quantity:        String(it.received_qty != null ? it.received_qty : it.dispatched_qty || 0),
+      damaged_quantity:'0',
       unit_price:      String(it.cost_price || 0),
       expiry_date:     '',
       is_extra:        false,
@@ -191,6 +197,7 @@ function GenerateGrnModal({ purchase, items, extras, onClose, onGenerated }) {
       product_name:    e.product_name,
       unit:            e.unit,
       quantity:        String(e.quantity || 0),
+      damaged_quantity:'0',
       unit_price:      String(e.cost_price || 0),
       expiry_date:     '',
       is_extra:        true,
@@ -239,6 +246,12 @@ function GenerateGrnModal({ purchase, items, extras, onClose, onGenerated }) {
 
   const total = grnLines.reduce((s, r) =>
     s + (parseFloat(r.quantity) || 0) * (parseFloat(r.unit_price) || 0), 0);
+  // v1.10.103 — damages summary. Value = damaged × unit_price (per line).
+  // Total booked as a P&L expense, WAC untouched.
+  const damageTotal = grnLines.reduce((s, r) =>
+    s + (parseFloat(r.damaged_quantity) || 0) * (parseFloat(r.unit_price) || 0), 0);
+  const damageUnits = grnLines.reduce((s, r) => s + (parseFloat(r.damaged_quantity) || 0), 0);
+  const netStockValue = Math.max(0, total - damageTotal);
   const finalPayable = Math.max(0, total - cnTotal);
 
   const handleSave = async () => {
@@ -256,6 +269,7 @@ function GenerateGrnModal({ purchase, items, extras, onClose, onGenerated }) {
           product_name:    r.product_name,
           unit:            r.unit,
           quantity:        parseFloat(r.quantity) || 0,
+          damaged_quantity:Math.max(0, parseFloat(r.damaged_quantity) || 0),
           unit_price:      parseFloat(r.unit_price) || 0,
           expiry_date:     r.expiry_date || null,
           is_extra:        r.is_extra,
@@ -316,12 +330,35 @@ function GenerateGrnModal({ purchase, items, extras, onClose, onGenerated }) {
         </div>
 
         <div style={{ padding: '20px 24px' }}>
+          {/* v1.10.103 — damages summary strip. Only appears when any
+              damaged qty > 0. Green = received to WAC, red = damage loss,
+              slate = net saleable that lands on the branch shelf. */}
+          {damageUnits > 0 && (
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12, marginBottom: 16, padding: '12px 14px', borderRadius: 10, background: '#fffbeb', border: '1px solid #fde68a' }}>
+              <div>
+                <div style={{ fontSize: 10, fontWeight: 700, color: '#92400e', textTransform: 'uppercase', letterSpacing: 0.4 }}>Received (invoice total)</div>
+                <div style={{ fontSize: 16, fontWeight: 800, color: '#16a34a', marginTop: 2 }}>{fmtMoney(total)}</div>
+                <div style={{ fontSize: 11, color: '#78716c', marginTop: 2 }}>WAC blends full received × cost</div>
+              </div>
+              <div>
+                <div style={{ fontSize: 10, fontWeight: 700, color: '#92400e', textTransform: 'uppercase', letterSpacing: 0.4 }}>Damaged in transit</div>
+                <div style={{ fontSize: 16, fontWeight: 800, color: '#dc2626', marginTop: 2 }}>−{fmtMoney(damageTotal)}</div>
+                <div style={{ fontSize: 11, color: '#78716c', marginTop: 2 }}>{fmtQty(damageUnits)} unit(s) · books as Damage Loss</div>
+              </div>
+              <div>
+                <div style={{ fontSize: 10, fontWeight: 700, color: '#92400e', textTransform: 'uppercase', letterSpacing: 0.4 }}>Net saleable stock</div>
+                <div style={{ fontSize: 16, fontWeight: 800, color: '#0f172a', marginTop: 2 }}>{fmtMoney(netStockValue)}</div>
+                <div style={{ fontSize: 11, color: '#78716c', marginTop: 2 }}>Lands on the branch shelf</div>
+              </div>
+            </div>
+          )}
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13, marginBottom: 16 }}>
             <thead>
               <tr style={{ background: '#f8fafc' }}>
                 <th style={th}>Product</th>
                 <th style={{ ...th, textAlign: 'right' }}>PO Expected</th>
                 <th style={{ ...th, textAlign: 'right' }}>Qty</th>
+                <th style={{ ...th, textAlign: 'right', color: '#dc2626' }}>Damaged</th>
                 <th style={th}>Unit</th>
                 <th style={{ ...th, textAlign: 'right' }}>Unit Cost</th>
                 <th style={{ ...th, textAlign: 'right' }}>Total</th>
@@ -330,6 +367,8 @@ function GenerateGrnModal({ purchase, items, extras, onClose, onGenerated }) {
             <tbody>
               {grnLines.map((r, idx) => {
                 const line = (parseFloat(r.quantity) || 0) * (parseFloat(r.unit_price) || 0);
+                const dmgQty = parseFloat(r.damaged_quantity) || 0;
+                const dmgValue = dmgQty * (parseFloat(r.unit_price) || 0);
                 return (
                   <tr key={idx} style={{ borderTop: '1px solid #f1f5f9' }}>
                     <td style={td}>
@@ -341,6 +380,14 @@ function GenerateGrnModal({ purchase, items, extras, onClose, onGenerated }) {
                       <input type="number" min="0" step="any" value={r.quantity}
                         onChange={e => updateLine(idx, 'quantity', e.target.value)}
                         style={{ width: 90, padding: '5px 8px', border: '1px solid #d1d5db', borderRadius: 5, fontSize: 12, textAlign: 'right' }} />
+                    </td>
+                    <td style={{ ...td, textAlign: 'right' }}>
+                      <input type="number" min="0" step="any" value={r.damaged_quantity}
+                        onChange={e => updateLine(idx, 'damaged_quantity', e.target.value)}
+                        style={{ width: 70, padding: '5px 8px', border: `1px solid ${dmgQty > 0 ? '#fca5a5' : '#e5e7eb'}`, borderRadius: 5, fontSize: 12, textAlign: 'right', color: dmgQty > 0 ? '#dc2626' : '#0f172a', fontWeight: dmgQty > 0 ? 700 : 400, background: dmgQty > 0 ? '#fef2f2' : '#fff' }} />
+                      {dmgValue > 0 && (
+                        <div style={{ fontSize: 10, color: '#dc2626', marginTop: 2 }}>−{fmtMoney(dmgValue)}</div>
+                      )}
                     </td>
                     <td style={{ ...td, color: '#475569' }}>{r.unit || '—'}</td>
                     <td style={{ ...td, textAlign: 'right' }}>
@@ -355,9 +402,21 @@ function GenerateGrnModal({ purchase, items, extras, onClose, onGenerated }) {
             </tbody>
             <tfoot>
               <tr style={{ borderTop: '2px solid #e5e7eb', background: '#f9fafb' }}>
-                <td colSpan={5} style={{ ...td, textAlign: 'right', fontWeight: 700 }}>Items subtotal</td>
+                <td colSpan={6} style={{ ...td, textAlign: 'right', fontWeight: 700 }}>Items subtotal</td>
                 <td style={{ ...td, textAlign: 'right', fontWeight: 800, color: '#16a34a' }}>{fmtMoney(total)}</td>
               </tr>
+              {damageTotal > 0 && (
+                <>
+                  <tr style={{ background: '#fef2f2' }}>
+                    <td colSpan={6} style={{ ...td, textAlign: 'right', fontWeight: 700, color: '#991b1b' }}>Damages (booked as loss)</td>
+                    <td style={{ ...td, textAlign: 'right', fontWeight: 800, color: '#dc2626' }}>−{fmtMoney(damageTotal)}</td>
+                  </tr>
+                  <tr style={{ background: '#f1f5f9' }}>
+                    <td colSpan={6} style={{ ...td, textAlign: 'right', fontWeight: 700 }}>Net stock value</td>
+                    <td style={{ ...td, textAlign: 'right', fontWeight: 800, color: '#0f172a' }}>{fmtMoney(netStockValue)}</td>
+                  </tr>
+                </>
+              )}
             </tfoot>
           </table>
 

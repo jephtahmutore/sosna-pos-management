@@ -921,6 +921,17 @@ router.post('/generate', hqAuth, (req, res) => {
            synced, created_at, updated_at)
         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?,datetime('now'))
       `);
+      // v1.10.103 — decrement helper for damage-out step below. Same shape
+      // as updWithWac but only current_stock moves; avg_cost_price stays
+      // untouched (option A: supplier billed us for the full quantity, WAC
+      // blends the full received amount, damage is a separate P&L loss).
+      const decStock = branchDb.prepare(`
+        UPDATE products
+           SET current_stock = current_stock - ?,
+               updated_at    = datetime('now'),
+               synced        = 0
+         WHERE sync_id = ?
+      `);
       for (const it of validItems) {
         if (!it.product_sync_id) continue; // extra items without a known product — skip stock posting
         const qty = parseFloat(it.quantity) || 0;
@@ -958,6 +969,32 @@ router.post('/generate', hqAuth, (req, res) => {
           randomUUID(), null, null, null,
           branchMovementAt
         );
+
+        // v1.10.103 — in-flow damage. If any of the received qty was
+        // damaged in transit, book it as a separate stock-out AFTER the
+        // WAC blend so:
+        //   1. WAC absorbs the full delivery cost (supplier billed us for
+        //      the full qty).
+        //   2. current_stock nets down to the actually-saleable amount.
+        //   3. Damage flows into daily_profit_summary.damages as a P&L
+        //      loss — profitHelper.js:111 reads stock_movements with
+        //      location='sales' AND movement_type='sales_return'. The
+        //      existing damage queue (hqDamages.js) uses the same tag,
+        //      so this reuses the same pipeline: cost = |qty| × WAC hits
+        //      the damages column on daily_profit_summary.
+        const damagedLine = Math.max(0, parseFloat(it.damaged_quantity) || 0);
+        if (damagedLine > 0) {
+          const damagedBase = damagedLine * conv;
+          insMov.run(
+            prod.id, prod.sync_id, 'sales', 'sales_return', -damagedBase,
+            null, 'hq_grn_damage', grnSyncId,
+            `Damaged in transit on HQ-generated GRN ${grnNumber} (${damagedLine} ${it.unit || prod.unit})`,
+            null,
+            randomUUID(), null, null, null,
+            branchMovementAt
+          );
+          decStock.run(damagedBase, prod.sync_id);
+        }
       }
       // v1.10.67 — negative stock movements for Crate Return / Bottle Return
       // / Goods Return CNs. Mirrors routes/grn.js:290-317 on the branch side.
