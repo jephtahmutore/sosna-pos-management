@@ -1746,28 +1746,16 @@ function initTenantDb(db) {
   // gave change entirely in FRA (usd_change_given=0, fra_change_given>0,
   // change_amount>0 → block wrote usd_change_given = change_amount on
   // next restart, doubling the recorded change). Real incident: 12
-  // Kassumbalesa orders inflated by $30 USD total (fingerprint below).
+  // Kassumbalesa orders inflated by $30 USD total.
   //
-  // v1.10.109 — one-shot phantom-repair for orders already inflated by
-  // the removed backfill. Matches by fingerprint (usd_change_given
-  // exactly equals change_amount AND FRA change was given), so it works
-  // on any tenant DB regardless of how many rows are affected. Idempotent:
-  // once zeroed, the row no longer matches, so re-runs are no-ops.
-  try {
-    const r = db.prepare(`
-      UPDATE orders
-         SET usd_change_given = 0,
-             synced           = 0,
-             updated_at       = datetime('now')
-       WHERE deleted_at IS NULL
-         AND ABS(COALESCE(usd_change_given, 0) - COALESCE(change_amount, 0)) < 0.01
-         AND COALESCE(fra_change_given, 0) > 0
-         AND COALESCE(change_amount, 0)    > 0
-    `).run();
-    if (r.changes > 0) {
-      console.log(`[phantom-repair v1.10.109] zeroed usd_change_given on ${r.changes} order(s)`);
-    }
-  } catch (e) { /* columns not yet present */ }
+  // v1.10.109 also added a one-shot phantom-repair block that zeroed
+  // usd_change_given on rows matching the corruption fingerprint
+  // (usd_change_given ≈ change_amount AND fra_change_given > 0).
+  //
+  // v1.10.110 — repair block REMOVED. Verified 0 remaining phantoms
+  // across all tenants (kassumbalesa1, mansa1, lusaka1, sosna HQ),
+  // so the block was no-op on every future restart. See
+  // [[project-sosna-phantom-change-backfill]] if the pattern returns.
 
   // v1.8.77 — SELF-HEALING fix for orders confirmed before v1.8.74 when the
   // backend defaulted overpaid_kept_ccy='USD' any time the customer paid some
