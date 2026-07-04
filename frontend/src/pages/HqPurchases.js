@@ -13,6 +13,16 @@ import {
 import printHtml from '../utils/printHtml';
 
 const fmtMoney = (n) => `$${parseFloat(n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+// v1.10.100 — currency-aware money format. HQ POs can be billed in USD,
+// K, or FRA (see costCurrency picker). The list row / modal totals used
+// to hardcode `$` which lied on K/FRA POs. Prefix by currency.
+const fmtMoneyCcy = (n, ccy) => {
+  const num = parseFloat(n || 0);
+  const c = String(ccy || 'USD').toUpperCase();
+  if (c === 'K')   return `K${num.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  if (c === 'FRA') return `F ${num.toLocaleString(undefined, { maximumFractionDigits: 0 })}`;
+  return `$${num.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+};
 const fmtInt   = (n) => parseFloat(n || 0).toLocaleString();
 const todayISO = () => new Date().toISOString().slice(0, 10);
 
@@ -111,7 +121,7 @@ export default function HqPurchases() {
                     <td style={{ ...td, fontFamily: 'monospace', fontSize: 12 }}>{p.purchase_number}</td>
                     <td style={td}>{p.date}</td>
                     <td style={td}>{p.supplier_name || '—'}</td>
-                    <td style={{ ...td, textAlign: 'right', fontWeight: 700 }}>{fmtMoney(p.total_amount)}</td>
+                    <td style={{ ...td, textAlign: 'right', fontWeight: 700 }}>{fmtMoneyCcy(p.total_amount, p.cost_currency)}</td>
                     <td style={td}>
                       <span style={{ color: '#0f172a', fontWeight: 600 }}>{p.items_received}/{p.items_total}</span>
                       {p.items_pending > 0 && <span style={{ color: '#92400e', fontSize: 11, marginLeft: 6 }}>({p.items_pending} pending)</span>}
@@ -521,7 +531,7 @@ function CreatePurchaseModal({ branches, onClose, onCreated, onError }) {
                       <td style={tdS}><input type="text" value={it.unit} onChange={e => updateItem(i, 'unit', e.target.value)} style={cellInp} /></td>
                       <td style={tdS}><input type="number" min="0" step="any" value={it.dispatched_qty} onChange={e => updateItem(i, 'dispatched_qty', e.target.value)} style={{ ...cellInp, textAlign: 'right' }} /></td>
                       <td style={tdS}><input type="number" min="0" step="any" value={it.cost_price} onChange={e => updateItem(i, 'cost_price', e.target.value)} style={{ ...cellInp, textAlign: 'right' }} /></td>
-                      <td style={{ ...tdS, textAlign: 'right', fontWeight: 700 }}>{fmtMoney(lineTotal)}</td>
+                      <td style={{ ...tdS, textAlign: 'right', fontWeight: 700 }}>{fmtMoneyCcy(lineTotal, costCurrency)}</td>
                       <td style={tdS}>
                         <button onClick={() => removeItem(i)} disabled={items.length === 1}
                           style={{ background: 'none', border: 'none', color: items.length === 1 ? '#cbd5e1' : '#dc2626', cursor: items.length === 1 ? 'not-allowed' : 'pointer', padding: 2 }}>
@@ -541,7 +551,7 @@ function CreatePurchaseModal({ branches, onClose, onCreated, onError }) {
 
           <div style={{ marginTop: 14, padding: '10px 14px', background: '#f0f9ff', border: '1px solid #bae6fd', borderRadius: 8, display: 'flex', justifyContent: 'space-between' }}>
             <strong style={{ color: '#0c4a6e' }}>Purchase total</strong>
-            <strong style={{ color: '#0c4a6e', fontSize: 17 }}>{fmtMoney(totalAmount)}</strong>
+            <strong style={{ color: '#0c4a6e', fontSize: 17 }}>{fmtMoneyCcy(totalAmount, costCurrency)}</strong>
           </div>
         </div>
 
@@ -617,7 +627,7 @@ function DetailModal({ data, onClose, onChanged, flash }) {
         <div style={{ padding: 16, overflowY: 'auto', flex: 1 }}>
           <div style={{ display: 'flex', gap: 12, marginBottom: 12 }}>
             <Pill label="Status" value={statusBadge(data.status)} />
-            <Pill label="Total" value={<strong>{fmtMoney(data.total_amount)}</strong>} />
+            <Pill label="Total" value={<strong>{fmtMoneyCcy(data.total_amount, data.cost_currency)}</strong>} />
             <Pill label="Lines" value={`${fmtInt(items.length)}`} />
             <Pill label="By" value={data.created_by_name || '—'} />
           </div>
@@ -646,7 +656,7 @@ function DetailModal({ data, onClose, onChanged, flash }) {
                     <td style={{ ...td, textAlign: 'right', color: variance ? '#b91c1c' : '#0f172a', fontWeight: variance ? 700 : 400 }}>
                       {it.received_qty == null ? '—' : parseFloat(it.received_qty).toFixed(2)}
                     </td>
-                    <td style={{ ...td, textAlign: 'right' }}>{fmtMoney(it.cost_price)}</td>
+                    <td style={{ ...td, textAlign: 'right' }}>{fmtMoneyCcy(it.cost_price, data.cost_currency)}</td>
                     <td style={td}>{statusBadge(it.status)}</td>
                     <td style={{ ...td, color: '#64748b' }}>{it.variance_notes || ''}</td>
                     <td style={td}>
