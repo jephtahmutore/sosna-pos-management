@@ -1222,8 +1222,10 @@ router.put('/:id/items/:itemId/reverse', auth, (req, res) => {
       const sellRate  = parseFloat(order.selling_rate_used   || 0);
       const sellRateK = parseFloat(order.selling_rate_k_used || 0);
       const oldAmtRecv = parseFloat(order.amount_received || 0);
+      const oldChange  = parseFloat(order.change_amount   || 0);
       let newCash = oldCash, newFra = oldFra, newK = oldK;
       let newAmtRecv = oldAmtRecv;
+      let newChange = oldChange;
       if (oldAmtRecv > 0.0001 && refund > 0.0001) {
         // Each currency's USD-equivalent contribution
         const usdShare = oldCash;
@@ -1231,6 +1233,10 @@ router.put('/:id/items/:itemId/reverse', auth, (req, res) => {
         const kShare   = sellRateK > 0 ? (oldK   / sellRateK) : 0;
         const totalShare = usdShare + fraShare + kShare;
         if (totalShare > 0.0001) {
+          // Sosna tri-currency path: distribute refund across per-currency
+          // received columns and decrement amount_received. change_amount
+          // stays put — it already ties out because amount_received drops
+          // by exactly the same delta as total_amount.
           const refundUsd = refund * (usdShare / totalShare);
           const refundFra = refund * (fraShare / totalShare) * (sellRate  || 0);
           const refundK   = refund * (kShare   / totalShare) * (sellRateK || 0);
@@ -1238,6 +1244,24 @@ router.put('/:id/items/:itemId/reverse', auth, (req, res) => {
           newFra  = Math.max(0, oldFra  - refundFra);
           newK    = Math.max(0, oldK    - refundK);
           newAmtRecv = Math.max(0, oldAmtRecv - refund);
+        } else {
+          // v1.10.102 — Liquor path (cash/fra/k all 0, customer paid via
+          // momo/bank). Pre-v1.10.102 the block above was skipped entirely
+          // and neither amount_received NOR change_amount moved, breaking
+          // the reconciliation identity amount_received − total_amount =
+          // change_amount. The K200 gap seen on Lusaka1 ORD-0150 was this:
+          // partial-refund reduced total from K1,795 to K1,595 but change
+          // stayed at K455 (the change dispensed at sale time), leaving
+          // K200 unaccounted for.
+          //
+          // Fix (option A per user 2026-07-04): keep amount_received and
+          // momo/bank_received as-is (money physically already came in),
+          // bump change_amount by the refund so the identity holds. Trade-
+          // off: change_amount now means "total change owed to customer"
+          // instead of "physical change dispensed at till". Cash drawer
+          // will show a shortage equal to unpaid refunds — a useful signal
+          // to remind the cashier to hand the money back.
+          newChange = oldChange + refund;
         }
       }
 
@@ -1248,12 +1272,12 @@ router.put('/:id/items/:itemId/reverse', auth, (req, res) => {
       db.prepare(`UPDATE orders
          SET subtotal = ?, total_amount = ?, status = ?,
              cash_received = ?, fra_received = ?, k_received = ?,
-             amount_received = ?,
+             amount_received = ?, change_amount = ?,
              updated_at = datetime('now'),
              synced = 0
          WHERE id = ?`).run(
         newSubtotal, newTotal, allReversed ? 'Reversed' : 'Partial',
-        newCash, newFra, newK, newAmtRecv,
+        newCash, newFra, newK, newAmtRecv, newChange,
         req.params.id
       );
 
