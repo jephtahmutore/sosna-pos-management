@@ -1626,21 +1626,29 @@ const SalesReport = () => {
                           )}
                         </span>
                       </div>
-                      {/* Per-line discount sub-row — shown only when this line had a
-                          discount applied. Same format as the thermal print. */}
-                      {lineDisc > 0 && (
+                      {/* Per-line adjustment sub-row — shown when this line had a
+                          discount OR surcharge applied. Same format as the thermal
+                          print.
+                          v1.10.106 — on Kassumbalesa (!isLiquorStyle), also print
+                          the sub-row when discount < 0 (that's a per-unit price
+                          markup via Change Price). Otherwise the receipt hides
+                          the markup and the summary "Total surcharge" number has
+                          no per-line detail to back it. Liquor branches keep
+                          the old markdown-only behavior. */}
+                      {((!isLiquorStyle && Math.abs(lineDisc) > 0.001) || lineDisc > 0) && (
                         <div key={`${idx}-disc`} style={{
-                          display: 'flex', fontSize: 11, color: '#6b7280',
+                          display: 'flex', fontSize: 11,
+                          color: lineDisc > 0 ? '#6b7280' : '#2563eb',
                           marginTop: -2, marginBottom: 6,
                           opacity: item.reversed ? 0.5 : 1,
                         }}>
                           <span style={{ flex: 2, paddingLeft: 16 }}>
-                            discount {netQty}{item.unit ? ` ${item.unit}` : ''} × -${(parseFloat(lineDisc)||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}
+                            {lineDisc > 0 ? 'discount' : 'surcharge'} {netQty}{item.unit ? ` ${item.unit}` : ''} × {lineDisc > 0 ? '-' : '+'}${Math.abs(parseFloat(lineDisc)||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}
                           </span>
                           <span style={{ flex: 1 }} />
                           <span style={{ flex: 1 }} />
                           <span style={{ flex: 1, textAlign: 'right' }}>
-                            -${(parseFloat(lineDiscTotal)||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}
+                            {lineDiscTotal > 0 ? '-' : '+'}${Math.abs(parseFloat(lineDiscTotal)||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}
                           </span>
                           <span className="sr-no-print" style={{ width: 28 }} />
                         </div>
