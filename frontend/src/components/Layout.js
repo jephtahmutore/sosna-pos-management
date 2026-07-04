@@ -680,7 +680,14 @@ const Layout = () => {
                       <FiSend className="nav-icon" /> <span>HQ Deposits</span>
                     </div>
                   )}
-                  {!hq && isDualCurrency && hasPageAccess('FxRates') && (
+                  {/* v1.10.89 — was `!hq && isDualCurrency`, which hid FX Rates on
+                      HQ. But HQ's Cash Book "K & K Equivalent" tile needs a
+                      rate to convert USD + FRA into K; without one it silently
+                      collapses to raw K. HQ is effectively tri-currency (it
+                      receives deposits in USD / FRA / K from branches) so it
+                      needs its own rate. Show on HQ unconditionally + on
+                      dual-currency branches. */}
+                  {(hq || isDualCurrency) && hasPageAccess('FxRates') && (
                     <div className={`nav-item ${isActive('/accounting/fx-rates') ? 'active' : ''}`} onClick={() => navigate('/accounting/fx-rates')}>
                       <FiDollarSign className="nav-icon" /> <span>Currency Rates</span>
                     </div>
