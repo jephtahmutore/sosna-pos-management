@@ -36,18 +36,34 @@ export default function ApPaymentFormModal({ open, supplier, onClose, onSaved, d
   const [error, setError] = useState('');
   const [saving, setSaving] = useState(false);
 
+  // v1.10.111 — supplier balances can be in USD, K, or FRA (each supplier
+  // has its own native currency, returned per-row by the backend as
+  // supplier.currency — see AccountPayables.js:496 for the same mapping).
+  // Use it for BOTH the outstanding-balance display AND the total row,
+  // instead of the tenant-wide curSym which gave FLAMINGO's K13,110
+  // outstanding an incorrect "$" prefix.
+  const supplierCcy = String(supplier?.currency || '').toUpperCase();
+  const supplierSym = supplierCcy === 'K'   ? 'K'
+                    : supplierCcy === 'FRA' ? ''
+                    : supplierCcy === 'USD' ? '$'
+                    : curSym;
+
   // Reset the form whenever the modal is (re)opened for a new supplier.
   useEffect(() => {
     if (!open || !supplier) return;
     const outstanding = parseFloat(supplier.balance) > 0 ? parseFloat(supplier.balance).toFixed(2) : '';
+    // v1.10.111 — auto-fill the box matching the supplier's native
+    // currency (K → k_amount, FRA → fra_amount, else usd_amount).
+    // Cashier no longer has to move the value from USD to K by hand.
+    const ccy = String(supplier?.currency || '').toUpperCase();
     setForm({
-      // HQ pre-fills usd_amount with the outstanding; Liquor pre-fills cash_amount.
+      // HQ pre-fills the box matching supplier.currency; Liquor pre-fills cash_amount.
       cash_amount: !onHq ? outstanding : '',
       bank_amount: '',
       momo_amount: '',
-      usd_amount:  onHq ? outstanding : '',
-      fra_amount:  '',
-      k_amount:    '',
+      usd_amount:  onHq && (ccy === '' || ccy === 'USD') ? outstanding : '',
+      fra_amount:  onHq && ccy === 'FRA'                 ? outstanding : '',
+      k_amount:    onHq && ccy === 'K'                   ? outstanding : '',
       date: defaultDate || todayStr(),
       description: defaultDescription || `Payment to ${supplier.supplier_name || ''}`.trim(),
       invoice_attachment: null,
@@ -118,7 +134,7 @@ export default function ApPaymentFormModal({ open, supplier, onClose, onSaved, d
             <div style={{ fontSize: 12, color: '#15803d', marginTop: 2 }}>
               {supplier.context_label
                 ? supplier.context_label
-                : `Outstanding balance: ${curSym}${Math.abs(parseFloat(supplier.balance) || 0).toLocaleString()}`}
+                : `Outstanding balance: ${supplierSym}${Math.abs(parseFloat(supplier.balance) || 0).toLocaleString()}`}
             </div>
           </div>
 
@@ -142,7 +158,7 @@ export default function ApPaymentFormModal({ open, supplier, onClose, onSaved, d
               <div style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 10px', background: '#f9fafb', borderRadius: 6, fontSize: 13, marginTop: 8 }}>
                 <span style={{ color: '#6b7280' }}>Total</span>
                 <span style={{ fontWeight: 800, color: '#1d4ed8' }}>
-                  {curSym}{total.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                  {supplierSym}{total.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                 </span>
               </div>
             </div>
