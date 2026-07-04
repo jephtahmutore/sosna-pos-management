@@ -841,7 +841,20 @@ router.put('/:id/collect-payment', auth, requirePagePerm('Cashier'), (req, res) 
       const givenFRAasUSD = buyRate   > 0 ? givenFRA / buyRate   : 0;
       const givenKasUSD   = buyRateK  > 0 ? givenK   / buyRateK  : 0;
       const totalGivenAsUSD = givenUSDasUSD + givenFRAasUSD + givenKasUSD;
-      const overpaidKeptUSD = Math.max(0, change - totalGivenAsUSD);
+      // v1.10.81 — On Liquor tenants (currency_mode='K' AND
+      // payment_methods='cash_momo_bank'), the POS Pay modal has no
+      // Change Given inputs — cashier physically hands change to the
+      // customer, no drawer surplus concept. Skip the classifier so we
+      // don't fabricate "kept in drawer" rows on Liquor. Kassumbalesa
+      // (currency_mode='USD+FRA+K') still runs the full classifier.
+      const bsRow = db.prepare(
+        "SELECT currency_mode, payment_methods FROM business_settings LIMIT 1"
+      ).get() || {};
+      const isLiquorStyleServer = String(bsRow.currency_mode || '').toUpperCase() === 'K'
+        && String(bsRow.payment_methods || '').toLowerCase() === 'cash_momo_bank';
+      const overpaidKeptUSD = isLiquorStyleServer
+        ? 0
+        : Math.max(0, change - totalGivenAsUSD);
       // v1.8.74 — attribute the over-payment to its SOURCE currency using
       // the same priority chain as the frontend (USD pays first, then FRA,
       // then K). Whatever's left over in each currency is the native

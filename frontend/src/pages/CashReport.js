@@ -1370,8 +1370,16 @@ const CashReport = () => {
       {/* v1.8.76 — Customer Over / Under Payments (drawer net). Combines:
           • Over-Collections kept in drawer (per source currency, native amount)
           • Under-Payments silently absorbed (walk-in tolerance shortages, USD-attributed)
-          Shows NET drift per currency so the shop sees daily gain/loss explicitly. */}
-      {(overpaidRows.length > 0
+          Shows NET drift per currency so the shop sees daily gain/loss explicitly.
+          v1.10.81 — HIDDEN on Liquor tenants. The panel was designed for
+          Kassumbalesa's 3-station flow where the cashier explicitly types
+          "Change USD / Change FRA" and any leftover is the real drawer surplus.
+          Liquor POS's Pay modal is a single read-only "Change" line — the
+          cashier hands cash to the customer, nothing is kept. Rendering the
+          panel there would show fabricated "shop gain" from the backend's
+          fallback (given_* fields never sent → whole change counted as
+          kept). Reference Liquor project doesn't have the panel at all. */}
+      {!isLiquorStyle && (overpaidRows.length > 0
         || overpaidByCcy.usd > 0 || overpaidByCcy.fra > 0 || overpaidByCcy.k > 0
         || underpaidByCcy.usd > 0 || underpaidByCcy.fra > 0 || underpaidByCcy.k > 0
        ) && (() => {
