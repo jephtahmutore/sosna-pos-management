@@ -147,12 +147,30 @@ router.put('/:id/confirm', hqAuth, (req, res) => {
     if (!row) return res.status(404).json({ error: 'Deposit not found' });
     if (row.status !== 'PENDING') return res.status(400).json({ error: `Deposit is already ${row.status}` });
     const confirmedByName = [req.user.first_name, req.user.last_name].filter(Boolean).join(' ') || null;
-    masterDb.prepare(`
-      UPDATE cash_deposits
-         SET status = 'CONFIRMED',
-             confirmed_by = ?, confirmed_by_name = ?, confirmed_at = datetime('now')
-       WHERE id = ?
-    `).run(req.user.id, confirmedByName, req.params.id);
+    // v1.10.82 — HQ can override deposit_date at confirm time. Cash Book
+    // shows the deposit under whatever date HQ picks here (fallback:
+    // confirmed_at, then created_at — see routes/cashBook.js:402).
+    // Guard: only YYYY-MM-DD strings; anything else falls back to the
+    // existing deposit_date.
+    const bodyDate = typeof req.body?.deposit_date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(req.body.deposit_date)
+      ? req.body.deposit_date
+      : null;
+    if (bodyDate) {
+      masterDb.prepare(`
+        UPDATE cash_deposits
+           SET status = 'CONFIRMED',
+               deposit_date = ?,
+               confirmed_by = ?, confirmed_by_name = ?, confirmed_at = datetime('now')
+         WHERE id = ?
+      `).run(bodyDate, req.user.id, confirmedByName, req.params.id);
+    } else {
+      masterDb.prepare(`
+        UPDATE cash_deposits
+           SET status = 'CONFIRMED',
+               confirmed_by = ?, confirmed_by_name = ?, confirmed_at = datetime('now')
+         WHERE id = ?
+      `).run(req.user.id, confirmedByName, req.params.id);
+    }
     const updated = masterDb.prepare('SELECT * FROM cash_deposits WHERE id = ?').get(req.params.id);
     res.json(updated);
   } catch (e) {

@@ -171,10 +171,23 @@ const HQDeposits = () => {
     setSending(false);
   };
 
-  const handleConfirm = async (id) => {
-    if (!window.confirm('Confirm this deposit? Marks it as physically received at HQ.')) return;
+  const handleConfirm = async (d) => {
+    // v1.10.82 — HQ operator can override the deposit_date at confirm
+    // time (e.g. cash arrived last week but they're only clicking
+    // confirm now). Blank = keep the branch's original date.
+    const currentDate = d.deposit_date || new Date().toISOString().slice(0, 10);
+    const input = window.prompt(
+      `Confirm deposit ${d.deposit_number}?\n\n` +
+      `Effective date (YYYY-MM-DD). Cash Book will show it under this date.\n` +
+      `Leave as-is to keep the branch's original date.`,
+      currentDate
+    );
+    if (input === null) return; // user cancelled
+    const trimmed = String(input).trim();
+    const dateOk = /^\d{4}-\d{2}-\d{2}$/.test(trimmed);
+    if (trimmed && !dateOk) { alert('Date must be YYYY-MM-DD.'); return; }
     try {
-      await confirmCashDeposit(id);
+      await confirmCashDeposit(d.id, dateOk && trimmed !== d.deposit_date ? { deposit_date: trimmed } : undefined);
       await fetchDeposits();
     } catch (err) {
       alert(err?.response?.data?.error || 'Failed to confirm deposit');
@@ -370,7 +383,7 @@ const HQDeposits = () => {
                         <div style={{ display: 'inline-flex', gap: 6 }}>
                           {onHq && d.status === 'PENDING' && (
                             <>
-                              <button onClick={() => handleConfirm(d.id)}
+                              <button onClick={() => handleConfirm(d)}
                                 style={{ padding: '5px 12px', background: '#16a34a', color: '#fff', border: 'none', borderRadius: 4, cursor: 'pointer', fontSize: 11, fontWeight: 700, display: 'inline-flex', alignItems: 'center', gap: 4 }}>
                                 <FiCheck size={11} /> Confirm
                               </button>
