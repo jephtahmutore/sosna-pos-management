@@ -1016,8 +1016,13 @@ export default function Cashier() {
                   <div style={{ fontSize: 26, fontWeight: 800, color: '#0c4a6e', lineHeight: 1.1 }}>{fmtUSD(selected.total_amount)}</div>
                 </div>
 
-                {/* FX Rate — editable when editing */}
-                {(editing || parseFloat(selected.selling_rate_used) > 0 || parseFloat(selected.buying_rate_used) > 0) && (
+                {/* FX Rate — editable when editing.
+                    v1.10.108 — box now ALWAYS renders in Payment History so
+                    cashier/audit can see exactly what rate was stamped on the
+                    order at save time (including zeros). Previously it was
+                    hidden when both FRA rates were 0, which made zero-rate
+                    orders indistinguishable from tri-currency ones. */}
+                {(
                   <div style={{ background: '#fef3c7', border: '1px solid #fde68a', borderRadius: 8, padding: 10, marginBottom: 10 }}>
                     <div style={{ fontSize: 11, color: '#92400e', fontWeight: 700, marginBottom: 6 }}>
                       FX Rate {editing ? '(editing)' : '(locked — stored on this order)'}
@@ -1050,8 +1055,8 @@ export default function Cashier() {
                         <>
                           <div>Sell FRA: <strong>{(parseFloat(selected.selling_rate_used) || 0).toLocaleString()}</strong></div>
                           <div>Buy FRA: <strong>{(parseFloat(selected.buying_rate_used) || 0).toLocaleString()}</strong></div>
-                          {parseFloat(selected.selling_rate_k_used) > 0 && <div>Sell K: <strong>{(parseFloat(selected.selling_rate_k_used) || 0).toLocaleString()}</strong></div>}
-                          {parseFloat(selected.buying_rate_k_used)  > 0 && <div>Buy K: <strong>{(parseFloat(selected.buying_rate_k_used)  || 0).toLocaleString()}</strong></div>}
+                          <div>Sell K: <strong>{(parseFloat(selected.selling_rate_k_used) || 0).toLocaleString()}</strong></div>
+                          <div>Buy K: <strong>{(parseFloat(selected.buying_rate_k_used)  || 0).toLocaleString()}</strong></div>
                         </>
                       )}
                     </div>
