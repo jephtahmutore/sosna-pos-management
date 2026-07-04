@@ -674,8 +674,12 @@ const Layout = () => {
                     </div>
                   )}
                   {/* v1.8.59 — Branch → HQ Cash Deposit workflow.
-                      Same page used by branch (Send) and HQ (Confirm/Reject). */}
-                  {hasPageAccess('CashBook') && (
+                      Same page used by branch (Send) and HQ (Confirm/Reject).
+                      v1.10.90 — HQDeposits now has its own permission entry so
+                      admins can grant/revoke it independently of Cash Book.
+                      Fall back to CashBook access to keep pre-v1.10.90 grants
+                      working (existing users don't lose access on upgrade). */}
+                  {(hasPageAccess('HQDeposits') || hasPageAccess('CashBook')) && (
                     <div className={`nav-item ${isActive('/accounting/hq-deposits') ? 'active' : ''}`} onClick={() => navigate('/accounting/hq-deposits')}>
                       <FiSend className="nav-icon" /> <span>HQ Deposits</span>
                     </div>
