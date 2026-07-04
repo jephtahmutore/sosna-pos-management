@@ -127,6 +127,29 @@ router.put('/:id/edit-payment', auth, (req, res) => {
       + (newPayload.selling_rate_k_used > 0 ? newPayload.k_received   / newPayload.selling_rate_k_used : 0);
     newPayload.amount_received = newAmountReceived;
 
+    // v1.10.107 — same OVER-CHANGE guard as /collect-payment. Prevents
+    // sneaking a bad edit past the frontend gate.
+    {
+      const bsEdit = db.prepare(
+        "SELECT currency_mode, payment_methods FROM business_settings LIMIT 1"
+      ).get() || {};
+      const isLiquorEdit = String(bsEdit.currency_mode || '').toUpperCase() === 'K'
+        && String(bsEdit.payment_methods || '').toLowerCase() === 'cash_momo_bank';
+      if (!isLiquorEdit) {
+        const totalDueEdit = parseFloat(order.total_amount || 0);
+        const changeOwedEdit = Math.max(0, newAmountReceived - totalDueEdit);
+        const givenTotalEditUSD =
+          newPayload.usd_change_given
+          + (newPayload.buying_rate_used   > 0 ? newPayload.fra_change_given / newPayload.buying_rate_used   : 0)
+          + (newPayload.buying_rate_k_used > 0 ? newPayload.k_change_given   / newPayload.buying_rate_k_used : 0);
+        if (givenTotalEditUSD - changeOwedEdit > 0.10) {
+          return res.status(400).json({
+            error: `Change returned ($${givenTotalEditUSD.toFixed(2)}) exceeds change owed ($${changeOwedEdit.toFixed(2)}) by $${(givenTotalEditUSD - changeOwedEdit).toFixed(2)}. Reduce the change-given amounts before saving.`
+          });
+        }
+      }
+    }
+
     const tenantId = syncConfig.getTenantId(req);
     const { branchId, deviceId } = syncConfig.getConfig();
     const editorName = `${req.user.first_name || ''} ${req.user.last_name || ''}`.trim() || req.user.email || 'unknown';
@@ -852,6 +875,28 @@ router.put('/:id/collect-payment', auth, requirePagePerm('Cashier'), (req, res) 
       ).get() || {};
       const isLiquorStyleServer = String(bsRow.currency_mode || '').toUpperCase() === 'K'
         && String(bsRow.payment_methods || '').toLowerCase() === 'cash_momo_bank';
+      // v1.10.107 — hard OVER-CHANGE guard on Kassumbalesa / Sosna
+      // (non-Liquor). Rejects any collect-payment where the total change
+      // returned (USD-equivalent, summed across USD + FRA + K given)
+      // exceeds the change actually owed by more than $0.10 tolerance.
+      // The frontend has isOverChange gating on the Confirm button, but
+      // 4 orders today on Kassumbalesa (ORD-0102/0106/0107/0112) show
+      // the pattern usd_change_given = change_amount AND fra_change_given
+      // = change × buy_rate — i.e. the till returning ~2× the amount
+      // owed. Root cause is still under investigation (see conversation
+      // notes 2026-07-05); until pinpointed, this backstop stops the
+      // shop-loss regardless of how the frontend produced the payload.
+      //
+      // Liquor branches skip this guard — they legitimately use
+      // "kept in drawer" flows where the math tolerates greater slack.
+      if (!isLiquorStyleServer && (totalGivenAsUSD - change) > 0.10) {
+        throw Object.assign(
+          new Error(
+            `Change returned ($${totalGivenAsUSD.toFixed(2)}) exceeds change owed ($${change.toFixed(2)}) by $${(totalGivenAsUSD - change).toFixed(2)}. Reduce the change-given amounts before saving.`
+          ),
+          { status: 400 }
+        );
+      }
       const overpaidKeptUSD = isLiquorStyleServer
         ? 0
         : Math.max(0, change - totalGivenAsUSD);
