@@ -130,7 +130,17 @@ router.get('/daily', auth, readOnlyGuard, (req, res) => {
     // Report needs these summed per method so each counter card has the
     // right Expected value. On Sosna branches these columns are 0 (the
     // walk-in modal isn't used), so the sums are 0 — harmless.
-    const cashNet = parseFloat(sumOrders('cash_received'));
+    //
+    // v1.10.101 — subtract change_amount from Cash bucket (mirrors the
+    // reference Liquor project's cashReport.js:105). When a Liquor customer
+    // overpays via MoMo/Bank, the cashier hands back Cash change from the
+    // drawer — so the till's Cash bucket must be NET of the change dispensed.
+    // Without this, Expected Cash inflates by the over-collection amount
+    // (K2,330 gap on 2026-07-04 Lusaka1). MoMo/Bank don't need subtraction
+    // because change never comes back through those methods on Liquor.
+    // Kassumbalesa (tri-currency) is unaffected — its UI reads usdNet/fraNet/
+    // kNet (lines 123-125) which already subtract per-currency change_given.
+    const cashNet = parseFloat(sumOrders('cash_received')) - parseFloat(sumOrders('change_amount'));
     const momoNet = parseFloat(sumOrders('momo_received'));
     const bankNet = parseFloat(sumOrders('bank_received'));
 

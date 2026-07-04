@@ -170,8 +170,13 @@ const SalesReport = () => {
   // (not cash / momo / bank). On Sosna branches these same columns hold
   // the USD/FRA-equivalent breakdown, but isLiquorStyle gates the reads
   // so they only matter on K-only multi-method branches.
+  // v1.10.101 — subtract change_amount from Cash total on Liquor so the
+  // per-method Cash card matches the ≈ total footer (both settle to the
+  // capped-at-total_amount value). Change on Liquor always comes out of
+  // Cash drawer, never from MoMo/Bank. These variables are only rendered
+  // on isLiquorStyle branches (line 878), so Kassumbalesa is untouched.
   const totalCashReceived = activeOrders.reduce((s, o) =>
-    s + parseFloat(o.cash_received || 0), 0);
+    s + parseFloat(o.cash_received || 0) - parseFloat(o.change_amount || 0), 0);
   const totalMomoReceived = activeOrders.reduce((s, o) =>
     s + parseFloat(o.momo_received || 0), 0);
   const totalBankReceived = activeOrders.reduce((s, o) =>
@@ -845,7 +850,14 @@ const SalesReport = () => {
           <div>
             <div style={{ fontSize: 12, fontWeight: 600, opacity: 0.85, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 4 }}>{t('totalRevenue')}</div>
             <div style={{ fontSize: 24, fontWeight: 800, lineHeight: 1 }}>{curSym}{(parseFloat(totalRevenue)||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</div>
-            {totalOverpaidAsUSD > 0.005 && (
+            {/* v1.10.101 — over-collected label hidden on Liquor. The
+                concept only applies where the cashier can *choose* to keep
+                surplus in a specific currency drawer (Kassumbalesa tri-
+                currency). On Liquor branches change always goes back to
+                the customer physically; there's no "kept" amount. Historical
+                pre-v1.10.81 orders may still carry classifier values in
+                overpaid_kept_amt but they no longer represent till reality. */}
+            {!isLiquorStyle && totalOverpaidAsUSD > 0.005 && (
               <div style={{ fontSize: 11, opacity: 0.9, marginTop: 3, color: '#fef3c7' }}>
                 + Over-collected ≈ {curSym}{totalOverpaidAsUSD.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}
                 {' '}
