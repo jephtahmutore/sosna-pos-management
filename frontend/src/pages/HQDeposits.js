@@ -14,11 +14,12 @@
 // hitting profit.
 import React, { useEffect, useState, useRef } from 'react';
 import {
-  FiSend, FiCheck, FiX, FiRefreshCw, FiInbox, FiArrowUpRight, FiArrowDownLeft, FiTrash2,
+  FiSend, FiCheck, FiX, FiRefreshCw, FiInbox, FiArrowUpRight, FiArrowDownLeft, FiTrash2, FiEdit2,
   FiPaperclip, FiCamera, FiUpload, FiEye, FiFileText, FiImage,
 } from 'react-icons/fi';
 import {
   getCashDeposits, createCashDeposit, confirmCashDeposit, rejectCashDeposit, deleteCashDeposit,
+  editCashDepositDate,
   uploadInvoiceAttachment,
   isHqHost, getBranchSlug,
 } from '../services/api';
@@ -197,7 +198,7 @@ const HQDeposits = () => {
     // where it lands in the Cash Book. That's a sensitive edit, so it
     // needs admin authorization. Unchanged date = fast-path, no prompt.
     if (dateOk && trimmed !== d.deposit_date) {
-      setPendingDateChange({ deposit: d, newDate: trimmed });
+      setPendingDateChange({ deposit: d, newDate: trimmed, mode: 'confirm' });
       return;
     }
 
@@ -209,16 +210,41 @@ const HQDeposits = () => {
     }
   };
 
-  // v1.10.83 — runs after admin authorises the date change.
+  // v1.10.84 — edit accounting date of an already-CONFIRMED deposit.
+  // Same UX as handleConfirm's date-change path: prompt for a new date,
+  // then require admin password before writing. Backend uses PUT /date
+  // (not /confirm) because the row is already CONFIRMED.
+  const handleEditDate = (d) => {
+    const currentDate = d.deposit_date || new Date().toISOString().slice(0, 10);
+    const input = window.prompt(
+      `Edit accounting date for ${d.deposit_number}?\n\n` +
+      `Cash Book will move this deposit to the new date on BOTH sides\n` +
+      `(HQ inflow and branch outflow).`,
+      currentDate
+    );
+    if (input === null) return;
+    const trimmed = String(input).trim();
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) { alert('Date must be YYYY-MM-DD.'); return; }
+    if (trimmed === d.deposit_date) return; // no change
+    setPendingDateChange({ deposit: d, newDate: trimmed, mode: 'edit' });
+  };
+
+  // v1.10.83 — runs after admin authorises the date change. In 'confirm'
+  // mode we flip PENDING → CONFIRMED with the new date; in 'edit' mode
+  // the row is already CONFIRMED, we just move its date.
   const finishConfirmWithDate = async () => {
     if (!pendingDateChange) return;
-    const { deposit, newDate } = pendingDateChange;
+    const { deposit, newDate, mode } = pendingDateChange;
     setPendingDateChange(null);
     try {
-      await confirmCashDeposit(deposit.id, { deposit_date: newDate });
+      if (mode === 'edit') {
+        await editCashDepositDate(deposit.id, newDate);
+      } else {
+        await confirmCashDeposit(deposit.id, { deposit_date: newDate });
+      }
       await fetchDeposits();
     } catch (err) {
-      alert(err?.response?.data?.error || 'Failed to confirm deposit');
+      alert(err?.response?.data?.error || (mode === 'edit' ? 'Failed to edit deposit date' : 'Failed to confirm deposit'));
     }
   };
 
@@ -420,6 +446,14 @@ const HQDeposits = () => {
                                 <FiX size={11} /> Reject
                               </button>
                             </>
+                          )}
+                          {/* v1.10.84 — HQ can edit accounting date on CONFIRMED
+                              deposits. Admin-gated inside handleEditDate. */}
+                          {onHq && d.status === 'CONFIRMED' && (
+                            <button onClick={() => handleEditDate(d)} title="Edit accounting date"
+                              style={{ padding: '5px 10px', background: '#fff', color: '#2563eb', border: '1px solid #bfdbfe', borderRadius: 4, cursor: 'pointer', fontSize: 11, fontWeight: 700, display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                              <FiEdit2 size={11} />
+                            </button>
                           )}
                           {/* Delete: branch can delete its own PENDING rows;
                               HQ can delete anything (mistakes, duplicates). */}
@@ -624,10 +658,12 @@ const HQDeposits = () => {
         </Portal>
       )}
 
-      {/* v1.10.83 — admin password gate for date-change confirms */}
+      {/* v1.10.83/84 — admin password gate for both:
+           - PENDING confirm-with-date-change (mode='confirm')
+           - CONFIRMED edit-date (mode='edit') */}
       <AdminPasswordPrompt
         open={!!pendingDateChange}
-        actionLabel="Approve Date Change"
+        actionLabel={pendingDateChange?.mode === 'edit' ? 'Approve Date Edit' : 'Approve Date Change'}
         onConfirm={finishConfirmWithDate}
         onCancel={() => setPendingDateChange(null)}
       />

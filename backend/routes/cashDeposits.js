@@ -199,6 +199,36 @@ router.put('/:id/reject', hqAuth, (req, res) => {
   }
 });
 
+// ─── PUT /cash-deposits/:id/date — edit accounting date of a CONFIRMED row ──
+//
+// v1.10.84 — HQ can move a CONFIRMED deposit to a different accounting
+// date. Cash Book UNIONs directly from master.cash_deposits so the
+// deposit re-lands on the new date automatically on both sides
+// (branch's outgoing deduction shifts, HQ's incoming credit shifts).
+//
+// Only the accounting date changes; amount/currency/status stay put.
+// Only CONFIRMED rows are editable through this endpoint — PENDING rows
+// use the existing /confirm flow which already accepts a date, and
+// REJECTED rows have no ledger effect so editing them is pointless.
+router.put('/:id/date', hqAuth, (req, res) => {
+  try {
+    const row = masterDb.prepare('SELECT * FROM cash_deposits WHERE id = ?').get(req.params.id);
+    if (!row) return res.status(404).json({ error: 'Deposit not found' });
+    if (row.status !== 'CONFIRMED') {
+      return res.status(400).json({ error: `Only CONFIRMED deposits can have their date edited (current: ${row.status}).` });
+    }
+    const newDate = req.body?.deposit_date;
+    if (typeof newDate !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(newDate)) {
+      return res.status(400).json({ error: 'deposit_date must be YYYY-MM-DD.' });
+    }
+    masterDb.prepare('UPDATE cash_deposits SET deposit_date = ? WHERE id = ?').run(newDate, req.params.id);
+    const updated = masterDb.prepare('SELECT * FROM cash_deposits WHERE id = ?').get(req.params.id);
+    res.json(updated);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ─── DELETE /cash-deposits/:id — remove a deposit ───────────────────────────
 // v1.8.60 — allow deleting deposits to clean up mistakes / cancelled records.
 // Branch can delete its own PENDING deposits; HQ can delete anything.
