@@ -37,7 +37,15 @@ router.post('/', auth, (req, res) => {
     const momo = parseFloat(momo_amount || 0) || 0;
     const usd  = parseFloat(usd_amount  || 0) || 0;
     const fra  = parseFloat(fra_amount  || 0) || 0;
-    const kAmt = parseFloat(k_amount    || 0) || 0;
+    // v1.10.129 — HQ now sends K as 3 sub-methods (cash/bank/momo) instead of
+    // a single k_amount. Detect HQ shape by presence of usd_amount or fra_amount
+    // in the body (present even when 0). On HQ: k_amount = cash + bank + momo,
+    // and cash/bank/momo are stored as K sub-method rows. On Liquor: legacy
+    // path (cash/bank/momo = K sub-methods of a K-only branch), unchanged.
+    const isHqTriCcy = (usd_amount !== undefined || fra_amount !== undefined);
+    const kAmt = isHqTriCcy
+      ? (cash + bank + momo)
+      : (parseFloat(k_amount || 0) || 0);
     // v1.10.78 — total resolution priority: triple-currency sum > method sum > legacy `amount`.
     const ccySum   = usd + fra + kAmt;
     const splitSum = cash + bank + momo;
@@ -46,10 +54,20 @@ router.post('/', auth, (req, res) => {
 
     // Derive a paid_from label for display when none provided.
     // v1.10.78 — prefer triple-currency label on HQ; fall back to method label.
+    // v1.10.129 — on HQ, K sub-methods now surface as 'K · Cash', 'K · Bank',
+    // 'K · MoMo' so the label reflects the actual drawer that funded it.
     const derivedPaidFrom = paid_from || (() => {
-      if (ccySum > 0) {
-        const used = [usd > 0 && 'USD', fra > 0 && 'FRA', kAmt > 0 && 'K'].filter(Boolean);
-        return used.length === 1 ? used[0] : 'Mixed';
+      if (isHqTriCcy) {
+        const used = [
+          usd  > 0 && 'USD',
+          fra  > 0 && 'FRA',
+          cash > 0 && 'K · Cash',
+          bank > 0 && 'K · Bank',
+          momo > 0 && 'K · MoMo',
+        ].filter(Boolean);
+        if (used.length === 0) return 'Main cashier';
+        if (used.length === 1) return used[0];
+        return 'Mixed';
       }
       const used = [cash > 0 && 'Cash', bank > 0 && 'Bank', momo > 0 && 'Mobile Money'].filter(Boolean);
       if (used.length === 0) return 'Main cashier';

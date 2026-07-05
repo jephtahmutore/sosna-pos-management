@@ -743,6 +743,65 @@ router.get('/stats', auth, readOnlyGuard, (req, res) => {
       k:   openingByCcy.k   + receiptsByCcy.k   - paymentsByCcy.k,
     };
 
+    // v1.10.129 — K sub-method breakdown (Cash / Bank / MoMo) for the K card
+    // on HQ. Reads cash_amount / bank_amount / momo_amount ONLY on rows that
+    // are K-currency (k_amount > 0). USD/FRA rows are excluded so they don't
+    // contaminate the K sub-buckets. Push 1 covers AP; CR and PV follow in
+    // Push 2 and 3 and will fall in here automatically once their forms are
+    // updated to also write cash/bank/momo on K rows.
+    const kSubMethodSum = (table, dateClause, dateParams) => {
+      const row = db.prepare(`
+        SELECT COALESCE(SUM(cash_amount), 0) AS cash,
+               COALESCE(SUM(bank_amount), 0) AS bank,
+               COALESCE(SUM(momo_amount), 0) AS momo
+          FROM ${table}
+         WHERE deleted_at IS NULL
+           AND tenant_id = ?
+           AND COALESCE(k_amount, 0) > 0
+           ${dateClause}
+      `).get(tenantId, ...dateParams);
+      return {
+        cash: parseFloat(row.cash) || 0,
+        bank: parseFloat(row.bank) || 0,
+        momo: parseFloat(row.momo) || 0,
+      };
+    };
+    const kSubIn  = {
+      // CR is the only INFLOW table with method columns tied to K amounts.
+      ...kSubMethodSum('cash_receipts', dateFilter, dParams),
+    };
+    const kSubOutPV = kSubMethodSum('payment_vouchers', dateFilter, dParams);
+    const kSubOutAP = kSubMethodSum('ap_payments',      dateFilter, dParams);
+    const kSubOut = {
+      cash: kSubOutPV.cash + kSubOutAP.cash,
+      bank: kSubOutPV.bank + kSubOutAP.bank,
+      momo: kSubOutPV.momo + kSubOutAP.momo,
+    };
+    const kSubNet = {
+      cash: kSubIn.cash - kSubOut.cash,
+      bank: kSubIn.bank - kSubOut.bank,
+      momo: kSubIn.momo - kSubOut.momo,
+    };
+
+    // Fold pre-period K sub-method activity into an opening snapshot too,
+    // so the "current" K sub-breakdown reflects real drawer state end-of-To.
+    let kSubOpening = { cash: 0, bank: 0, momo: 0 };
+    if (from) {
+      const bIn  = kSubMethodSum('cash_receipts',   ' AND date < ?', [from]);
+      const bPV  = kSubMethodSum('payment_vouchers',' AND date < ?', [from]);
+      const bAP  = kSubMethodSum('ap_payments',     ' AND date < ?', [from]);
+      kSubOpening = {
+        cash: bIn.cash - bPV.cash - bAP.cash,
+        bank: bIn.bank - bPV.bank - bAP.bank,
+        momo: bIn.momo - bPV.momo - bAP.momo,
+      };
+    }
+    const kSubCurrent = {
+      cash: kSubOpening.cash + kSubNet.cash,
+      bank: kSubOpening.bank + kSubNet.bank,
+      momo: kSubOpening.momo + kSubNet.momo,
+    };
+
     res.json({
       openingBalance, openingByMethod,
       totalReceipts, totalPV, totalAP, totalPayments,
@@ -753,6 +812,14 @@ router.get('/stats', auth, readOnlyGuard, (req, res) => {
       // v1.8.62 — per-currency cards for the Sosna Cash Book dashboard.
       openingByCcy, receiptsByCcy, paymentsByCcy, currentByCcy,
       depositsByCcy: { in: depInByCcy, out: depOutByCcy },
+      // v1.10.129 — K sub-method breakdown (Cash / Bank / MoMo) for HQ.
+      kSubMethods: {
+        in:      kSubIn,
+        out:     kSubOut,
+        net:     kSubNet,
+        opening: kSubOpening,
+        current: kSubCurrent,
+      },
     });
   } catch (error) {
     res.status(500).json({ error: error.message });

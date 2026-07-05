@@ -52,18 +52,21 @@ export default function ApPaymentFormModal({ open, supplier, onClose, onSaved, d
   useEffect(() => {
     if (!open || !supplier) return;
     const outstanding = parseFloat(supplier.balance) > 0 ? parseFloat(supplier.balance).toFixed(2) : '';
-    // v1.10.111 — auto-fill the box matching the supplier's native
-    // currency (K → k_amount, FRA → fra_amount, else usd_amount).
-    // Cashier no longer has to move the value from USD to K by hand.
+    // v1.10.111 — auto-fill the box matching the supplier's native currency.
+    // v1.10.129 — on HQ, K supplier defaults into K → Cash sub-method
+    // (most common on Sosna). User can redistribute across Cash/Bank/MoMo.
     const ccy = String(supplier?.currency || '').toUpperCase();
     setForm({
-      // HQ pre-fills the box matching supplier.currency; Liquor pre-fills cash_amount.
-      cash_amount: !onHq ? outstanding : '',
+      // HQ K → cash_amount (K-Cash sub-method). Liquor → cash_amount (legacy).
+      cash_amount: !onHq
+        ? outstanding
+        : (ccy === 'K' ? outstanding : ''),
       bank_amount: '',
       momo_amount: '',
       usd_amount:  onHq && (ccy === '' || ccy === 'USD') ? outstanding : '',
       fra_amount:  onHq && ccy === 'FRA'                 ? outstanding : '',
-      k_amount:    onHq && ccy === 'K'                   ? outstanding : '',
+      // k_amount is DERIVED on HQ (= cash + bank + momo). Never stored in form.
+      k_amount:    '',
       date: defaultDate || todayStr(),
       description: defaultDescription || `Payment to ${supplier.supplier_name || ''}`.trim(),
       invoice_attachment: null,
@@ -74,11 +77,19 @@ export default function ApPaymentFormModal({ open, supplier, onClose, onSaved, d
 
   if (!open || !supplier) return null;
 
-  const fields = onHq
+  // v1.10.129 — HQ K currency now has Cash/Bank/MoMo sub-methods. USD/FRA
+  // stay as single inputs. Liquor branches unchanged (Cash/Bank/MoMo of K).
+  const ccyFields = onHq
     ? [
         { key: 'usd_amount', label: 'USD ($)', color: '#16a34a', step: '0.01', placeholder: '0.00' },
         { key: 'fra_amount', label: 'FRA',     color: '#7c3aed', step: '1',    placeholder: '0'    },
-        { key: 'k_amount',   label: 'K',       color: '#ea580c', step: '1',    placeholder: '0'    },
+      ]
+    : [];
+  const kSubFields = onHq
+    ? [
+        { key: 'cash_amount', label: 'K · Cash', color: '#ea580c', step: '1', placeholder: '0' },
+        { key: 'bank_amount', label: 'K · Bank', color: '#c2410c', step: '1', placeholder: '0' },
+        { key: 'momo_amount', label: 'K · MoMo', color: '#9a3412', step: '1', placeholder: '0' },
       ]
     : [
         { key: 'cash_amount', label: 'Cash', color: '#16a34a', step: '0.01', placeholder: '0.00' },
@@ -86,7 +97,15 @@ export default function ApPaymentFormModal({ open, supplier, onClose, onSaved, d
         { key: 'momo_amount', label: 'MoMo', color: '#f59e0b', step: '0.01', placeholder: '0.00' },
       ];
 
-  const total = fields.reduce((s, f) => s + (parseFloat(form[f.key] || 0) || 0), 0);
+  // Derived K total for HQ display (sum of the 3 sub-methods).
+  const kSubTotal = onHq
+    ? kSubFields.reduce((s, f) => s + (parseFloat(form[f.key] || 0) || 0), 0)
+    : 0;
+  const total = onHq
+    ? (parseFloat(form.usd_amount || 0) || 0)
+      + (parseFloat(form.fra_amount || 0) || 0)
+      + kSubTotal
+    : kSubFields.reduce((s, f) => s + (parseFloat(form[f.key] || 0) || 0), 0);
 
   const handlePay = async () => {
     if (!(total > 0)) { setError('Enter at least one method > 0.'); return; }
@@ -102,9 +121,13 @@ export default function ApPaymentFormModal({ open, supplier, onClose, onSaved, d
         invoice_attachment: form.invoice_attachment || null,
       };
       if (onHq) {
-        payload.usd_amount = parseFloat(form.usd_amount || 0) || 0;
-        payload.fra_amount = parseFloat(form.fra_amount || 0) || 0;
-        payload.k_amount   = parseFloat(form.k_amount   || 0) || 0;
+        // v1.10.129 — HQ now sends K as 3 sub-methods (Cash/Bank/MoMo).
+        // Backend computes k_amount = cash + bank + momo. USD/FRA single.
+        payload.usd_amount  = parseFloat(form.usd_amount  || 0) || 0;
+        payload.fra_amount  = parseFloat(form.fra_amount  || 0) || 0;
+        payload.cash_amount = parseFloat(form.cash_amount || 0) || 0;
+        payload.bank_amount = parseFloat(form.bank_amount || 0) || 0;
+        payload.momo_amount = parseFloat(form.momo_amount || 0) || 0;
       } else {
         payload.cash_amount = parseFloat(form.cash_amount || 0) || 0;
         payload.bank_amount = parseFloat(form.bank_amount || 0) || 0;
@@ -141,13 +164,35 @@ export default function ApPaymentFormModal({ open, supplier, onClose, onSaved, d
           <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
             <div>
               <label style={{ fontSize: 11, fontWeight: 700, color: '#6b7280', textTransform: 'uppercase', letterSpacing: 0.5, display: 'block', marginBottom: 8 }}>
-                {onHq ? 'Amount Paid (split across currencies)' : 'Amount Paid (split across methods)'}
+                {onHq ? 'Amount Paid (by currency)' : 'Amount Paid (split across methods)'}
               </label>
+              {onHq && (
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 12 }}>
+                  {ccyFields.map((f, i) => (
+                    <div key={f.key}>
+                      <label style={{ fontSize: 11, color: f.color, fontWeight: 700, textTransform: 'uppercase', marginBottom: 3, display: 'block' }}>{f.label}</label>
+                      <input type="number" min="0" step={f.step} autoFocus={i === 0}
+                        value={form[f.key]}
+                        onChange={e => setForm(prev => ({ ...prev, [f.key]: e.target.value }))}
+                        placeholder={f.placeholder}
+                        style={{ width: '100%', padding: '8px 10px', border: `2px solid ${parseFloat(form[f.key] || 0) > 0 ? f.color : '#d1d5db'}`, borderRadius: 6, fontSize: 14, fontWeight: 600, color: parseFloat(form[f.key] || 0) > 0 ? f.color : '#374151', boxSizing: 'border-box' }} />
+                    </div>
+                  ))}
+                </div>
+              )}
+              {/* v1.10.129 — K sub-method section. On HQ, K is split into
+                  Cash / Bank / MoMo. On Liquor, this same row IS the primary
+                  Cash / Bank / MoMo split (unchanged behaviour). */}
+              {onHq && (
+                <div style={{ fontSize: 10, color: '#9a3412', fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.4, marginBottom: 6 }}>
+                  K (split by method) {kSubTotal > 0 && <span style={{ color: '#c2410c', fontWeight: 600 }}>· Total K{kSubTotal.toLocaleString()}</span>}
+                </div>
+              )}
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10 }}>
-                {fields.map((f, i) => (
+                {kSubFields.map((f, i) => (
                   <div key={f.key}>
                     <label style={{ fontSize: 11, color: f.color, fontWeight: 700, textTransform: 'uppercase', marginBottom: 3, display: 'block' }}>{f.label}</label>
-                    <input type="number" min="0" step={f.step} autoFocus={i === 0}
+                    <input type="number" min="0" step={f.step} autoFocus={!onHq && i === 0}
                       value={form[f.key]}
                       onChange={e => setForm(prev => ({ ...prev, [f.key]: e.target.value }))}
                       placeholder={f.placeholder}
@@ -155,9 +200,6 @@ export default function ApPaymentFormModal({ open, supplier, onClose, onSaved, d
                   </div>
                 ))}
               </div>
-              {/* v1.10.111 — Total row removed per user (was confusing when
-                  the tenant sym differed from supplier sym; auto-fill already
-                  makes the intended amount obvious in the currency field). */}
             </div>
             <div>
               <label style={{ fontSize: 13, fontWeight: 600, color: '#374151', display: 'block', marginBottom: 5 }}>Date *</label>

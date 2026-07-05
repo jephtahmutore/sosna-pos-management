@@ -774,7 +774,11 @@ const CashBook = () => {
           [
             { key: 'usd', label: 'USD ($)', defaultClass: 'green',  symbol: '$',  raw: false, show: showUSDccy },
             { key: 'fra', label: 'FRA',     defaultClass: 'purple', symbol: '',   raw: true,  show: showFRAccy },
-            { key: 'k',   label: 'K',       defaultClass: 'orange', symbol: '',   raw: true,  show: showKccy   },
+            { key: 'k',   label: 'K',       defaultClass: 'orange', symbol: '',   raw: true,  show: showKccy,
+              // v1.10.129 — K sub-method breakdown on HQ (Cash / Bank / MoMo).
+              // Shown in a tight strip under the K card. Feeds off stats.kSubMethods.
+              subMethods: onHq ? stats.kSubMethods?.current : null,
+            },
           ].filter(m => m.show).map(m => {
             const bal  = stats.currentByCcy?.[m.key] || 0;
             const open = stats.openingByCcy?.[m.key] || 0;
@@ -797,6 +801,16 @@ const CashBook = () => {
                   <div className="stat-label">{m.label}{isActive && <span style={{ fontSize: 10, marginLeft: 6, opacity: 0.85 }}>· active</span>}</div>
                   <div className="stat-value">{hasPermission('CashBook:View') ? fmtBal : 'N/A'}</div>
                   <div style={{ fontSize: 11, opacity: 0.85, marginTop: 2 }}>{t('opening')} {fmtOpen}</div>
+                  {/* v1.10.129 — K sub-method breakdown strip under the K card.
+                      Shown only on HQ, only for the K row, only when the
+                      backend returns kSubMethods.current. */}
+                  {m.subMethods && (
+                    <div style={{ fontSize: 10.5, opacity: 0.9, marginTop: 4, borderTop: '1px solid rgba(255,255,255,0.25)', paddingTop: 4, display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+                      <span>Cash <strong>{Math.round(m.subMethods.cash || 0).toLocaleString()}</strong></span>
+                      <span>Bank <strong>{Math.round(m.subMethods.bank || 0).toLocaleString()}</strong></span>
+                      <span>MoMo <strong>{Math.round(m.subMethods.momo || 0).toLocaleString()}</strong></span>
+                    </div>
+                  )}
                 </div>
               </div>
             );
