@@ -119,6 +119,40 @@ router.get('/hq/:syncId', hqAuth, (req, res) => {
     const items = masterDb.prepare(
       `SELECT * FROM hq_grn_items WHERE grn_sync_id = ? ORDER BY id ASC`
     ).all(syncId);
+    // v1.10.114 — damaged_quantity isn't stored on hq_grn_items (only on
+    // stock_movements at generate-time with reference_type='hq_grn_damage'),
+    // so cross-DB read from the destination branch's stock_movements is
+    // required to surface it. Group by product_sync_id, sum abs(quantity)
+    // in BASE units. Frontend divides by the item's conv to display in
+    // line units. Silent-skip if branch DB unavailable (won't break archive).
+    let damageByProduct = {};
+    try {
+      if (grn.branch_slug && isRegistered(grn.branch_slug)) {
+        const branchDb = getTenantDb(grn.branch_slug);
+        const rows = branchDb.prepare(`
+          SELECT dmg.product_sync_id,
+                 SUM(ABS(dmg.quantity)) AS damaged_base,
+                 gin.qty_base
+            FROM stock_movements dmg
+            LEFT JOIN (
+              SELECT product_sync_id, SUM(quantity) AS qty_base
+                FROM stock_movements
+               WHERE reference_type = 'hq_grn'
+                 AND reference_sync_id = ?
+                 AND deleted_at IS NULL
+               GROUP BY product_sync_id
+            ) gin ON gin.product_sync_id = dmg.product_sync_id
+           WHERE dmg.reference_type = 'hq_grn_damage'
+             AND dmg.reference_sync_id = ?
+             AND dmg.deleted_at IS NULL
+           GROUP BY dmg.product_sync_id, gin.qty_base
+        `).all(syncId, syncId);
+        for (const r of rows) damageByProduct[r.product_sync_id] = {
+          damaged_base: parseFloat(r.damaged_base) || 0,
+          in_base:      parseFloat(r.qty_base)     || 0,
+        };
+      }
+    } catch (e) { /* branch DB open failed — non-fatal */ }
     let credit_notes = [];
     try {
       credit_notes = masterDb.prepare(`
@@ -128,7 +162,7 @@ router.get('/hq/:syncId', hqAuth, (req, res) => {
          ORDER BY id ASC
       `).all(syncId);
     } catch { /* table may not exist on old DBs */ }
-    res.json({ grn: { ...grn, grn_sync_id: grn.sync_id }, items, credit_notes });
+    res.json({ grn: { ...grn, grn_sync_id: grn.sync_id }, items, credit_notes, damage_by_product: damageByProduct });
   } catch (error) {
     console.error('[hq.grns.hq-detail]', error);
     res.status(500).json({ error: error.message });
@@ -192,7 +226,22 @@ router.get('/:slug/:syncId', hqAuth, (req, res) => {
          ORDER BY id ASC
       `).all(syncId);
     } catch { /* table may not have the column yet on very old DBs */ }
-    res.json({ grn: { ...grn, branch_slug: slug }, items, credit_notes });
+    // v1.10.114 — damage-per-product from stock_movements (same tag used
+    // by the /hq/:syncId endpoint). Branch DB is already open, so this is
+    // a straight local query, no cross-DB hop.
+    let damageByProduct = {};
+    try {
+      const rows = db.prepare(`
+        SELECT product_sync_id, SUM(ABS(quantity)) AS damaged_base
+          FROM stock_movements
+         WHERE reference_type = 'hq_grn_damage'
+           AND reference_sync_id = ?
+           AND deleted_at IS NULL
+         GROUP BY product_sync_id
+      `).all(syncId);
+      for (const r of rows) damageByProduct[r.product_sync_id] = parseFloat(r.damaged_base) || 0;
+    } catch (e) { /* stock_movements columns may differ on old DBs */ }
+    res.json({ grn: { ...grn, branch_slug: slug }, items, credit_notes, damage_by_product: damageByProduct });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }

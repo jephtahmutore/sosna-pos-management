@@ -63,6 +63,7 @@ export default function HqGrnArchive() {
         grn:   r.data?.grn   || g,
         items: r.data?.items || [],
         cnRows: r.data?.credit_notes || [],
+        damageByProduct: r.data?.damage_by_product || {},
         loading: false,
       });
     } catch (err) {
@@ -217,7 +218,7 @@ function branchUploadUrl(branchSlug, path) {
 // lays out PO, supplier, invoice # + attachment, branch confirmer,
 // HQ generator, and timestamps. Line items + credit notes + totals follow.
 function DetailsModal({ state, onClose }) {
-  const { grn, items, cnRows, loading, error } = state;
+  const { grn, items, cnRows, damageByProduct = {}, loading, error } = state;
   const itemsSubtotal = items.reduce((s, i) => s + (parseFloat(i.quantity) || 0) * (parseFloat(i.unit_price) || 0), 0);
   const invoiceNumber = grn.invoice_number || grn.supplier_invoice_number;
   const invoiceUrl    = branchUploadUrl(grn.branch_slug, grn.invoice_attachment);
@@ -300,24 +301,38 @@ function DetailsModal({ state, onClose }) {
                       <th style={th}>Product</th>
                       <th style={th}>Unit</th>
                       <th style={{ ...th, textAlign: 'right' }}>Qty</th>
+                      {/* v1.10.114 — Damaged column. Shown in line units by
+                          multiplying damaged_base × (line_qty / in_base). Cell
+                          renders '—' when no damage recorded for this product. */}
+                      <th style={{ ...th, textAlign: 'right', color: '#b91c1c' }}>Damaged</th>
                       <th style={{ ...th, textAlign: 'right' }}>Cost</th>
                       <th style={{ ...th, textAlign: 'right' }}>Line $</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {items.map(it => (
-                      <tr key={it.id} style={{ borderTop: '1px solid #f1f5f9' }}>
-                        <td style={td}><strong>{it.product_name || `#${it.product_id}`}</strong>{it.product_code && <span style={{ color: '#94a3b8', fontSize: 11 }}> ({it.product_code})</span>}</td>
-                        <td style={td}>{it.unit || it.product_base_unit}</td>
-                        <td style={{ ...td, textAlign: 'right' }}>{parseFloat(it.quantity || 0).toLocaleString()}</td>
-                        <td style={{ ...td, textAlign: 'right', color: '#64748b' }}>{fmtMoney(it.unit_price)}</td>
-                        <td style={{ ...td, textAlign: 'right', fontWeight: 600 }}>{fmtMoney(parseFloat(it.quantity || 0) * parseFloat(it.unit_price || 0))}</td>
-                      </tr>
-                    ))}
+                    {items.map(it => {
+                      const dmg  = damageByProduct[it.product_sync_id];
+                      const qtyLine = parseFloat(it.quantity || 0);
+                      const damagedLine = (dmg && dmg.in_base > 0)
+                        ? (parseFloat(dmg.damaged_base) * qtyLine) / parseFloat(dmg.in_base)
+                        : (dmg ? parseFloat(dmg.damaged_base) : 0);
+                      return (
+                        <tr key={it.id} style={{ borderTop: '1px solid #f1f5f9' }}>
+                          <td style={td}><strong>{it.product_name || `#${it.product_id}`}</strong>{it.product_code && <span style={{ color: '#94a3b8', fontSize: 11 }}> ({it.product_code})</span>}</td>
+                          <td style={td}>{it.unit || it.product_base_unit}</td>
+                          <td style={{ ...td, textAlign: 'right' }}>{qtyLine.toLocaleString()}</td>
+                          <td style={{ ...td, textAlign: 'right', color: damagedLine > 0 ? '#b91c1c' : '#94a3b8', fontWeight: damagedLine > 0 ? 700 : 400 }}>
+                            {damagedLine > 0 ? damagedLine.toLocaleString(undefined, { maximumFractionDigits: 2 }) : '—'}
+                          </td>
+                          <td style={{ ...td, textAlign: 'right', color: '#64748b' }}>{fmtMoney(it.unit_price)}</td>
+                          <td style={{ ...td, textAlign: 'right', fontWeight: 600 }}>{fmtMoney(qtyLine * parseFloat(it.unit_price || 0))}</td>
+                        </tr>
+                      );
+                    })}
                   </tbody>
                   <tfoot>
                     <tr style={{ borderTop: '2px solid #e5e7eb', fontWeight: 700 }}>
-                      <td colSpan={4} style={td}>Items subtotal</td>
+                      <td colSpan={5} style={td}>Items subtotal</td>
                       <td style={{ ...td, textAlign: 'right' }}>{fmtMoney(itemsSubtotal || grn.items_subtotal)}</td>
                     </tr>
                   </tfoot>
