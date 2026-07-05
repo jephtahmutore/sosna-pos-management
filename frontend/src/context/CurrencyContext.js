@@ -44,6 +44,16 @@ export const CurrencyProvider = ({ children }) => {
   const [currencyMode, setCurrencyMode] = useState('K');
   const [paymentMethods, setPaymentMethods] = useState('cash_momo_bank');
   const [legacyProcurementEnabled, setLegacyProcurementEnabled] = useState(false);
+  // v1.10.127 — gate the first render until settings arrive. Before this,
+  // every page mounted with the Liquor defaults (K + cash_momo_bank) and
+  // re-rendered ~200ms later once /api/settings finished. On Kassumbalesa
+  // (tri-currency, cash_only) that meant a visible flash of Cash/MoMo/Bank
+  // inputs where USD/FRA/K should be — worse after pm2 restart because the
+  // cold-start /settings took longer. Setting loading=true initially and
+  // flipping it after the fetch means children only render ONCE, with the
+  // right config. Only the initial mount blocks; caller-triggered refresh()
+  // doesn't blank the app.
+  const [loading, setLoading] = useState(true);
 
   const refresh = useCallback(async () => {
     // Skip the API call when the user isn't logged in — otherwise the 401 response
@@ -64,7 +74,12 @@ export const CurrencyProvider = ({ children }) => {
     } catch { /* keep defaults */ }
   }, []);
 
-  useEffect(() => { refresh(); }, [refresh]);
+  useEffect(() => {
+    (async () => {
+      await refresh();
+      setLoading(false);
+    })();
+  }, [refresh]);
 
   const primary = currencies.find(c => c.is_primary) || currencies[0] || DEFAULTS[0];
   const symbol = primary.symbol;
@@ -81,7 +96,12 @@ export const CurrencyProvider = ({ children }) => {
       legacyProcurementEnabled,
       refresh,
     }}>
-      {children}
+      {loading ? (
+        // v1.10.127 — brief blank until settings arrive; prevents the
+        // wrong-tenant flash. Kept intentionally minimal so on fast fetches
+        // it's imperceptible; on slow (cold pm2) it just shows blank.
+        <div style={{ position: 'fixed', inset: 0, background: '#f8fafc' }} />
+      ) : children}
     </CurrencyContext.Provider>
   );
 };
