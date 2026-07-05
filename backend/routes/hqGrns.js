@@ -491,6 +491,190 @@ router.post('/:slug/:syncId/reject', hqAuth, (req, res) => {
   }
 });
 
+// POST /api/hq/grns/:syncId/void
+// v1.10.115 — full rollback of a HQ-generated GRN. Reverses branch stock
+// movements (goods_in + hq_grn_damage), soft-deletes the GRN doc on
+// master.db + hq.db mirror, and resets the linked PO line back to
+// AWAITING_GRN so a corrected GRN can be regenerated.
+//
+// WAC intentionally left untouched (Option B, user 2026-07-05): recomputing
+// WAC on void is mathematically hard when other GRNs have blended since,
+// and self-corrects when stock hits 0 on the next receipt anyway. This
+// means the affected product's WAC keeps its polluted value until then —
+// documented drift the user accepted knowingly.
+//
+// Refuses if:
+//   - GRN not found or already voided.
+//   - Branch stock < this GRN's net contribution (would go negative → some
+//     of the received qty has already been sold or issued out; void would
+//     silently leave those downstream movements orphaned).
+//
+// Requires admin password (verified client-side via AdminPasswordPrompt),
+// admin id/name passed in body as attestation. Reason mandatory for audit.
+router.post('/:syncId/void', hqAuth, (req, res) => {
+  try {
+    if (!masterDb) return res.status(400).json({ error: 'master.db unavailable' });
+    const syncId = req.params.syncId;
+    const { reason, adminId, adminName } = req.body || {};
+    if (!reason || String(reason).trim().length < 3) {
+      return res.status(400).json({ error: 'Reason (min 3 chars) is required for audit.' });
+    }
+    if (!adminId) {
+      return res.status(400).json({ error: 'Admin authorization missing.' });
+    }
+
+    const grn = masterDb.prepare(`
+      SELECT * FROM hq_grns WHERE sync_id = ? AND deleted_at IS NULL
+    `).get(syncId);
+    if (!grn) return res.status(404).json({ error: 'GRN not found or already voided.' });
+    if (!grn.branch_slug || !isRegistered(grn.branch_slug)) {
+      return res.status(400).json({ error: `Branch "${grn.branch_slug}" not registered — cannot reverse stock.` });
+    }
+
+    const branchDb = getTenantDb(grn.branch_slug);
+
+    // 1. Safety check: for each product on this GRN, verify that its
+    //    NET contribution (goods_in - damage) can be pulled back out
+    //    without dropping current_stock below zero. If ANY product would
+    //    go negative, refuse with a detailed shortfall list so the user
+    //    knows WHICH lines were already consumed.
+    const perProduct = branchDb.prepare(`
+      SELECT product_sync_id,
+             SUM(quantity) AS net_qty,
+             (SELECT current_stock FROM products WHERE sync_id = stock_movements.product_sync_id) AS current_stock,
+             (SELECT name          FROM products WHERE sync_id = stock_movements.product_sync_id) AS product_name
+        FROM stock_movements
+       WHERE reference_type IN ('hq_grn', 'hq_grn_damage')
+         AND reference_sync_id = ?
+         AND deleted_at IS NULL
+       GROUP BY product_sync_id
+    `).all(syncId);
+
+    const violations = perProduct.filter(p => (parseFloat(p.current_stock) || 0) < (parseFloat(p.net_qty) || 0));
+    if (violations.length > 0) {
+      return res.status(400).json({
+        error: 'Cannot void — some of this GRN\'s stock has already been sold or issued out.',
+        violations: violations.map(v => ({
+          product_name: v.product_name,
+          product_sync_id: v.product_sync_id,
+          grn_qty: parseFloat(v.net_qty) || 0,
+          current_stock: parseFloat(v.current_stock) || 0,
+          shortfall: (parseFloat(v.net_qty) || 0) - (parseFloat(v.current_stock) || 0),
+        })),
+      });
+    }
+
+    // 2. Reverse the branch: decrement current_stock by the net contribution
+    //    of each product, then soft-delete this GRN's stock_movements.
+    branchDb.transaction(() => {
+      const decStock = branchDb.prepare(`
+        UPDATE products
+           SET current_stock = current_stock - ?,
+               updated_at    = datetime('now'),
+               synced        = 0
+         WHERE sync_id = ?
+      `);
+      for (const p of perProduct) {
+        decStock.run(parseFloat(p.net_qty) || 0, p.product_sync_id);
+      }
+      branchDb.prepare(`
+        UPDATE stock_movements
+           SET deleted_at = datetime('now'),
+               updated_at = datetime('now'),
+               synced     = 0
+         WHERE reference_type IN ('hq_grn', 'hq_grn_damage')
+           AND reference_sync_id = ?
+           AND deleted_at IS NULL
+      `).run(syncId);
+    })();
+
+    // 3. Master.db + hq.db mirror + PO line reset — in a single master tx
+    //    so the audit trail (voided_by/voided_at/void_reason) lands atomic
+    //    with the soft-deletes and the PO line flip.
+    masterDb.transaction(() => {
+      masterDb.prepare(`
+        UPDATE hq_grn_items
+           SET deleted_at = datetime('now'),
+               updated_at = datetime('now')
+         WHERE grn_sync_id = ? AND deleted_at IS NULL
+      `).run(syncId);
+      masterDb.prepare(`
+        UPDATE hq_grns
+           SET deleted_at    = datetime('now'),
+               updated_at    = datetime('now'),
+               voided_by     = ?,
+               voided_by_name= ?,
+               voided_at     = datetime('now'),
+               void_reason   = ?
+         WHERE sync_id = ?
+      `).run(adminId, adminName || null, String(reason).trim(), syncId);
+
+      // Reset PO line back to AWAITING_GRN so a corrected GRN can be
+      // generated against the same PO. Mirrors the /reject flow.
+      if (grn.po_sync_id) {
+        try {
+          masterDb.prepare(`
+            UPDATE hq_purchase_items
+               SET status              = 'AWAITING_GRN',
+                   linked_grn_sync_id  = NULL,
+                   linked_grn_number   = NULL,
+                   confirmed_by        = NULL,
+                   confirmed_by_name   = NULL,
+                   confirmed_at        = NULL,
+                   confirm_notes       = ?
+             WHERE purchase_sync_id = ?
+               AND linked_grn_sync_id = ?
+          `).run(`HQ voided GRN ${grn.grn_number}: ${String(reason).trim()}`, grn.po_sync_id, syncId);
+
+          // Header status: if this was the only confirmed line and there
+          // are no other open lines, don't touch header — user can revisit.
+        } catch (e) {
+          console.error('[hq.grns.void] PO line reset failed:', e.message);
+        }
+      }
+
+      // Also soft-delete any credit notes that were attached to this GRN.
+      try {
+        masterDb.prepare(`
+          UPDATE hq_supplier_credit_notes
+             SET deleted_at = datetime('now'), updated_at = datetime('now')
+           WHERE grn_sync_id = ? AND deleted_at IS NULL
+        `).run(syncId);
+      } catch { /* table may not exist on old DBs */ }
+    })();
+
+    // 4. Mirror the soft-delete to hq.db (the tenant-shaped HQ mirror
+    //    created at generate-time so HQ can browse GRNs alongside branches).
+    try {
+      const hqDb = getTenantDb('hq');
+      hqDb.transaction(() => {
+        hqDb.prepare(`
+          UPDATE grn_items SET deleted_at = datetime('now'), updated_at = datetime('now'), synced = 0
+           WHERE grn_sync_id = ? AND deleted_at IS NULL
+        `).run(syncId);
+        hqDb.prepare(`
+          UPDATE grn SET deleted_at = datetime('now'), updated_at = datetime('now'), synced = 0
+           WHERE sync_id = ? AND deleted_at IS NULL
+        `).run(syncId);
+        // Soft-delete supplier_credit_notes mirror if present.
+        try {
+          hqDb.prepare(`
+            UPDATE supplier_credit_notes SET deleted_at = datetime('now'), updated_at = datetime('now'), synced = 0
+             WHERE grn_sync_id = ? AND deleted_at IS NULL
+          `).run(syncId);
+        } catch { /* older DB — column may not exist */ }
+      })();
+    } catch (e) {
+      console.error('[hq.grns.void] hq.db mirror soft-delete failed:', e.message);
+    }
+
+    res.json({ ok: true, message: `GRN ${grn.grn_number} voided. PO line reset to AWAITING_GRN — regenerate with correct data.` });
+  } catch (error) {
+    console.error('[hq.grns.void] CRASH:', error.stack || error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // GET /api/hq/grns/archive
 // v1.9.14 — HQ-wide list of CONFIRMED GRNs, served entirely from the
 // master.db snapshot table. Supports filters via query string:

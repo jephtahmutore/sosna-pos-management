@@ -234,6 +234,12 @@ export const getHqGrnDetail = (syncId)              => api.get(`/hq/grns/hq/${sy
 export const confirmHqGrn  = (slug, syncId, notes)  => api.post(`/hq/grns/${slug}/${syncId}/confirm`, { notes: notes || null });
 // Reject: branch can re-generate the GRN. Reason is mandatory.
 export const rejectHqGrn   = (slug, syncId, reason) => api.post(`/hq/grns/${slug}/${syncId}/reject`, { reason });
+// v1.10.115 — Void a HQ-generated GRN. Reverses branch stock, soft-deletes
+// the doc on master.db + hq.db, resets PO line to AWAITING_GRN so a new
+// correct GRN can be generated. Admin password required (verified via
+// verifyAdmin before this call; adminId + adminName passed as attestation).
+// WAC intentionally NOT recomputed (user chose Option B on 2026-07-05).
+export const voidHqGrn = (syncId, payload) => api.post(`/hq/grns/${syncId}/void`, payload);
 
 // v1.10.0 — new procurement flow: branch confirms received qty + invoice on
 // the PO; HQ then generates the GRN. See backend/routes/branchReceipts.js

@@ -624,6 +624,14 @@ try {
   addMasterCol('stock_transfers', 'cost_currency', 'TEXT');
   addMasterCol('stock_transfers', 'fx_rate_used', 'REAL');
 
+  // v1.10.115 — Void audit trail on HQ GRNs. Set by /api/hq/grns/:syncId/void
+  // when an admin voids a wrong GRN. deleted_at column already exists on
+  // hq_grns; these fields answer "who / when / why" for the audit log.
+  addMasterCol('hq_grns', 'voided_by',      'INTEGER');
+  addMasterCol('hq_grns', 'voided_by_name', 'TEXT');
+  addMasterCol('hq_grns', 'voided_at',      'TEXT');
+  addMasterCol('hq_grns', 'void_reason',    'TEXT');
+
   console.log('[master] Master DB ready:', masterDbPath);
 } catch (e) {
   console.warn('[master] Could not open master DB (Electron mode — VPS-only features disabled):', e.message);

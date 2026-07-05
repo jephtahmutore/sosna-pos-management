@@ -7,8 +7,9 @@
 // subtotal, CN total, and final payable across the filtered set so
 // HQ can spot per-supplier or per-period AP movement at a glance.
 import React, { useEffect, useState } from 'react';
-import { FiRefreshCw, FiEye, FiInbox, FiX, FiPaperclip, FiUser, FiClock, FiFileText } from 'react-icons/fi';
-import { getHqGrnArchive, getHqGrn, getHqGrnDetail, getHqBranches, getHqSuppliers } from '../services/api';
+import { FiRefreshCw, FiEye, FiInbox, FiX, FiPaperclip, FiUser, FiClock, FiFileText, FiSlash } from 'react-icons/fi';
+import { getHqGrnArchive, getHqGrn, getHqGrnDetail, getHqBranches, getHqSuppliers, voidHqGrn } from '../services/api';
+import AdminPasswordPrompt from '../components/AdminPasswordPrompt';
 
 const fmtMoney = (n) => `$${parseFloat(n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 const todayISO = () => new Date().toISOString().slice(0, 10);
@@ -177,7 +178,11 @@ export default function HqGrnArchive() {
         )}
       </div>
 
-      {viewing && <DetailsModal state={viewing} onClose={() => setViewing(null)} />}
+      {viewing && <DetailsModal
+        state={viewing}
+        onClose={() => setViewing(null)}
+        onVoided={() => { setViewing(null); load(); }}
+      />}
     </div>
   );
 }
@@ -217,7 +222,7 @@ function branchUploadUrl(branchSlug, path) {
 // v1.10.4 — full provenance modal. Header shows GRN #; a Provenance card
 // lays out PO, supplier, invoice # + attachment, branch confirmer,
 // HQ generator, and timestamps. Line items + credit notes + totals follow.
-function DetailsModal({ state, onClose }) {
+function DetailsModal({ state, onClose, onVoided }) {
   const { grn, items, cnRows, damageByProduct = {}, loading, error } = state;
   const itemsSubtotal = items.reduce((s, i) => s + (parseFloat(i.quantity) || 0) * (parseFloat(i.unit_price) || 0), 0);
   const invoiceNumber = grn.invoice_number || grn.supplier_invoice_number;
@@ -226,6 +231,15 @@ function DetailsModal({ state, onClose }) {
   const confirmedAtBranch     = grn.confirmed_at_branch;
   const generatedByHq         = grn.generated_by_hq_name || grn.confirmed_by_name;
   const generatedAt           = grn.generated_at        || grn.confirmed_at;
+  // v1.10.115 — void flow. Two-step: user opens reason prompt → admin
+  // password prompt. Only HQ-generated GRNs (source='hq' i.e. grn_sync_id
+  // routes to /hq/hq/:syncId) can be voided from here; legacy branch GRNs
+  // don't have a corresponding master.hq_grns row to soft-delete.
+  const [voidStep, setVoidStep] = useState(null); // null | 'reason' | 'password'
+  const [voidReason, setVoidReason] = useState('');
+  const [voidBusy, setVoidBusy] = useState(false);
+  const [voidError, setVoidError] = useState('');
+  const canVoid = !!grn?.grn_sync_id;
   return (
     <div style={overlay} onClick={onClose}>
       <div onClick={e => e.stopPropagation()}
@@ -375,11 +389,85 @@ function DetailsModal({ state, onClose }) {
           )}
         </div>
 
-        <div style={{ padding: '12px 20px', borderTop: '1px solid #e5e7eb', textAlign: 'right' }}>
+        <div style={{ padding: '12px 20px', borderTop: '1px solid #e5e7eb', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
+          {canVoid ? (
+            <button onClick={() => { setVoidStep('reason'); setVoidError(''); }}
+              disabled={loading || voidBusy}
+              style={{ padding: '8px 18px', background: '#fff', color: '#b91c1c', border: '1px solid #fca5a5', borderRadius: 6, cursor: (loading || voidBusy) ? 'not-allowed' : 'pointer', fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+              <FiSlash size={14} /> Void GRN
+            </button>
+          ) : <div />}
           <button onClick={onClose}
             style={{ padding: '8px 22px', background: '#fff', color: '#374151', border: '1px solid #e5e7eb', borderRadius: 6, cursor: 'pointer', fontWeight: 600 }}>Close</button>
         </div>
       </div>
+
+      {/* Step 1 — reason prompt. Modal-in-modal on purpose so the user sees
+          the GRN context behind it. Blocks the "void" action until reason
+          is non-empty AND admin password is verified. */}
+      {voidStep === 'reason' && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1500 }}
+             onClick={(e) => { if (e.target === e.currentTarget && !voidBusy) setVoidStep(null); }}>
+          <div style={{ background: '#fff', borderRadius: 12, padding: 22, width: 460, maxWidth: 'calc(100vw - 32px)', boxShadow: '0 20px 60px rgba(0,0,0,0.3)' }}>
+            <h3 style={{ margin: '0 0 8px', fontSize: 16, color: '#b91c1c' }}>Void GRN {grn.grn_number}</h3>
+            <p style={{ fontSize: 13, color: '#4b5563', margin: '0 0 14px', lineHeight: 1.5 }}>
+              This reverses branch stock, soft-deletes the GRN, and resets the linked PO line back to AWAITING_GRN.
+              <strong style={{ color: '#b45309', display: 'block', marginTop: 6 }}>WAC is NOT recomputed — the affected products keep their current blended WAC until next receipt.</strong>
+            </p>
+            <label style={{ ...lbl, color: '#374151' }}>Reason for voiding *</label>
+            <textarea rows={3} value={voidReason} onChange={(e) => setVoidReason(e.target.value)}
+              placeholder="e.g. wrong unit cost typed at PO create — regenerating with correct K value"
+              style={{ ...inp, resize: 'vertical', minHeight: 60 }} />
+            {voidError && <div style={{ marginTop: 10, color: '#b91c1c', fontSize: 12 }}>{voidError}</div>}
+            <div style={{ display: 'flex', gap: 10, marginTop: 16, justifyContent: 'flex-end' }}>
+              <button onClick={() => { setVoidStep(null); setVoidReason(''); setVoidError(''); }}
+                disabled={voidBusy}
+                style={{ padding: '9px 18px', background: '#f3f4f6', color: '#374151', border: '1px solid #d1d5db', borderRadius: 8, fontSize: 13, cursor: voidBusy ? 'not-allowed' : 'pointer' }}>
+                Cancel
+              </button>
+              <button
+                onClick={() => {
+                  if (voidReason.trim().length < 3) { setVoidError('Reason must be at least 3 characters.'); return; }
+                  setVoidError('');
+                  setVoidStep('password');
+                }}
+                disabled={voidBusy || voidReason.trim().length < 3}
+                style={{ padding: '9px 18px', background: voidBusy || voidReason.trim().length < 3 ? '#fca5a5' : '#dc2626', color: '#fff', border: 'none', borderRadius: 8, fontSize: 13, fontWeight: 600, cursor: voidBusy || voidReason.trim().length < 3 ? 'not-allowed' : 'pointer' }}>
+                Continue → Admin auth
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Step 2 — admin password. On confirm we have adminId/adminName from
+          verifyAdmin; POST the void with reason + admin attestation. */}
+      <AdminPasswordPrompt
+        open={voidStep === 'password'}
+        subject={`GRN ${grn.grn_number} — ${grn.branch_name || grn.branch_slug}`}
+        actionLabel="Void GRN"
+        onCancel={() => { if (!voidBusy) setVoidStep('reason'); }}
+        onConfirm={async ({ adminId, adminName }) => {
+          setVoidBusy(true); setVoidError('');
+          try {
+            await voidHqGrn(grn.grn_sync_id, { reason: voidReason.trim(), adminId, adminName });
+            setVoidBusy(false);
+            setVoidStep(null);
+            setVoidReason('');
+            onVoided && onVoided();
+          } catch (err) {
+            setVoidBusy(false);
+            setVoidStep('reason');
+            const msg = err.response?.data?.error || 'Failed to void GRN.';
+            const vios = err.response?.data?.violations;
+            setVoidError(
+              vios && vios.length
+                ? `${msg}\nProducts already consumed: ${vios.map(v => `${v.product_name} (short ${v.shortfall})`).join(', ')}`
+                : msg
+            );
+          }
+        }}
+      />
     </div>
   );
 }
