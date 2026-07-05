@@ -645,8 +645,11 @@ router.post('/:syncId/void', hqAuth, (req, res) => {
 
     // 4. Mirror the soft-delete to hq.db (the tenant-shaped HQ mirror
     //    created at generate-time so HQ can browse GRNs alongside branches).
+    //    v1.10.123 — same fix as the Edit endpoint: HQ's mirror lives in
+    //    backend/sosna.db (defaultDb), not tenants/hq.db.
     try {
-      const hqDb = getTenantDb('hq');
+      const hqDb = require('../config/database').defaultDb;
+      if (!hqDb) throw new Error('defaultDb (backend/sosna.db) unavailable');
       hqDb.transaction(() => {
         hqDb.prepare(`
           UPDATE grn_items SET deleted_at = datetime('now'), updated_at = datetime('now'), synced = 0
@@ -793,7 +796,16 @@ router.post('/:syncId/edit', hqAuth, (req, res) => {
     let hqGrnUpdated = 0;
     let hqMirrorError = null;
     try {
-      const hqDb = getTenantDb('hq');
+      // v1.10.123 — HQ's mirror DB is backend/sosna.db (defaultDb), NOT
+      // tenants/hq.db. See routes/hqGrns.js:1201-1203 (generate flow) and
+      // routes/hqSuppliers.js for rationale. Using getTenantDb('hq') was
+      // silently opening an orphan tenants/hq.db file — writes there were
+      // invisible to Account Payables (which reads sosna.db via the
+      // tenant.js:78 "bare HQ → default DB" path). Real incident: FLAMINGO
+      // GRN Edit updated master.hq_grn_items successfully but AP still
+      // showed the OLD K13,110 because sosna.db.grn never got the update.
+      const hqDb = require('../config/database').defaultDb;
+      if (!hqDb) throw new Error('defaultDb (backend/sosna.db) unavailable');
       hqDb.transaction(() => {
         // v1.10.122 — dropped `AND deleted_at IS NULL`. hq.db.grn_items
         // schema (migrations.js:133-142) has never had deleted_at, so
