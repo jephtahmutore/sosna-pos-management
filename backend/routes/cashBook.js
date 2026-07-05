@@ -768,9 +768,12 @@ router.get('/stats', auth, readOnlyGuard, (req, res) => {
         return { cash: 0, bank: 0, momo: 0 };
       }
     };
-    const kSubIn    = kSubMethodSum('cash_receipts',    dateFilter, dParams);
-    const kSubOutPV = kSubMethodSum('payment_vouchers', dateFilter, dParams);
-    const kSubOutAP = kSubMethodSum('ap_payments',      dateFilter, dParams);
+    // v1.10.131 — /stats endpoint scope uses `df` / `dp`, not the / endpoint's
+    // `dateFilter` / `dParams`. Wrong names → ReferenceError → 500 → all
+    // cards showed zero on Kassumbalesa Cash Book after v1.10.129.
+    const kSubIn    = kSubMethodSum('cash_receipts',    df, dp);
+    const kSubOutPV = kSubMethodSum('payment_vouchers', df, dp);
+    const kSubOutAP = kSubMethodSum('ap_payments',      df, dp);
     const kSubOut = {
       cash: kSubOutPV.cash + kSubOutAP.cash,
       bank: kSubOutPV.bank + kSubOutAP.bank,
