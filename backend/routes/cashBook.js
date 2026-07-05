@@ -743,33 +743,32 @@ router.get('/stats', auth, readOnlyGuard, (req, res) => {
       k:   openingByCcy.k   + receiptsByCcy.k   - paymentsByCcy.k,
     };
 
-    // v1.10.129 — K sub-method breakdown (Cash / Bank / MoMo) for the K card
-    // on HQ. Reads cash_amount / bank_amount / momo_amount ONLY on rows that
-    // are K-currency (k_amount > 0). USD/FRA rows are excluded so they don't
-    // contaminate the K sub-buckets. Push 1 covers AP; CR and PV follow in
-    // Push 2 and 3 and will fall in here automatically once their forms are
-    // updated to also write cash/bank/momo on K rows.
+    // v1.10.130 — K sub-method breakdown for the K card on HQ. Each SUM is
+    // wrapped in a try so a missing table (e.g. ap_payments doesn't exist on
+    // branch DBs — AP is HQ-only per project_sosna_ap_ar_split) doesn't take
+    // down the whole endpoint. Falls back to zeros silently on any error.
     const kSubMethodSum = (table, dateClause, dateParams) => {
-      const row = db.prepare(`
-        SELECT COALESCE(SUM(cash_amount), 0) AS cash,
-               COALESCE(SUM(bank_amount), 0) AS bank,
-               COALESCE(SUM(momo_amount), 0) AS momo
-          FROM ${table}
-         WHERE deleted_at IS NULL
-           AND tenant_id = ?
-           AND COALESCE(k_amount, 0) > 0
-           ${dateClause}
-      `).get(tenantId, ...dateParams);
-      return {
-        cash: parseFloat(row.cash) || 0,
-        bank: parseFloat(row.bank) || 0,
-        momo: parseFloat(row.momo) || 0,
-      };
+      try {
+        const row = db.prepare(`
+          SELECT COALESCE(SUM(cash_amount), 0) AS cash,
+                 COALESCE(SUM(bank_amount), 0) AS bank,
+                 COALESCE(SUM(momo_amount), 0) AS momo
+            FROM ${table}
+           WHERE deleted_at IS NULL
+             AND tenant_id = ?
+             AND COALESCE(k_amount, 0) > 0
+             ${dateClause}
+        `).get(tenantId, ...dateParams);
+        return {
+          cash: parseFloat(row.cash) || 0,
+          bank: parseFloat(row.bank) || 0,
+          momo: parseFloat(row.momo) || 0,
+        };
+      } catch (_) {
+        return { cash: 0, bank: 0, momo: 0 };
+      }
     };
-    const kSubIn  = {
-      // CR is the only INFLOW table with method columns tied to K amounts.
-      ...kSubMethodSum('cash_receipts', dateFilter, dParams),
-    };
+    const kSubIn    = kSubMethodSum('cash_receipts',    dateFilter, dParams);
     const kSubOutPV = kSubMethodSum('payment_vouchers', dateFilter, dParams);
     const kSubOutAP = kSubMethodSum('ap_payments',      dateFilter, dParams);
     const kSubOut = {
