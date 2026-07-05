@@ -643,6 +643,16 @@ try {
   addMasterCol('hq_grns', 'edited_at',      'TEXT');
   addMasterCol('hq_grns', 'edit_reason',    'TEXT');
 
+  // v1.10.119 — hq_grn_items was created (v1.10.0) without soft-delete
+  // columns. The v1.10.115 Void endpoint and v1.10.118 Edit endpoint both
+  // reference `deleted_at IS NULL` when reading/updating item rows, so
+  // Edit fails with "no such column: deleted_at" (real incident on
+  // GRN-2026-85215664, 2026-07-05) and Void would too if it ever got past
+  // the stock-consumed safety check. Adding the columns retroactively —
+  // existing rows get NULL, which passes the IS NULL check.
+  addMasterCol('hq_grn_items', 'deleted_at', 'TEXT');
+  addMasterCol('hq_grn_items', 'updated_at', 'TEXT');
+
   console.log('[master] Master DB ready:', masterDbPath);
 } catch (e) {
   console.warn('[master] Could not open master DB (Electron mode — VPS-only features disabled):', e.message);
