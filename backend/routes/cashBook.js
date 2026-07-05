@@ -699,10 +699,21 @@ router.get('/stats', auth, readOnlyGuard, (req, res) => {
     currentByMethod.momo -= depOutByMethod.momo;
     currentByMethod.bank -= depOutByMethod.bank;
     // Per-currency receipts / payments roll-up.
+    //
+    // v1.10.128 — REMOVED ordersUsd/Fra/K from the sum. Every POS sale
+    // already creates a matching cash_receipts row (which crByCcy sums),
+    // so adding orders too was double-counting when From was set. The
+    // 'before' fold uses ccyReceiptsPayments (line 81) which correctly
+    // EXCLUDES orders per its own comment ("SOURCES MUST MATCH THE LEDGER
+    // UNION ... it does NOT show orders"). This block was asymmetric with
+    // that helper, which is why the top-card current balance drifted every
+    // time the user shifted From backwards (Jul 5→5 = $27,035; Jul 4→5 =
+    // $61,275; Jul 3→5 = $74,725 — the delta between them = each prior
+    // day's POS orders, added exactly once too many).
     const receiptsByCcy = {
-      usd: ordersUsd + crByCcy.usd + depInByCcy.usd + exchIn.usd,
-      fra: ordersFra + crByCcy.fra + depInByCcy.fra + exchIn.fra,
-      k:   ordersK   + crByCcy.k   + depInByCcy.k   + exchIn.k,
+      usd: crByCcy.usd + depInByCcy.usd + exchIn.usd,
+      fra: crByCcy.fra + depInByCcy.fra + exchIn.fra,
+      k:   crByCcy.k   + depInByCcy.k   + exchIn.k,
     };
     const paymentsByCcy = {
       // v1.10.79 — AP now contributes per-currency (was apUsd — a single
