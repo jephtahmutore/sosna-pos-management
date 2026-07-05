@@ -18,21 +18,54 @@ function deriveMethodLabel(cash, bank, momo) {
 
 // Insert ONE cash_receipts row per AR payment, even when the customer split across
 // methods. The split is noted in the description and the payment_method is a derived
-// label (Cash / Bank Transfer / Mobile Money / Mixed). Cash Book shows one entry per
-// payment — matches "one payment = one voucher" mental model.
-function mintReceipt({ customerPaymentId, customer, cash, bank, momo, date, notes, createdBy, tenantId, branchId, deviceId }) {
-  const total = cash + bank + momo;
+// label. Cash Book shows one entry per payment — matches "one payment = one voucher".
+//
+// v1.10.126 — tri-currency aware. Accepts BOTH the legacy shape (cash / bank /
+// momo) and the Sosna tri-currency shape (usd / fra / k with FX rates). On
+// tri-currency payments, populates cash_receipts.usd_amount / fra_amount /
+// k_amount so Cash Book routes the entry to the correct currency column.
+// Before this fix, K AR payments landed in cash_amount (the USD-equivalent),
+// which Cash Book then displayed under the USD column instead of K.
+function mintReceipt({
+  customerPaymentId, customer,
+  cash, bank, momo,                    // legacy shape
+  usd, fra, k, sellRate, sellRateK,    // tri-currency shape
+  date, notes, createdBy, tenantId, branchId, deviceId,
+}) {
+  cash = parseFloat(cash) || 0;
+  bank = parseFloat(bank) || 0;
+  momo = parseFloat(momo) || 0;
+  usd  = parseFloat(usd)  || 0;
+  fra  = parseFloat(fra)  || 0;
+  k    = parseFloat(k)    || 0;
+  sellRate  = parseFloat(sellRate)  || 0;
+  sellRateK = parseFloat(sellRateK) || 0;
+
+  const isTripleCcy = (usd > 0 || fra > 0 || k > 0);
+  const fraAsUsd = isTripleCcy && sellRate  > 0 ? fra / sellRate  : 0;
+  const kAsUsd   = isTripleCcy && sellRateK > 0 ? k   / sellRateK : 0;
+
+  const total = isTripleCcy ? (usd + fraAsUsd + kAsUsd) : (cash + bank + momo);
   if (!(total > 0)) return null;
 
-  const used = [
-    cash > 0 && { label: 'Cash',          amount: cash },
-    bank > 0 && { label: 'Bank',          amount: bank },
-    momo > 0 && { label: 'MoMo',          amount: momo },
-  ].filter(Boolean);
+  const used = isTripleCcy
+    ? [
+        usd > 0 && { label: 'USD', amount: usd },
+        fra > 0 && { label: 'FRA', amount: fra },
+        k   > 0 && { label: 'K',   amount: k   },
+      ].filter(Boolean)
+    : [
+        cash > 0 && { label: 'Cash', amount: cash },
+        bank > 0 && { label: 'Bank', amount: bank },
+        momo > 0 && { label: 'MoMo', amount: momo },
+      ].filter(Boolean);
   const isMixed = used.length > 1;
-  const methodLabel = isMixed ? 'Mixed' : (cash > 0 ? 'Cash' : bank > 0 ? 'Bank Transfer' : 'Mobile Money');
+  const methodLabel = isMixed
+    ? 'Mixed'
+    : (isTripleCcy
+        ? (usd > 0 ? 'USD' : fra > 0 ? 'FRA' : 'K')
+        : (cash > 0 ? 'Cash' : bank > 0 ? 'Bank Transfer' : 'Mobile Money'));
 
-  // Description shows the breakdown when mixed, e.g. "AR Payment — Cash 50.00, Bank 30.00, MoMo 20.00 — invoice notes"
   const breakdown = isMixed
     ? used.map(u => `${u.label} ${u.amount.toFixed(2)}`).join(', ')
     : null;
@@ -41,18 +74,27 @@ function mintReceipt({ customerPaymentId, customer, cash, bank, momo, date, note
   if (notes)     descParts.push(notes);
   const desc = descParts.join(' — ');
 
+  // In tri-currency mode we zero the legacy columns and populate usd/fra/k.
+  // In legacy mode we do the opposite. Never both — avoids double-counting
+  // in any consumer that SUMs both shape sets.
   const crSyncId = randomUUID();
   const receiptNum = syncConfig.generateNumber('CR', 'cash_receipts');
   db.prepare(`
     INSERT INTO cash_receipts (receipt_number, received_from, description, payment_method, amount,
                                cash_amount, bank_amount, momo_amount,
+                               usd_amount, fra_amount, k_amount,
                                date, created_by, sync_id, tenant_id, branch_id, device_id, synced,
                                source_type, source_customer_payment_id,
                                created_at, updated_at)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?,?,datetime('now'),datetime('now'))
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?,?,datetime('now'),datetime('now'))
   `).run(
     receiptNum, customer.name, desc, methodLabel, total,
-    cash, bank, momo,
+    isTripleCcy ? 0 : cash,
+    isTripleCcy ? 0 : bank,
+    isTripleCcy ? 0 : momo,
+    isTripleCcy ? usd : 0,
+    isTripleCcy ? fra : 0,
+    isTripleCcy ? k   : 0,
     date, createdBy, crSyncId, tenantId, branchId, deviceId,
     'ar_payment', customerPaymentId
   );
@@ -210,8 +252,19 @@ router.post('/', auth, (req, res) => {
         paySyncId, tenantId, branchId, deviceId
       );
       const id = info.lastInsertRowid;
+      // v1.10.126 — pass the tri-currency fields when present so mintReceipt
+      // can populate cash_receipts.usd/fra/k_amount. Without this, K-only AR
+      // payments were saving cash_amount = USD-equivalent and Cash Book was
+      // routing them to the USD column.
       const crSyncId = mintReceipt({
-        customerPaymentId: id, customer, cash: cashForLegacy, bank, momo, date: finalDate, notes,
+        customerPaymentId: id, customer,
+        cash: isTripleCcy ? 0 : cashForLegacy,
+        bank, momo,
+        usd: isTripleCcy ? usd  : 0,
+        fra: isTripleCcy ? fra  : 0,
+        k:   isTripleCcy ? kAmt : 0,
+        sellRate, sellRateK,
+        date: finalDate, notes,
         createdBy: req.user.id, tenantId, branchId, deviceId,
       });
       if (crSyncId) {
@@ -284,8 +337,15 @@ router.put('/:id', auth, (req, res) => {
              req.params.id, tenantId);
 
       voidLinkedReceipts(parseInt(req.params.id));
+      // v1.10.126 — mirror the POST fix: pass tri-currency amounts through.
       const crSyncId = mintReceipt({
-        customerPaymentId: parseInt(req.params.id), customer, cash: cashForLegacy, bank, momo,
+        customerPaymentId: parseInt(req.params.id), customer,
+        cash: isTripleCcy ? 0 : cashForLegacy,
+        bank, momo,
+        usd: isTripleCcy ? usd  : 0,
+        fra: isTripleCcy ? fra  : 0,
+        k:   isTripleCcy ? kAmt : 0,
+        sellRate, sellRateK,
         date: payment_date, notes, createdBy: req.user.id, tenantId, branchId, deviceId,
       });
       db.prepare('UPDATE customer_payments SET cash_receipt_sync_id = ? WHERE id = ?').run(crSyncId, req.params.id);
