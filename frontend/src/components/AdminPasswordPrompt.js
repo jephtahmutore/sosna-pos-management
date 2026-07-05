@@ -42,13 +42,25 @@ export default function AdminPasswordPrompt({ open, subject, actionLabel = 'Conf
   };
 
   return ReactDOM.createPortal((
+    // v1.10.117 — stopPropagation on both the overlay AND the form.
+    // ReactDOM.createPortal escapes the DOM tree but NOT the React event
+    // tree — synthetic clicks still bubble to whatever React parent
+    // rendered the <AdminPasswordPrompt/>. When the caller wraps this
+    // component inside its own modal that closes-on-click-outside (e.g.
+    // HqGrnArchive DetailsModal), typing the admin password would close
+    // the parent modal. This fix contains events to the prompt itself,
+    // matching the DOM-based expectation everyone has about modals.
     <div
-      onClick={(e) => { if (e.target === e.currentTarget && !busy) onCancel(); }}
+      onClick={(e) => {
+        e.stopPropagation();
+        if (e.target === e.currentTarget && !busy) onCancel();
+      }}
       onKeyDown={(e) => { if (e.key === 'Escape' && !busy) onCancel(); }}
       style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', zIndex: 2000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
     >
       <form
         onSubmit={submit}
+        onClick={e => e.stopPropagation()}
         style={{ background: '#fff', borderRadius: 12, padding: 24, width: 420, maxWidth: 'calc(100vw - 32px)', boxShadow: '0 20px 60px rgba(0,0,0,0.3)' }}
       >
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 18 }}>
