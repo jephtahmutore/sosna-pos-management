@@ -653,6 +653,16 @@ try {
   addMasterCol('hq_grn_items', 'deleted_at', 'TEXT');
   addMasterCol('hq_grn_items', 'updated_at', 'TEXT');
 
+  // v1.10.120 — hq_grns CREATE (v1.10.0) also missed `updated_at`. Void +
+  // Edit endpoints both stamp updated_at=datetime('now') on write, so the
+  // header UPDATE was throwing "no such column: updated_at" (second
+  // incident on GRN-2026-85215664 after the deleted_at fix). Same for
+  // hq_supplier_credit_notes on Void's CN soft-delete path — defensively
+  // add there too.
+  addMasterCol('hq_grns',                  'updated_at', 'TEXT');
+  addMasterCol('hq_supplier_credit_notes', 'updated_at', 'TEXT');
+  addMasterCol('hq_supplier_credit_notes', 'deleted_at', 'TEXT');
+
   console.log('[master] Master DB ready:', masterDbPath);
 } catch (e) {
   console.warn('[master] Could not open master DB (Electron mode — VPS-only features disabled):', e.message);
