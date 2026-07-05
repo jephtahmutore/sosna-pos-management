@@ -155,12 +155,9 @@ export default function ApPaymentFormModal({ open, supplier, onClose, onSaved, d
                   </div>
                 ))}
               </div>
-              <div style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 10px', background: '#f9fafb', borderRadius: 6, fontSize: 13, marginTop: 8 }}>
-                <span style={{ color: '#6b7280' }}>Total</span>
-                <span style={{ fontWeight: 800, color: '#1d4ed8' }}>
-                  {supplierSym}{total.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                </span>
-              </div>
+              {/* v1.10.111 — Total row removed per user (was confusing when
+                  the tenant sym differed from supplier sym; auto-fill already
+                  makes the intended amount obvious in the currency field). */}
             </div>
             <div>
               <label style={{ fontSize: 13, fontWeight: 600, color: '#374151', display: 'block', marginBottom: 5 }}>Date *</label>

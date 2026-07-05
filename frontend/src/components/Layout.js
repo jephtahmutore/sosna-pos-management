@@ -518,6 +518,16 @@ const Layout = () => {
                       <FiInbox className="nav-icon" /> <span>GRN Archive</span>
                     </div>
                   )}
+                  {/* v1.10.112 — wire the Liquor-style GRN page (/stock/grn)
+                      into the HQ Store menu. The page code already exists and
+                      returns correct data on HQ context; only the menu link
+                      was missing. Keeps HQ Purchases + Generate GRN + GRN
+                      Archive alongside as separate flows — user asked. */}
+                  {hq && hasPageAccess('GRN') && (
+                    <div className={`nav-item ${isActive('/stock/grn') ? 'active' : ''}`} onClick={() => navigate('/stock/grn')}>
+                      <FiDownload className="nav-icon" /> <span>GRN</span>
+                    </div>
+                  )}
                   {hq && (
                     <div className={`nav-item ${isActive('/hq/variances') ? 'active' : ''}`} onClick={() => navigate('/hq/variances')}>
                       <FiAlertTriangle className="nav-icon" /> <span>Transit Variances</span>
