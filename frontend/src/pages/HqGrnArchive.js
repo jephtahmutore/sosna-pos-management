@@ -404,11 +404,20 @@ function DetailsModal({ state, onClose, onVoided }) {
 
       {/* Step 1 — reason prompt. Modal-in-modal on purpose so the user sees
           the GRN context behind it. Blocks the "void" action until reason
-          is non-empty AND admin password is verified. */}
+          is non-empty AND admin password is verified.
+          v1.10.116 — stopPropagation on BOTH the overlay and the inner card,
+          because this prompt renders INSIDE the parent DetailsModal's
+          overlay div (which has onClick=onClose). Without stopPropagation,
+          any click here — even typing in the textarea — bubbles up to the
+          parent and closes the whole GRN modal. */}
       {voidStep === 'reason' && (
         <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1500 }}
-             onClick={(e) => { if (e.target === e.currentTarget && !voidBusy) setVoidStep(null); }}>
-          <div style={{ background: '#fff', borderRadius: 12, padding: 22, width: 460, maxWidth: 'calc(100vw - 32px)', boxShadow: '0 20px 60px rgba(0,0,0,0.3)' }}>
+             onClick={(e) => {
+               e.stopPropagation();
+               if (e.target === e.currentTarget && !voidBusy) setVoidStep(null);
+             }}>
+          <div onClick={e => e.stopPropagation()}
+               style={{ background: '#fff', borderRadius: 12, padding: 22, width: 460, maxWidth: 'calc(100vw - 32px)', boxShadow: '0 20px 60px rgba(0,0,0,0.3)' }}>
             <h3 style={{ margin: '0 0 8px', fontSize: 16, color: '#b91c1c' }}>Void GRN {grn.grn_number}</h3>
             <p style={{ fontSize: 13, color: '#4b5563', margin: '0 0 14px', lineHeight: 1.5 }}>
               This reverses branch stock, soft-deletes the GRN, and resets the linked PO line back to AWAITING_GRN.
