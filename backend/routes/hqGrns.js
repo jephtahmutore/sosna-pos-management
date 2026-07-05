@@ -753,6 +753,9 @@ router.post('/:syncId/edit', hqAuth, (req, res) => {
       : null;
 
     // 1. Master.db: update items + header in one transaction.
+    //    v1.10.121 — COALESCE cost_currency + fx_rate_used so that
+    //    "leave unchanged" (null from frontend) doesn't wipe the existing
+    //    value on the row. Only replaces when a new value is supplied.
     masterDb.transaction(() => {
       const updItem = masterDb.prepare(`
         UPDATE hq_grn_items
@@ -765,8 +768,8 @@ router.post('/:syncId/edit', hqAuth, (req, res) => {
         UPDATE hq_grns
            SET items_subtotal = ?,
                final_payable  = ?,
-               cost_currency  = ?,
-               fx_rate_used   = ?,
+               cost_currency  = COALESCE(?, cost_currency),
+               fx_rate_used   = COALESCE(?, fx_rate_used),
                edited_by      = ?,
                edited_by_name = ?,
                edited_at      = datetime('now'),
@@ -782,6 +785,13 @@ router.post('/:syncId/edit', hqAuth, (req, res) => {
     // 2. hq.db mirror — grn + grn_items. cost_currency exists on branch
     //    grn table (see migrations.js:850). fx_rate_used may not be
     //    stored there historically; wrap in try/catch.
+    //    v1.10.121 — Account Payables reads hq.db.grn.total_amount, so
+    //    this update is what makes the AP row reflect the new cost. Now
+    //    LOG every step so silent failures are visible in pm2 logs, and
+    //    use COALESCE on cost_currency so "unchanged" doesn't wipe.
+    let hqItemsUpdated = 0;
+    let hqGrnUpdated = 0;
+    let hqMirrorError = null;
     try {
       const hqDb = getTenantDb('hq');
       hqDb.transaction(() => {
@@ -793,23 +803,28 @@ router.post('/:syncId/edit', hqAuth, (req, res) => {
                  updated_at  = datetime('now')
            WHERE grn_sync_id = ? AND product_sync_id = ? AND deleted_at IS NULL
         `);
-        for (const r of merged) updHqItem.run(r.unit_price, r.total_price, syncId, r.product_sync_id);
+        for (const r of merged) {
+          const info = updHqItem.run(r.unit_price, r.total_price, syncId, r.product_sync_id);
+          hqItemsUpdated += info.changes || 0;
+        }
         try {
-          hqDb.prepare(`
+          const info = hqDb.prepare(`
             UPDATE grn
-               SET total_amount = ?,
-                   cost_currency = ?,
+               SET total_amount  = ?,
+                   cost_currency = COALESCE(?, cost_currency),
                    synced        = 0,
                    updated_at    = datetime('now')
              WHERE sync_id = ?
           `).run(newFinalPayable, finalCcy, syncId);
-        } catch {
-          // total_amount / cost_currency column mismatch — fall back to items only
+          hqGrnUpdated = info.changes || 0;
+        } catch (e) {
+          hqMirrorError = 'grn header: ' + e.message;
         }
       })();
     } catch (e) {
-      console.error('[hq.grns.edit] hq.db mirror update failed:', e.message);
+      hqMirrorError = 'transaction: ' + e.message;
     }
+    console.log(`[hq.grns.edit] hq.db mirror: grn_items updated=${hqItemsUpdated}, grn header updated=${hqGrnUpdated}${hqMirrorError ? ', ERROR=' + hqMirrorError : ''}`);
 
     // 3. Linked PO — keep hq_purchase_items.unit_price + hq_purchases.
     //    cost_currency/fx_rate_used consistent with the corrected GRN, so
@@ -840,10 +855,11 @@ router.post('/:syncId/edit', hqAuth, (req, res) => {
               }
             }
           }
+          // v1.10.121 — COALESCE PO cost fields so "unchanged" doesn't wipe.
           masterDb.prepare(`
             UPDATE hq_purchases
-               SET cost_currency = ?,
-                   fx_rate_used  = ?,
+               SET cost_currency = COALESCE(?, cost_currency),
+                   fx_rate_used  = COALESCE(?, fx_rate_used),
                    updated_at    = datetime('now')
              WHERE sync_id = ?
           `).run(finalCcy, finalRate, grn.po_sync_id);
