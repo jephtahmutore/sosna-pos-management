@@ -240,6 +240,12 @@ export const rejectHqGrn   = (slug, syncId, reason) => api.post(`/hq/grns/${slug
 // verifyAdmin before this call; adminId + adminName passed as attestation).
 // WAC intentionally NOT recomputed (user chose Option B on 2026-07-05).
 export const voidHqGrn = (syncId, payload) => api.post(`/hq/grns/${syncId}/void`, payload);
+// v1.10.118 — Light Edit for HQ GRN. Scope: unit_price per line,
+// cost_currency, fx_rate_used. Doesn't touch stock movements (qty/damage
+// unchanged) — for stock-affecting fixes, use Void + regenerate instead.
+// Payload: { line_updates:{[item_sync_id]:{unit_price}}, cost_currency,
+// fx_rate_used, reason, adminId, adminName }.
+export const editHqGrn = (syncId, payload) => api.post(`/hq/grns/${syncId}/edit`, payload);
 
 // v1.10.0 — new procurement flow: branch confirms received qty + invoice on
 // the PO; HQ then generates the GRN. See backend/routes/branchReceipts.js

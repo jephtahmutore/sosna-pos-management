@@ -675,6 +675,195 @@ router.post('/:syncId/void', hqAuth, (req, res) => {
   }
 });
 
+// POST /api/hq/grns/:syncId/edit
+// v1.10.118 — light Edit endpoint. Updates unit_price per line +
+// cost_currency + fx_rate_used across master.hq_grns + hq_grn_items,
+// hq.db.grn + grn_items (mirror), AND the linked hq_purchases +
+// hq_purchase_items so PO and GRN stay consistent.
+//
+// SCOPE (v1, deliberately minimal):
+//   ✓ line unit_price (recomputes total_price + items_subtotal + final_payable)
+//   ✓ cost_currency (USD | K | FRA)
+//   ✓ fx_rate_used
+// Anything that touches STOCK (qty, damage, add/remove line) is NOT
+// editable here — use Void to get a clean rollback and regenerate.
+//
+// Doesn't touch stock movements. Doesn't recompute WAC (Option B, per
+// user 2026-07-05) — the affected products keep their current polluted
+// blend until stock hits 0 on next receipt.
+//
+// Audit: edited_by / edited_by_name / edited_at / edit_reason.
+// Requires admin password (verified client-side via AdminPasswordPrompt).
+router.post('/:syncId/edit', hqAuth, (req, res) => {
+  try {
+    if (!masterDb) return res.status(400).json({ error: 'master.db unavailable' });
+    const syncId = req.params.syncId;
+    const {
+      line_updates,       // { [item_sync_id]: { unit_price } }
+      cost_currency,      // 'USD' | 'K' | 'FRA' | ''
+      fx_rate_used,       // number or null
+      reason,
+      adminId,
+      adminName,
+    } = req.body || {};
+
+    if (!reason || String(reason).trim().length < 3) {
+      return res.status(400).json({ error: 'Reason (min 3 chars) is required for audit.' });
+    }
+    if (!adminId) {
+      return res.status(400).json({ error: 'Admin authorization missing.' });
+    }
+
+    const grn = masterDb.prepare(`
+      SELECT * FROM hq_grns WHERE sync_id = ? AND deleted_at IS NULL
+    `).get(syncId);
+    if (!grn) return res.status(404).json({ error: 'GRN not found or voided.' });
+
+    // Load current line rows so we can produce a merged shape and
+    // compute the new items_subtotal safely.
+    const items = masterDb.prepare(`
+      SELECT * FROM hq_grn_items WHERE grn_sync_id = ? AND (deleted_at IS NULL OR deleted_at = '')
+    `).all(syncId);
+    if (items.length === 0) {
+      return res.status(400).json({ error: 'GRN has no items to edit.' });
+    }
+
+    // Build the merged view: apply user's unit_price overrides where present.
+    const merged = items.map(it => {
+      const upd = line_updates && line_updates[it.sync_id];
+      const newPrice = (upd && upd.unit_price != null && !isNaN(parseFloat(upd.unit_price)))
+        ? parseFloat(upd.unit_price)
+        : parseFloat(it.unit_price) || 0;
+      const qty = parseFloat(it.quantity) || 0;
+      return {
+        sync_id:   it.sync_id,
+        product_sync_id: it.product_sync_id,
+        quantity:  qty,
+        unit_price: newPrice,
+        total_price: qty * newPrice,
+      };
+    });
+
+    const newItemsSubtotal = merged.reduce((s, r) => s + r.total_price, 0);
+    const newFinalPayable  = newItemsSubtotal - (parseFloat(grn.cn_total) || 0);
+    const normCcy = String(cost_currency || '').toUpperCase();
+    const finalCcy = ['USD', 'K', 'FRA'].includes(normCcy) ? normCcy : null;
+    const finalRate = fx_rate_used != null && !isNaN(parseFloat(fx_rate_used))
+      ? parseFloat(fx_rate_used)
+      : null;
+
+    // 1. Master.db: update items + header in one transaction.
+    masterDb.transaction(() => {
+      const updItem = masterDb.prepare(`
+        UPDATE hq_grn_items
+           SET unit_price  = ?,
+               total_price = ?
+         WHERE sync_id = ?
+      `);
+      for (const r of merged) updItem.run(r.unit_price, r.total_price, r.sync_id);
+      masterDb.prepare(`
+        UPDATE hq_grns
+           SET items_subtotal = ?,
+               final_payable  = ?,
+               cost_currency  = ?,
+               fx_rate_used   = ?,
+               edited_by      = ?,
+               edited_by_name = ?,
+               edited_at      = datetime('now'),
+               edit_reason    = COALESCE(edit_reason, '') || CASE WHEN COALESCE(edit_reason, '') = '' THEN '' ELSE ' | ' END || ?,
+               updated_at     = datetime('now')
+         WHERE sync_id = ?
+      `).run(
+        newItemsSubtotal, newFinalPayable, finalCcy, finalRate,
+        adminId, adminName || null, String(reason).trim(), syncId
+      );
+    })();
+
+    // 2. hq.db mirror — grn + grn_items. cost_currency exists on branch
+    //    grn table (see migrations.js:850). fx_rate_used may not be
+    //    stored there historically; wrap in try/catch.
+    try {
+      const hqDb = getTenantDb('hq');
+      hqDb.transaction(() => {
+        const updHqItem = hqDb.prepare(`
+          UPDATE grn_items
+             SET unit_price  = ?,
+                 total_price = ?,
+                 synced      = 0,
+                 updated_at  = datetime('now')
+           WHERE grn_sync_id = ? AND product_sync_id = ? AND deleted_at IS NULL
+        `);
+        for (const r of merged) updHqItem.run(r.unit_price, r.total_price, syncId, r.product_sync_id);
+        try {
+          hqDb.prepare(`
+            UPDATE grn
+               SET total_amount = ?,
+                   cost_currency = ?,
+                   synced        = 0,
+                   updated_at    = datetime('now')
+             WHERE sync_id = ?
+          `).run(newFinalPayable, finalCcy, syncId);
+        } catch {
+          // total_amount / cost_currency column mismatch — fall back to items only
+        }
+      })();
+    } catch (e) {
+      console.error('[hq.grns.edit] hq.db mirror update failed:', e.message);
+    }
+
+    // 3. Linked PO — keep hq_purchase_items.unit_price + hq_purchases.
+    //    cost_currency/fx_rate_used consistent with the corrected GRN, so
+    //    a re-generate on the same PO would produce matching numbers.
+    if (grn.po_sync_id) {
+      try {
+        masterDb.transaction(() => {
+          // Match PO items to GRN items by product_sync_id. If multiple
+          // PO lines share a product_sync_id (rare), we update all of them
+          // to the new cost — safer than silently skipping some.
+          const updPoItem = masterDb.prepare(`
+            UPDATE hq_purchase_items
+               SET unit_price     = ?,
+                   cost_price     = ?,
+                   updated_at     = datetime('now')
+             WHERE purchase_sync_id = ? AND product_sync_id = ?
+          `);
+          const findCol = masterDb.prepare(`PRAGMA table_info(hq_purchase_items)`).all().map(c => c.name);
+          const hasUnitPrice = findCol.includes('unit_price');
+          const hasCostPrice = findCol.includes('cost_price');
+          if (hasUnitPrice || hasCostPrice) {
+            // Fallback: one shape uses cost_price, the other unit_price.
+            for (const r of merged) {
+              try { updPoItem.run(r.unit_price, r.unit_price, grn.po_sync_id, r.product_sync_id); }
+              catch {
+                if (hasUnitPrice) masterDb.prepare(`UPDATE hq_purchase_items SET unit_price=?, updated_at=datetime('now') WHERE purchase_sync_id=? AND product_sync_id=?`).run(r.unit_price, grn.po_sync_id, r.product_sync_id);
+                else if (hasCostPrice) masterDb.prepare(`UPDATE hq_purchase_items SET cost_price=?, updated_at=datetime('now') WHERE purchase_sync_id=? AND product_sync_id=?`).run(r.unit_price, grn.po_sync_id, r.product_sync_id);
+              }
+            }
+          }
+          masterDb.prepare(`
+            UPDATE hq_purchases
+               SET cost_currency = ?,
+                   fx_rate_used  = ?,
+                   updated_at    = datetime('now')
+             WHERE sync_id = ?
+          `).run(finalCcy, finalRate, grn.po_sync_id);
+        })();
+      } catch (e) {
+        console.error('[hq.grns.edit] PO consistency update failed:', e.message);
+      }
+    }
+
+    res.json({
+      ok: true,
+      grn: masterDb.prepare(`SELECT * FROM hq_grns WHERE sync_id = ?`).get(syncId),
+      items: masterDb.prepare(`SELECT * FROM hq_grn_items WHERE grn_sync_id = ? ORDER BY id ASC`).all(syncId),
+    });
+  } catch (error) {
+    console.error('[hq.grns.edit] CRASH:', error.stack || error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // GET /api/hq/grns/archive
 // v1.9.14 — HQ-wide list of CONFIRMED GRNs, served entirely from the
 // master.db snapshot table. Supports filters via query string:

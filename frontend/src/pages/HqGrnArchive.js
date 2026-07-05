@@ -7,8 +7,8 @@
 // subtotal, CN total, and final payable across the filtered set so
 // HQ can spot per-supplier or per-period AP movement at a glance.
 import React, { useEffect, useState } from 'react';
-import { FiRefreshCw, FiEye, FiInbox, FiX, FiPaperclip, FiUser, FiClock, FiFileText, FiSlash } from 'react-icons/fi';
-import { getHqGrnArchive, getHqGrn, getHqGrnDetail, getHqBranches, getHqSuppliers, voidHqGrn } from '../services/api';
+import { FiRefreshCw, FiEye, FiInbox, FiX, FiPaperclip, FiUser, FiClock, FiFileText, FiSlash, FiEdit2, FiCheck } from 'react-icons/fi';
+import { getHqGrnArchive, getHqGrn, getHqGrnDetail, getHqBranches, getHqSuppliers, voidHqGrn, editHqGrn } from '../services/api';
 import AdminPasswordPrompt from '../components/AdminPasswordPrompt';
 
 const fmtMoney = (n) => `$${parseFloat(n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
@@ -240,6 +240,49 @@ function DetailsModal({ state, onClose, onVoided }) {
   const [voidBusy, setVoidBusy] = useState(false);
   const [voidError, setVoidError] = useState('');
   const canVoid = !!grn?.grn_sync_id;
+
+  // v1.10.118 — inline edit. Scope: unit_price per line + cost_currency +
+  // fx_rate_used. Anything that touches stock (qty, damage, add/remove
+  // line) requires Void instead. Enter edit mode → seed local drafts →
+  // reason field appears → Save Changes triggers admin password.
+  const [editing, setEditing] = useState(false);
+  const [editUnitPrices, setEditUnitPrices] = useState({}); // { [item_sync_id]: '345.00' }
+  const [editCcy, setEditCcy] = useState('');
+  const [editRate, setEditRate] = useState('');
+  const [editReason, setEditReason] = useState('');
+  const [editPwOpen, setEditPwOpen] = useState(false);
+  const [editBusy, setEditBusy] = useState(false);
+  const [editError, setEditError] = useState('');
+  const canEdit = canVoid;
+
+  const startEdit = () => {
+    const seed = {};
+    for (const it of items) seed[it.sync_id] = String(it.unit_price ?? 0);
+    setEditUnitPrices(seed);
+    setEditCcy(grn.cost_currency || '');
+    setEditRate(grn.fx_rate_used != null ? String(grn.fx_rate_used) : '');
+    setEditReason('');
+    setEditError('');
+    setEditing(true);
+  };
+  const cancelEdit = () => {
+    setEditing(false);
+    setEditUnitPrices({});
+    setEditReason('');
+    setEditError('');
+  };
+  // Live-preview totals from the drafts so the footer subtotal updates as
+  // you type. Falls back to stored values for lines that weren't touched.
+  const previewItemsSubtotal = editing
+    ? items.reduce((s, it) => {
+        const px = parseFloat(editUnitPrices[it.sync_id] ?? it.unit_price) || 0;
+        const qty = parseFloat(it.quantity) || 0;
+        return s + qty * px;
+      }, 0)
+    : itemsSubtotal;
+  const previewFinalPayable = editing
+    ? previewItemsSubtotal - (parseFloat(grn.cn_total) || 0)
+    : (parseFloat(grn.final_payable) || (previewItemsSubtotal - (parseFloat(grn.cn_total) || 0)));
   return (
     <div style={overlay} onClick={onClose}>
       <div onClick={e => e.stopPropagation()}
@@ -330,6 +373,14 @@ function DetailsModal({ state, onClose, onVoided }) {
                       const damagedLine = (dmg && dmg.in_base > 0)
                         ? (parseFloat(dmg.damaged_base) * qtyLine) / parseFloat(dmg.in_base)
                         : (dmg ? parseFloat(dmg.damaged_base) : 0);
+                      // v1.10.118 — in edit mode, unit_price becomes an editable input.
+                      // Live total_price uses the draft. Everything else stays read-only.
+                      const draftPx = editing
+                        ? (editUnitPrices[it.sync_id] ?? String(it.unit_price ?? 0))
+                        : null;
+                      const linePx = editing
+                        ? (parseFloat(draftPx) || 0)
+                        : (parseFloat(it.unit_price) || 0);
                       return (
                         <tr key={it.id} style={{ borderTop: '1px solid #f1f5f9' }}>
                           <td style={td}><strong>{it.product_name || `#${it.product_id}`}</strong>{it.product_code && <span style={{ color: '#94a3b8', fontSize: 11 }}> ({it.product_code})</span>}</td>
@@ -338,8 +389,15 @@ function DetailsModal({ state, onClose, onVoided }) {
                           <td style={{ ...td, textAlign: 'right', color: damagedLine > 0 ? '#b91c1c' : '#94a3b8', fontWeight: damagedLine > 0 ? 700 : 400 }}>
                             {damagedLine > 0 ? damagedLine.toLocaleString(undefined, { maximumFractionDigits: 2 }) : '—'}
                           </td>
-                          <td style={{ ...td, textAlign: 'right', color: '#64748b' }}>{fmtMoney(it.unit_price)}</td>
-                          <td style={{ ...td, textAlign: 'right', fontWeight: 600 }}>{fmtMoney(qtyLine * parseFloat(it.unit_price || 0))}</td>
+                          <td style={{ ...td, textAlign: 'right', color: '#64748b' }}>
+                            {editing ? (
+                              <input type="number" min="0" step="0.01" value={draftPx}
+                                onChange={(e) => setEditUnitPrices(prev => ({ ...prev, [it.sync_id]: e.target.value }))}
+                                onClick={(e) => e.stopPropagation()}
+                                style={{ width: 100, padding: '4px 6px', border: '1px solid #d1d5db', borderRadius: 4, fontSize: 13, textAlign: 'right', boxSizing: 'border-box' }} />
+                            ) : fmtMoney(it.unit_price)}
+                          </td>
+                          <td style={{ ...td, textAlign: 'right', fontWeight: 600, color: editing ? '#0369a1' : '#111827' }}>{fmtMoney(qtyLine * linePx)}</td>
                         </tr>
                       );
                     })}
@@ -347,7 +405,7 @@ function DetailsModal({ state, onClose, onVoided }) {
                   <tfoot>
                     <tr style={{ borderTop: '2px solid #e5e7eb', fontWeight: 700 }}>
                       <td colSpan={5} style={td}>Items subtotal</td>
-                      <td style={{ ...td, textAlign: 'right' }}>{fmtMoney(itemsSubtotal || grn.items_subtotal)}</td>
+                      <td style={{ ...td, textAlign: 'right', color: editing ? '#0369a1' : '#111827' }}>{fmtMoney(previewItemsSubtotal || grn.items_subtotal)}</td>
                     </tr>
                   </tfoot>
                 </table>
@@ -378,27 +436,102 @@ function DetailsModal({ state, onClose, onVoided }) {
               )}
 
               <div style={{ marginTop: 18, padding: 14, background: '#f8fafc', border: '1px solid #e5e7eb', borderRadius: 8 }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', padding: '4px 0' }}><span>Items subtotal</span><strong>{fmtMoney(grn.items_subtotal || itemsSubtotal)}</strong></div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', padding: '4px 0' }}><span>Items subtotal</span><strong style={{ color: editing ? '#0369a1' : '#111827' }}>{fmtMoney(previewItemsSubtotal || grn.items_subtotal)}</strong></div>
                 <div style={{ display: 'flex', justifyContent: 'space-between', padding: '4px 0', color: grn.cn_total > 0 ? '#dc2626' : '#9ca3af' }}><span>Credit Notes</span><strong>{grn.cn_total > 0 ? '−' : ''}{fmtMoney(grn.cn_total)}</strong></div>
                 <div style={{ display: 'flex', justifyContent: 'space-between', padding: '10px 0 0', marginTop: 6, borderTop: '2px solid #e5e7eb', fontWeight: 700, fontSize: 15 }}>
                   <span>Final Payable</span>
-                  <span style={{ color: '#16a34a' }}>{fmtMoney(grn.final_payable || (itemsSubtotal - (grn.cn_total || 0)))}</span>
+                  <span style={{ color: '#16a34a' }}>{fmtMoney(previewFinalPayable)}</span>
                 </div>
               </div>
+
+              {/* v1.10.118 — inline edit panel. Appears below the totals
+                  when editing. Contains currency + fx rate + reason. Unit
+                  prices are edited directly in the items table above. */}
+              {editing && (
+                <div style={{ marginTop: 14, padding: 14, background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 8 }}>
+                  <div style={{ fontSize: 12, fontWeight: 700, color: '#b45309', textTransform: 'uppercase', letterSpacing: 0.4, marginBottom: 10 }}>
+                    Editing GRN — cost / currency / rate only
+                  </div>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 10 }}>
+                    <div>
+                      <label style={{ ...lbl, color: '#78350f' }}>Cost currency</label>
+                      <select value={editCcy} onChange={e => setEditCcy(e.target.value)}
+                        onClick={e => e.stopPropagation()}
+                        style={{ ...inp, background: '#fff' }}>
+                        <option value="">— unchanged —</option>
+                        <option value="USD">USD ($)</option>
+                        <option value="K">K</option>
+                        <option value="FRA">FRA</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label style={{ ...lbl, color: '#78350f' }}>
+                        FX rate used {editCcy && editCcy !== 'USD' ? '(e.g. 25 → 1 USD = 25 ' + editCcy + ')' : '(only when currency ≠ USD)'}
+                      </label>
+                      <input type="number" min="0" step="0.01" value={editRate}
+                        onChange={e => setEditRate(e.target.value)}
+                        onClick={e => e.stopPropagation()}
+                        placeholder="e.g. 25"
+                        style={inp} />
+                    </div>
+                  </div>
+                  <label style={{ ...lbl, color: '#78350f' }}>Reason for edit * (min 3 chars, audit)</label>
+                  <textarea rows={2} value={editReason} onChange={e => setEditReason(e.target.value)}
+                    onClick={e => e.stopPropagation()}
+                    placeholder="e.g. supplier invoice was in K at 4,140 per box — was typed as USD 345"
+                    style={{ ...inp, resize: 'vertical', minHeight: 44 }} />
+                  {editError && <div style={{ marginTop: 8, color: '#b91c1c', fontSize: 12 }}>{editError}</div>}
+                  <div style={{ fontSize: 11, color: '#92400e', marginTop: 6, fontStyle: 'italic' }}>
+                    Note: WAC is NOT recomputed — same trade-off as Void. Stock qty on this GRN is not editable.
+                  </div>
+                </div>
+              )}
             </>
           )}
         </div>
 
         <div style={{ padding: '12px 20px', borderTop: '1px solid #e5e7eb', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
-          {canVoid ? (
-            <button onClick={() => { setVoidStep('reason'); setVoidError(''); }}
-              disabled={loading || voidBusy}
-              style={{ padding: '8px 18px', background: '#fff', color: '#b91c1c', border: '1px solid #fca5a5', borderRadius: 6, cursor: (loading || voidBusy) ? 'not-allowed' : 'pointer', fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-              <FiSlash size={14} /> Void GRN
-            </button>
+          {/* Left group: Edit + Void (hidden while editing) */}
+          {!editing && canVoid ? (
+            <div style={{ display: 'flex', gap: 8 }}>
+              {canEdit && (
+                <button onClick={startEdit}
+                  disabled={loading || voidBusy}
+                  style={{ padding: '8px 18px', background: '#fff', color: '#0369a1', border: '1px solid #7dd3fc', borderRadius: 6, cursor: (loading || voidBusy) ? 'not-allowed' : 'pointer', fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                  <FiEdit2 size={14} /> Edit
+                </button>
+              )}
+              <button onClick={() => { setVoidStep('reason'); setVoidError(''); }}
+                disabled={loading || voidBusy}
+                style={{ padding: '8px 18px', background: '#fff', color: '#b91c1c', border: '1px solid #fca5a5', borderRadius: 6, cursor: (loading || voidBusy) ? 'not-allowed' : 'pointer', fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                <FiSlash size={14} /> Void GRN
+              </button>
+            </div>
           ) : <div />}
-          <button onClick={onClose}
-            style={{ padding: '8px 22px', background: '#fff', color: '#374151', border: '1px solid #e5e7eb', borderRadius: 6, cursor: 'pointer', fontWeight: 600 }}>Close</button>
+
+          {/* Right group: while editing → Cancel + Save Changes. Otherwise → Close. */}
+          {editing ? (
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button onClick={cancelEdit}
+                disabled={editBusy}
+                style={{ padding: '8px 18px', background: '#fff', color: '#374151', border: '1px solid #e5e7eb', borderRadius: 6, cursor: editBusy ? 'not-allowed' : 'pointer', fontWeight: 600 }}>
+                Cancel
+              </button>
+              <button
+                onClick={() => {
+                  if (editReason.trim().length < 3) { setEditError('Reason must be at least 3 characters.'); return; }
+                  setEditError('');
+                  setEditPwOpen(true);
+                }}
+                disabled={editBusy || editReason.trim().length < 3}
+                style={{ padding: '8px 22px', background: editBusy || editReason.trim().length < 3 ? '#93c5fd' : '#0284c7', color: '#fff', border: 'none', borderRadius: 6, cursor: editBusy || editReason.trim().length < 3 ? 'not-allowed' : 'pointer', fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                <FiCheck size={14} /> Save Changes
+              </button>
+            </div>
+          ) : (
+            <button onClick={onClose}
+              style={{ padding: '8px 22px', background: '#fff', color: '#374151', border: '1px solid #e5e7eb', borderRadius: 6, cursor: 'pointer', fontWeight: 600 }}>Close</button>
+          )}
         </div>
       </div>
 
@@ -448,6 +581,51 @@ function DetailsModal({ state, onClose, onVoided }) {
           </div>
         </div>
       )}
+
+      {/* v1.10.118 — Edit admin password. On confirm builds line_updates
+          map from editUnitPrices, ships to /edit with reason + attestation.
+          On success: reloads parent list (via onVoided — reused as
+          "refresh archive" callback) and closes the modal. */}
+      <AdminPasswordPrompt
+        open={editPwOpen}
+        subject={`GRN ${grn.grn_number} — ${grn.branch_name || grn.branch_slug}`}
+        actionLabel="Save Edit"
+        onCancel={() => { if (!editBusy) setEditPwOpen(false); }}
+        onConfirm={async ({ adminId, adminName }) => {
+          setEditBusy(true); setEditError('');
+          const line_updates = {};
+          for (const it of items) {
+            const draft = editUnitPrices[it.sync_id];
+            if (draft != null && draft !== '') {
+              const nextPx = parseFloat(draft);
+              const curPx  = parseFloat(it.unit_price) || 0;
+              if (!isNaN(nextPx) && Math.abs(nextPx - curPx) > 0.0001) {
+                line_updates[it.sync_id] = { unit_price: nextPx };
+              }
+            }
+          }
+          try {
+            await editHqGrn(grn.grn_sync_id, {
+              line_updates,
+              cost_currency: editCcy || null,
+              fx_rate_used:  editRate === '' ? null : parseFloat(editRate),
+              reason: editReason.trim(),
+              adminId,
+              adminName,
+            });
+            setEditBusy(false);
+            setEditPwOpen(false);
+            setEditing(false);
+            setEditUnitPrices({});
+            setEditReason('');
+            onVoided && onVoided(); // reloads archive + closes detail
+          } catch (err) {
+            setEditBusy(false);
+            setEditPwOpen(false);
+            setEditError(err.response?.data?.error || 'Failed to save edit.');
+          }
+        }}
+      />
 
       {/* Step 2 — admin password. On confirm we have adminId/adminName from
           verifyAdmin; POST the void with reason + admin attestation. */}

@@ -632,6 +632,17 @@ try {
   addMasterCol('hq_grns', 'voided_at',      'TEXT');
   addMasterCol('hq_grns', 'void_reason',    'TEXT');
 
+  // v1.10.118 — Edit endpoint columns. cost_currency + fx_rate_used mirror
+  // hq_purchases (see v1.10.53 WAC redesign); we store them on hq_grns
+  // too so the Archive can display the right symbol without JOINing back
+  // to the PO. edited_* columns are the audit trail for /edit.
+  addMasterCol('hq_grns', 'cost_currency',  'TEXT');
+  addMasterCol('hq_grns', 'fx_rate_used',   'REAL');
+  addMasterCol('hq_grns', 'edited_by',      'INTEGER');
+  addMasterCol('hq_grns', 'edited_by_name', 'TEXT');
+  addMasterCol('hq_grns', 'edited_at',      'TEXT');
+  addMasterCol('hq_grns', 'edit_reason',    'TEXT');
+
   console.log('[master] Master DB ready:', masterDbPath);
 } catch (e) {
   console.warn('[master] Could not open master DB (Electron mode — VPS-only features disabled):', e.message);

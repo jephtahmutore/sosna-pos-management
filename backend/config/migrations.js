@@ -1834,28 +1834,20 @@ function initTenantDb(db) {
     }
   } catch (e) { /* table may not yet have all columns on a fresh DB */ }
 
-  // v1.8.80 — SELF-HEALING zero-out for usd_change_given when the surplus is
-  // actually in a FRA or K drawer. The v1.8.68 backfill blindly seeded
-  // usd_change_given = change_amount for ALL orders, but for orders where the
-  // cashier kept the surplus in FRA/K (overpaid_kept_ccy != 'USD'), no USD
-  // was physically returned — so usd_change_given should be 0.
-  // Symptom: Sales Report By Payment USD column shows '$199.89' instead of
-  // '$200.00' for orders where the customer paid USD + FRA and the FRA
-  // surplus was kept by the cashier (e.g. ORD-0016).
-  try {
-    const result = db.prepare(`
-      UPDATE orders
-         SET usd_change_given = 0,
-             synced           = 0,
-             updated_at       = datetime('now')
-       WHERE deleted_at IS NULL
-         AND COALESCE(overpaid_kept_ccy, '') IN ('FRA', 'K')
-         AND COALESCE(usd_change_given, 0) > 0.005
-    `).run();
-    if (result.changes > 0) {
-      console.log(`[self-heal usd_change_given] zeroed ${result.changes} order(s) where surplus is in FRA/K drawer`);
-    }
-  } catch (e) { /* fresh DB or columns not yet present */ }
+  // v1.10.118 — REMOVED the v1.8.80 self-healing block that zeroed
+  // usd_change_given whenever overpaid_kept_ccy IN ('FRA','K'). It was
+  // written to clean up damage from the removed v1.8.68 backfill (see
+  // [[project-sosna-phantom-change-backfill]]), assuming that "kept in
+  // FRA/K → no USD was returned". That assumption is TOO STRICT for
+  // Sosna's tri-currency Cashier flow: a customer can pay $50 + K20,
+  // owe $20.64 change, get $20 USD + 500 FRA back, AND still leave a
+  // small FRA surplus in the drawer — all three amounts legitimate.
+  // Under the removed rule, admin fixes to usd_change_given would
+  // silently revert to 0 on the next restart (real incident on ORD-0101,
+  // 2026-07-05). Like the v1.8.68 backfill, this block had no run-once
+  // guard so it perpetually re-zeroed legitimate values. Deleted outright;
+  // any prior damage stays until the admin re-enters the correct number
+  // going forward (this second Edit will stick now).
 
   // v1.8.83 — SELF-HEALING backfill for cash_receipts FRA / K columns.
   // Auto-created CRs (received_from LIKE 'Sales%') before v1.8.83 only sent
