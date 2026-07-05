@@ -51,9 +51,20 @@ router.get('/', auth, readOnlyGuard, (req, res) => {
                    CASE WHEN COALESCE(grn_qty.total_qty, 0) > 0
                      THEN ROUND(COALESCE(grn_qty.total_cost, 0) / grn_qty.total_qty, 2)
                      ELSE p.cost_price
-                   END as avg_cost_price
+                   END as avg_cost_price,
+                   COALESCE(opening_agg.opening_balance_qty, 0) as opening_balance_qty
                  FROM products p
                  LEFT JOIN categories c ON p.category_sync_id = c.sync_id
+                 LEFT JOIN (
+                   -- v1.10.112 — expose the active opening-balance stock movement's
+                   -- quantity so the ItemDetails modal seeds "Opening Stock" with
+                   -- the actual OB (not current_stock, which was silently rewriting
+                   -- the OB on every re-save).
+                   SELECT product_sync_id, SUM(quantity) as opening_balance_qty
+                   FROM stock_movements
+                   WHERE reference_type = 'opening_balance' AND deleted_at IS NULL AND product_sync_id IS NOT NULL
+                   GROUP BY product_sync_id
+                 ) opening_agg ON opening_agg.product_sync_id = p.sync_id
                  LEFT JOIN (
                    SELECT product_sync_id, SUM(quantity) as store_balance
                    FROM stock_movements WHERE location = 'store' AND deleted_at IS NULL AND product_sync_id IS NOT NULL GROUP BY product_sync_id

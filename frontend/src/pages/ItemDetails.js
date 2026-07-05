@@ -472,10 +472,14 @@ const ItemDetails = () => {
       code: item.code, name: item.name, category_id: item.category_id, unit: item.unit,
       cost_price: item.cost_price, selling_price: item.selling_price,
       current_stock: item.current_stock,
-      // DB stores only the collapsed base-unit total. Seed opening_base with it
-      // so re-saving is idempotent. Users who want "46 Box + 10 Bottle" form
-      // can zero this and fill in the packaging rows.
-      opening_base: item.current_stock != null ? String(item.current_stock) : '',
+      // v1.10.112 — Seed opening_base with the ACTUAL opening-balance stock
+      // movement quantity (from opening_balance_qty), NOT current_stock.
+      // The old behaviour (seeding from current_stock) meant every re-save
+      // silently voided the real OB and stamped current_stock as the new OB,
+      // so any sale between saves got lost from the audit trail (see
+      // Kassumbalesa-morning batch bug on 2026-07-02). Users who want to
+      // reset the opening can still overwrite the value manually.
+      opening_base: item.opening_balance_qty != null ? String(item.opening_balance_qty) : '',
       min_stock: minStockInDispUnit ? String(minStockInDispUnit) : '',
       min_stock_unit: dispUnit.name || item.unit || '',
       product_type: item.product_type || 'finished',
