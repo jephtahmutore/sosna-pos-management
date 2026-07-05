@@ -396,9 +396,15 @@ router.put('/:id', auth, (req, res) => {
       if (parseFloat(current_stock) > 0) {
         const tenantId = syncConfig.getTenantId(req);
         const { branchId, deviceId } = syncConfig.getConfig();
+        // v1.10.125 — backdate opening_balance rows to 2026-06-29 (one day
+        // before Sosna's business launch on 2026-06-30). This keeps the row
+        // strictly BEFORE any realistic Bin Card "From" date, so it lands in
+        // the blue "Opening Balance" pill instead of the mid-timeline
+        // "Adjustment" row. Matches the one-time backdate we already applied
+        // to existing OB rows via SQL.
         db.prepare(
           `INSERT INTO stock_movements (product_id, product_sync_id, location, movement_type, quantity, reference_type, notes, sync_id, tenant_id, branch_id, device_id, synced, created_at, updated_at)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,0,datetime('now'),datetime('now'))`
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,0,'2026-06-29 00:00:00',datetime('now'))`
         ).run(req.params.id, product?.sync_id, 'sales', 'adjustment', parseFloat(current_stock), 'opening_balance', 'Opening balance',
               randomUUID(), tenantId, branchId, deviceId);
       }
