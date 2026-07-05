@@ -98,6 +98,18 @@ const GRN = () => {
   const { t } = useLanguage();
   const { hasPermission, user: authUser } = useAuth();
   const { symbol: curSym, money } = useCurrency();
+  // v1.10.113 — each GRN row carries its own cost_currency ($/K/FRA),
+  // because Sosna HQ books GRNs against suppliers with different native
+  // currencies (MATUIDA in USD, HENIKEN in K, etc.). Use the row's own
+  // currency for its amount display instead of the tenant-wide curSym.
+  const symForCcy = (c) => {
+    const u = String(c || '').toUpperCase();
+    return u === 'K' ? 'K' : u === 'FRA' ? '' : u === 'USD' ? '$' : curSym;
+  };
+  const suffixForCcy = (c) => String(c || '').toUpperCase() === 'FRA' ? ' FRA' : '';
+  // v1.10.113 — currency-aware money formatter that reads viewGRN's own
+  // cost_currency instead of the tenant-wide money() from useCurrency.
+  // Used throughout the detail-view modal (desktop + mobile).
   const isMobile = useIsMobile();
   const navigate = useNavigate();
   const pageScrollTopRef = useRef(0);
@@ -111,6 +123,13 @@ const GRN = () => {
   const [editId, setEditId]       = useState(null);
   const [editLoading, setEditLoading] = useState(false);
   const [viewGRN, setViewGRN]           = useState(null);
+  // v1.10.113 — viewGrn-scoped money formatter. Reads viewGRN?.cost_currency
+  // to pick the right symbol. Falls back to tenant money() before viewGRN
+  // is set (should never render, but keeps the function safe to call).
+  const viewMoney = (v) => {
+    if (!viewGRN) return money(v);
+    return `${symForCcy(viewGRN.cost_currency)}${parseFloat(v || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}${suffixForCcy(viewGRN.cost_currency)}`;
+  };
   const [viewLoading, setViewLoading]   = useState(false);
   const [showGRNPrint, setShowGRNPrint] = useState(false);
   const [saving, setSaving]       = useState(false);
@@ -371,6 +390,17 @@ const GRN = () => {
   });
 
   const filteredTotal = filteredGRNs.reduce((s, g) => s + parseFloat(g.total_amount || 0), 0);
+  // v1.10.113 — split filtered total by currency so mixed-ccy lists
+  // (e.g. one USD supplier + one K supplier) display honestly instead
+  // of adding raw numbers across currencies.
+  const filteredTotalsByCcy = filteredGRNs.reduce((acc, g) => {
+    const c = String(g.cost_currency || '').toUpperCase() || 'USD';
+    acc[c] = (acc[c] || 0) + parseFloat(g.total_amount || 0);
+    return acc;
+  }, {});
+  const filteredTotalDisplay = Object.entries(filteredTotalsByCcy)
+    .map(([c, v]) => `${symForCcy(c)}${v.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}${suffixForCcy(c)}`)
+    .join(' + ') || `${curSym}0.00`;
 
   // ── Form helpers ──────────────────────────────────────────────────
   const openForm = () => {
@@ -879,7 +909,7 @@ const GRN = () => {
           <div className="stat-icon"><FiFileText /></div>
           <div>
             <div className="stat-label">{t('totalAmount')}</div>
-            <div className="stat-value" style={{ fontSize: 18 }}>{hasPermission('GRN:View') ? `${curSym}${filteredTotal.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : 'N/A'}</div>
+            <div className="stat-value" style={{ fontSize: 18 }}>{hasPermission('GRN:View') ? filteredTotalDisplay : 'N/A'}</div>
           </div>
         </div>
       </div>
@@ -920,7 +950,7 @@ const GRN = () => {
 
         <span style={{ marginLeft: 'auto', fontSize: 12, color: '#9ca3af' }}>
           {filteredGRNs.length} GRN{filteredGRNs.length !== 1 ? 's' : ''}
-          {hasFilter && <> &nbsp;·&nbsp; Total: <strong style={{ color: '#16a34a' }}>${filteredTotal.toLocaleString(undefined, { minimumFractionDigits: 2 })}</strong></>}
+          {hasFilter && <> &nbsp;·&nbsp; Total: <strong style={{ color: '#16a34a' }}>{filteredTotalDisplay}</strong></>}
         </span>
       </div>
 
@@ -945,7 +975,7 @@ const GRN = () => {
                   <td>{formatDate(grn.date || grn.created_at)}</td>
                   <td>{grn.supplier_name || '—'}</td>
                   <td style={{ textAlign: 'center' }}>{grn.total_items}</td>
-                  <td>{curSym}{parseFloat(grn.total_amount).toLocaleString(undefined, { minimumFractionDigits: 2 })}</td>
+                  <td>{symForCcy(grn.cost_currency)}{parseFloat(grn.total_amount).toLocaleString(undefined, { minimumFractionDigits: 2 })}{suffixForCcy(grn.cost_currency)}</td>
                   <td>
                     {/* v1.9.21 — HQ-linked GRNs show their HQ lifecycle
                         (Awaiting / Confirmed / Rejected) instead of the
@@ -1301,7 +1331,7 @@ const GRN = () => {
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 8 }}>
                   <span style={{ fontSize: 11, fontWeight: 700, color: '#15803d', textTransform: 'uppercase', letterSpacing: 0.5 }}>Grand Total</span>
                   <span style={{ fontSize: 22, fontWeight: 900, color: '#15803d', fontFamily: 'monospace' }}>
-                    {money(viewGRN.total_amount || 0)}
+                    {viewMoney(viewGRN.total_amount || 0)}
                   </span>
                 </div>
                 <div style={{ display: 'flex', gap: 12, fontSize: 11, color: '#166534', flexWrap: 'wrap' }}>
@@ -1310,8 +1340,8 @@ const GRN = () => {
                       (branch has no AP). Kept for legacy/standalone GRNs. */}
                   {!viewGRN.linked_purchase_sync_id && (
                     <>
-                      <span>Paid: <strong>{money(viewGRN.amount_paid_on_grn || 0)}</strong></span>
-                      <span>Balance: <strong style={{ color: parseFloat(viewGRN.balance_on_grn || 0) > 0.001 ? '#dc2626' : '#15803d' }}>{money(viewGRN.balance_on_grn || 0)}</strong></span>
+                      <span>Paid: <strong>{viewMoney(viewGRN.amount_paid_on_grn || 0)}</strong></span>
+                      <span>Balance: <strong style={{ color: parseFloat(viewGRN.balance_on_grn || 0) > 0.001 ? '#dc2626' : '#15803d' }}>{viewMoney(viewGRN.balance_on_grn || 0)}</strong></span>
                     </>
                   )}
                 </div>
@@ -1358,10 +1388,10 @@ const GRN = () => {
                       <span>
                         {parseFloat(item.quantity).toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 })} {item.unit || item.product_unit || ''}
                         <span style={{ color: '#9ca3af', margin: '0 6px' }}>×</span>
-                        {money(item.unit_price)}
+                        {viewMoney(item.unit_price)}
                       </span>
                       <span style={{ fontWeight: 800, color: '#15803d', fontFamily: 'monospace' }}>
-                        {money(item.total_price)}
+                        {viewMoney(item.total_price)}
                       </span>
                     </div>
                     {item.expiry_date && (
@@ -1373,9 +1403,9 @@ const GRN = () => {
                       <div style={{ marginTop: 8, padding: '8px 10px', background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 8, fontSize: 11.5, color: '#92400e' }}>
                         <div style={{ fontWeight: 600 }}>↳ Returnable: {containerProd?.name || 'Empty container'}</div>
                         <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 3 }}>
-                          <span>Recv {recv} / Ret {ret} @ {money(dep)}</span>
+                          <span>Recv {recv} / Ret {ret} @ {viewMoney(dep)}</span>
                           <span style={{ fontWeight: 700, color: containerLine < 0 ? '#dc2626' : '#92400e' }}>
-                            {containerLine < 0 ? '−' : '+'}{money(Math.abs(containerLine))}
+                            {containerLine < 0 ? '−' : '+'}{viewMoney(Math.abs(containerLine))}
                           </span>
                         </div>
                       </div>
@@ -1485,8 +1515,8 @@ const GRN = () => {
                   <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 14px', borderRadius: 8, background: s.bg, border: `1px solid ${s.border}`, marginBottom: 16 }}>
                     <span style={{ fontWeight: 700, fontSize: 13, color: s.color }}>{viewGRN.payment_status || 'Not Paid'}</span>
                     <span style={{ fontSize: 12, color: s.color, opacity: 0.8 }}>
-                      &nbsp;·&nbsp; Paid: <strong>${parseFloat(viewGRN.amount_paid_on_grn || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}</strong>
-                      &nbsp;&nbsp;Balance: <strong>${parseFloat(viewGRN.balance_on_grn || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}</strong>
+                      &nbsp;·&nbsp; Paid: <strong>{viewMoney(viewGRN.amount_paid_on_grn || 0)}</strong>
+                      &nbsp;&nbsp;Balance: <strong>{viewMoney(viewGRN.balance_on_grn || 0)}</strong>
                     </span>
                   </div>
                 );
@@ -1517,8 +1547,8 @@ const GRN = () => {
                       <th style={{ padding: '9px 14px', textAlign: 'left',  fontWeight: 600, color: '#6b7280', fontSize: 11.5, borderBottom: '1px solid #e5e7eb' }}>Product</th>
                       <th style={{ padding: '9px 14px', textAlign: 'right', fontWeight: 600, color: '#6b7280', fontSize: 11.5, borderBottom: '1px solid #e5e7eb' }}>Quantity</th>
                       <th style={{ padding: '9px 14px', textAlign: 'left',  fontWeight: 600, color: '#6b7280', fontSize: 11.5, borderBottom: '1px solid #e5e7eb' }}>Unit</th>
-                      <th style={{ padding: '9px 14px', textAlign: 'right', fontWeight: 600, color: '#6b7280', fontSize: 11.5, borderBottom: '1px solid #e5e7eb' }}>Unit Cost ({curSym})</th>
-                      <th style={{ padding: '9px 14px', textAlign: 'right', fontWeight: 600, color: '#6b7280', fontSize: 11.5, borderBottom: '1px solid #e5e7eb' }}>Total ({curSym})</th>
+                      <th style={{ padding: '9px 14px', textAlign: 'right', fontWeight: 600, color: '#6b7280', fontSize: 11.5, borderBottom: '1px solid #e5e7eb' }}>Unit Cost ({symForCcy(viewGRN.cost_currency).trim() || 'FRA'})</th>
+                      <th style={{ padding: '9px 14px', textAlign: 'right', fontWeight: 600, color: '#6b7280', fontSize: 11.5, borderBottom: '1px solid #e5e7eb' }}>Total ({symForCcy(viewGRN.cost_currency).trim() || 'FRA'})</th>
                       <th style={{ padding: '9px 14px', textAlign: 'left',  fontWeight: 600, color: '#6b7280', fontSize: 11.5, borderBottom: '1px solid #e5e7eb' }}>Expiry Date</th>
                     </tr>
                   </thead>
@@ -1556,10 +1586,10 @@ const GRN = () => {
                                 {(recv - ret) > 0 && `+${recv - ret} into yard`}
                                 {(recv - ret) < 0 && `${recv - ret} sent back`}
                                 {(recv - ret) === 0 && '—'}
-                                &nbsp;@ {curSym}{(parseFloat(dep)||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}
+                                &nbsp;@ {viewMoney(dep)}
                               </td>
                               <td style={{ padding: '6px 14px 10px', textAlign: 'right', fontWeight: 600, fontFamily: 'monospace', color: containerLine < 0 ? '#dc2626' : '#92400e' }}>
-                                {containerLine < 0 ? '−' : '+'}{curSym}{Math.abs(containerLine).toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                                {containerLine < 0 ? '−' : '+'}{viewMoney(Math.abs(containerLine))}
                               </td>
                               <td style={{ padding: '6px 14px 10px' }}></td>
                             </tr>
@@ -1572,7 +1602,7 @@ const GRN = () => {
                     <tr style={{ background: '#f0fdf4', borderTop: '2px solid #86efac' }}>
                       <td colSpan={6} style={{ padding: '10px 14px', fontWeight: 700, fontSize: 13, color: '#14532d' }}>TOTAL</td>
                       <td style={{ padding: '10px 14px', textAlign: 'right', fontWeight: 800, fontSize: 15, fontFamily: 'monospace', color: '#15803d' }}>
-                        {curSym}{parseFloat(viewGRN.total_amount || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                        {viewMoney(viewGRN.total_amount || 0)}
                       </td>
                     </tr>
                   </tfoot>
@@ -2735,7 +2765,7 @@ const GRN = () => {
                     <tr style={{ background: '#f0fdf4', borderTop: '2px solid #86efac' }}>
                       <td colSpan={5} style={{ padding: '12px 14px', fontWeight: 800, fontSize: 12, color: '#14532d', letterSpacing: 0.5 }}>GRAND TOTAL</td>
                       <td style={{ padding: '12px 14px', textAlign: 'right', fontWeight: 900, fontSize: 16, fontFamily: 'monospace', color: '#15803d' }}>
-                        {curSym}{parseFloat(viewGRN.total_amount || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                        {viewMoney(viewGRN.total_amount || 0)}
                       </td>
                     </tr>
                   </tfoot>
