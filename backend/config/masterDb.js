@@ -663,6 +663,12 @@ try {
   addMasterCol('hq_supplier_credit_notes', 'updated_at', 'TEXT');
   addMasterCol('hq_supplier_credit_notes', 'deleted_at', 'TEXT');
 
+  // v1.10.122 — hq_purchase_items + hq_purchases CREATE also missed
+  // `updated_at`. Void's PO reset + Edit's PO consistency step both
+  // stamp it. Adding retroactively.
+  addMasterCol('hq_purchase_items', 'updated_at', 'TEXT');
+  addMasterCol('hq_purchases',       'updated_at', 'TEXT');
+
   console.log('[master] Master DB ready:', masterDbPath);
 } catch (e) {
   console.warn('[master] Could not open master DB (Electron mode — VPS-only features disabled):', e.message);

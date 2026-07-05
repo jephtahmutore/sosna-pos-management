@@ -795,13 +795,18 @@ router.post('/:syncId/edit', hqAuth, (req, res) => {
     try {
       const hqDb = getTenantDb('hq');
       hqDb.transaction(() => {
+        // v1.10.122 — dropped `AND deleted_at IS NULL`. hq.db.grn_items
+        // schema (migrations.js:133-142) has never had deleted_at, so
+        // prepare was throwing 'no such column: deleted_at'. The mirror
+        // rows are never soft-deleted in isolation anyway — Void soft-
+        // deletes them separately with a table-level UPDATE.
         const updHqItem = hqDb.prepare(`
           UPDATE grn_items
              SET unit_price  = ?,
                  total_price = ?,
                  synced      = 0,
                  updated_at  = datetime('now')
-           WHERE grn_sync_id = ? AND product_sync_id = ? AND deleted_at IS NULL
+           WHERE grn_sync_id = ? AND product_sync_id = ?
         `);
         for (const r of merged) {
           const info = updHqItem.run(r.unit_price, r.total_price, syncId, r.product_sync_id);
@@ -826,48 +831,45 @@ router.post('/:syncId/edit', hqAuth, (req, res) => {
     }
     console.log(`[hq.grns.edit] hq.db mirror: grn_items updated=${hqItemsUpdated}, grn header updated=${hqGrnUpdated}${hqMirrorError ? ', ERROR=' + hqMirrorError : ''}`);
 
-    // 3. Linked PO — keep hq_purchase_items.unit_price + hq_purchases.
+    // 3. Linked PO — keep hq_purchase_items.cost_price + hq_purchases.
     //    cost_currency/fx_rate_used consistent with the corrected GRN, so
     //    a re-generate on the same PO would produce matching numbers.
+    //
+    //    v1.10.122 — real column is `cost_price` (see masterDb.js:208),
+    //    NOT unit_price. Also recompute line_total = dispatched_qty *
+    //    cost_price. Previously prepare was crashing on the non-existent
+    //    unit_price column.
+    let poItemsUpdated = 0;
+    let poHeaderUpdated = 0;
+    let poError = null;
     if (grn.po_sync_id) {
       try {
         masterDb.transaction(() => {
-          // Match PO items to GRN items by product_sync_id. If multiple
-          // PO lines share a product_sync_id (rare), we update all of them
-          // to the new cost — safer than silently skipping some.
           const updPoItem = masterDb.prepare(`
             UPDATE hq_purchase_items
-               SET unit_price     = ?,
-                   cost_price     = ?,
-                   updated_at     = datetime('now')
+               SET cost_price = ?,
+                   line_total = ? * dispatched_qty,
+                   updated_at = datetime('now')
              WHERE purchase_sync_id = ? AND product_sync_id = ?
           `);
-          const findCol = masterDb.prepare(`PRAGMA table_info(hq_purchase_items)`).all().map(c => c.name);
-          const hasUnitPrice = findCol.includes('unit_price');
-          const hasCostPrice = findCol.includes('cost_price');
-          if (hasUnitPrice || hasCostPrice) {
-            // Fallback: one shape uses cost_price, the other unit_price.
-            for (const r of merged) {
-              try { updPoItem.run(r.unit_price, r.unit_price, grn.po_sync_id, r.product_sync_id); }
-              catch {
-                if (hasUnitPrice) masterDb.prepare(`UPDATE hq_purchase_items SET unit_price=?, updated_at=datetime('now') WHERE purchase_sync_id=? AND product_sync_id=?`).run(r.unit_price, grn.po_sync_id, r.product_sync_id);
-                else if (hasCostPrice) masterDb.prepare(`UPDATE hq_purchase_items SET cost_price=?, updated_at=datetime('now') WHERE purchase_sync_id=? AND product_sync_id=?`).run(r.unit_price, grn.po_sync_id, r.product_sync_id);
-              }
-            }
+          for (const r of merged) {
+            const info = updPoItem.run(r.unit_price, r.unit_price, grn.po_sync_id, r.product_sync_id);
+            poItemsUpdated += info.changes || 0;
           }
-          // v1.10.121 — COALESCE PO cost fields so "unchanged" doesn't wipe.
-          masterDb.prepare(`
+          const info = masterDb.prepare(`
             UPDATE hq_purchases
                SET cost_currency = COALESCE(?, cost_currency),
                    fx_rate_used  = COALESCE(?, fx_rate_used),
                    updated_at    = datetime('now')
              WHERE sync_id = ?
           `).run(finalCcy, finalRate, grn.po_sync_id);
+          poHeaderUpdated = info.changes || 0;
         })();
       } catch (e) {
-        console.error('[hq.grns.edit] PO consistency update failed:', e.message);
+        poError = e.message;
       }
     }
+    console.log(`[hq.grns.edit] PO consistency: items updated=${poItemsUpdated}, header updated=${poHeaderUpdated}${poError ? ', ERROR=' + poError : ''}`);
 
     res.json({
       ok: true,
