@@ -163,6 +163,11 @@ try {
   // deposits (they're currency-anchored, not method-anchored) and for
   // legacy Liquor rows written before this column existed.
   addMasterCol('cash_deposits', 'from_method', 'TEXT');
+  // v1.10.134 — to_method: which HQ drawer the deposit lands in on Confirm.
+  // Cash / Bank / Mobile Money. NULL until HQ confirms. Only meaningful
+  // for K deposits — Cash Book's K sub-breakdown uses it to route
+  // deposit inflows to the right K sub-drawer (Cash / Bank / MoMo).
+  addMasterCol('cash_deposits', 'to_method', 'TEXT');
 
   masterDb.exec(`
 

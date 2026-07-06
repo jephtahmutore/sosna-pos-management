@@ -774,15 +774,50 @@ router.get('/stats', auth, readOnlyGuard, (req, res) => {
     const kSubIn    = kSubMethodSum('cash_receipts',    df, dp);
     const kSubOutPV = kSubMethodSum('payment_vouchers', df, dp);
     const kSubOutAP = kSubMethodSum('ap_payments',      df, dp);
+
+    // v1.10.134 — HQ K deposits also contribute to the K sub-breakdown.
+    // Read from master.db.cash_deposits (CONFIRMED, currency='K') using
+    // to_method as the K sub-drawer. For HQ (HQ_INBOX_SLUGS matches), the
+    // deposit is an INFLOW; for a branch (from_slug matches), it's an
+    // OUTFLOW. USD/FRA deposits skipped — they don't have sub-methods.
+    const kSubMethodDepositSum = (dateClause, dateParams, direction) => {
+      if (!masterDb || !slug) return { cash: 0, bank: 0, momo: 0 };
+      try {
+        const datePred = `date(COALESCE(deposit_date, confirmed_at, created_at))`;
+        const depClause = dateClause.replace(/\bdate\b/g, datePred);
+        const whereClause = direction === 'in'
+          ? `WHERE status = 'CONFIRMED' AND currency = 'K'${depClause}`
+          : `WHERE status = 'CONFIRMED' AND currency = 'K' AND from_slug = ?${depClause}`;
+        const rows = masterDb.prepare(`
+          SELECT COALESCE(to_method, from_method, 'Bank') AS m, COALESCE(SUM(amount), 0) AS t
+            FROM cash_deposits
+           ${whereClause}
+           GROUP BY COALESCE(to_method, from_method, 'Bank')
+        `).all(...(direction === 'in' ? [] : [slug]), ...dateParams);
+        const out = { cash: 0, bank: 0, momo: 0 };
+        for (const r of rows) {
+          if (r.m === 'Cash')          out.cash += parseFloat(r.t) || 0;
+          else if (r.m === 'Bank')     out.bank += parseFloat(r.t) || 0;
+          else if (r.m === 'Mobile Money') out.momo += parseFloat(r.t) || 0;
+        }
+        return out;
+      } catch (_) {
+        return { cash: 0, bank: 0, momo: 0 };
+      }
+    };
+    const isHqInbox = HQ_INBOX_SLUGS.has(slug);
+    const kSubDepIn  = isHqInbox ? kSubMethodDepositSum(df, dp, 'in')  : { cash: 0, bank: 0, momo: 0 };
+    const kSubDepOut = !isHqInbox ? kSubMethodDepositSum(df, dp, 'out') : { cash: 0, bank: 0, momo: 0 };
+
     const kSubOut = {
-      cash: kSubOutPV.cash + kSubOutAP.cash,
-      bank: kSubOutPV.bank + kSubOutAP.bank,
-      momo: kSubOutPV.momo + kSubOutAP.momo,
+      cash: kSubOutPV.cash + kSubOutAP.cash + kSubDepOut.cash,
+      bank: kSubOutPV.bank + kSubOutAP.bank + kSubDepOut.bank,
+      momo: kSubOutPV.momo + kSubOutAP.momo + kSubDepOut.momo,
     };
     const kSubNet = {
-      cash: kSubIn.cash - kSubOut.cash,
-      bank: kSubIn.bank - kSubOut.bank,
-      momo: kSubIn.momo - kSubOut.momo,
+      cash: kSubIn.cash + kSubDepIn.cash - kSubOut.cash,
+      bank: kSubIn.bank + kSubDepIn.bank - kSubOut.bank,
+      momo: kSubIn.momo + kSubDepIn.momo - kSubOut.momo,
     };
 
     // Fold pre-period K sub-method activity into an opening snapshot too,
@@ -792,10 +827,13 @@ router.get('/stats', auth, readOnlyGuard, (req, res) => {
       const bIn  = kSubMethodSum('cash_receipts',   ' AND date < ?', [from]);
       const bPV  = kSubMethodSum('payment_vouchers',' AND date < ?', [from]);
       const bAP  = kSubMethodSum('ap_payments',     ' AND date < ?', [from]);
+      // v1.10.134 — pre-period deposit inflows/outflows also fold in.
+      const bDepIn  = isHqInbox  ? kSubMethodDepositSum(' AND date < ?', [from], 'in')  : { cash: 0, bank: 0, momo: 0 };
+      const bDepOut = !isHqInbox ? kSubMethodDepositSum(' AND date < ?', [from], 'out') : { cash: 0, bank: 0, momo: 0 };
       kSubOpening = {
-        cash: bIn.cash - bPV.cash - bAP.cash,
-        bank: bIn.bank - bPV.bank - bAP.bank,
-        momo: bIn.momo - bPV.momo - bAP.momo,
+        cash: bIn.cash + bDepIn.cash - bPV.cash - bAP.cash - bDepOut.cash,
+        bank: bIn.bank + bDepIn.bank - bPV.bank - bAP.bank - bDepOut.bank,
+        momo: bIn.momo + bDepIn.momo - bPV.momo - bAP.momo - bDepOut.momo,
       };
     }
     const kSubCurrent = {

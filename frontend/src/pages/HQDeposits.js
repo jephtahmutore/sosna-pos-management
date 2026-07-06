@@ -178,6 +178,41 @@ const HQDeposits = () => {
     setSending(false);
   };
 
+  // v1.10.134 — normalize a free-text method entry into the canonical form
+  // the backend accepts ('Cash', 'Bank', 'Mobile Money'). Returns null when
+  // the input doesn't match any known method.
+  const normalizeToMethod = (raw) => {
+    const s = String(raw || '').trim().toLowerCase();
+    if (!s) return null;
+    if (s === 'cash' || s === 'c') return 'Cash';
+    if (s === 'bank' || s === 'b') return 'Bank';
+    if (s === 'momo' || s === 'mobile money' || s === 'mobile' || s === 'm') return 'Mobile Money';
+    return null;
+  };
+
+  // v1.10.134 — prompt for the HQ drawer this K deposit lands in. Only
+  // asked for K currency; USD/FRA deposits don't need it. Defaults to the
+  // branch-side from_method (Bank branch → Bank HQ, etc.).
+  const askToMethod = (d) => {
+    if (String(d.currency || '').toUpperCase() !== 'K') return null;
+    const defaultMethod = d.from_method && ['Cash','Bank','Mobile Money'].includes(d.from_method)
+      ? d.from_method
+      : 'Bank';
+    const raw = window.prompt(
+      `Which HQ drawer receives this K${d.amount ? ' ' + d.amount.toLocaleString() : ''} deposit?\n\n` +
+      `Type: Cash · Bank · MoMo\n` +
+      `(Default = ${defaultMethod})`,
+      defaultMethod
+    );
+    if (raw === null) return 'CANCELLED';
+    const normalized = normalizeToMethod(raw);
+    if (!normalized) {
+      alert('Method must be Cash, Bank, or MoMo.');
+      return 'INVALID';
+    }
+    return normalized;
+  };
+
   const handleConfirm = async (d) => {
     // v1.10.82 — HQ operator can override the deposit_date at confirm
     // time (e.g. cash arrived last week but they're only clicking
@@ -194,16 +229,20 @@ const HQDeposits = () => {
     const dateOk = /^\d{4}-\d{2}-\d{2}$/.test(trimmed);
     if (trimmed && !dateOk) { alert('Date must be YYYY-MM-DD.'); return; }
 
+    // v1.10.134 — for K deposits, also ask which HQ drawer receives it.
+    const toMethod = askToMethod(d);
+    if (toMethod === 'CANCELLED' || toMethod === 'INVALID') return;
+
     // v1.10.83 — moving a deposit to a different accounting date shifts
     // where it lands in the Cash Book. That's a sensitive edit, so it
     // needs admin authorization. Unchanged date = fast-path, no prompt.
     if (dateOk && trimmed !== d.deposit_date) {
-      setPendingDateChange({ deposit: d, newDate: trimmed, mode: 'confirm' });
+      setPendingDateChange({ deposit: d, newDate: trimmed, mode: 'confirm', toMethod });
       return;
     }
 
     try {
-      await confirmCashDeposit(d.id);
+      await confirmCashDeposit(d.id, toMethod ? { to_method: toMethod } : undefined);
       await fetchDeposits();
     } catch (err) {
       alert(err?.response?.data?.error || 'Failed to confirm deposit');
@@ -234,13 +273,16 @@ const HQDeposits = () => {
   // the row is already CONFIRMED, we just move its date.
   const finishConfirmWithDate = async () => {
     if (!pendingDateChange) return;
-    const { deposit, newDate, mode } = pendingDateChange;
+    const { deposit, newDate, mode, toMethod } = pendingDateChange;
     setPendingDateChange(null);
     try {
       if (mode === 'edit') {
         await editCashDepositDate(deposit.id, newDate);
       } else {
-        await confirmCashDeposit(deposit.id, { deposit_date: newDate });
+        // v1.10.134 — include to_method in the delayed-confirm payload too.
+        const payload = { deposit_date: newDate };
+        if (toMethod) payload.to_method = toMethod;
+        await confirmCashDeposit(deposit.id, payload);
       }
       await fetchDeposits();
     } catch (err) {

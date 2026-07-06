@@ -155,21 +155,31 @@ router.put('/:id/confirm', hqAuth, (req, res) => {
     const bodyDate = typeof req.body?.deposit_date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(req.body.deposit_date)
       ? req.body.deposit_date
       : null;
+    // v1.10.134 — HQ picks which of its drawers (Cash / Bank / MoMo) the K
+    // deposit lands in at confirm time. Fallback: use the branch-side
+    // from_method (Bank branch → Bank HQ, etc.). Only meaningful for K
+    // currency; USD/FRA deposits ignore this field.
+    const VALID_TO_METHODS = new Set(['Cash', 'Bank', 'Mobile Money']);
+    const bodyToMethod = typeof req.body?.to_method === 'string' && VALID_TO_METHODS.has(req.body.to_method)
+      ? req.body.to_method
+      : (row.from_method && VALID_TO_METHODS.has(row.from_method) ? row.from_method : null);
     if (bodyDate) {
       masterDb.prepare(`
         UPDATE cash_deposits
            SET status = 'CONFIRMED',
                deposit_date = ?,
+               to_method = ?,
                confirmed_by = ?, confirmed_by_name = ?, confirmed_at = datetime('now')
          WHERE id = ?
-      `).run(bodyDate, req.user.id, confirmedByName, req.params.id);
+      `).run(bodyDate, bodyToMethod, req.user.id, confirmedByName, req.params.id);
     } else {
       masterDb.prepare(`
         UPDATE cash_deposits
            SET status = 'CONFIRMED',
+               to_method = ?,
                confirmed_by = ?, confirmed_by_name = ?, confirmed_at = datetime('now')
          WHERE id = ?
-      `).run(req.user.id, confirmedByName, req.params.id);
+      `).run(bodyToMethod, req.user.id, confirmedByName, req.params.id);
     }
     const updated = masterDb.prepare('SELECT * FROM cash_deposits WHERE id = ?').get(req.params.id);
     res.json(updated);
