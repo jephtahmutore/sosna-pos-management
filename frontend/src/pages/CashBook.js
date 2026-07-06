@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { getCashBook, getCashBookStats, setOpeningBalance, getSettings, getSalesRangeSummary, createCashTransfer, isHqHost, getBranchSlug, getCurrentFxRate } from '../services/api';
+import { getCashBook, getCashBookStats, setOpeningBalance, getSettings, getSalesRangeSummary, createCashTransfer, getCashTransfers, deleteCashTransfer, isHqHost, getBranchSlug, getCurrentFxRate } from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import CurrencyExchangePanel from '../components/CurrencyExchangePanel';
 import { useCurrency } from '../context/CurrencyContext';
@@ -63,6 +63,9 @@ const CashBook = () => {
   const [transferForm, setTransferForm] = useState({ from_method: 'Cash', to_method: 'Bank', amount: '', date: todayStr, description: '' });
   const [savingTransfer, setSavingTransfer] = useState(false);
   const [transferError, setTransferError] = useState('');
+  // v1.10.138 — K sub-drawer transfers list (HQ Transfers tab).
+  const [transferList, setTransferList] = useState([]);
+  const [transferListLoading, setTransferListLoading] = useState(false);
 
   // v1.8.59 — HQ Deposit moved to its own page (Accounting → HQ Deposits)
   // to keep Cash Book focused on ledger view and to avoid conflating
@@ -135,12 +138,44 @@ const CashBook = () => {
       });
       setShowTransfer(false);
       await fetchData(from, to);
+      if (onHq) await refreshTransferList();
     } catch (err) {
       setTransferError(err.response?.data?.error || 'Failed to save transfer.');
     } finally {
       setSavingTransfer(false);
     }
   };
+
+  // v1.10.138 — HQ Transfers tab data.
+  const refreshTransferList = async () => {
+    setTransferListLoading(true);
+    try {
+      const r = await getCashTransfers();
+      // Only K sub-drawer transfers show on HQ; legacy USD ones (if any)
+      // stay in the ledger. Filter defensively — pre-v1.10.137 rows have
+      // NULL currency but the backend default is 'USD' so they wouldn't
+      // slip through anyway.
+      const rows = Array.isArray(r.data) ? r.data : [];
+      setTransferList(rows.filter(x => (x.currency || 'USD') === 'K'));
+    } catch (_) {
+      setTransferList([]);
+    }
+    setTransferListLoading(false);
+  };
+  const handleDeleteTransfer = async (id) => {
+    if (!window.confirm('Delete this transfer? The K sub-drawer breakdown will revert.')) return;
+    try {
+      await deleteCashTransfer(id);
+      await refreshTransferList();
+      await fetchData(from, to);
+    } catch (err) {
+      alert(err.response?.data?.error || 'Failed to delete transfer.');
+    }
+  };
+  useEffect(() => {
+    if (onHq) refreshTransferList();
+    // eslint-disable-next-line
+  }, [onHq]);
 
   const handleSaveOB = async () => {
     setSavingOB(true);
@@ -551,6 +586,11 @@ const CashBook = () => {
         {[
           { key: 'ledger',    label: 'Ledger',    show: true },
           { key: 'exchanges', label: 'Exchanges', show: !isLiquorStyle },
+          // v1.10.138 — K sub-drawer transfers live on their own tab (HQ)
+          // so the ledger doesn't have to display them without a method
+          // column. Removing them from the ledger doesn't move any Cash
+          // Book total — transfers are net-zero across sub-drawers.
+          { key: 'transfers', label: 'Transfers', show: onHq },
         ].filter(t => t.show).map(tab => (
           <button key={tab.key} onClick={() => setActiveTab(tab.key)}
             style={{
@@ -590,6 +630,73 @@ const CashBook = () => {
           showKSubMethods={onHq}
           onChanged={() => fetchData(from, to)}
         />
+      )}
+
+      {/* v1.10.138 — HQ Transfers tab: dedicated view for K sub-drawer
+          transfers with proper From / To method columns (the ledger's
+          single-currency-column layout couldn't render them). */}
+      {activeTab === 'transfers' && onHq && (
+        <div style={{ background: '#fff', border: '1px solid #e5e7eb', borderRadius: 12, marginTop: 4 }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 16px', borderBottom: '1px solid #f1f5f9' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <FiRepeat color="#2563eb" />
+              <h3 style={{ margin: 0, fontSize: 14, fontWeight: 700, color: '#0f172a' }}>K Sub-Drawer Transfers</h3>
+              <span style={{ fontSize: 11, color: '#94a3b8' }}>· {transferList.length} entr{transferList.length === 1 ? 'y' : 'ies'}</span>
+            </div>
+            <button onClick={() => { setTransferError(''); setTransferForm(f => ({ ...f, amount: '', description: '', date: todayStr })); setShowTransfer(true); }}
+              style={{ padding: '6px 12px', borderRadius: 6, border: '1.5px solid #2563eb', background: '#2563eb', color: '#fff', cursor: 'pointer', fontSize: 12, fontWeight: 700, display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+              <FiRepeat size={13} /> New Transfer
+            </button>
+          </div>
+          <div style={{ padding: '0 8px 8px' }}>
+            {transferListLoading ? (
+              <div style={{ padding: 18, color: '#94a3b8', fontSize: 13 }}>Loading…</div>
+            ) : transferList.length === 0 ? (
+              <div style={{ padding: 18, color: '#94a3b8', fontSize: 13 }}>
+                No K transfers yet. Use "New Transfer" to move K between Cash · Bank · MoMo.
+              </div>
+            ) : (
+              <div style={{ overflowX: 'auto' }}>
+                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+                  <thead>
+                    <tr style={{ background: '#f8fafc', color: '#64748b', fontSize: 11, textTransform: 'uppercase', letterSpacing: 0.4 }}>
+                      <th style={{ textAlign: 'left', padding: '8px 12px', fontWeight: 700 }}>Date</th>
+                      <th style={{ textAlign: 'left', padding: '8px 12px', fontWeight: 700 }}>Ref</th>
+                      <th style={{ textAlign: 'left', padding: '8px 12px', fontWeight: 700 }}>From</th>
+                      <th style={{ textAlign: 'left', padding: '8px 12px', fontWeight: 700 }}>To</th>
+                      <th style={{ textAlign: 'right', padding: '8px 12px', fontWeight: 700 }}>Amount</th>
+                      <th style={{ textAlign: 'left', padding: '8px 12px', fontWeight: 700 }}>Description</th>
+                      <th style={{ textAlign: 'left', padding: '8px 12px', fontWeight: 700 }}>By</th>
+                      <th style={{ textAlign: 'right', padding: '8px 12px', fontWeight: 700 }}></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {transferList.map(r => (
+                      <tr key={r.id} style={{ borderTop: '1px solid #f1f5f9' }}>
+                        <td style={{ padding: '8px 12px', color: '#0f172a' }}>{r.date}</td>
+                        <td style={{ padding: '8px 12px', color: '#64748b', fontFamily: 'monospace', fontSize: 12 }}>{r.transfer_number}</td>
+                        <td style={{ padding: '8px 12px', color: '#dc2626', fontWeight: 600 }}>−{r.from_method}</td>
+                        <td style={{ padding: '8px 12px', color: '#16a34a', fontWeight: 600 }}>+{r.to_method}</td>
+                        <td style={{ padding: '8px 12px', textAlign: 'right', fontWeight: 700, color: '#0f172a' }}>
+                          {parseFloat(r.amount || 0).toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 0 })} K
+                        </td>
+                        <td style={{ padding: '8px 12px', color: '#475569' }}>{r.description || '—'}</td>
+                        <td style={{ padding: '8px 12px', color: '#94a3b8', fontSize: 11 }}>{r.created_by_name || '—'}</td>
+                        <td style={{ padding: '8px 12px', textAlign: 'right' }}>
+                          <button onClick={() => handleDeleteTransfer(r.id)}
+                            title="Delete transfer"
+                            style={{ background: 'none', border: 'none', color: '#dc2626', cursor: 'pointer', fontSize: 12, fontWeight: 600 }}>
+                            <FiX />
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        </div>
       )}
 
       {activeTab === 'ledger' && (<>

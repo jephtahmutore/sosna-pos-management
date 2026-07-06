@@ -332,16 +332,16 @@ router.get('/', auth, readOnlyGuard, (req, res) => {
         'Transfer: ' || from_method || ' -> ' || to_method ||
           CASE WHEN description IS NOT NULL AND description != '' THEN ' (' || description || ')' ELSE '' END AS description,
         amount AS receipt_amount, amount AS payment_amount,
-        -- v1.10.137 — route the ledger amount to the right currency column
-        -- based on the transfer's currency (defaults to USD for legacy rows).
-        CASE WHEN COALESCE(currency,'USD')='USD' THEN amount ELSE 0 END AS usd_in,
-        CASE WHEN currency='FRA' THEN amount ELSE 0 END AS fra_in,
-        CASE WHEN currency='K'   THEN amount ELSE 0 END AS k_in,
-        CASE WHEN COALESCE(currency,'USD')='USD' THEN amount ELSE 0 END AS usd_out,
-        CASE WHEN currency='FRA' THEN amount ELSE 0 END AS fra_out,
-        CASE WHEN currency='K'   THEN amount ELSE 0 END AS k_out
+        amount AS usd_in, 0 AS fra_in, 0 AS k_in,
+        amount AS usd_out, 0 AS fra_out, 0 AS k_out
       FROM cash_transfers
-      WHERE deleted_at IS NULL AND tenant_id = ?${dateFilter}
+      -- v1.10.138 — K sub-drawer transfers move to their own "Transfers"
+      -- tab on HQ; keep them out of the ledger UNION so the row doesn't
+      -- render with an empty method column. Legacy USD transfers still
+      -- show for Liquor / Butchery. currency defaults to USD for pre-
+      -- v1.10.137 rows, so the filter is safe cross-tenant.
+      WHERE deleted_at IS NULL AND tenant_id = ?
+        AND COALESCE(currency, 'USD') = 'USD'${dateFilter}
       UNION ALL
       SELECT date,
         CASE WHEN type='Injection' THEN 'CAP-IN' ELSE 'CAP-OUT' END AS type,
