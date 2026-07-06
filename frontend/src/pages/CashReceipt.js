@@ -68,9 +68,13 @@ const CashReceipt = () => {
   // v1.8.32 — triple-currency form. usd/fra/k each in own currency
   // (same shape as PV modal). Legacy cash/bank/momo dropped from the
   // form state — backend still accepts them for old API callers.
+  // v1.10.132 — form carries cash/bank/momo too. On HQ, they hold the K
+  // sub-method split (K·Cash / K·Bank / K·MoMo). k_amount is derived
+  // (= cash+bank+momo). On non-HQ tenants the fields go unused.
   const [form, setForm] = useState({
     received_from: '', description: '',
     usd_amount: '', fra_amount: '', k_amount: '',
+    cash_amount: '', bank_amount: '', momo_amount: '',
     date: todayStr,
   });
 
@@ -100,7 +104,12 @@ const CashReceipt = () => {
   const openForm = () => {
     setEditMode(false);
     setEditId(null);
-    setForm({ received_from: '', description: '', usd_amount: '', fra_amount: '', k_amount: '', date: todayStr });
+    setForm({
+      received_from: '', description: '',
+      usd_amount: '', fra_amount: '', k_amount: '',
+      cash_amount: '', bank_amount: '', momo_amount: '',
+      date: todayStr,
+    });
     setFormError('');
     setShowForm(true);
   };
@@ -117,12 +126,21 @@ const CashReceipt = () => {
     const k   = parseFloat(r.k_amount   || r.momo_amount || 0) || 0;
     const splitsSum = usd + fra + k;
     const legacy = parseFloat(r.amount || 0) || 0;
+    // v1.10.132 — on HQ, seed the K sub-method fields (cash/bank/momo) from
+    // the raw row so editing a K CR shows its Cash/Bank/MoMo split correctly.
+    // Only when it's a K receipt (k_amount > 0) — otherwise USD or FRA row.
+    const kCash = onHq && k > 0 ? (parseFloat(r.cash_amount) || 0) : 0;
+    const kBank = onHq && k > 0 ? (parseFloat(r.bank_amount) || 0) : 0;
+    const kMomo = onHq && k > 0 ? (parseFloat(r.momo_amount) || 0) : 0;
     setForm({
       received_from:  r.received_from  || '',
       description:    r.description    || '',
       usd_amount:     splitsSum > 0 ? (usd > 0 ? String(usd) : '') : (legacy > 0 ? String(legacy) : ''),
       fra_amount:     fra > 0 ? String(fra) : '',
       k_amount:       k   > 0 ? String(k)   : '',
+      cash_amount:    kCash > 0 ? String(kCash) : '',
+      bank_amount:    kBank > 0 ? String(kBank) : '',
+      momo_amount:    kMomo > 0 ? String(kMomo) : '',
       date:           (r.date || todayStr).split('T')[0],
     });
     setFormError('');
@@ -134,7 +152,12 @@ const CashReceipt = () => {
     if (!form.received_from.trim()) return setFormError('Received From is required.');
     const usd = parseFloat(form.usd_amount || 0) || 0;
     const fra = parseFloat(form.fra_amount || 0) || 0;
-    const k   = parseFloat(form.k_amount   || 0) || 0;
+    // v1.10.132 — on HQ, K is now the SUM of Cash + Bank + MoMo sub-methods.
+    // Off HQ, the k_amount field is edited directly and cash/bank/momo stay 0.
+    const kCash = onHq ? (parseFloat(form.cash_amount || 0) || 0) : 0;
+    const kBank = onHq ? (parseFloat(form.bank_amount || 0) || 0) : 0;
+    const kMomo = onHq ? (parseFloat(form.momo_amount || 0) || 0) : 0;
+    const k = onHq ? (kCash + kBank + kMomo) : (parseFloat(form.k_amount || 0) || 0);
     if (usd <= 0 && fra <= 0 && k <= 0) return setFormError('Enter an amount in at least one currency.');
 
     if (editMode) {
@@ -149,9 +172,14 @@ const CashReceipt = () => {
       // currency (K), so a single CR can span Cash + MoMo + Bank at
       // once. Label the receipt with whichever slot is largest so the
       // badge is meaningful; the payload sums for amount + splits.
+      // v1.10.132 — on HQ, when receipt is K-flavour we surface the
+      // dominant sub-method (K·Cash / K·Bank / K·MoMo) as the label.
       const paymentMethod = isLiquorStyle
         ? (usd >= fra && usd >= k ? 'Cash' : fra >= k ? 'Mobile Money' : 'Bank Transfer')
-        : (k > 0 && onHq ? 'K' : usd > 0 ? 'USD' : fra > 0 ? 'FRA' : k > 0 ? 'K' : 'Cash');
+        : (onHq && k > 0
+            ? (kBank > kCash && kBank > kMomo ? 'K · Bank'
+              : kMomo > kCash ? 'K · MoMo' : 'K · Cash')
+            : (usd > 0 ? 'USD' : fra > 0 ? 'FRA' : k > 0 ? 'K' : 'Cash'));
       // v1.10.44 — on Liquor amount = usd+fra+k so the Cash Book ledger
       // sums the full receipt total (not just Cash). Sosna Kassumbalesa
       // keeps amount=usd only (dual-currency receipts book in USD).
@@ -168,9 +196,17 @@ const CashReceipt = () => {
         usd_amount:     usd,
         fra_amount:     fra,
         k_amount:       k,
-        // Liquor: send explicit method splits so backend deriveCRSplits
-        // doesn't collapse everything into the payment_method's slot.
-        ...(isLiquorStyle ? { cash_amount: usd, momo_amount: fra, bank_amount: k } : {}),
+        // Liquor: legacy weird mapping (Cash→usd_amount, MoMo→fra_amount,
+        //         Bank→k_amount) kept for back-compat.
+        // v1.10.132 HQ: send real K sub-method split so cash_receipts.
+        //   cash_amount / bank_amount / momo_amount reflect the drawer
+        //   that received the money. Cash Book's kSubMethods block reads
+        //   these directly.
+        ...(isLiquorStyle
+              ? { cash_amount: usd, momo_amount: fra, bank_amount: k }
+              : onHq
+                ? { cash_amount: kCash, bank_amount: kBank, momo_amount: kMomo }
+                : {}),
         date:           form.date,
       };
       if (editMode) {
@@ -702,8 +738,61 @@ const CashReceipt = () => {
                   Bank→k_amount). */}
               <div className="form-group">
                 <label style={{ fontSize: 11, fontWeight: 700, color: '#6b7280', textTransform: 'uppercase', letterSpacing: 0.5, display: 'block', marginBottom: 8 }}>
-                  Amount Received{isLiquorStyle ? ' (split across methods)' : ''}
+                  Amount Received{isLiquorStyle ? ' (split across methods)' : (onHq ? ' (by currency)' : '')}
                 </label>
+                {/* v1.10.132 — HQ layout: USD + FRA on row 1, K sub-methods
+                    (K·Cash / K·Bank / K·MoMo) on row 2. Lock logic: any of
+                    the 5 fields > 0 disables the OTHER currency's fields
+                    (multiple K sub-methods can coexist since they all sum
+                    to k_amount). Liquor / Kassumbalesa layouts unchanged. */}
+                {onHq ? (() => {
+                  const kTotal = ['cash_amount','bank_amount','momo_amount']
+                    .reduce((s, key) => s + (parseFloat(form[key] || 0) || 0), 0);
+                  const usdVal = parseFloat(form.usd_amount || 0) || 0;
+                  const fraVal = parseFloat(form.fra_amount || 0) || 0;
+                  const lockOtherCcys = (self) => {
+                    if (self === 'usd') return fraVal > 0 || kTotal > 0;
+                    if (self === 'fra') return usdVal > 0 || kTotal > 0;
+                    if (self === 'k')   return usdVal > 0 || fraVal > 0;
+                    return false;
+                  };
+                  const renderInput = (key, label, color, step, placeholder, disabled) => (
+                    <div key={key}>
+                      <label style={{ fontSize: 11, color: disabled ? '#cbd5e1' : color, fontWeight: 700, textTransform: 'uppercase', marginBottom: 3, display: 'block' }}>{label}{disabled && ' (locked)'}</label>
+                      <input type="number" min="0" step={step}
+                        disabled={disabled}
+                        value={form[key]}
+                        onChange={e => setForm(prev => ({ ...prev, [key]: e.target.value }))}
+                        placeholder={placeholder}
+                        title={disabled ? 'Clear the other currency to switch — one CR = one currency.' : ''}
+                        style={{
+                          width: '100%', padding: '8px 10px',
+                          border: `2px solid ${disabled ? '#e5e7eb' : (parseFloat(form[key] || 0) > 0 ? color : '#d1d5db')}`,
+                          borderRadius: 6, fontSize: 14, fontWeight: 600,
+                          color: disabled ? '#cbd5e1' : (parseFloat(form[key] || 0) > 0 ? color : '#374151'),
+                          background: disabled ? '#f9fafb' : '#fff',
+                          cursor: disabled ? 'not-allowed' : 'text',
+                          boxSizing: 'border-box',
+                        }} />
+                    </div>
+                  );
+                  return (
+                    <>
+                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 12 }}>
+                        {renderInput('usd_amount', 'USD ($)', '#16a34a', '0.01', '0.00', lockOtherCcys('usd'))}
+                        {renderInput('fra_amount', 'FRA',     '#7c3aed', '1',    '0',    lockOtherCcys('fra'))}
+                      </div>
+                      <div style={{ fontSize: 10, color: '#9a3412', fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.4, marginBottom: 6 }}>
+                        K (split by method) {kTotal > 0 && <span style={{ color: '#c2410c', fontWeight: 600 }}>· Total K{kTotal.toLocaleString()}</span>}
+                      </div>
+                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10 }}>
+                        {renderInput('cash_amount', 'K · Cash', '#ea580c', '1', '0', lockOtherCcys('k'))}
+                        {renderInput('bank_amount', 'K · Bank', '#c2410c', '1', '0', lockOtherCcys('k'))}
+                        {renderInput('momo_amount', 'K · MoMo', '#9a3412', '1', '0', lockOtherCcys('k'))}
+                      </div>
+                    </>
+                  );
+                })() : (
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10 }}>
                   {(isLiquorStyle
                     ? [
@@ -711,18 +800,11 @@ const CashReceipt = () => {
                         { key: 'fra_amount', label: 'Mobile Money', color: '#ea580c', step: '0.01', placeholder: '0.00', prefix: curSym },
                         { key: 'k_amount',   label: 'Bank',         color: '#2563eb', step: '0.01', placeholder: '0.00', prefix: curSym },
                       ]
-                    : onHq
-                      /* v1.10.68 — HQ order: K default (leftmost), then USD, then FRA. */
-                      ? [
-                          { key: 'k_amount',   label: 'K',       color: '#ea580c', step: '1',    placeholder: '0',    prefix: ''  },
-                          { key: 'usd_amount', label: 'USD ($)', color: '#16a34a', step: '0.01', placeholder: '0.00', prefix: '$' },
-                          { key: 'fra_amount', label: 'FRA',     color: '#7c3aed', step: '1',    placeholder: '0',    prefix: ''  },
-                        ]
-                      : [
-                          { key: 'usd_amount', label: 'USD ($)', color: '#16a34a', step: '0.01', placeholder: '0.00', prefix: '$' },
-                          { key: 'fra_amount', label: 'FRA',     color: '#7c3aed', step: '1',    placeholder: '0',    prefix: ''  },
-                          { key: 'k_amount',   label: 'K',       color: '#ea580c', step: '1',    placeholder: '0',    prefix: ''  },
-                        ]
+                    : [
+                        { key: 'usd_amount', label: 'USD ($)', color: '#16a34a', step: '0.01', placeholder: '0.00', prefix: '$' },
+                        { key: 'fra_amount', label: 'FRA',     color: '#7c3aed', step: '1',    placeholder: '0',    prefix: ''  },
+                        { key: 'k_amount',   label: 'K',       color: '#ea580c', step: '1',    placeholder: '0',    prefix: ''  },
+                      ]
                   ).map((f) => {
                     const otherKeys = ['usd_amount', 'fra_amount', 'k_amount'].filter(k => k !== f.key);
                     // Sosna keeps the one-currency-per-CR lock. Liquor drops it.
@@ -755,6 +837,7 @@ const CashReceipt = () => {
                     );
                   })}
                 </div>
+                )}
                 {/* v1.10.45 — Liquor total row (all K). Sosna keeps the
                     one-currency-per-CR model so no total row is needed. */}
                 {isLiquorStyle && (
