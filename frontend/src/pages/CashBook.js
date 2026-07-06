@@ -130,6 +130,8 @@ const CashBook = () => {
         to_method:    transferForm.to_method,
         amount:       amt,
         description:  transferForm.description || null,
+        // v1.10.137 — HQ transfers move K between K sub-drawers, not USD.
+        currency:     onHq ? 'K' : 'USD',
       });
       setShowTransfer(false);
       await fetchData(from, to);
@@ -1349,14 +1351,27 @@ const CashBook = () => {
             </div>
             <div className="modal-body">
               <p style={{ fontSize: 13, color: '#6b7280', marginTop: 0, marginBottom: 14 }}>
-                Move money between cash buckets. Your total cash on hand stays the same — only the breakdown shifts.
+                {/* v1.10.137 — HQ transfers K between its K sub-drawers. */}
+                {onHq
+                  ? 'Move K between sub-drawers (Cash · Bank · MoMo). The K total on hand stays the same — only the breakdown shifts.'
+                  : 'Move money between cash buckets. Your total cash on hand stays the same — only the breakdown shifts.'}
               </p>
 
               {(() => {
                 const methodKey = (m) => m === 'Cash' ? 'cash' : m === 'Bank' ? 'bank' : 'momo';
-                const fmt = (n) => parseFloat(n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-                const fromCur  = parseFloat(stats.currentByMethod?.[methodKey(transferForm.from_method)] || 0);
-                const toCur    = parseFloat(stats.currentByMethod?.[methodKey(transferForm.to_method)]   || 0);
+                // v1.10.137 — HQ reads live K sub-drawer values; Liquor still
+                // uses the USD-based currentByMethod (its native model).
+                const kCur = onHq ? (stats.kSubMethods?.current || { cash: 0, bank: 0, momo: 0 }) : null;
+                const decs = onHq ? 0 : 2;
+                const fmt  = (n) => parseFloat(n || 0).toLocaleString(undefined, { minimumFractionDigits: decs, maximumFractionDigits: decs });
+                const sym  = onHq ? '' : curSym;
+                const suf  = onHq ? ' K' : '';
+                const fromCur  = onHq
+                  ? parseFloat(kCur[methodKey(transferForm.from_method)] || 0)
+                  : parseFloat(stats.currentByMethod?.[methodKey(transferForm.from_method)] || 0);
+                const toCur    = onHq
+                  ? parseFloat(kCur[methodKey(transferForm.to_method)] || 0)
+                  : parseFloat(stats.currentByMethod?.[methodKey(transferForm.to_method)]   || 0);
                 const amt      = parseFloat(transferForm.amount || 0) || 0;
                 const fromAfter = fromCur - amt;
                 const toAfter   = toCur   + amt;
@@ -1371,11 +1386,11 @@ const CashBook = () => {
                         <option value="Mobile Money">Mobile Money</option>
                       </select>
                       <small style={{ color: '#6b7280', fontSize: 11, display: 'block', marginTop: 4 }}>
-                        Current: <strong>{curSym}{fmt(fromCur)}</strong>
+                        Current: <strong>{sym}{fmt(fromCur)}{suf}</strong>
                       </small>
                       {showAfter && (
                         <small style={{ color: fromAfter < 0 ? '#dc2626' : '#0f766e', fontSize: 11, fontWeight: 600, display: 'block', marginTop: 2 }}>
-                          After: {curSym}{fmt(fromAfter)} {fromAfter < 0 ? '⚠ overdraft' : ''}
+                          After: {sym}{fmt(fromAfter)}{suf} {fromAfter < 0 ? '⚠ overdraft' : ''}
                         </small>
                       )}
                     </div>
@@ -1387,11 +1402,11 @@ const CashBook = () => {
                         <option value="Mobile Money">Mobile Money</option>
                       </select>
                       <small style={{ color: '#6b7280', fontSize: 11, display: 'block', marginTop: 4 }}>
-                        Current: <strong>{curSym}{fmt(toCur)}</strong>
+                        Current: <strong>{sym}{fmt(toCur)}{suf}</strong>
                       </small>
                       {showAfter && (
                         <small style={{ color: '#0f766e', fontSize: 11, fontWeight: 600, display: 'block', marginTop: 2 }}>
-                          After: {curSym}{fmt(toAfter)}
+                          After: {sym}{fmt(toAfter)}{suf}
                         </small>
                       )}
                     </div>
@@ -1400,8 +1415,8 @@ const CashBook = () => {
               })()}
 
               <div className="form-group">
-                <label>Amount ({curSym}) *</label>
-                <input type="number" min="0" step="0.01" placeholder="0.00"
+                <label>Amount ({onHq ? 'K' : curSym}) *</label>
+                <input type="number" min="0" step={onHq ? '1' : '0.01'} placeholder={onHq ? '0' : '0.00'}
                   value={transferForm.amount}
                   onChange={e => setTransferForm({ ...transferForm, amount: e.target.value })} />
               </div>
@@ -1425,8 +1440,11 @@ const CashBook = () => {
               )}
 
               <div style={{ padding: '10px 14px', background: '#eff6ff', border: '1px solid #bfdbfe', borderRadius: 8, fontSize: 12, color: '#1e40af', lineHeight: 1.5, marginBottom: 14 }}>
-                <strong>Effect:</strong> {transferForm.from_method} {curSym}{(parseFloat(parseFloat(transferForm.amount || 0))||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})} → {transferForm.to_method}.
-                Cash Book total unchanged; per-method cards on top will reflect the move.
+                {/* v1.10.137 — HQ effect wording: K sub-drawer shift, not $. */}
+                <strong>Effect:</strong>{' '}
+                {onHq
+                  ? `${transferForm.from_method} → ${transferForm.to_method}: ${(parseFloat(transferForm.amount||0)||0).toLocaleString(undefined,{minimumFractionDigits:0,maximumFractionDigits:0})} K. K total on hand unchanged; only the K sub-drawer breakdown shifts.`
+                  : `${transferForm.from_method} ${curSym}${(parseFloat(transferForm.amount||0)||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})} → ${transferForm.to_method}. Cash Book total unchanged; per-method cards on top will reflect the move.`}
               </div>
 
               <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10 }}>

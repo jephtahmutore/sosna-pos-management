@@ -206,8 +206,11 @@ function sumMethod(tenantId, methodCol, dateClause, dateParams) {
   const loanInt  = db.prepare(`SELECT COALESCE(SUM(${methodCol}), 0) AS t FROM loan_transactions WHERE deleted_at IS NULL AND tenant_id = ? AND type='Interest'${dateClause}`).get(tenantId, ...dateParams).t;
   // Net cash transfer effect on this method = inflow (to_method) - outflow (from_method)
   const methodName = methodCol === 'cash_amount' ? 'Cash' : methodCol === 'bank_amount' ? 'Bank' : 'Mobile Money';
-  const trIn  = db.prepare(`SELECT COALESCE(SUM(amount), 0) AS t FROM cash_transfers WHERE deleted_at IS NULL AND tenant_id = ? AND to_method   = ?${dateClause}`).get(tenantId, methodName, ...dateParams).t;
-  const trOut = db.prepare(`SELECT COALESCE(SUM(amount), 0) AS t FROM cash_transfers WHERE deleted_at IS NULL AND tenant_id = ? AND from_method = ?${dateClause}`).get(tenantId, methodName, ...dateParams).t;
+  // v1.10.137 — only USD transfers feed the legacy USD method-flow tracking.
+  // K sub-drawer transfers (currency='K') are accounted for separately in
+  // the kSubMethods block below.
+  const trIn  = db.prepare(`SELECT COALESCE(SUM(amount), 0) AS t FROM cash_transfers WHERE deleted_at IS NULL AND tenant_id = ? AND COALESCE(currency,'USD')='USD' AND to_method   = ?${dateClause}`).get(tenantId, methodName, ...dateParams).t;
+  const trOut = db.prepare(`SELECT COALESCE(SUM(amount), 0) AS t FROM cash_transfers WHERE deleted_at IS NULL AND tenant_id = ? AND COALESCE(currency,'USD')='USD' AND from_method = ?${dateClause}`).get(tenantId, methodName, ...dateParams).t;
   return {
     cr: parseFloat(cr), pv: parseFloat(pv), ap: parseFloat(ap),
     capIn: parseFloat(capIn), capOut: parseFloat(capOut), div: parseFloat(div),
@@ -329,8 +332,14 @@ router.get('/', auth, readOnlyGuard, (req, res) => {
         'Transfer: ' || from_method || ' -> ' || to_method ||
           CASE WHEN description IS NOT NULL AND description != '' THEN ' (' || description || ')' ELSE '' END AS description,
         amount AS receipt_amount, amount AS payment_amount,
-        amount AS usd_in, 0 AS fra_in, 0 AS k_in,
-        amount AS usd_out, 0 AS fra_out, 0 AS k_out
+        -- v1.10.137 — route the ledger amount to the right currency column
+        -- based on the transfer's currency (defaults to USD for legacy rows).
+        CASE WHEN COALESCE(currency,'USD')='USD' THEN amount ELSE 0 END AS usd_in,
+        CASE WHEN currency='FRA' THEN amount ELSE 0 END AS fra_in,
+        CASE WHEN currency='K'   THEN amount ELSE 0 END AS k_in,
+        CASE WHEN COALESCE(currency,'USD')='USD' THEN amount ELSE 0 END AS usd_out,
+        CASE WHEN currency='FRA' THEN amount ELSE 0 END AS fra_out,
+        CASE WHEN currency='K'   THEN amount ELSE 0 END AS k_out
       FROM cash_transfers
       WHERE deleted_at IS NULL AND tenant_id = ?${dateFilter}
       UNION ALL
@@ -862,15 +871,47 @@ router.get('/stats', auth, readOnlyGuard, (req, res) => {
     const kSubExchIn  = kSubMethodExchSum(df, dp, 'in');
     const kSubExchOut = kSubMethodExchSum(df, dp, 'out');
 
+    // v1.10.137 — HQ K sub-drawer transfers shift K from one sub-drawer to
+    // another. Direction:
+    //   to_method   → K IN  → amount into that sub-drawer
+    //   from_method → K OUT → amount out of that sub-drawer
+    // Net K on hand unchanged (in.total = out.total), only the breakdown
+    // moves. USD/FRA legacy transfers skipped via currency='K' filter.
+    const kSubMethodTransferSum = (dateClause, dateParams, direction) => {
+      try {
+        const col = direction === 'in' ? 'to_method' : 'from_method';
+        const rows = db.prepare(`
+          SELECT ${col} AS m, COALESCE(SUM(amount), 0) AS t
+            FROM cash_transfers
+           WHERE deleted_at IS NULL
+             AND tenant_id = ?
+             AND COALESCE(currency, 'USD') = 'K'
+             ${dateClause}
+           GROUP BY ${col}
+        `).all(tenantId, ...dateParams);
+        const out = { cash: 0, bank: 0, momo: 0 };
+        for (const r of rows) {
+          if (r.m === 'Cash')              out.cash += parseFloat(r.t) || 0;
+          else if (r.m === 'Bank')         out.bank += parseFloat(r.t) || 0;
+          else if (r.m === 'Mobile Money') out.momo += parseFloat(r.t) || 0;
+        }
+        return out;
+      } catch (_) {
+        return { cash: 0, bank: 0, momo: 0 };
+      }
+    };
+    const kSubTrfIn  = kSubMethodTransferSum(df, dp, 'in');
+    const kSubTrfOut = kSubMethodTransferSum(df, dp, 'out');
+
     const kSubOut = {
-      cash: kSubOutPV.cash + kSubOutAP.cash + kSubDepOut.cash + kSubExchOut.cash,
-      bank: kSubOutPV.bank + kSubOutAP.bank + kSubDepOut.bank + kSubExchOut.bank,
-      momo: kSubOutPV.momo + kSubOutAP.momo + kSubDepOut.momo + kSubExchOut.momo,
+      cash: kSubOutPV.cash + kSubOutAP.cash + kSubDepOut.cash + kSubExchOut.cash + kSubTrfOut.cash,
+      bank: kSubOutPV.bank + kSubOutAP.bank + kSubDepOut.bank + kSubExchOut.bank + kSubTrfOut.bank,
+      momo: kSubOutPV.momo + kSubOutAP.momo + kSubDepOut.momo + kSubExchOut.momo + kSubTrfOut.momo,
     };
     const kSubNet = {
-      cash: kSubIn.cash + kSubDepIn.cash + kSubExchIn.cash - kSubOut.cash,
-      bank: kSubIn.bank + kSubDepIn.bank + kSubExchIn.bank - kSubOut.bank,
-      momo: kSubIn.momo + kSubDepIn.momo + kSubExchIn.momo - kSubOut.momo,
+      cash: kSubIn.cash + kSubDepIn.cash + kSubExchIn.cash + kSubTrfIn.cash - kSubOut.cash,
+      bank: kSubIn.bank + kSubDepIn.bank + kSubExchIn.bank + kSubTrfIn.bank - kSubOut.bank,
+      momo: kSubIn.momo + kSubDepIn.momo + kSubExchIn.momo + kSubTrfIn.momo - kSubOut.momo,
     };
 
     // Fold pre-period K sub-method activity into an opening snapshot too,
@@ -889,10 +930,13 @@ router.get('/stats', auth, readOnlyGuard, (req, res) => {
       // v1.10.135 — pre-period exchange in/out also fold in.
       const bExchIn  = kSubMethodExchSum(' AND date < ?', [from], 'in');
       const bExchOut = kSubMethodExchSum(' AND date < ?', [from], 'out');
+      // v1.10.137 — pre-period K sub-drawer transfers also fold in.
+      const bTrfIn  = kSubMethodTransferSum(' AND date < ?', [from], 'in');
+      const bTrfOut = kSubMethodTransferSum(' AND date < ?', [from], 'out');
       kSubOpening = {
-        cash: bIn.cash + bDepIn.cash + bExchIn.cash - bPV.cash - bAP.cash - bDepOut.cash - bExchOut.cash,
-        bank: bIn.bank + bDepIn.bank + bExchIn.bank - bPV.bank - bAP.bank - bDepOut.bank - bExchOut.bank,
-        momo: bIn.momo + bDepIn.momo + bExchIn.momo - bPV.momo - bAP.momo - bDepOut.momo - bExchOut.momo,
+        cash: kSubOpening.cash + bIn.cash + bDepIn.cash + bExchIn.cash + bTrfIn.cash - bPV.cash - bAP.cash - bDepOut.cash - bExchOut.cash - bTrfOut.cash,
+        bank: kSubOpening.bank + bIn.bank + bDepIn.bank + bExchIn.bank + bTrfIn.bank - bPV.bank - bAP.bank - bDepOut.bank - bExchOut.bank - bTrfOut.bank,
+        momo: kSubOpening.momo + bIn.momo + bDepIn.momo + bExchIn.momo + bTrfIn.momo - bPV.momo - bAP.momo - bDepOut.momo - bExchOut.momo - bTrfOut.momo,
       };
     }
     const kSubCurrent = {
@@ -1032,14 +1076,18 @@ router.get('/transfers', auth, readOnlyGuard, (req, res) => {
 });
 
 // Create transfer
+// v1.10.137 — accepts `currency` (default 'USD'). HQ K sub-drawer shifts
+// send 'K' so the transfer feeds kSubMethods without polluting the legacy
+// USD method-flow tracking.
 router.post('/transfers', auth, (req, res) => {
   try {
-    const { date, from_method, to_method, amount, description } = req.body;
+    const { date, from_method, to_method, amount, description, currency } = req.body;
     if (!VALID_METHODS.has(from_method)) return res.status(400).json({ error: 'Invalid from_method.' });
     if (!VALID_METHODS.has(to_method))   return res.status(400).json({ error: 'Invalid to_method.' });
     if (from_method === to_method)       return res.status(400).json({ error: 'From and To must be different.' });
     const amt = parseFloat(amount || 0);
     if (!(amt > 0))                       return res.status(400).json({ error: 'Amount must be greater than zero.' });
+    const ccy = (currency === 'K' || currency === 'FRA') ? currency : 'USD';
 
     const tenantId = syncConfig.getTenantId(req);
     const { branchId, deviceId } = syncConfig.getConfig();
@@ -1048,10 +1096,10 @@ router.post('/transfers', auth, (req, res) => {
 
     const info = db.prepare(`
       INSERT INTO cash_transfers (transfer_number, date, from_method, to_method, amount, description, created_by,
-                                   sync_id, tenant_id, branch_id, device_id, synced, created_at, updated_at)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,0,datetime('now'),datetime('now'))
+                                   sync_id, tenant_id, branch_id, device_id, synced, currency, created_at, updated_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,0,?,datetime('now'),datetime('now'))
     `).run(transferNum, transferDate, from_method, to_method, amt, description || null, req.user.id,
-           randomUUID(), tenantId, branchId, deviceId);
+           randomUUID(), tenantId, branchId, deviceId, ccy);
     res.status(201).json(db.prepare('SELECT * FROM cash_transfers WHERE id = ?').get(info.lastInsertRowid));
   } catch (error) {
     res.status(500).json({ error: error.message });

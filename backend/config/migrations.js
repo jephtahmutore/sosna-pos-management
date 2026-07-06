@@ -905,6 +905,13 @@ function initTenantDb(db) {
   // to fund AP, or K->USD to bank surplus) attribute to the right K drawer.
   addCol('currency_exchanges', 'from_method', 'TEXT');
   addCol('currency_exchanges', 'to_method',   'TEXT');
+
+  // v1.10.137 — cash_transfers gets a currency dimension so HQ can shift
+  // K between its Cash/Bank/MoMo sub-drawers without polluting the USD
+  // method-flow tracking. Legacy transfers default to 'USD' (Liquor/
+  // Butchery behaviour); new HQ K-side transfers set currency='K' and
+  // feed the kSubMethods block in cashBook.js.
+  addCol('cash_transfers', 'currency', "TEXT NOT NULL DEFAULT 'USD'");
   // Invoice attachment — stored under uploads/invoices/. The column holds the
   // relative path (e.g. "invoices/grn_1700000000_abcd.pdf") so the same file
   // can be served from /uploads/<path> on any host.

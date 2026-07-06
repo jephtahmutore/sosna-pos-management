@@ -194,19 +194,22 @@ export default function CurrencyExchangePanel({
 
 function AddExchangeModal({ scope, defaultDate, cashierId, drawerBalance, showKSubMethods, onClose, onSaved }) {
   // v1.8.19 — default direction is FRA -> USD (customer brings FRA, takes
-  // USD back is the common street case). Any other direction prompts
-  // "are you sure?" so accidental wrong-direction entries get caught.
+  // USD back is the common street case at Kassumbalesa). Any other direction
+  // prompts "are you sure?" so accidental wrong-direction entries get caught.
   // v1.10.135 — from_method/to_method carry the K sub-drawer when
   // showKSubMethods is on and the corresponding side is K. Default 'Bank'
   // because the common HQ case (USD -> K to fund AP) lands in the Bank drawer.
+  // v1.10.137 — on HQ (showKSubMethods) the canonical direction is USD -> K
+  // (funding K supplier payments), so both the initial form state and the
+  // "are you sure?" prompt flip accordingly.
   const [form, setForm] = useState({
-    from_currency: 'FRA', from_amount: '',
-    to_currency:   'USD', to_amount: '',
+    from_currency: showKSubMethods ? 'USD' : 'FRA', from_amount: '',
+    to_currency:   showKSubMethods ? 'K'   : 'USD', to_amount: '',
     notes: '',
     date: defaultDate,
     time: new Date().toTimeString().slice(0, 5),
-    from_method: 'Bank',
-    to_method:   'Bank',
+    from_method: 'Cash',
+    to_method:   'Cash',
   });
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
@@ -229,12 +232,16 @@ function AddExchangeModal({ scope, defaultDate, cashierId, drawerBalance, showKS
   };
 
   // v1.8.19 — confirm prompt when direction isn't the canonical FRA -> USD.
-  const isCanonical = (from, to) => from === 'FRA' && to === 'USD';
+  // v1.10.137 — on HQ (showKSubMethods) the canonical direction is USD -> K.
+  const canonicalPair = showKSubMethods
+    ? { from: 'USD', to: 'K' }
+    : { from: 'FRA', to: 'USD' };
+  const isCanonical = (from, to) => from === canonicalPair.from && to === canonicalPair.to;
   const changeCurrency = (side, value) => {
     const next = { ...form, [side]: value };
     if (!isCanonical(next.from_currency, next.to_currency)
         && (next.from_currency !== next.to_currency)
-        && !window.confirm(`Are you sure? The usual direction is FRA → USD.\nYou're picking ${next.from_currency} → ${next.to_currency}.`)) {
+        && !window.confirm(`Are you sure? The usual direction is ${canonicalPair.from} → ${canonicalPair.to}.\nYou're picking ${next.from_currency} → ${next.to_currency}.`)) {
       return; // user cancelled — keep previous selection
     }
     setForm(next);

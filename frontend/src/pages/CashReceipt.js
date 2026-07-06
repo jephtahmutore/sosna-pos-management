@@ -750,11 +750,22 @@ const CashReceipt = () => {
                     .reduce((s, key) => s + (parseFloat(form[key] || 0) || 0), 0);
                   const usdVal = parseFloat(form.usd_amount || 0) || 0;
                   const fraVal = parseFloat(form.fra_amount || 0) || 0;
-                  const lockOtherCcys = (self) => {
-                    if (self === 'usd') return fraVal > 0 || kTotal > 0;
-                    if (self === 'fra') return usdVal > 0 || kTotal > 0;
-                    if (self === 'k')   return usdVal > 0 || fraVal > 0;
-                    return false;
+                  // v1.10.137 — lock only EMPTY fields when a different
+                  // currency carries a value. A field that already has a
+                  // value stays editable so a mis-saved CR (values landing
+                  // in two currencies at once) can still be corrected in
+                  // Edit mode. Same idea as v1.10.70 for the legacy path.
+                  // K sub-methods (cash/bank/momo) are same-currency so
+                  // each K field's own value alone re-opens it.
+                  const lockField = (key) => {
+                    const selfVal = parseFloat(form[key] || 0) || 0;
+                    if (selfVal > 0) return false;
+                    if (key === 'usd_amount')  return fraVal > 0 || kTotal > 0;
+                    if (key === 'fra_amount')  return usdVal > 0 || kTotal > 0;
+                    // K sub-method: locked only if the OTHER currencies have
+                    // value; don't lock a K sub-method just because another
+                    // K sub-method is filled.
+                    return usdVal > 0 || fraVal > 0;
                   };
                   const renderInput = (key, label, color, step, placeholder, disabled) => (
                     <div key={key}>
@@ -779,16 +790,16 @@ const CashReceipt = () => {
                   return (
                     <>
                       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 12 }}>
-                        {renderInput('usd_amount', 'USD ($)', '#16a34a', '0.01', '0.00', lockOtherCcys('usd'))}
-                        {renderInput('fra_amount', 'FRA',     '#7c3aed', '1',    '0',    lockOtherCcys('fra'))}
+                        {renderInput('usd_amount', 'USD ($)', '#16a34a', '0.01', '0.00', lockField('usd_amount'))}
+                        {renderInput('fra_amount', 'FRA',     '#7c3aed', '1',    '0',    lockField('fra_amount'))}
                       </div>
                       <div style={{ fontSize: 10, color: '#9a3412', fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.4, marginBottom: 6 }}>
                         K (split by method) {kTotal > 0 && <span style={{ color: '#c2410c', fontWeight: 600 }}>· Total K{kTotal.toLocaleString()}</span>}
                       </div>
                       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10 }}>
-                        {renderInput('cash_amount', 'K · Cash', '#ea580c', '1', '0', lockOtherCcys('k'))}
-                        {renderInput('bank_amount', 'K · Bank', '#c2410c', '1', '0', lockOtherCcys('k'))}
-                        {renderInput('momo_amount', 'K · MoMo', '#9a3412', '1', '0', lockOtherCcys('k'))}
+                        {renderInput('cash_amount', 'K · Cash', '#ea580c', '1', '0', lockField('cash_amount'))}
+                        {renderInput('bank_amount', 'K · Bank', '#c2410c', '1', '0', lockField('bank_amount'))}
+                        {renderInput('momo_amount', 'K · MoMo', '#9a3412', '1', '0', lockField('momo_amount'))}
                       </div>
                     </>
                   );
