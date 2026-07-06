@@ -112,6 +112,7 @@ router.post('/', auth, (req, res) => {
       from_currency, from_amount,
       to_currency, to_amount,
       cashier_id, notes,
+      from_method, to_method, // v1.10.135 — K sub-drawer picker on HQ
     } = req.body;
     if (!['drawer', 'book'].includes(scope)) return res.status(400).json({ error: 'scope must be drawer or book' });
     if (!VALID_CURRENCIES.has(from_currency)) return res.status(400).json({ error: 'from_currency must be USD, FRA or K' });
@@ -130,18 +131,28 @@ router.post('/', auth, (req, res) => {
     const rate = toAmt / fromAmt;
     const cfg = syncConfig.getConfig() || {};
     const sId = randomUUID();
+    // v1.10.135 — only accept from_method/to_method for the corresponding K
+    // side. Any value passed for a non-K side is discarded so a stray client
+    // never poisons the sub-drawer attribution.
+    const VALID_METHODS = new Set(['Cash', 'Bank', 'Mobile Money']);
+    const fromMethodClean = (from_currency === 'K' && VALID_METHODS.has(String(from_method)))
+      ? String(from_method) : null;
+    const toMethodClean = (to_currency === 'K' && VALID_METHODS.has(String(to_method)))
+      ? String(to_method) : null;
     const info = db.prepare(`
       INSERT INTO currency_exchanges
         (sync_id, scope, date, time,
          from_currency, from_amount, to_currency, to_amount, rate,
-         notes, cashier_id, created_by, tenant_id, branch_id, device_id, synced)
-      VALUES (?,?,?,?, ?,?,?,?,?, ?,?,?,?,?,?, 0)
+         notes, cashier_id, created_by, tenant_id, branch_id, device_id, synced,
+         from_method, to_method)
+      VALUES (?,?,?,?, ?,?,?,?,?, ?,?,?,?,?,?, 0, ?,?)
     `).run(
       sId, scope, day, tm,
       from_currency, fromAmt, to_currency, toAmt, rate,
       (notes ? String(notes).trim() : null),
       scope === 'drawer' ? (parseInt(cashier_id) || 0) : null,
       req.user.id, req.user.tenantId, cfg.branchId || null, cfg.deviceId || null,
+      fromMethodClean, toMethodClean,
     );
     const row = db.prepare(`SELECT * FROM currency_exchanges WHERE id = ?`).get(info.lastInsertRowid);
     res.status(201).json(row);

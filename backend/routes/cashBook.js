@@ -809,15 +809,48 @@ router.get('/stats', auth, readOnlyGuard, (req, res) => {
     const kSubDepIn  = isHqInbox ? kSubMethodDepositSum(df, dp, 'in')  : { cash: 0, bank: 0, momo: 0 };
     const kSubDepOut = !isHqInbox ? kSubMethodDepositSum(df, dp, 'out') : { cash: 0, bank: 0, momo: 0 };
 
+    // v1.10.135 — currency_exchanges scope='book' also move K between
+    // sub-drawers. Direction:
+    //   to_currency='K'   → K IN  → to_amount   into `to_method`   sub-drawer
+    //   from_currency='K' → K OUT → from_amount into `from_method` sub-drawer
+    // USD<->FRA exchanges skipped (no K side).
+    const kSubMethodExchSum = (dateClause, dateParams, direction) => {
+      try {
+        const col = direction === 'in' ? 'to_method' : 'from_method';
+        const ccyCol = direction === 'in' ? 'to_currency' : 'from_currency';
+        const amtCol = direction === 'in' ? 'to_amount' : 'from_amount';
+        const rows = db.prepare(`
+          SELECT COALESCE(${col}, 'Bank') AS m, COALESCE(SUM(${amtCol}), 0) AS t
+            FROM currency_exchanges
+           WHERE scope = 'book'
+             AND tenant_id = ?
+             AND ${ccyCol} = 'K'
+             ${dateClause}
+           GROUP BY COALESCE(${col}, 'Bank')
+        `).all(tenantId, ...dateParams);
+        const out = { cash: 0, bank: 0, momo: 0 };
+        for (const r of rows) {
+          if (r.m === 'Cash')              out.cash += parseFloat(r.t) || 0;
+          else if (r.m === 'Bank')         out.bank += parseFloat(r.t) || 0;
+          else if (r.m === 'Mobile Money') out.momo += parseFloat(r.t) || 0;
+        }
+        return out;
+      } catch (_) {
+        return { cash: 0, bank: 0, momo: 0 };
+      }
+    };
+    const kSubExchIn  = kSubMethodExchSum(df, dp, 'in');
+    const kSubExchOut = kSubMethodExchSum(df, dp, 'out');
+
     const kSubOut = {
-      cash: kSubOutPV.cash + kSubOutAP.cash + kSubDepOut.cash,
-      bank: kSubOutPV.bank + kSubOutAP.bank + kSubDepOut.bank,
-      momo: kSubOutPV.momo + kSubOutAP.momo + kSubDepOut.momo,
+      cash: kSubOutPV.cash + kSubOutAP.cash + kSubDepOut.cash + kSubExchOut.cash,
+      bank: kSubOutPV.bank + kSubOutAP.bank + kSubDepOut.bank + kSubExchOut.bank,
+      momo: kSubOutPV.momo + kSubOutAP.momo + kSubDepOut.momo + kSubExchOut.momo,
     };
     const kSubNet = {
-      cash: kSubIn.cash + kSubDepIn.cash - kSubOut.cash,
-      bank: kSubIn.bank + kSubDepIn.bank - kSubOut.bank,
-      momo: kSubIn.momo + kSubDepIn.momo - kSubOut.momo,
+      cash: kSubIn.cash + kSubDepIn.cash + kSubExchIn.cash - kSubOut.cash,
+      bank: kSubIn.bank + kSubDepIn.bank + kSubExchIn.bank - kSubOut.bank,
+      momo: kSubIn.momo + kSubDepIn.momo + kSubExchIn.momo - kSubOut.momo,
     };
 
     // Fold pre-period K sub-method activity into an opening snapshot too,
@@ -830,10 +863,13 @@ router.get('/stats', auth, readOnlyGuard, (req, res) => {
       // v1.10.134 — pre-period deposit inflows/outflows also fold in.
       const bDepIn  = isHqInbox  ? kSubMethodDepositSum(' AND date < ?', [from], 'in')  : { cash: 0, bank: 0, momo: 0 };
       const bDepOut = !isHqInbox ? kSubMethodDepositSum(' AND date < ?', [from], 'out') : { cash: 0, bank: 0, momo: 0 };
+      // v1.10.135 — pre-period exchange in/out also fold in.
+      const bExchIn  = kSubMethodExchSum(' AND date < ?', [from], 'in');
+      const bExchOut = kSubMethodExchSum(' AND date < ?', [from], 'out');
       kSubOpening = {
-        cash: bIn.cash + bDepIn.cash - bPV.cash - bAP.cash - bDepOut.cash,
-        bank: bIn.bank + bDepIn.bank - bPV.bank - bAP.bank - bDepOut.bank,
-        momo: bIn.momo + bDepIn.momo - bPV.momo - bAP.momo - bDepOut.momo,
+        cash: bIn.cash + bDepIn.cash + bExchIn.cash - bPV.cash - bAP.cash - bDepOut.cash - bExchOut.cash,
+        bank: bIn.bank + bDepIn.bank + bExchIn.bank - bPV.bank - bAP.bank - bDepOut.bank - bExchOut.bank,
+        momo: bIn.momo + bDepIn.momo + bExchIn.momo - bPV.momo - bAP.momo - bDepOut.momo - bExchOut.momo,
       };
     }
     const kSubCurrent = {

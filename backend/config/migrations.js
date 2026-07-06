@@ -897,6 +897,14 @@ function initTenantDb(db) {
   `).run();
   db.prepare(`CREATE INDEX IF NOT EXISTS idx_currency_exchanges_scope_date ON currency_exchanges(scope, date)`).run();
   db.prepare(`CREATE INDEX IF NOT EXISTS idx_currency_exchanges_cashier ON currency_exchanges(scope, date, cashier_id)`).run();
+  // v1.10.135 — K sub-method (Cash/Bank/MoMo) split on currency_exchanges.
+  // Populated only when the corresponding side is K on HQ:
+  //   from_method: 'Cash'|'Bank'|'Mobile Money' when from_currency='K', else NULL
+  //   to_method  : same values when to_currency='K', else NULL
+  // Used by the HQ Cash Book K-card sub-breakdown so exchanges (e.g. USD->K
+  // to fund AP, or K->USD to bank surplus) attribute to the right K drawer.
+  addCol('currency_exchanges', 'from_method', 'TEXT');
+  addCol('currency_exchanges', 'to_method',   'TEXT');
   // Invoice attachment — stored under uploads/invoices/. The column holds the
   // relative path (e.g. "invoices/grn_1700000000_abcd.pdf") so the same file
   // can be served from /uploads/<path> on any host.

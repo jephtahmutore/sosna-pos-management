@@ -570,6 +570,7 @@ const CashBook = () => {
           to={to}
           user={authUser}
           title="Currency Exchanges (Cash Book)"
+          showKSubMethods={onHq}
         />
       )}
 
@@ -584,6 +585,7 @@ const CashBook = () => {
           user={authUser}
           openSignal={exchangeOpenSignal}
           hideHeader
+          showKSubMethods={onHq}
           onChanged={() => fetchData(from, to)}
         />
       )}

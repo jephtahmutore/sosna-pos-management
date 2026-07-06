@@ -36,6 +36,9 @@ export default function CurrencyExchangePanel({
   hideHeader,        // v1.8.63: when true, render only the modal logic and
                      //   the list — skip the built-in title + Add button.
                      //   Parent supplies its own trigger UI.
+  showKSubMethods,   // v1.10.135: when true, the modal asks which K sub-drawer
+                     //   (Cash/Bank/MoMo) the K side lands in. Passed by HQ
+                     //   Cash Book only — Kassumbalesa & Liquor branches don't.
 }) {
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -82,6 +85,7 @@ export default function CurrencyExchangePanel({
             defaultDate={date || from || new Date().toISOString().slice(0, 10)}
             cashierId={cashierId}
             drawerBalance={drawerBalance}
+            showKSubMethods={showKSubMethods}
             onClose={() => setShowAdd(false)}
             onSaved={() => { setShowAdd(false); refresh(); if (onChanged) onChanged(); }}
           />
@@ -179,6 +183,7 @@ export default function CurrencyExchangePanel({
           defaultDate={date || new Date().toISOString().slice(0, 10)}
           cashierId={cashierId}
           drawerBalance={drawerBalance}
+          showKSubMethods={showKSubMethods}
           onClose={() => setShowAdd(false)}
           onSaved={() => { setShowAdd(false); refresh(); if (onChanged) onChanged(); }}
         />
@@ -187,16 +192,21 @@ export default function CurrencyExchangePanel({
   );
 }
 
-function AddExchangeModal({ scope, defaultDate, cashierId, drawerBalance, onClose, onSaved }) {
+function AddExchangeModal({ scope, defaultDate, cashierId, drawerBalance, showKSubMethods, onClose, onSaved }) {
   // v1.8.19 — default direction is FRA -> USD (customer brings FRA, takes
   // USD back is the common street case). Any other direction prompts
   // "are you sure?" so accidental wrong-direction entries get caught.
+  // v1.10.135 — from_method/to_method carry the K sub-drawer when
+  // showKSubMethods is on and the corresponding side is K. Default 'Bank'
+  // because the common HQ case (USD -> K to fund AP) lands in the Bank drawer.
   const [form, setForm] = useState({
     from_currency: 'FRA', from_amount: '',
     to_currency:   'USD', to_amount: '',
     notes: '',
     date: defaultDate,
     time: new Date().toTimeString().slice(0, 5),
+    from_method: 'Bank',
+    to_method:   'Bank',
   });
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
@@ -268,6 +278,10 @@ function AddExchangeModal({ scope, defaultDate, cashierId, drawerBalance, onClos
         to_amount:     toAmt,
         cashier_id:    scope === 'drawer' ? (cashierId || 0) : null,
         notes:         form.notes || null,
+        // v1.10.135 — HQ Cash Book asks which K drawer. Server discards
+        // whichever side isn't K, so it's safe to always send both.
+        from_method:   showKSubMethods && form.from_currency === 'K' ? form.from_method : null,
+        to_method:     showKSubMethods && form.to_currency   === 'K' ? form.to_method   : null,
       });
       onSaved();
     } catch (e) {
@@ -339,6 +353,41 @@ function AddExchangeModal({ scope, defaultDate, cashierId, drawerBalance, onClos
               placeholder="0" style={{ ...inp, marginTop: 6, fontFamily: 'monospace', fontSize: 15 }} />
           </div>
         </div>
+
+        {/* v1.10.135 — K sub-drawer picker (HQ Cash Book only). Rendered
+            only for the K side(s); USD/FRA sides skip the row. Both sides
+            can be K sub-drawer picks in the theoretical K->K case, but
+            same-currency exchanges are blocked upstream so at most one
+            side ever needs a picker in practice. */}
+        {showKSubMethods && (form.from_currency === 'K' || form.to_currency === 'K') && (
+          <div style={{ background: '#f5f3ff', border: '1px solid #ddd6fe', borderRadius: 8, padding: '10px 12px', marginBottom: 10 }}>
+            <div style={{ fontSize: 11, fontWeight: 700, color: '#5b21b6', marginBottom: 8, textTransform: 'uppercase', letterSpacing: 0.4 }}>
+              K Sub-Drawer{form.from_currency === 'K' && form.to_currency === 'K' ? 's' : ''}
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: form.from_currency === 'K' && form.to_currency === 'K' ? '1fr 1fr' : '1fr', gap: 12 }}>
+              {form.from_currency === 'K' && (
+                <div>
+                  <label style={lbl}>K taken from</label>
+                  <select value={form.from_method} onChange={e => setForm({ ...form, from_method: e.target.value })} style={inp}>
+                    <option value="Cash">Cash</option>
+                    <option value="Bank">Bank</option>
+                    <option value="Mobile Money">Mobile Money</option>
+                  </select>
+                </div>
+              )}
+              {form.to_currency === 'K' && (
+                <div>
+                  <label style={lbl}>K received in</label>
+                  <select value={form.to_method} onChange={e => setForm({ ...form, to_method: e.target.value })} style={inp}>
+                    <option value="Cash">Cash</option>
+                    <option value="Bank">Bank</option>
+                    <option value="Mobile Money">Mobile Money</option>
+                  </select>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
 
         {/* v1.8.8 — soft warning when FROM amount exceeds drawer balance.
             Save stays enabled (Option B). Hidden when no drawerBalance prop. */}
