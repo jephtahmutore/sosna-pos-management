@@ -79,9 +79,25 @@ router.post('/', auth, (req, res) => {
     const resolvedPaidFrom = paid_from || 'Main cashier';
     // v1.8.5 — triple-currency. Each in its own currency. Legacy
     // cash/bank/momo still accepted but zeroed when usd/fra/k are sent.
-    const usdAmt = parseFloat(usd_amount ?? cash_amount ?? 0) || 0;
-    const fraAmt = parseFloat(fra_amount ?? bank_amount ?? 0) || 0;
-    const kAmt   = parseFloat(k_amount   ?? momo_amount ?? 0) || 0;
+    // v1.10.133 — on HQ, cash/bank/momo now hold the K sub-method split
+    // (K·Cash / K·Bank / K·MoMo). Detect the HQ shape by presence of BOTH
+    // tri-currency AND sub-method fields in the payload. Legacy Liquor
+    // clients (send usd/fra/k only) still zero the sub-method columns.
+    const hasTriCcy   = (usd_amount !== undefined || fra_amount !== undefined || k_amount !== undefined);
+    const hasSubMeth  = (cash_amount !== undefined || bank_amount !== undefined || momo_amount !== undefined);
+    const isHqTriCcy  = hasTriCcy && hasSubMeth;
+    const usdAmt = isHqTriCcy
+      ? (parseFloat(usd_amount) || 0)
+      : (parseFloat(usd_amount ?? cash_amount ?? 0) || 0);
+    const fraAmt = isHqTriCcy
+      ? (parseFloat(fra_amount) || 0)
+      : (parseFloat(fra_amount ?? bank_amount ?? 0) || 0);
+    const kAmt   = isHqTriCcy
+      ? (parseFloat(k_amount) || 0)
+      : (parseFloat(k_amount   ?? momo_amount ?? 0) || 0);
+    const cashAmt = isHqTriCcy ? (parseFloat(cash_amount) || 0) : 0;
+    const bankAmt = isHqTriCcy ? (parseFloat(bank_amount) || 0) : 0;
+    const momoAmt = isHqTriCcy ? (parseFloat(momo_amount) || 0) : 0;
     const sumSplits = usdAmt + fraAmt + kAmt;
     // For the legacy total `amount` column we use whatever the caller sent
     // (the USD-equivalent header), falling back to USD-only if missing.
@@ -92,8 +108,9 @@ router.post('/', auth, (req, res) => {
                                      usd_amount, fra_amount, k_amount,
                                      date, paid_from, cashier_id, invoice_attachment, created_by,
                                      sync_id, tenant_id, branch_id, device_id, synced, created_at, updated_at)
-       VALUES (?,?,?,?,?, 0,0,0, ?,?,?, ?,?,?,?,?, ?,?,?,?, 0,datetime('now'),datetime('now'))`
+       VALUES (?,?,?,?,?, ?,?,?, ?,?,?, ?,?,?,?,?, ?,?,?,?, 0,datetime('now'),datetime('now'))`
     ).run(voucherNum, paid_to, description, category, totalAmount,
+          cashAmt, bankAmt, momoAmt,
           usdAmt, fraAmt, kAmt,
           date || new Date().toISOString().split('T')[0],
           resolvedPaidFrom,
@@ -116,10 +133,16 @@ router.put('/:id', auth, (req, res) => {
             usd_amount, fra_amount, k_amount } = req.body;
     const pvDate = date || new Date().toISOString().split('T')[0];
     const resolvedPaidFrom = paid_from || 'Main cashier';
-    // v1.8.5 — triple-currency. Same merge as POST.
-    const usdAmt = parseFloat(usd_amount ?? cash_amount ?? 0) || 0;
-    const fraAmt = parseFloat(fra_amount ?? bank_amount ?? 0) || 0;
-    const kAmt   = parseFloat(k_amount   ?? momo_amount ?? 0) || 0;
+    // v1.10.133 — HQ K sub-method write (same detection as POST).
+    const hasTriCcy   = (usd_amount !== undefined || fra_amount !== undefined || k_amount !== undefined);
+    const hasSubMeth  = (cash_amount !== undefined || bank_amount !== undefined || momo_amount !== undefined);
+    const isHqTriCcy  = hasTriCcy && hasSubMeth;
+    const usdAmt = isHqTriCcy ? (parseFloat(usd_amount) || 0) : (parseFloat(usd_amount ?? cash_amount ?? 0) || 0);
+    const fraAmt = isHqTriCcy ? (parseFloat(fra_amount) || 0) : (parseFloat(fra_amount ?? bank_amount ?? 0) || 0);
+    const kAmt   = isHqTriCcy ? (parseFloat(k_amount)   || 0) : (parseFloat(k_amount   ?? momo_amount ?? 0) || 0);
+    const cashAmt = isHqTriCcy ? (parseFloat(cash_amount) || 0) : 0;
+    const bankAmt = isHqTriCcy ? (parseFloat(bank_amount) || 0) : 0;
+    const momoAmt = isHqTriCcy ? (parseFloat(momo_amount) || 0) : 0;
     const sumSplits = usdAmt + fraAmt + kAmt;
     const totalAmount = parseFloat(amount) > 0 ? parseFloat(amount) : (sumSplits > 0 ? usdAmt : 0);
     // invoice_attachment: pass null to clear, omit to keep existing
@@ -127,21 +150,23 @@ router.put('/:id', auth, (req, res) => {
     const sql = keepAttachment
       ? `UPDATE payment_vouchers
             SET paid_to=?, description=?, category=?, amount=?,
-                cash_amount=0, bank_amount=0, momo_amount=0,
+                cash_amount=?, bank_amount=?, momo_amount=?,
                 usd_amount=?, fra_amount=?, k_amount=?,
                 date=?, paid_from=?, updated_at=datetime('now'), synced=0
           WHERE id=?`
       : `UPDATE payment_vouchers
             SET paid_to=?, description=?, category=?, amount=?,
-                cash_amount=0, bank_amount=0, momo_amount=0,
+                cash_amount=?, bank_amount=?, momo_amount=?,
                 usd_amount=?, fra_amount=?, k_amount=?,
                 date=?, paid_from=?, invoice_attachment=?, updated_at=datetime('now'), synced=0
           WHERE id=?`;
     const args = keepAttachment
       ? [paid_to, description, category, totalAmount,
+         cashAmt, bankAmt, momoAmt,
          usdAmt, fraAmt, kAmt,
          pvDate, resolvedPaidFrom, req.params.id]
       : [paid_to, description, category, totalAmount,
+         cashAmt, bankAmt, momoAmt,
          usdAmt, fraAmt, kAmt,
          pvDate, resolvedPaidFrom, invoice_attachment || null, req.params.id];
     const info = db.prepare(sql).run(...args);

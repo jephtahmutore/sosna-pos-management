@@ -31,7 +31,8 @@ const PaymentVoucherFormModal = ({
   // Same override the Cash Book page already uses: force per-currency treatment
   // on the HQ host so the modal renders USD / FRA / K instead of
   // Cash / MoMo / Bank.
-  const effectiveLiquorStyle = isHqHost() ? false : isLiquorStyle;
+  const onHq = isHqHost();
+  const effectiveLiquorStyle = onHq ? false : isLiquorStyle;
   // v1.10.31 — On Liquor-style branches (Lusaka, Mansa, K-only Cash/MoMo/Bank
   // workflow) the three amount inputs are physical methods, not currencies.
   // Storage columns stay the same (usd_amount = Cash, fra_amount = MoMo,
@@ -52,9 +53,13 @@ const PaymentVoucherFormModal = ({
   const [pvTypes, setPvTypes] = useState([]);
   // v1.8.5 — triple-currency. USD ($), FRA, K each in own currency. Legacy
   // cash_amount/bank_amount/momo_amount columns still in DB, kept at 0.
+  // v1.10.133 — form carries cash/bank/momo too. On HQ they hold the K
+  // sub-method split (K·Cash / K·Bank / K·MoMo). k_amount is derived
+  // (= cash + bank + momo).
   const [form, setForm] = useState({
     paid_to: '', description: '', category: '',
     usd_amount: '', fra_amount: '', k_amount: '',
+    cash_amount: '', bank_amount: '', momo_amount: '',
     date: todayStr(), paid_from: defaultPaidFrom || 'Main cashier',
     invoice_attachment: null,
   });
@@ -77,6 +82,10 @@ const PaymentVoucherFormModal = ({
       const k   = parseFloat(editVoucher.k_amount   || editVoucher.momo_amount || 0) || 0;
       const splitsSum = usd + fra + k;
       const legacyAmount = parseFloat(editVoucher.amount || 0) || 0;
+      // v1.10.133 — seed K sub-method fields when editing an HQ K-flavour PV.
+      const kCash = onHq && k > 0 ? (parseFloat(editVoucher.cash_amount) || 0) : 0;
+      const kBank = onHq && k > 0 ? (parseFloat(editVoucher.bank_amount) || 0) : 0;
+      const kMomo = onHq && k > 0 ? (parseFloat(editVoucher.momo_amount) || 0) : 0;
       setForm({
         paid_to:     editVoucher.paid_to     || '',
         description: editVoucher.description || '',
@@ -84,6 +93,9 @@ const PaymentVoucherFormModal = ({
         usd_amount:  splitsSum > 0 ? (usd > 0 ? String(usd) : '') : (legacyAmount > 0 ? String(legacyAmount) : ''),
         fra_amount:  fra > 0 ? String(fra) : '',
         k_amount:    k   > 0 ? String(k)   : '',
+        cash_amount: kCash > 0 ? String(kCash) : '',
+        bank_amount: kBank > 0 ? String(kBank) : '',
+        momo_amount: kMomo > 0 ? String(kMomo) : '',
         date:        editVoucher.date ? editVoucher.date.split('T')[0] : (defaultDate || todayStr()),
         paid_from:   editVoucher.paid_from   || defaultPaidFrom || 'Main cashier',
         invoice_attachment: editVoucher.invoice_attachment || null,
@@ -93,6 +105,7 @@ const PaymentVoucherFormModal = ({
         paid_to: defaultPaidTo || '', // v1.8.24 — pre-fill with cashier name when provided
         description: '', category: 'Other',
         usd_amount: '', fra_amount: '', k_amount: '',
+        cash_amount: '', bank_amount: '', momo_amount: '',
         date: defaultDate || todayStr(),
         paid_from: defaultPaidFrom || 'Main cashier',
         invoice_attachment: null,
@@ -111,7 +124,12 @@ const PaymentVoucherFormModal = ({
     if (!form.category) return setError('Type is required — pick one from the dropdown.');
     const usd = parseFloat(form.usd_amount || 0) || 0;
     const fra = parseFloat(form.fra_amount || 0) || 0;
-    const k   = parseFloat(form.k_amount   || 0) || 0;
+    // v1.10.133 — on HQ, K is the SUM of Cash + Bank + MoMo sub-methods.
+    // Off HQ, k_amount is edited directly and cash/bank/momo stay 0.
+    const kCash = onHq ? (parseFloat(form.cash_amount || 0) || 0) : 0;
+    const kBank = onHq ? (parseFloat(form.bank_amount || 0) || 0) : 0;
+    const kMomo = onHq ? (parseFloat(form.momo_amount || 0) || 0) : 0;
+    const k = onHq ? (kCash + kBank + kMomo) : (parseFloat(form.k_amount || 0) || 0);
     // Total for the header `amount` column (legacy reports + Cash Book read
     // this). On Sosna, only USD is canonical since FRA & K would need FX;
     // on Liquor the three slots are all the same currency (Cash/MoMo/Bank
@@ -138,6 +156,9 @@ const PaymentVoucherFormModal = ({
         usd_amount:  usd,
         fra_amount:  fra,
         k_amount:    k,
+        // v1.10.133 — HQ K sub-method split. Backend paymentVouchers.js
+        // stores cash_amount / bank_amount / momo_amount when present.
+        ...(onHq ? { cash_amount: kCash, bank_amount: kBank, momo_amount: kMomo } : {}),
         date:        form.date,
         paid_from:   resolvedPaidFrom,
         invoice_attachment: form.invoice_attachment,
@@ -204,11 +225,62 @@ const PaymentVoucherFormModal = ({
               </div>
             )}
 
-            {/* Amount split across methods — mirrors the AP Record Payment modal. */}
+            {/* Amount split across methods — mirrors the AP Record Payment modal.
+                v1.10.133 — HQ layout: USD + FRA on row 1, K sub-methods
+                (K·Cash / K·Bank / K·MoMo) on row 2. Liquor / Kassumbalesa
+                unchanged. */}
             <div className="form-group">
               <label style={{ fontSize: 11, fontWeight: 700, color: '#6b7280', textTransform: 'uppercase', letterSpacing: 0.5, display: 'block', marginBottom: 8 }}>
-                Amount Paid (split across methods)
+                Amount Paid{effectiveLiquorStyle ? ' (split across methods)' : (onHq ? ' (by currency)' : '')}
               </label>
+              {onHq ? (() => {
+                const kTotal = ['cash_amount','bank_amount','momo_amount']
+                  .reduce((s, key) => s + (parseFloat(form[key] || 0) || 0), 0);
+                const usdVal = parseFloat(form.usd_amount || 0) || 0;
+                const fraVal = parseFloat(form.fra_amount || 0) || 0;
+                const lockOtherCcys = (self) => {
+                  if (self === 'usd') return fraVal > 0 || kTotal > 0;
+                  if (self === 'fra') return usdVal > 0 || kTotal > 0;
+                  if (self === 'k')   return usdVal > 0 || fraVal > 0;
+                  return false;
+                };
+                const renderInput = (key, label, color, step, placeholder, disabled) => (
+                  <div key={key}>
+                    <label style={{ fontSize: 11, color: disabled ? '#cbd5e1' : color, fontWeight: 700, textTransform: 'uppercase', marginBottom: 3, display: 'block' }}>{label}{disabled && ' (locked)'}</label>
+                    <input type="number" min="0" step={step}
+                      disabled={disabled}
+                      value={form[key]}
+                      onChange={e => setForm(prev => ({ ...prev, [key]: e.target.value }))}
+                      placeholder={placeholder}
+                      title={disabled ? 'Clear the other currency to switch — one PV = one currency.' : ''}
+                      style={{
+                        width: '100%', padding: '8px 10px',
+                        border: `2px solid ${disabled ? '#e5e7eb' : (parseFloat(form[key] || 0) > 0 ? color : '#d1d5db')}`,
+                        borderRadius: 6, fontSize: 14, fontWeight: 600,
+                        color: disabled ? '#cbd5e1' : (parseFloat(form[key] || 0) > 0 ? color : '#374151'),
+                        background: disabled ? '#f9fafb' : '#fff',
+                        cursor: disabled ? 'not-allowed' : 'text',
+                        boxSizing: 'border-box',
+                      }} />
+                  </div>
+                );
+                return (
+                  <>
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 12 }}>
+                      {renderInput('usd_amount', 'USD ($)', '#16a34a', '0.01', '0.00', lockOtherCcys('usd'))}
+                      {renderInput('fra_amount', 'FRA',     '#7c3aed', '1',    '0',    lockOtherCcys('fra'))}
+                    </div>
+                    <div style={{ fontSize: 10, color: '#9a3412', fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.4, marginBottom: 6 }}>
+                      K (split by method) {kTotal > 0 && <span style={{ color: '#c2410c', fontWeight: 600 }}>· Total K{kTotal.toLocaleString()}</span>}
+                    </div>
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10 }}>
+                      {renderInput('cash_amount', 'K · Cash', '#ea580c', '1', '0', lockOtherCcys('k'))}
+                      {renderInput('bank_amount', 'K · Bank', '#c2410c', '1', '0', lockOtherCcys('k'))}
+                      {renderInput('momo_amount', 'K · MoMo', '#9a3412', '1', '0', lockOtherCcys('k'))}
+                    </div>
+                  </>
+                );
+              })() : (
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10 }}>
                 {fieldConfigs.map((f) => {
                   const isDefault = defaultCurrency && f.ccy === defaultCurrency;
@@ -241,6 +313,7 @@ const PaymentVoucherFormModal = ({
                   );
                 })}
               </div>
+              )}
               <div style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 10px', background: '#f9fafb', borderRadius: 6, fontSize: 13, marginTop: 8 }}>
                 {(() => {
                   // v1.10.31 — Liquor totals sum all three inputs in one currency
