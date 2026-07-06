@@ -52,6 +52,26 @@ function getOpeningByCurrency(tenantId) {
   return out;
 }
 
+// v1.10.136 — HQ K sub-drawer opening seeds. Split of OB-K into Cash/Bank/
+// MoMo drawers on day one. Optional: if no OB-K-* rows exist, seeds fall
+// back to zeros and the K sub-strip continues to disagree with the K card
+// by exactly OB-K (which is the pre-Push-6 behaviour).
+// Invariant (soft, not enforced): OB-K-CASH + OB-K-BANK + OB-K-MOMO = OB-K
+// so the K sub-strip totals reconcile against the K card.
+function getKSubOpeningSeeds(tenantId) {
+  const rows = db.prepare(
+    "SELECT reference, COALESCE(receipt_amount, 0) AS amount FROM cash_book WHERE type = 'opening' AND deleted_at IS NULL AND tenant_id = ?"
+  ).all(tenantId);
+  const out = { cash: 0, bank: 0, momo: 0 };
+  for (const r of rows) {
+    const ref = (r.reference || '').toUpperCase();
+    if      (ref === 'OB-K-CASH') out.cash += parseFloat(r.amount);
+    else if (ref === 'OB-K-BANK') out.bank += parseFloat(r.amount);
+    else if (ref === 'OB-K-MOMO') out.momo += parseFloat(r.amount);
+  }
+  return out;
+}
+
 // v1.10.25 — Per-currency receipts + payments for an arbitrary date clause.
 // Used to fold pre-period activity into openingByCcy so opening on day N
 // equals closing on day N-1.
@@ -855,7 +875,10 @@ router.get('/stats', auth, readOnlyGuard, (req, res) => {
 
     // Fold pre-period K sub-method activity into an opening snapshot too,
     // so the "current" K sub-breakdown reflects real drawer state end-of-To.
-    let kSubOpening = { cash: 0, bank: 0, momo: 0 };
+    // v1.10.136 — seed with OB-K-CASH/BANK/MOMO so the sub-strip totals
+    // match the K card. Without this, sub-strip = K card - OB-K.
+    const kSeed = getKSubOpeningSeeds(tenantId);
+    let kSubOpening = { cash: kSeed.cash, bank: kSeed.bank, momo: kSeed.momo };
     if (from) {
       const bIn  = kSubMethodSum('cash_receipts',   ' AND date < ?', [from]);
       const bPV  = kSubMethodSum('payment_vouchers',' AND date < ?', [from]);
@@ -907,44 +930,69 @@ router.get('/stats', auth, readOnlyGuard, (req, res) => {
 //   { usd, fra, k }                — v1.8.62 per-currency (Sosna)
 //   { cash, bank, momo }           — legacy per-method
 //   { amount }                     — legacy single Cash opening
+//   { k_cash, k_bank, k_momo }     — v1.10.136 HQ K sub-drawer split
+// v1.10.136 — OB-K-CASH/BANK/MOMO rows survive an opening-balance save
+// unless the payload explicitly sends replacements. That way the existing
+// Opening Balance UI (which only knows about usd/fra/k) doesn't nuke the
+// K sub-split every time the user re-saves the openings.
 router.post('/opening-balance', auth, (req, res) => {
   try {
-    const { amount, cash, bank, momo, usd, fra, k } = req.body;
+    const { amount, cash, bank, momo, usd, fra, k, k_cash, k_bank, k_momo } = req.body;
     const tenantId = syncConfig.getTenantId(req);
     const { branchId, deviceId } = syncConfig.getConfig();
 
-    const usingCcy   = usd  !== undefined || fra  !== undefined || k    !== undefined;
-    const usingSplit = cash !== undefined || bank !== undefined || momo !== undefined;
-    let buckets;
+    const usingCcy    = usd    !== undefined || fra    !== undefined || k      !== undefined;
+    const usingSplit  = cash   !== undefined || bank   !== undefined || momo   !== undefined;
+    const usingKSplit = k_cash !== undefined || k_bank !== undefined || k_momo !== undefined;
+    const buckets = [];
     if (usingCcy) {
-      buckets = [
+      buckets.push(
         { ref: 'OB-USD', amount: parseFloat(usd || 0) || 0 },
         { ref: 'OB-FRA', amount: parseFloat(fra || 0) || 0 },
         { ref: 'OB-K',   amount: parseFloat(k   || 0) || 0 },
-      ];
+      );
     } else if (usingSplit) {
-      buckets = [
+      buckets.push(
         { ref: 'OB-CASH', amount: parseFloat(cash || 0) || 0 },
         { ref: 'OB-BANK', amount: parseFloat(bank || 0) || 0 },
         { ref: 'OB-MOMO', amount: parseFloat(momo || 0) || 0 },
-      ];
-    } else {
-      buckets = [{ ref: 'OB-CASH', amount: parseFloat(amount || 0) || 0 }];
+      );
+    } else if (!usingKSplit) {
+      buckets.push({ ref: 'OB-CASH', amount: parseFloat(amount || 0) || 0 });
+    }
+    if (usingKSplit) {
+      buckets.push(
+        { ref: 'OB-K-CASH', amount: parseFloat(k_cash || 0) || 0 },
+        { ref: 'OB-K-BANK', amount: parseFloat(k_bank || 0) || 0 },
+        { ref: 'OB-K-MOMO', amount: parseFloat(k_momo || 0) || 0 },
+      );
     }
 
+    // Only DELETE the ref codes the payload actually replaces — everything
+    // else stays as-is. Empty replacements set (impossible given the branches
+    // above) would no-op the DELETE.
+    const refsToReplace = buckets.map(b => b.ref);
+    const placeholders  = refsToReplace.map(() => '?').join(',');
+
     db.transaction(() => {
-      db.prepare("DELETE FROM cash_book WHERE type = 'opening' AND tenant_id = ?").run(tenantId);
+      if (refsToReplace.length) {
+        db.prepare(`DELETE FROM cash_book WHERE type = 'opening' AND tenant_id = ? AND reference IN (${placeholders})`)
+          .run(tenantId, ...refsToReplace);
+      }
       const ins = db.prepare(`
         INSERT INTO cash_book (date, description, reference, receipt_amount, payment_amount, balance,
                                type, sync_id, tenant_id, branch_id, device_id, synced, created_at, updated_at)
         VALUES (DATE('now'), ?, ?, ?, 0, ?, 'opening', ?, ?, ?, ?, 0, datetime('now'), datetime('now'))
       `);
       for (const b of buckets) {
-        const label = b.ref === 'OB-BANK' ? 'Opening Bank Balance'
-                    : b.ref === 'OB-MOMO' ? 'Opening MoMo Balance'
-                    : b.ref === 'OB-USD'  ? 'Opening USD Balance'
-                    : b.ref === 'OB-FRA'  ? 'Opening FRA Balance'
-                    : b.ref === 'OB-K'    ? 'Opening K Balance'
+        const label = b.ref === 'OB-BANK'   ? 'Opening Bank Balance'
+                    : b.ref === 'OB-MOMO'   ? 'Opening MoMo Balance'
+                    : b.ref === 'OB-USD'    ? 'Opening USD Balance'
+                    : b.ref === 'OB-FRA'    ? 'Opening FRA Balance'
+                    : b.ref === 'OB-K'      ? 'Opening K Balance'
+                    : b.ref === 'OB-K-CASH' ? 'Opening K Cash Balance'
+                    : b.ref === 'OB-K-BANK' ? 'Opening K Bank Balance'
+                    : b.ref === 'OB-K-MOMO' ? 'Opening K MoMo Balance'
                     : 'Opening Cash Balance';
         ins.run(label, b.ref, b.amount, b.amount, randomUUID(), tenantId, branchId, deviceId);
       }
@@ -952,8 +1000,9 @@ router.post('/opening-balance', auth, (req, res) => {
 
     res.json({
       success: true,
-      openingByMethod: getOpeningByMethod(tenantId),
-      openingByCcy:    getOpeningByCurrency(tenantId),
+      openingByMethod:   getOpeningByMethod(tenantId),
+      openingByCcy:      getOpeningByCurrency(tenantId),
+      kSubOpeningSeeds:  getKSubOpeningSeeds(tenantId),
     });
   } catch (error) {
     res.status(500).json({ error: error.message });
