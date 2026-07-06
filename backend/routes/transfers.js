@@ -181,8 +181,22 @@ router.post('/', hqAuth, (req, res) => {
     if (ccy && !VALID_CCY.has(ccy)) {
       return res.status(400).json({ error: 'cost_currency must be one of USD, FRA, K' });
     }
+    // v1.10.140 — mirror the hqPurchases relaxation: only require FX
+    // when the DESTINATION branch's currency_mode doesn't natively
+    // include cost_currency. K-only Lusaka/Mansa keep a K cost with
+    // no rate (nothing to convert to); tri-currency Kassumbalesa still
+    // needs a rate for non-USD costs.
     if (ccy && ccy !== 'USD' && !(rate > 0)) {
-      return res.status(400).json({ error: `fx_rate_used > 0 is required when cost_currency is ${ccy}` });
+      let needsFx = true;
+      try {
+        const bdb = getTenantDb(String(to_slug || '').toLowerCase());
+        const row = bdb.prepare('SELECT currency_mode FROM business_settings ORDER BY id ASC LIMIT 1').get();
+        const mode = (row && row.currency_mode) || 'K';
+        needsFx = !mode.split(/[+\-,]/).map(s => s.trim()).includes(ccy);
+      } catch (_) { /* fall through to strict check */ }
+      if (needsFx) {
+        return res.status(400).json({ error: `fx_rate_used > 0 is required when cost_currency is ${ccy}` });
+      }
     }
     // Convert helper: local cost → USD equivalent using this transfer's
     // rate. USD stays 1:1. Stored on each item inside items_json so read

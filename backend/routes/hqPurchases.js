@@ -56,6 +56,20 @@ function destinationName(slug) {
   } catch (_) { return slug; }
 }
 
+// v1.10.140 — read a destination's currency_mode from its tenant DB.
+// Returns 'K' (Liquor-style Lusaka/Mansa), 'USD+FRA+K' (Sosna
+// Kassumbalesa), etc. Falls back to 'K' when the DB or row is missing
+// (safe default: assume no FX conversion needed rather than forcing one).
+function destinationCurrencyMode(slug) {
+  try {
+    const db = getTenantDb(slug);
+    const row = db.prepare('SELECT currency_mode FROM business_settings ORDER BY id ASC LIMIT 1').get();
+    return (row && row.currency_mode) || 'K';
+  } catch (_) {
+    return 'K';
+  }
+}
+
 // POST /api/hq/purchases
 // Body: { supplier_name, invoice_number, date, notes,
 //         items: [{product_sync_id?, product_name, unit, dispatched_qty,
@@ -86,8 +100,25 @@ router.post('/', hqAuth, (req, res) => {
     if (ccy && !VALID_CCY.has(ccy)) {
       return res.status(400).json({ error: `cost_currency must be one of USD, FRA, K` });
     }
+    // v1.10.140 — FX is only required when at least one destination
+    // needs conversion. If every destination line targets a branch whose
+    // currency_mode already contains cost_currency as a native drawer
+    // (e.g. K-only Lusaka/Mansa with cost_currency='K'), no conversion
+    // happens — the cost stays in that currency end-to-end and rate can
+    // be null. This restores the pre-v1.10.54 behaviour for K-only
+    // dispatches while keeping the guardrail on tri-currency ones.
     if (ccy && ccy !== 'USD' && !(rate > 0)) {
-      return res.status(400).json({ error: `fx_rate_used > 0 is required when cost_currency is ${ccy}` });
+      const anyNeedsFx = (items || []).some(it => {
+        const slug = String(it.destination_slug || '').toLowerCase();
+        if (!slug) return true; // unknown → fall through to strict check
+        const mode = destinationCurrencyMode(slug);
+        // Modes are dash/plus-delimited currency codes (e.g. 'K',
+        // 'USD+FRA', 'USD+FRA+K'). Native drawer iff the code appears.
+        return !mode.split(/[+\-,]/).map(s => s.trim()).includes(ccy);
+      });
+      if (anyNeedsFx) {
+        return res.status(400).json({ error: `fx_rate_used > 0 is required when cost_currency is ${ccy}` });
+      }
     }
     // Convert helper: local cost → USD equivalent, using the PO rate.
     // USD stays 1:1. FRA/K divide by the rate. NULL rate on non-USD
