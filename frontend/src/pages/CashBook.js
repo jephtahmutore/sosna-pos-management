@@ -606,10 +606,13 @@ const CashBook = () => {
       </div>
 
       {activeTab === 'exchanges' && (
+        // v1.10.139 — the Exchange tab shows all-time history by default
+        // (no date-filter inheritance from the Ledger tab). The Ledger's
+        // from/to defaults to today, which was silently hiding older
+        // exchanges here — users read "0 entries" as data loss when the
+        // rows were just outside the date window.
         <CurrencyExchangePanel
           scope="book"
-          from={from}
-          to={to}
           user={authUser}
           title="Currency Exchanges (Cash Book)"
           showKSubMethods={onHq}
