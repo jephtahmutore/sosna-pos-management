@@ -15,8 +15,14 @@ import {
 } from 'react-icons/fi';
 import { getHqOverview, setHqBranch, mirrorHqToAllBranches } from '../services/api';
 
-const fmtMoney = (n) => `$${parseFloat(n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+// v1.10.146 — money formatters honour a currency symbol argument. Default
+// stays '$' for callers that don't pass one. Branch cards + rollups both
+// use fmtMoneyCcy so no branch ever sees dollars misrendered as its own.
+const fmtNum   = (n) => parseFloat(n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const fmtMoney = (n, sym = '$') => `${sym}${fmtNum(n)}`;
+const fmtMoneyCcy = (n, ccy) => fmtMoney(n, ccy === 'K' ? 'K ' : '$');
 const fmtInt   = (n) => parseFloat(n || 0).toLocaleString();
+const branchSym = (b) => (b.currency_mode === 'K' ? 'K ' : '$');
 
 export default function HqOverview() {
   const navigate = useNavigate();
@@ -110,16 +116,39 @@ export default function HqOverview() {
         // error, mid-render race, or older endpoint version). Use a
         // zeroed default rather than crashing the whole page. v1.3.13.
         const rollup = data.rollup || {};
+        // v1.10.146 — money KPIs split by currency instead of summing mixed.
+        // by_currency.USD / by_currency.K each hold their own subtotals.
+        // A currency bucket is only rendered if there's at least one non-zero
+        // metric in it (so branches on a single-currency deployment don't get
+        // an empty second row).
+        const buckets = rollup.by_currency || { USD: {}, K: {} };
+        const active = ['USD', 'K'].filter(cur => {
+          const b = buckets[cur] || {};
+          return (b.today_revenue || 0) + (b.mtd_revenue || 0) + (b.stock_value || 0) + (b.ar_outstanding || 0) > 0
+              || (b.today_orders || 0) + (b.mtd_orders || 0) > 0;
+        });
+        // If no currency has any data (fresh deploy), fall back to showing both
+        // rows as zero so the layout stays predictable.
+        const rows = active.length ? active : ['USD', 'K'];
         return (
         <>
-          {/* Roll-up row */}
+          {/* Roll-up row — money KPIs render one line per currency bucket,
+              counts stay as a single global number. */}
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(190px, 1fr))', gap: 12, marginBottom: 22 }}>
-            <RollupCard icon={<FiTrendingUp />} label="Today's Revenue" value={fmtMoney(rollup.today_revenue)} sub={`${fmtInt(rollup.today_orders)} orders`} color="#0ea5e9" />
-            <RollupCard icon={<FiTrendingUp />} label="Month-to-Date"     value={fmtMoney(rollup.mtd_revenue)}   sub={`${fmtInt(rollup.mtd_orders)} orders`}   color="#6366f1" />
+            <RollupCard icon={<FiTrendingUp />} label="Today's Revenue"
+              lines={rows.map(c => ({ ccy: c, value: fmtMoneyCcy(buckets[c]?.today_revenue, c), sub: `${fmtInt(buckets[c]?.today_orders)} orders` }))}
+              color="#0ea5e9" />
+            <RollupCard icon={<FiTrendingUp />} label="Month-to-Date"
+              lines={rows.map(c => ({ ccy: c, value: fmtMoneyCcy(buckets[c]?.mtd_revenue, c), sub: `${fmtInt(buckets[c]?.mtd_orders)} orders` }))}
+              color="#6366f1" />
             <RollupCard icon={<FiClock />}      label="Awaiting Payment"  value={fmtInt(rollup.pending_payment)} sub="3-station Sales → Cashier" color="#f59e0b" />
             <RollupCard icon={<FiTruck />}      label="Awaiting Dispatch" value={fmtInt(rollup.awaiting_dispatch)} sub="Cashier → Dispatch"     color="#16a34a" />
-            <RollupCard icon={<FiPackage />}    label="Stock Value"       value={fmtMoney(rollup.stock_value)}   sub="At cost, all branches"  color="#0f766e" />
-            <RollupCard icon={<FiDollarSign />} label="AR Outstanding"    value={fmtMoney(rollup.ar_outstanding)} sub="Unpaid by customers"   color="#dc2626" />
+            <RollupCard icon={<FiPackage />}    label="Stock Value"
+              lines={rows.map(c => ({ ccy: c, value: fmtMoneyCcy(buckets[c]?.stock_value, c), sub: 'At cost' }))}
+              color="#0f766e" />
+            <RollupCard icon={<FiDollarSign />} label="AR Outstanding"
+              lines={rows.map(c => ({ ccy: c, value: fmtMoneyCcy(buckets[c]?.ar_outstanding, c), sub: 'Unpaid' }))}
+              color="#dc2626" />
           </div>
 
           {/* Per-branch cards */}
@@ -153,21 +182,27 @@ export default function HqOverview() {
                   <div style={{ padding: 10, background: '#fef2f2', color: '#991b1b', border: '1px solid #fecaca', borderRadius: 6, fontSize: 12 }}>
                     <FiAlertTriangle style={{ verticalAlign: 'middle', marginRight: 4 }} /> {b.error}
                   </div>
-                ) : (
+                ) : (() => {
+                  // v1.10.146 — use the branch's own currency symbol for money
+                  // metrics on its card. K-primary branches (Mansa/Lusaka) get
+                  // 'K ', USD-primary (Kassumbalesa) gets '$'. Never mix.
+                  const sym = branchSym(b);
+                  return (
                   <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-                    <Metric label="Today" value={fmtMoney(b.today.revenue)} sub={`${b.today.orders} orders`} />
-                    <Metric label="MTD"   value={fmtMoney(b.mtd.revenue)}   sub={`${b.mtd.orders} orders`} />
+                    <Metric label="Today" value={fmtMoney(b.today.revenue, sym)} sub={`${b.today.orders} orders`} />
+                    <Metric label="MTD"   value={fmtMoney(b.mtd.revenue, sym)}   sub={`${b.mtd.orders} orders`} />
                     {b.workflow_mode === 'three_station' && (
                       <>
                         <Metric label="Awaiting Payment"  value={fmtInt(b.pending_payment)}   warn={b.pending_payment > 0} />
                         <Metric label="Awaiting Dispatch" value={fmtInt(b.awaiting_dispatch)} warn={b.awaiting_dispatch > 0} />
                       </>
                     )}
-                    <Metric label="Stock Value" value={fmtMoney(b.stock_value)} />
+                    <Metric label="Stock Value" value={fmtMoney(b.stock_value, sym)} />
                     <Metric label="Low Stock"   value={fmtInt(b.stock_low_count)} warn={b.stock_low_count > 0} />
-                    <Metric label="AR Open"     value={fmtMoney(b.ar_outstanding)} warn={b.ar_outstanding > 0.001} fullRow />
+                    <Metric label="AR Open"     value={fmtMoney(b.ar_outstanding, sym)} warn={b.ar_outstanding > 0.001} fullRow />
                   </div>
-                )}
+                  );
+                })()}
               </div>
             ))}
           </div>
@@ -184,14 +219,32 @@ export default function HqOverview() {
   );
 }
 
-function RollupCard({ icon, label, value, sub, color }) {
+// v1.10.146 — RollupCard now supports two shapes:
+//   1) single value + sub (unchanged, used by count KPIs)
+//   2) lines = [{ ccy, value, sub }, ...]  — one row per currency bucket
+function RollupCard({ icon, label, value, sub, lines, color }) {
   return (
     <div style={{ background: '#fff', border: '1px solid #e5e7eb', borderRadius: 10, padding: 14 }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, color, fontSize: 12, fontWeight: 600 }}>
         {icon} <span>{label}</span>
       </div>
-      <div style={{ fontSize: 22, fontWeight: 800, color: '#0f172a', marginTop: 6 }}>{value}</div>
-      {sub && <div style={{ fontSize: 11, color: '#64748b', marginTop: 2 }}>{sub}</div>}
+      {Array.isArray(lines) && lines.length > 0 ? (
+        <div style={{ marginTop: 6 }}>
+          {lines.map((ln, i) => (
+            <div key={ln.ccy} style={{ marginTop: i === 0 ? 0 : 4 }}>
+              <div style={{ fontSize: i === 0 ? 20 : 16, fontWeight: 800, color: '#0f172a', lineHeight: 1.1 }}>
+                {ln.value}
+              </div>
+              {ln.sub && <div style={{ fontSize: 10, color: '#94a3b8' }}>{ln.sub}</div>}
+            </div>
+          ))}
+        </div>
+      ) : (
+        <>
+          <div style={{ fontSize: 22, fontWeight: 800, color: '#0f172a', marginTop: 6 }}>{value}</div>
+          {sub && <div style={{ fontSize: 11, color: '#64748b', marginTop: 2 }}>{sub}</div>}
+        </>
+      )}
     </div>
   );
 }

@@ -167,20 +167,33 @@ router.get('/overview', hqAuth, (req, res) => {
       }
     }
 
-    // Roll-up — sum across all branches (ignores ones that errored).
-    const rollup = branches.reduce((acc, b) => {
-      if (b.error) return acc;
-      acc.today_revenue   += b.today.revenue;
-      acc.today_orders    += b.today.orders;
-      acc.mtd_revenue     += b.mtd.revenue;
-      acc.mtd_orders      += b.mtd.orders;
-      acc.pending_payment += b.pending_payment;
-      acc.awaiting_dispatch += b.awaiting_dispatch;
-      acc.stock_value     += b.stock_value;
-      acc.ar_outstanding  += b.ar_outstanding;
-      return acc;
-    }, { today_revenue:0, today_orders:0, mtd_revenue:0, mtd_orders:0,
-         pending_payment:0, awaiting_dispatch:0, stock_value:0, ar_outstanding:0 });
+    // v1.10.146 — Roll-up money KPIs per-currency instead of one mixed sum.
+    // Kwacha branches (Mansa/Lusaka) go into K bucket; dual-currency branches
+    // (Kassumbalesa) go into USD (their primary). Counts (pending_payment,
+    // awaiting_dispatch) stay global — they're not money.
+    // primaryCurrency: 'K' | 'USD' (FRA is transactional-only, never primary).
+    const primaryFor = (b) => (b.currency_mode === 'K' ? 'K' : 'USD');
+    const emptyBucket = () => ({
+      today_revenue: 0, today_orders: 0,
+      mtd_revenue: 0,   mtd_orders: 0,
+      stock_value: 0,   ar_outstanding: 0,
+    });
+    const by_currency = { USD: emptyBucket(), K: emptyBucket() };
+    let pending_payment = 0, awaiting_dispatch = 0;
+    for (const b of branches) {
+      if (b.error) continue;
+      const cur = primaryFor(b);
+      const bucket = by_currency[cur] || (by_currency[cur] = emptyBucket());
+      bucket.today_revenue   += b.today.revenue;
+      bucket.today_orders    += b.today.orders;
+      bucket.mtd_revenue     += b.mtd.revenue;
+      bucket.mtd_orders      += b.mtd.orders;
+      bucket.stock_value     += b.stock_value;
+      bucket.ar_outstanding  += b.ar_outstanding;
+      pending_payment   += b.pending_payment;
+      awaiting_dispatch += b.awaiting_dispatch;
+    }
+    const rollup = { by_currency, pending_payment, awaiting_dispatch };
 
     res.json({ as_of: new Date().toISOString(), branches, rollup });
   } catch (error) {
