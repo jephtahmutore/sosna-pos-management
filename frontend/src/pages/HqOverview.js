@@ -173,10 +173,16 @@ export default function HqOverview() {
                           heading above. Removed. Workflow-mode pill now shown
                           for every branch (was 3-station only) so managers can
                           tell at a glance which POS pattern each branch uses. */}
-                      {b.currency_mode === 'USD+FRA' && <span style={tagStyle('#fef3c7', '#92400e')}>Dual currency</span>}
-                      {b.workflow_mode === 'three_station'
-                        ? <span style={tagStyle('#dbeafe', '#1e40af')}>3-station</span>
-                        : <span style={tagStyle('#f1f5f9', '#475569')}>Single POS</span>}
+                      {/* v1.10.148 — cover all currency + workflow modes.
+                          Currency: USD+FRA → Dual, USD+FRA+K → Triple.
+                          Workflow: three_station → 3-station,
+                                    two_station   → 2-station,
+                                    else          → Single POS. */}
+                      {b.currency_mode === 'USD+FRA'   && <span style={tagStyle('#fef3c7', '#92400e')}>Dual currency</span>}
+                      {b.currency_mode === 'USD+FRA+K' && <span style={tagStyle('#fef3c7', '#92400e')}>Triple currency</span>}
+                      {b.workflow_mode === 'three_station' && <span style={tagStyle('#dbeafe', '#1e40af')}>3-station</span>}
+                      {b.workflow_mode === 'two_station'   && <span style={tagStyle('#e0e7ff', '#3730a3')}>2-station</span>}
+                      {!['three_station', 'two_station'].includes(b.workflow_mode) && <span style={tagStyle('#f1f5f9', '#475569')}>Single POS</span>}
                     </div>
                   </div>
                   <button onClick={() => openBranch(b.slug)}
