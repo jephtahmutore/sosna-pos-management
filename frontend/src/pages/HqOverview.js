@@ -131,9 +131,16 @@ export default function HqOverview() {
                   <div>
                     <h4 style={{ margin: '0 0 2px 0', fontSize: 16, color: '#0f172a' }}>{b.name}</h4>
                     <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-                      <span style={tagStyle('#e2e8f0', '#0f172a')}>{b.slug}</span>
+                      {/* v1.10.145 — the slug chip was leaking the internal
+                          device slug (KASSUMBALESA1 etc.) into the HQ Overview
+                          UI and competing with the actual business_name in the
+                          heading above. Removed. Workflow-mode pill now shown
+                          for every branch (was 3-station only) so managers can
+                          tell at a glance which POS pattern each branch uses. */}
                       {b.currency_mode === 'USD+FRA' && <span style={tagStyle('#fef3c7', '#92400e')}>Dual currency</span>}
-                      {b.workflow_mode === 'three_station' && <span style={tagStyle('#dbeafe', '#1e40af')}>3-station</span>}
+                      {b.workflow_mode === 'three_station'
+                        ? <span style={tagStyle('#dbeafe', '#1e40af')}>3-station</span>
+                        : <span style={tagStyle('#f1f5f9', '#475569')}>Single POS</span>}
                     </div>
                   </div>
                   <button onClick={() => openBranch(b.slug)}
