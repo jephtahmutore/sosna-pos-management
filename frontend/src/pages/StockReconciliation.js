@@ -159,13 +159,16 @@ const StockReconciliation = () => {
         : `<span style="display:inline-block;border-bottom:1px solid #000;min-width:80px;height:14px"></span>`;
       const baseQty = parseFloat(p.system_qty) || 0;
       const transitQty = parseFloat(p.transit_qty || 0);
-      const systemDisplay = formatStockForProduct(baseQty, p, { showBaseInParens: false });
+      const netSysQty = Math.max(0, baseQty - transitQty);
+      // v1.10.142 — printed System Qty column also shows net (raw − transit),
+      // amber when transit > 0, matching the on-screen behaviour.
+      const systemDisplay = formatStockForProduct(netSysQty, p, { showBaseInParens: false });
       const transitDisplay = transitQty > 0 ? formatStockForProduct(transitQty, p, { showBaseInParens: false }) : '—';
       return `<tr style="background:${idx % 2 === 1 ? '#f5f5f5' : '#fff'};border-bottom:1px solid #ddd">
         <td style="padding:6px 8px;color:#000;font-size:10px">${idx + 1}</td>
         <td style="padding:6px 8px;font-size:10px;font-family:monospace">${p.code || '—'}</td>
         <td style="padding:6px 8px;font-weight:600;font-size:10.5px">${p.name}</td>
-        <td style="padding:6px 8px;text-align:right;font-family:monospace;font-size:10.5px">${systemDisplay}</td>
+        <td style="padding:6px 8px;text-align:right;font-family:monospace;font-size:10.5px;color:${transitQty > 0 ? '#b45309' : '#000'};font-weight:${transitQty > 0 ? 700 : 400}">${systemDisplay}</td>
         <td style="padding:6px 8px;text-align:right;font-family:monospace;font-size:10.5px;color:${transitQty > 0 ? '#0e7490' : '#999'}">${transitDisplay}</td>
         <td style="padding:6px 8px;text-align:right;font-family:monospace;font-size:10.5px">${physicalCell}</td>
         <td style="padding:6px 8px;text-align:center;font-size:10px">${c.unit || p.unit}</td>
@@ -427,12 +430,28 @@ const StockReconciliation = () => {
                         <div style={{ fontWeight: 500, color: '#111827' }}>{p.name}</div>
                         <div style={{ fontSize: 11, color: '#9ca3af' }}>{p.code || '—'}</div>
                       </td>
-                      <td style={{ padding: '8px 14px', textAlign: 'right', color: '#374151' }}>
-                        {formatStockForProduct(p.system_qty, p)}
-                      </td>
-                      <td style={{ padding: '8px 14px', textAlign: 'right', color: parseFloat(p.transit_qty || 0) > 0 ? '#0e7490' : '#9ca3af', fontWeight: parseFloat(p.transit_qty || 0) > 0 ? 600 : 400 }}>
-                        {parseFloat(p.transit_qty || 0) > 0 ? formatStockForProduct(p.transit_qty, p) : '—'}
-                      </td>
+                      {(() => {
+                        // v1.10.142 — System Qty column shows (system − transit)
+                        // whenever there's pending outgoing transfers, coloured
+                        // amber so the counter sees it's already net of transit
+                        // and doesn't double-subtract manually. When transit = 0
+                        // the raw system_qty is shown in the default slate.
+                        const rawSys = parseFloat(p.system_qty) || 0;
+                        const transit = parseFloat(p.transit_qty || 0);
+                        const netSys = Math.max(0, rawSys - transit);
+                        const hasTransit = transit > 0;
+                        return (
+                          <>
+                            <td style={{ padding: '8px 14px', textAlign: 'right', color: hasTransit ? '#b45309' : '#374151', fontWeight: hasTransit ? 600 : 400 }}
+                                title={hasTransit ? `Raw system ${formatStockForProduct(rawSys, p)} − Transit ${formatStockForProduct(transit, p)}` : undefined}>
+                              {formatStockForProduct(netSys, p)}
+                            </td>
+                            <td style={{ padding: '8px 14px', textAlign: 'right', color: hasTransit ? '#0e7490' : '#9ca3af', fontWeight: hasTransit ? 600 : 400 }}>
+                              {hasTransit ? formatStockForProduct(transit, p) : '—'}
+                            </td>
+                          </>
+                        );
+                      })()}
                       <td style={{ padding: '8px 6px' }}>
                         <input type="number" min="0" step="1" placeholder="—"
                           value={c.physical_qty ?? ''}
