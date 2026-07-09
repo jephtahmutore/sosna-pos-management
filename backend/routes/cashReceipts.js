@@ -30,9 +30,22 @@ router.get('/stats', auth, readOnlyGuard, (req, res) => {
     // v1.8.31 — per-currency totals. Same CASE-WHEN pattern as PV stats
     // (v1.8.25): prefer new usd/fra/k columns, fall back to legacy
     // cash/bank/momo on rows where new columns are 0.
-    const usdExpr = `COALESCE(SUM(CASE WHEN COALESCE(usd_amount,0) > 0 THEN usd_amount ELSE COALESCE(cash_amount,0) END), 0)`;
-    const fraExpr = `COALESCE(SUM(CASE WHEN COALESCE(fra_amount,0) > 0 THEN fra_amount ELSE COALESCE(bank_amount,0) END), 0)`;
-    const kExpr   = `COALESCE(SUM(CASE WHEN COALESCE(k_amount,  0) > 0 THEN k_amount   ELSE COALESCE(momo_amount,0) END), 0)`;
+    // v1.10.141 — HQ K CRs (Push 2, v1.10.132) fill cash/bank/momo as K
+    // sub-drawers (not USD/FRA equivalents). Skip the fallback when k_amount
+    // is populated so a K·Cash amount doesn't get counted as USD and
+    // K·Bank doesn't get counted as FRA. Liquor AR-mint CRs (k_amount=0,
+    // legacy columns filled) still hit the fallback as intended.
+    const usdExpr = `COALESCE(SUM(CASE
+      WHEN COALESCE(usd_amount,0) > 0 THEN usd_amount
+      WHEN COALESCE(k_amount,0)   > 0 THEN 0
+      ELSE COALESCE(cash_amount,0)
+    END), 0)`;
+    const fraExpr = `COALESCE(SUM(CASE
+      WHEN COALESCE(fra_amount,0) > 0 THEN fra_amount
+      WHEN COALESCE(k_amount,0)   > 0 THEN 0
+      ELSE COALESCE(bank_amount,0)
+    END), 0)`;
+    const kExpr   = `COALESCE(SUM(CASE WHEN COALESCE(k_amount,0) > 0 THEN k_amount ELSE COALESCE(momo_amount,0) END), 0)`;
     const totalsRow = (whereExtra, params) => db.prepare(
       `SELECT ${usdExpr} AS usd, ${fraExpr} AS fra, ${kExpr} AS k
        FROM cash_receipts WHERE deleted_at IS NULL AND tenant_id = ?${whereExtra}`

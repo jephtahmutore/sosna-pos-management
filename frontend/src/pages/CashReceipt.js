@@ -449,9 +449,14 @@ const CashReceipt = () => {
                 // double-count fear from v1.10.46 no longer applies because
                 // we prefer the mirror when it's non-zero.
                 const pf = (v) => parseFloat(v || 0) || 0;
-                const ru = pf(r.usd_amount) > 0 ? pf(r.usd_amount) : pf(r.cash_amount);
-                const rf = pf(r.fra_amount) > 0 ? pf(r.fra_amount) : pf(isLiquorStyle ? r.momo_amount : r.bank_amount);
-                const rk = pf(r.k_amount)   > 0 ? pf(r.k_amount)   : pf(isLiquorStyle ? r.bank_amount : r.momo_amount);
+                // v1.10.141 — the v1.10.74 fallback from usd/fra/k → cash/bank/momo
+                // was only meant for Liquor's AR-mint CRs (which fill legacy
+                // cash/bank/momo but not usd/fra/k). On HQ, cash/bank/momo are the
+                // K sub-drawers, so falling back displayed a K·Cash amount as USD
+                // and a K·Bank amount as FRA. Gate the fallback on isLiquorStyle.
+                const ru = pf(r.usd_amount) > 0 ? pf(r.usd_amount) : (isLiquorStyle ? pf(r.cash_amount) : 0);
+                const rf = pf(r.fra_amount) > 0 ? pf(r.fra_amount) : (isLiquorStyle ? pf(r.momo_amount) : 0);
+                const rk = pf(r.k_amount)   > 0 ? pf(r.k_amount)   : (isLiquorStyle ? pf(r.bank_amount) : 0);
                 const dash = <span style={{ color: '#cbd5e1' }}>—</span>;
                 // v1.10.45 — Liquor total = sum of the three slots (all K).
                 const liquorTotal = ru + rf + rk;
@@ -523,9 +528,12 @@ const CashReceipt = () => {
                   // legacy cash/bank/momo columns (which is what
                   // customerPayments.js's mintReceipt fills on Liquor AR).
                   const pf = (v) => parseFloat(v || 0) || 0;
-                  const pickU = (r) => pf(r.usd_amount) > 0 ? pf(r.usd_amount) : pf(r.cash_amount);
-                  const pickF = (r) => pf(r.fra_amount) > 0 ? pf(r.fra_amount) : pf(isLiquorStyle ? r.momo_amount : r.bank_amount);
-                  const pickK = (r) => pf(r.k_amount)   > 0 ? pf(r.k_amount)   : pf(isLiquorStyle ? r.bank_amount : r.momo_amount);
+                  // v1.10.141 — see row-level comment: fallback to cash/bank/momo
+                  // is a Liquor-only thing. On HQ the sub-drawer columns are K,
+                  // not USD/FRA equivalents.
+                  const pickU = (r) => pf(r.usd_amount) > 0 ? pf(r.usd_amount) : (isLiquorStyle ? pf(r.cash_amount) : 0);
+                  const pickF = (r) => pf(r.fra_amount) > 0 ? pf(r.fra_amount) : (isLiquorStyle ? pf(r.momo_amount) : 0);
+                  const pickK = (r) => pf(r.k_amount)   > 0 ? pf(r.k_amount)   : (isLiquorStyle ? pf(r.bank_amount) : 0);
                   const tu = filteredReceipts.reduce((s, r) => s + pickU(r), 0);
                   const tf = filteredReceipts.reduce((s, r) => s + pickF(r), 0);
                   const tk = filteredReceipts.reduce((s, r) => s + pickK(r), 0);
