@@ -159,6 +159,13 @@ export default function HqOverview() {
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 12 }}>
                   <div>
                     <h4 style={{ margin: '0 0 2px 0', fontSize: 16, color: '#0f172a' }}>{b.name}</h4>
+                    {/* v1.10.147 — show the branch's business_address as a
+                        subtitle so managers see the actual location (Mansa /
+                        Kassumbalesa / Lusaka etc.) without relying on the
+                        internal slug tag we removed in v1.10.145. */}
+                    {b.address && (
+                      <div style={{ fontSize: 11, color: '#64748b', marginBottom: 4 }}>{b.address}</div>
+                    )}
                     <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
                       {/* v1.10.145 — the slug chip was leaking the internal
                           device slug (KASSUMBALESA1 etc.) into the HQ Overview

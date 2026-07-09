@@ -143,8 +143,10 @@ router.get('/overview', hqAuth, (req, res) => {
 
         // Branch business settings — currency_mode / workflow_mode so the
         // dashboard can flag dual-currency / 3-station branches at a glance.
+        // v1.10.147: also pull business_address so the HQ card shows the
+        // branch's actual location under the business name.
         const settings = tryGet(db, `
-          SELECT business_name, currency_mode, workflow_mode
+          SELECT business_name, business_address, currency_mode, workflow_mode
             FROM business_settings
            ORDER BY id ASC LIMIT 1
         `) || {};
@@ -152,6 +154,7 @@ router.get('/overview', hqAuth, (req, res) => {
         branches.push({
           slug: t.slug,
           name: settings.business_name || t.business_name || t.slug,
+          address: settings.business_address || '',
           currency_mode: settings.currency_mode || 'K',
           workflow_mode: settings.workflow_mode || 'single_pos',
           today: { revenue: salesToday.revenue, orders: salesToday.orders },
