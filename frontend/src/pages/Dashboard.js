@@ -72,7 +72,7 @@ const Dashboard = () => {
           <div className="stat-icon"><FiDollarSign /></div>
           <div>
             <div className="stat-label">Today's Sales</div>
-            <div className="stat-value">K {data.todaySales?.toLocaleString()}</div>
+            <div className="stat-value">{curSym}{data.todaySales?.toLocaleString()}</div>
           </div>
         </div>
         <div className="stat-card blue">
@@ -86,7 +86,7 @@ const Dashboard = () => {
           <div className="stat-icon"><FiTrendingUp /></div>
           <div>
             <div className="stat-label">Weekly Revenue</div>
-            <div className="stat-value">K {data.weeklyRevenue?.toLocaleString()}</div>
+            <div className="stat-value">{curSym}{data.weeklyRevenue?.toLocaleString()}</div>
           </div>
         </div>
         <div className="stat-card orange">
@@ -166,7 +166,7 @@ const Dashboard = () => {
                   <h4>{product.product_name}</h4>
                   <p>{product.units_sold} units sold</p>
                 </div>
-                <div className="top-product-revenue">K {product.revenue?.toLocaleString()}</div>
+                <div className="top-product-revenue">{curSym}{product.revenue?.toLocaleString()}</div>
               </div>
             ))
           )}

@@ -392,8 +392,11 @@ const Layout = () => {
               child. HQ Products kept hidden (replaced by Store → Item
               Details that pushes to branches automatically). */}
 
-          {/* Dashboard — only for All access users */}
-          {isAllAccess() && (
+          {/* Dashboard — only for All access users, and hidden on HQ
+              because HQ has no POS orders (Dashboard tiles would all
+              read zero). v1.10.144 — HQ Overview is the real landing
+              for HQ users. */}
+          {isAllAccess() && !hq && (
             <div className={`nav-item ${isActive('/dashboard') ? 'active' : ''}`} onClick={() => navigate('/dashboard')}>
               <FiGrid className="nav-icon" />
               {!collapsed && <span>{t('dashboard')}</span>}
