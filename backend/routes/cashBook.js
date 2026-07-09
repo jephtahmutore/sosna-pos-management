@@ -103,11 +103,15 @@ function ccyReceiptsPayments(tenantId, slug, dateClause, dateParams) {
   const payments = { usd: 0, fra: 0, k: 0 };
   const num = (v) => parseFloat(v || 0) || 0;
   // CR — cash_receipts.
-  receipts.usd += num(db.prepare(`SELECT COALESCE(SUM(CASE WHEN COALESCE(usd_amount,0)>0 THEN usd_amount ELSE COALESCE(cash_amount,0) END), 0) AS t FROM cash_receipts WHERE deleted_at IS NULL AND tenant_id = ?${dateClause}`).get(tenantId, ...dateParams).t);
+  // v1.10.142 — skip usd_amount→cash_amount fallback on rows where
+  // k_amount > 0 (marks HQ K CR whose cash_amount is a K sub-drawer,
+  // not a USD equivalent). Liquor AR-mint rows (k_amount = 0) still
+  // hit the fallback as intended.
+  receipts.usd += num(db.prepare(`SELECT COALESCE(SUM(CASE WHEN COALESCE(usd_amount,0)>0 THEN usd_amount WHEN COALESCE(k_amount,0)>0 THEN 0 ELSE COALESCE(cash_amount,0) END), 0) AS t FROM cash_receipts WHERE deleted_at IS NULL AND tenant_id = ?${dateClause}`).get(tenantId, ...dateParams).t);
   receipts.fra += num(db.prepare(`SELECT COALESCE(SUM(fra_amount), 0) AS t FROM cash_receipts WHERE deleted_at IS NULL AND tenant_id = ?${dateClause}`).get(tenantId, ...dateParams).t);
   receipts.k   += num(db.prepare(`SELECT COALESCE(SUM(k_amount), 0)   AS t FROM cash_receipts WHERE deleted_at IS NULL AND tenant_id = ?${dateClause}`).get(tenantId, ...dateParams).t);
   // PV — payment_vouchers.
-  payments.usd += num(db.prepare(`SELECT COALESCE(SUM(CASE WHEN COALESCE(usd_amount,0)>0 THEN usd_amount ELSE COALESCE(cash_amount,0) END), 0) AS t FROM payment_vouchers WHERE deleted_at IS NULL AND tenant_id = ?${dateClause}`).get(tenantId, ...dateParams).t);
+  payments.usd += num(db.prepare(`SELECT COALESCE(SUM(CASE WHEN COALESCE(usd_amount,0)>0 THEN usd_amount WHEN COALESCE(k_amount,0)>0 THEN 0 ELSE COALESCE(cash_amount,0) END), 0) AS t FROM payment_vouchers WHERE deleted_at IS NULL AND tenant_id = ?${dateClause}`).get(tenantId, ...dateParams).t);
   payments.fra += num(db.prepare(`SELECT COALESCE(SUM(fra_amount), 0) AS t FROM payment_vouchers WHERE deleted_at IS NULL AND tenant_id = ?${dateClause}`).get(tenantId, ...dateParams).t);
   payments.k   += num(db.prepare(`SELECT COALESCE(SUM(k_amount), 0)   AS t FROM payment_vouchers WHERE deleted_at IS NULL AND tenant_id = ?${dateClause}`).get(tenantId, ...dateParams).t);
   // v1.10.78 — AP payments now support triple-currency (usd/fra/k) on HQ
@@ -264,7 +268,16 @@ router.get('/', auth, readOnlyGuard, (req, res) => {
           ELSE COALESCE(received_from, '')
         END AS description,
         amount AS receipt_amount, 0 AS payment_amount,
-        CASE WHEN COALESCE(usd_amount,0) > 0 THEN usd_amount ELSE COALESCE(cash_amount,0) END AS usd_in,
+        -- v1.10.142 — legacy fallback usd_amount → cash_amount was for
+        -- Liquor AR-mint CRs (only cash/bank/momo filled). On HQ K·Cash
+        -- CRs (Push 2, v1.10.132) cash_amount is a K sub-drawer, so the
+        -- fallback rendered K·Cash amounts as USD in the ledger. Skip
+        -- the fallback when k_amount > 0 (marks the row as HQ K CR).
+        CASE
+          WHEN COALESCE(usd_amount,0) > 0 THEN usd_amount
+          WHEN COALESCE(k_amount,0)   > 0 THEN 0
+          ELSE COALESCE(cash_amount,0)
+        END AS usd_in,
         COALESCE(fra_amount, 0) AS fra_in,
         COALESCE(k_amount,   0) AS k_in,
         0 AS usd_out, 0 AS fra_out, 0 AS k_out
@@ -290,7 +303,13 @@ router.get('/', auth, readOnlyGuard, (req, res) => {
         END AS description,
         0 AS receipt_amount, amount AS payment_amount,
         0 AS usd_in, 0 AS fra_in, 0 AS k_in,
-        CASE WHEN COALESCE(usd_amount,0) > 0 THEN usd_amount ELSE COALESCE(cash_amount,0) END AS usd_out,
+        -- v1.10.142 — same fallback fix as CR above. HQ K·Cash PVs stop
+        -- polluting the USD outflow column.
+        CASE
+          WHEN COALESCE(usd_amount,0) > 0 THEN usd_amount
+          WHEN COALESCE(k_amount,0)   > 0 THEN 0
+          ELSE COALESCE(cash_amount,0)
+        END AS usd_out,
         COALESCE(fra_amount, 0) AS fra_out,
         COALESCE(k_amount,   0) AS k_out
       FROM payment_vouchers
@@ -613,7 +632,9 @@ router.get('/stats', auth, readOnlyGuard, (req, res) => {
     const sumCcy = (table, dateCol, col) => {
       const usdExpr = `CASE WHEN COALESCE(${col === 'cash_amount' ? 'usd_amount' : col + '_TODO'},0) > 0 THEN ${col === 'cash_amount' ? 'usd_amount' : col} ELSE COALESCE(${col === 'cash_amount' ? 'cash_amount' : col},0) END`;
       // Simpler: always pick the USD value via COALESCE.
-      const usd = db.prepare(`SELECT COALESCE(SUM(CASE WHEN COALESCE(usd_amount,0)>0 THEN usd_amount ELSE COALESCE(cash_amount,0) END), 0) AS t FROM ${table} WHERE deleted_at IS NULL AND tenant_id = ?${df.replace(/date/g, dateCol)}`).get(tenantId, ...dp).t;
+      // v1.10.142 — skip fallback when k_amount > 0 (HQ K CR/PV where
+      // cash_amount is a K sub-drawer, not a USD equivalent).
+      const usd = db.prepare(`SELECT COALESCE(SUM(CASE WHEN COALESCE(usd_amount,0)>0 THEN usd_amount WHEN COALESCE(k_amount,0)>0 THEN 0 ELSE COALESCE(cash_amount,0) END), 0) AS t FROM ${table} WHERE deleted_at IS NULL AND tenant_id = ?${df.replace(/date/g, dateCol)}`).get(tenantId, ...dp).t;
       const fra = db.prepare(`SELECT COALESCE(SUM(fra_amount), 0) AS t FROM ${table} WHERE deleted_at IS NULL AND tenant_id = ?${df.replace(/date/g, dateCol)}`).get(tenantId, ...dp).t;
       const kAmt= db.prepare(`SELECT COALESCE(SUM(k_amount), 0) AS t FROM ${table} WHERE deleted_at IS NULL AND tenant_id = ?${df.replace(/date/g, dateCol)}`).get(tenantId, ...dp).t;
       return { usd: parseFloat(usd), fra: parseFloat(fra), k: parseFloat(kAmt) };
