@@ -67,14 +67,20 @@ const StockReconciliation = () => {
     setCounts(prev => ({ ...prev, [productId]: { ...(prev[productId] || {}), [field]: value } }));
   };
 
-  // Compute live variance for a row (in BASE units)
+  // Compute live variance for a row (in BASE units).
+  // v1.10.141 — subtract transit_qty from system so items already dispatched
+  // as PENDING outgoing transfers don't show up as shrinkage. Formula:
+  //   variance = physical - (system - transit)
+  // If transit_qty is 0 (store location, or no pending transfers) this
+  // reduces to the previous behaviour.
   const lineVariance = (p, c) => {
     if (!c || c.physical_qty === '' || c.physical_qty == null || isNaN(parseFloat(c.physical_qty))) return null;
     const qty = parseFloat(c.physical_qty);
     const units = unitsForProductFE(p);
     const u = units.find(x => x.name === (c.unit || p.unit)) || units.find(x => x.is_base) || { conv: 1 };
     const physicalBase = qty * (u.conv || 1);
-    return physicalBase - parseFloat(p.system_qty || 0);
+    const expected = parseFloat(p.system_qty || 0) - parseFloat(p.transit_qty || 0);
+    return physicalBase - expected;
   };
 
   // Silent thermal print of a count worksheet — same printer the receipts
@@ -152,12 +158,15 @@ const StockReconciliation = () => {
         ? c.reason
         : `<span style="display:inline-block;border-bottom:1px solid #000;min-width:80px;height:14px"></span>`;
       const baseQty = parseFloat(p.system_qty) || 0;
+      const transitQty = parseFloat(p.transit_qty || 0);
       const systemDisplay = formatStockForProduct(baseQty, p, { showBaseInParens: false });
+      const transitDisplay = transitQty > 0 ? formatStockForProduct(transitQty, p, { showBaseInParens: false }) : '—';
       return `<tr style="background:${idx % 2 === 1 ? '#f5f5f5' : '#fff'};border-bottom:1px solid #ddd">
         <td style="padding:6px 8px;color:#000;font-size:10px">${idx + 1}</td>
         <td style="padding:6px 8px;font-size:10px;font-family:monospace">${p.code || '—'}</td>
         <td style="padding:6px 8px;font-weight:600;font-size:10.5px">${p.name}</td>
         <td style="padding:6px 8px;text-align:right;font-family:monospace;font-size:10.5px">${systemDisplay}</td>
+        <td style="padding:6px 8px;text-align:right;font-family:monospace;font-size:10.5px;color:${transitQty > 0 ? '#0e7490' : '#999'}">${transitDisplay}</td>
         <td style="padding:6px 8px;text-align:right;font-family:monospace;font-size:10.5px">${physicalCell}</td>
         <td style="padding:6px 8px;text-align:center;font-size:10px">${c.unit || p.unit}</td>
         <td style="padding:6px 8px;text-align:right;font-family:monospace;font-size:10px">${varianceCell}</td>
@@ -209,6 +218,7 @@ const StockReconciliation = () => {
             <th style="width:60px">Code</th>
             <th>Product</th>
             <th style="text-align:right">System Qty</th>
+            <th style="text-align:right;color:#0e7490">Transit</th>
             <th style="text-align:right">Physical Qty</th>
             <th style="text-align:center;width:40px">Unit</th>
             <th style="text-align:right">Variance</th>
@@ -396,7 +406,8 @@ const StockReconciliation = () => {
               <thead>
                 <tr style={{ background: '#f9fafb' }}>
                   <th style={{ padding: '11px 14px', textAlign: 'left', fontSize: 11, fontWeight: 700, color: '#6b7280', textTransform: 'uppercase', letterSpacing: 0.5, borderBottom: '1px solid #e5e7eb' }}>Product</th>
-                  <th style={{ padding: '11px 14px', textAlign: 'right', fontSize: 11, fontWeight: 700, color: '#6b7280', textTransform: 'uppercase', letterSpacing: 0.5, borderBottom: '1px solid #e5e7eb', width: 200 }}>System Qty</th>
+                  <th style={{ padding: '11px 14px', textAlign: 'right', fontSize: 11, fontWeight: 700, color: '#6b7280', textTransform: 'uppercase', letterSpacing: 0.5, borderBottom: '1px solid #e5e7eb', width: 180 }}>System Qty</th>
+                  <th style={{ padding: '11px 14px', textAlign: 'right', fontSize: 11, fontWeight: 700, color: '#0e7490', textTransform: 'uppercase', letterSpacing: 0.5, borderBottom: '1px solid #e5e7eb', width: 120 }} title="Pending outgoing transfers (base units). Subtracted from System when computing Variance.">Transit</th>
                   <th style={{ padding: '11px 14px', textAlign: 'right', fontSize: 11, fontWeight: 700, color: '#6b7280', textTransform: 'uppercase', letterSpacing: 0.5, borderBottom: '1px solid #e5e7eb', width: 140 }}>Physical Qty</th>
                   <th style={{ padding: '11px 14px', textAlign: 'left', fontSize: 11, fontWeight: 700, color: '#6b7280', textTransform: 'uppercase', letterSpacing: 0.5, borderBottom: '1px solid #e5e7eb', width: 130 }}>Unit</th>
                   <th style={{ padding: '11px 14px', textAlign: 'right', fontSize: 11, fontWeight: 700, color: '#6b7280', textTransform: 'uppercase', letterSpacing: 0.5, borderBottom: '1px solid #e5e7eb', width: 110 }}>Variance</th>
@@ -405,7 +416,7 @@ const StockReconciliation = () => {
               </thead>
               <tbody>
                 {filteredProducts.length === 0 ? (
-                  <tr><td colSpan={6} style={{ padding: 40, textAlign: 'center', color: '#9ca3af' }}>No products.</td></tr>
+                  <tr><td colSpan={7} style={{ padding: 40, textAlign: 'center', color: '#9ca3af' }}>No products.</td></tr>
                 ) : filteredProducts.map(p => {
                   const c = counts[p.id] || {};
                   const variance = lineVariance(p, c);
@@ -418,6 +429,9 @@ const StockReconciliation = () => {
                       </td>
                       <td style={{ padding: '8px 14px', textAlign: 'right', color: '#374151' }}>
                         {formatStockForProduct(p.system_qty, p)}
+                      </td>
+                      <td style={{ padding: '8px 14px', textAlign: 'right', color: parseFloat(p.transit_qty || 0) > 0 ? '#0e7490' : '#9ca3af', fontWeight: parseFloat(p.transit_qty || 0) > 0 ? 600 : 400 }}>
+                        {parseFloat(p.transit_qty || 0) > 0 ? formatStockForProduct(p.transit_qty, p) : '—'}
                       </td>
                       <td style={{ padding: '8px 6px' }}>
                         <input type="number" min="0" step="1" placeholder="—"

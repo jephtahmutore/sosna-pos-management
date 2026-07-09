@@ -5,6 +5,8 @@ const syncConfig = require('../config/syncConfig');
 const { randomUUID } = require('crypto');
 const { recalculateDailyProfit } = require('../config/profitHelper');
 const { conversionToBase, baseQtyExpr } = require('../config/unitsHelper');
+const { masterDb } = require('../config/masterDb');
+const { getHostSlug } = require('../middleware/hqPush');
 
 // ── Build a SQL fragment that computes system stock per product for a given
 //    location ('sales' or 'store'). Stock movements are stored in base units.
@@ -16,7 +18,7 @@ function balanceSQL(location, tenantId, asOf = null) {
   return {
     text: `
       SELECT
-        p.id, p.code, p.name, p.unit, p.alt_unit, p.conversion_factor, p.units_json,
+        p.id, p.sync_id, p.code, p.name, p.unit, p.alt_unit, p.conversion_factor, p.units_json,
         p.cost_price, p.selling_price,
         COALESCE(bal.balance, 0) AS system_qty,
         CASE WHEN COALESCE(grn_cost.total_qty, 0) > 0
@@ -57,6 +59,47 @@ router.get('/products', auth, readOnlyGuard, (req, res) => {
     const asOf = (typeof rawDate === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(rawDate)) ? rawDate : null;
     const q = balanceSQL(location, req.user.tenantId, asOf);
     const rows = db.prepare(q.text).all(...q.params);
+
+    // v1.10.141 — attach transit_qty (base units) from PENDING outgoing
+    // transfers. Since v1.9.22 transfers don't deduct source stock until
+    // the destination confirms receipt, so system_qty on 'sales' still
+    // includes items already dispatched but in flight. Exposing this as
+    // a column lets the counter reconcile without treating in-transit
+    // stock as a shrinkage variance. Only relevant to 'sales' location
+    // (transfers post to sales only) so we skip the lookup for store.
+    if (location === 'sales') {
+      try {
+        const slug = getHostSlug(req);
+        if (slug) {
+          const pending = masterDb.prepare(
+            `SELECT items_json FROM stock_transfers WHERE from_slug = ? AND status = 'PENDING'`
+          ).all(slug);
+          const transitBySync = new Map();
+          for (const t of pending) {
+            let items = [];
+            try { items = JSON.parse(t.items_json || '[]'); } catch { /* skip */ }
+            for (const it of items) {
+              const psid = it.product_sync_id;
+              if (!psid) continue;
+              const prod = db.prepare(
+                'SELECT unit, alt_unit, conversion_factor, units_json FROM products WHERE sync_id = ?'
+              ).get(psid);
+              const baseQty = parseFloat(it.quantity || 0) * conversionToBase(prod || {}, it.unit);
+              transitBySync.set(psid, (transitBySync.get(psid) || 0) + baseQty);
+            }
+          }
+          for (const r of rows) r.transit_qty = transitBySync.get(r.sync_id) || 0;
+        } else {
+          for (const r of rows) r.transit_qty = 0;
+        }
+      } catch (_) {
+        // On any error keep transit_qty=0 so reconciliation still loads.
+        for (const r of rows) r.transit_qty = 0;
+      }
+    } else {
+      for (const r of rows) r.transit_qty = 0;
+    }
+
     res.json(rows);
   } catch (err) { res.status(500).json({ error: err.message }); }
 });

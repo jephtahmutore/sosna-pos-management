@@ -1,6 +1,6 @@
 {
   "name": "sosna-frontend",
-  "version": "1.10.140",
+  "version": "1.10.141",
   "private": true,
   "main": "electron/main.js",
   "homepage": "./",
