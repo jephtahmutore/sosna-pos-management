@@ -152,7 +152,7 @@ function ccyReceiptsPayments(tenantId, slug, dateClause, dateParams) {
       const outRows = masterDb.prepare(`
         SELECT currency, COALESCE(SUM(amount), 0) AS t
           FROM cash_deposits
-         WHERE status = 'CONFIRMED' AND from_slug = ?${depClause}
+         WHERE status = 'CONFIRMED' AND deleted_at IS NULL AND from_slug = ?${depClause}
          GROUP BY currency
       `).all(slug, ...dateParams);
       for (const r of outRows) {
@@ -163,7 +163,7 @@ function ccyReceiptsPayments(tenantId, slug, dateClause, dateParams) {
         const inRows = masterDb.prepare(`
           SELECT currency, COALESCE(SUM(amount), 0) AS t
             FROM cash_deposits
-           WHERE status = 'CONFIRMED'${depClause}
+           WHERE status = 'CONFIRMED' AND deleted_at IS NULL${depClause}
            GROUP BY currency
         `).all(...dateParams);
         for (const r of inRows) {
@@ -452,7 +452,7 @@ router.get('/', auth, readOnlyGuard, (req, res) => {
                  COALESCE(deposit_date, date(COALESCE(confirmed_at, created_at))) AS date,
                  from_name, notes
             FROM cash_deposits
-           WHERE status = 'CONFIRMED' AND from_slug = ?${depDateFilter}
+           WHERE status = 'CONFIRMED' AND deleted_at IS NULL AND from_slug = ?${depDateFilter}
         `).all(slug, ...depParams);
         for (const r of out) {
           const amt = parseFloat(r.amount);
@@ -481,7 +481,7 @@ router.get('/', auth, readOnlyGuard, (req, res) => {
                    COALESCE(deposit_date, date(COALESCE(confirmed_at, created_at))) AS date,
                    from_slug, from_name, notes
               FROM cash_deposits
-             WHERE status = 'CONFIRMED'${depDateFilter}
+             WHERE status = 'CONFIRMED' AND deleted_at IS NULL${depDateFilter}
           `).all(...depParams);
           for (const r of incoming) {
             const amt = parseFloat(r.amount);
@@ -592,7 +592,7 @@ router.get('/stats', auth, readOnlyGuard, (req, res) => {
           const preDepRows = masterDb.prepare(`
             SELECT COALESCE(from_method, 'Cash') AS m, COALESCE(SUM(amount), 0) AS t
               FROM cash_deposits
-             WHERE status = 'CONFIRMED' AND from_slug = ?
+             WHERE status = 'CONFIRMED' AND deleted_at IS NULL AND from_slug = ?
                AND ${datePredFold} < ?
              GROUP BY COALESCE(from_method, 'Cash')
           `).all(slugForFold, from);
@@ -687,7 +687,7 @@ router.get('/stats', auth, readOnlyGuard, (req, res) => {
         const outRows = masterDb.prepare(`
           SELECT currency, COALESCE(SUM(amount), 0) AS t
             FROM cash_deposits
-           WHERE status = 'CONFIRMED' AND from_slug = ?${depDf}
+           WHERE status = 'CONFIRMED' AND deleted_at IS NULL AND from_slug = ?${depDf}
            GROUP BY currency
         `).all(slug, ...depParams);
         for (const r of outRows) {
@@ -700,7 +700,7 @@ router.get('/stats', auth, readOnlyGuard, (req, res) => {
         const outByMethodRows = masterDb.prepare(`
           SELECT COALESCE(from_method, 'Cash') AS m, COALESCE(SUM(amount), 0) AS t
             FROM cash_deposits
-           WHERE status = 'CONFIRMED' AND from_slug = ?${depDf}
+           WHERE status = 'CONFIRMED' AND deleted_at IS NULL AND from_slug = ?${depDf}
            GROUP BY COALESCE(from_method, 'Cash')
         `).all(slug, ...depParams);
         for (const r of outByMethodRows) {
@@ -711,7 +711,7 @@ router.get('/stats', auth, readOnlyGuard, (req, res) => {
           const inRows = masterDb.prepare(`
             SELECT currency, COALESCE(SUM(amount), 0) AS t
               FROM cash_deposits
-             WHERE status = 'CONFIRMED'${depDf}
+             WHERE status = 'CONFIRMED' AND deleted_at IS NULL${depDf}
              GROUP BY currency
           `).all(...depParams);
           for (const r of inRows) {
@@ -836,8 +836,8 @@ router.get('/stats', auth, readOnlyGuard, (req, res) => {
         const datePred = `date(COALESCE(deposit_date, confirmed_at, created_at))`;
         const depClause = dateClause.replace(/\bdate\b/g, datePred);
         const whereClause = direction === 'in'
-          ? `WHERE status = 'CONFIRMED' AND currency = 'K'${depClause}`
-          : `WHERE status = 'CONFIRMED' AND currency = 'K' AND from_slug = ?${depClause}`;
+          ? `WHERE status = 'CONFIRMED' AND deleted_at IS NULL AND currency = 'K'${depClause}`
+          : `WHERE status = 'CONFIRMED' AND deleted_at IS NULL AND currency = 'K' AND from_slug = ?${depClause}`;
         const rows = masterDb.prepare(`
           SELECT COALESCE(to_method, from_method, 'Bank') AS m, COALESCE(SUM(amount), 0) AS t
             FROM cash_deposits

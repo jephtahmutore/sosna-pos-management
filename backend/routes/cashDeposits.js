@@ -145,6 +145,7 @@ router.put('/:id/confirm', hqAuth, (req, res) => {
   try {
     const row = masterDb.prepare('SELECT * FROM cash_deposits WHERE id = ?').get(req.params.id);
     if (!row) return res.status(404).json({ error: 'Deposit not found' });
+    if (row.deleted_at) return res.status(400).json({ error: 'Deposit was deleted; cannot confirm.' });
     if (row.status !== 'PENDING') return res.status(400).json({ error: `Deposit is already ${row.status}` });
     const confirmedByName = [req.user.first_name, req.user.last_name].filter(Boolean).join(' ') || null;
     // v1.10.82 — HQ can override deposit_date at confirm time. Cash Book
@@ -193,6 +194,7 @@ router.put('/:id/reject', hqAuth, (req, res) => {
   try {
     const row = masterDb.prepare('SELECT * FROM cash_deposits WHERE id = ?').get(req.params.id);
     if (!row) return res.status(404).json({ error: 'Deposit not found' });
+    if (row.deleted_at) return res.status(400).json({ error: 'Deposit was deleted; cannot reject.' });
     if (row.status !== 'PENDING') return res.status(400).json({ error: `Deposit is already ${row.status}` });
     const confirmedByName = [req.user.first_name, req.user.last_name].filter(Boolean).join(' ') || null;
     masterDb.prepare(`
@@ -224,6 +226,7 @@ router.put('/:id/date', hqAuth, (req, res) => {
   try {
     const row = masterDb.prepare('SELECT * FROM cash_deposits WHERE id = ?').get(req.params.id);
     if (!row) return res.status(404).json({ error: 'Deposit not found' });
+    if (row.deleted_at) return res.status(400).json({ error: 'Deposit was deleted; cannot edit date.' });
     if (row.status !== 'CONFIRMED') {
       return res.status(400).json({ error: `Only CONFIRMED deposits can have their date edited (current: ${row.status}).` });
     }
@@ -241,15 +244,37 @@ router.put('/:id/date', hqAuth, (req, res) => {
 
 // ─── DELETE /cash-deposits/:id — remove a deposit ───────────────────────────
 // v1.8.60 — allow deleting deposits to clean up mistakes / cancelled records.
-// Branch can delete its own PENDING deposits; HQ can delete anything.
-// CONFIRMED deposits should NOT be silently deleted by branches because
-// HQ may have already balanced its drawer against them — gate behind HQ.
+// v1.10.143 — now a SOFT delete gated by admin password verification. Hard
+// delete on a CONFIRMED deposit silently reverses it on both sides (HQ and
+// the depositing branch), making the branch's ledger show cash that was
+// physically handed over as still on the books. Soft-delete keeps the row
+// with an audit trail (deleted_by/deleted_at/delete_reason) so the list
+// can render a DELETED badge (same pattern as REJECTED) while balance math
+// excludes the row.
+// Body: { reason, adminId, adminName } — adminId/Name come from a
+//   client-side verify-admin call (same pattern as GRN void). Backend
+//   trusts the attestation since only authenticated users reach this route.
 router.delete('/:id', hqAuth, (req, res) => {
   try {
+    const { reason, adminId, adminName } = req.body || {};
+    if (!reason || String(reason).trim().length < 3) {
+      return res.status(400).json({ error: 'Reason (min 3 chars) is required for audit.' });
+    }
+    if (!adminId) {
+      return res.status(400).json({ error: 'Admin authorization missing.' });
+    }
     const row = masterDb.prepare('SELECT * FROM cash_deposits WHERE id = ?').get(req.params.id);
     if (!row) return res.status(404).json({ error: 'Deposit not found' });
-    masterDb.prepare('DELETE FROM cash_deposits WHERE id = ?').run(req.params.id);
-    res.json({ message: 'Deposit deleted' });
+    if (row.deleted_at) return res.status(400).json({ error: 'Deposit already deleted.' });
+    masterDb.prepare(`
+      UPDATE cash_deposits
+         SET deleted_at      = datetime('now'),
+             deleted_by      = ?,
+             deleted_by_name = ?,
+             delete_reason   = ?
+       WHERE id = ?
+    `).run(adminId, adminName || null, String(reason).trim(), req.params.id);
+    res.json({ message: 'Deposit deleted', ok: true });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }

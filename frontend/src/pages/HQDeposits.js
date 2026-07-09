@@ -302,18 +302,21 @@ const HQDeposits = () => {
     }
   };
 
-  const handleDelete = async (d) => {
-    const label = `${d.deposit_number} — ${d.currency} ${parseFloat(d.amount).toLocaleString()}`;
-    const extra = d.status === 'CONFIRMED'
-      ? '\n\nThis deposit was already CONFIRMED. Deleting it removes it from Cash Report reconciliation.'
-      : '';
-    if (!window.confirm(`Delete this deposit?\n\n${label}${extra}`)) return;
-    try {
-      await deleteCashDeposit(d.id);
-      await fetchDeposits();
-    } catch (err) {
-      alert(err?.response?.data?.error || 'Failed to delete deposit');
-    }
+  // v1.10.143 — two-step soft-delete: reason → admin password → soft delete
+  // + audit stamp. Mirrors the GRN void flow. Hard delete is gone: the
+  // row stays in the DB with deleted_at/deleted_by/delete_reason so the
+  // list can render a DELETED badge and Cash Book balances can be
+  // audited without silently rewriting history.
+  const [deleteRow, setDeleteRow]         = useState(null);
+  const [deleteStep, setDeleteStep]       = useState(null); // null | 'reason' | 'password'
+  const [deleteReason, setDeleteReason]   = useState('');
+  const [deleteBusy, setDeleteBusy]       = useState(false);
+  const [deleteError, setDeleteError]     = useState('');
+  const handleDelete = (d) => {
+    setDeleteRow(d);
+    setDeleteReason('');
+    setDeleteError('');
+    setDeleteStep('reason');
   };
 
   const fmt = (n) => `${curSym}${parseFloat(n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
@@ -451,13 +454,36 @@ const HQDeposits = () => {
                         })()}
                       </td>
                       <td style={td}>
-                        <span style={{ padding: '2px 10px', background: statusBg, color: statusColor, borderRadius: 999, fontSize: 10, fontWeight: 700 }}>
-                          {d.status}
-                        </span>
-                        {d.status === 'REJECTED' && d.reject_reason && (
-                          <div style={{ fontSize: 10, color: '#b91c1c', fontStyle: 'italic', marginTop: 3 }} title={d.reject_reason}>
-                            {d.reject_reason.length > 30 ? d.reject_reason.slice(0, 30) + '…' : d.reject_reason}
-                          </div>
+                        {/* v1.10.143 — DELETED badge takes precedence over
+                            the status badge. Same visual pattern as REJECTED
+                            (red pill + italic reason underneath). */}
+                        {d.deleted_at ? (
+                          <>
+                            <span style={{ padding: '2px 10px', background: '#fee2e2', color: '#991b1b', borderRadius: 999, fontSize: 10, fontWeight: 700 }}>
+                              DELETED
+                            </span>
+                            {d.delete_reason && (
+                              <div style={{ fontSize: 10, color: '#b91c1c', fontStyle: 'italic', marginTop: 3 }} title={d.delete_reason}>
+                                {d.delete_reason.length > 30 ? d.delete_reason.slice(0, 30) + '…' : d.delete_reason}
+                              </div>
+                            )}
+                            {d.deleted_by_name && (
+                              <div style={{ fontSize: 9, color: '#94a3b8', marginTop: 2 }}>
+                                by {d.deleted_by_name}
+                              </div>
+                            )}
+                          </>
+                        ) : (
+                          <>
+                            <span style={{ padding: '2px 10px', background: statusBg, color: statusColor, borderRadius: 999, fontSize: 10, fontWeight: 700 }}>
+                              {d.status}
+                            </span>
+                            {d.status === 'REJECTED' && d.reject_reason && (
+                              <div style={{ fontSize: 10, color: '#b91c1c', fontStyle: 'italic', marginTop: 3 }} title={d.reject_reason}>
+                                {d.reject_reason.length > 30 ? d.reject_reason.slice(0, 30) + '…' : d.reject_reason}
+                              </div>
+                            )}
+                          </>
                         )}
                       </td>
                       <td style={{ ...td, color: '#374151', fontSize: 11, fontWeight: 600 }}>
@@ -476,6 +502,10 @@ const HQDeposits = () => {
                         ) : '—'}
                       </td>
                       <td style={{ ...td, textAlign: 'right' }}>
+                        {/* v1.10.143 — no actions on deleted rows. */}
+                        {d.deleted_at ? (
+                          <span style={{ fontSize: 10, color: '#94a3b8' }}>—</span>
+                        ) : (
                         <div style={{ display: 'inline-flex', gap: 6 }}>
                           {onHq && d.status === 'PENDING' && (
                             <>
@@ -506,6 +536,7 @@ const HQDeposits = () => {
                             </button>
                           )}
                         </div>
+                        )}
                       </td>
                     </tr>
                   );
@@ -708,6 +739,69 @@ const HQDeposits = () => {
         actionLabel={pendingDateChange?.mode === 'edit' ? 'Approve Date Edit' : 'Approve Date Change'}
         onConfirm={finishConfirmWithDate}
         onCancel={() => setPendingDateChange(null)}
+      />
+
+      {/* v1.10.143 — Delete flow: reason → admin password → soft delete. */}
+      {deleteStep === 'reason' && deleteRow && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1500 }}
+             onClick={(e) => { if (e.target === e.currentTarget && !deleteBusy) setDeleteStep(null); }}>
+          <div onClick={e => e.stopPropagation()}
+               style={{ background: '#fff', borderRadius: 12, padding: 22, width: 460, maxWidth: 'calc(100vw - 32px)', boxShadow: '0 20px 60px rgba(0,0,0,0.3)' }}>
+            <h3 style={{ margin: '0 0 8px', fontSize: 16, color: '#b91c1c' }}>Delete Deposit {deleteRow.deposit_number}</h3>
+            <p style={{ fontSize: 13, color: '#4b5563', margin: '0 0 14px', lineHeight: 1.5 }}>
+              {deleteRow.currency} {parseFloat(deleteRow.amount || 0).toLocaleString()} from {deleteRow.from_name || deleteRow.from_slug}.
+              {deleteRow.status === 'CONFIRMED' && (
+                <strong style={{ color: '#b45309', display: 'block', marginTop: 6 }}>
+                  ⚠ This deposit was already CONFIRMED. Deleting it removes it from both HQ's and the branch's Cash Book.
+                </strong>
+              )}
+            </p>
+            <label style={{ display: 'block', fontSize: 12, fontWeight: 700, color: '#374151', marginBottom: 4, textTransform: 'uppercase', letterSpacing: 0.4 }}>Reason *</label>
+            <textarea rows={3} value={deleteReason} onChange={(e) => setDeleteReason(e.target.value)}
+              placeholder="e.g. duplicate entry — actual deposit is DEP-...-0031"
+              style={{ width: '100%', padding: '10px 12px', border: '1px solid #d1d5db', borderRadius: 8, fontSize: 14, boxSizing: 'border-box', resize: 'vertical', minHeight: 60, fontFamily: 'inherit' }} />
+            {deleteError && <div style={{ marginTop: 10, color: '#b91c1c', fontSize: 12 }}>{deleteError}</div>}
+            <div style={{ display: 'flex', gap: 10, marginTop: 16, justifyContent: 'flex-end' }}>
+              <button onClick={() => { setDeleteStep(null); setDeleteRow(null); setDeleteReason(''); setDeleteError(''); }}
+                disabled={deleteBusy}
+                style={{ padding: '9px 18px', background: '#f3f4f6', color: '#374151', border: '1px solid #d1d5db', borderRadius: 8, fontSize: 13, cursor: deleteBusy ? 'not-allowed' : 'pointer' }}>
+                Cancel
+              </button>
+              <button
+                onClick={() => {
+                  if (deleteReason.trim().length < 3) { setDeleteError('Reason must be at least 3 characters.'); return; }
+                  setDeleteError('');
+                  setDeleteStep('password');
+                }}
+                disabled={deleteBusy || deleteReason.trim().length < 3}
+                style={{ padding: '9px 18px', background: deleteBusy || deleteReason.trim().length < 3 ? '#fca5a5' : '#dc2626', color: '#fff', border: 'none', borderRadius: 8, fontSize: 13, fontWeight: 600, cursor: deleteBusy || deleteReason.trim().length < 3 ? 'not-allowed' : 'pointer' }}>
+                Continue → Admin auth
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <AdminPasswordPrompt
+        open={deleteStep === 'password'}
+        subject={deleteRow ? `${deleteRow.deposit_number} — ${deleteRow.currency} ${parseFloat(deleteRow.amount || 0).toLocaleString()}` : ''}
+        actionLabel="Delete Deposit"
+        onCancel={() => { if (!deleteBusy) setDeleteStep('reason'); }}
+        onConfirm={async ({ adminId, adminName }) => {
+          setDeleteBusy(true); setDeleteError('');
+          try {
+            await deleteCashDeposit(deleteRow.id, { reason: deleteReason.trim(), adminId, adminName });
+            setDeleteBusy(false);
+            setDeleteStep(null);
+            setDeleteRow(null);
+            setDeleteReason('');
+            await fetchDeposits();
+          } catch (err) {
+            setDeleteBusy(false);
+            setDeleteStep('reason');
+            setDeleteError(err.response?.data?.error || 'Failed to delete deposit.');
+          }
+        }}
       />
     </div>
   );

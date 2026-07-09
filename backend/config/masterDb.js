@@ -168,6 +168,17 @@ try {
   // for K deposits — Cash Book's K sub-breakdown uses it to route
   // deposit inflows to the right K sub-drawer (Cash / Bank / MoMo).
   addMasterCol('cash_deposits', 'to_method', 'TEXT');
+  // v1.10.143 — soft-delete audit trail for HQ Deposits. Hard delete lost
+  // the row from both sides (HQ Cash Book + branch Cash Book DEP-OUT),
+  // effectively "un-depositing" the money on the branch's books while the
+  // physical cash was already handed over. Soft-delete keeps the row +
+  // stamps who deleted / when / why + which admin approved it, so the
+  // UI can show a DELETED badge (same pattern as REJECTED) and read paths
+  // exclude the row from balance math.
+  addMasterCol('cash_deposits', 'deleted_at',      'TEXT');
+  addMasterCol('cash_deposits', 'deleted_by',      'INTEGER');
+  addMasterCol('cash_deposits', 'deleted_by_name', 'TEXT');
+  addMasterCol('cash_deposits', 'delete_reason',   'TEXT');
 
   masterDb.exec(`
 
