@@ -737,6 +737,14 @@ const CashBook = () => {
             On HQ this tile now shows "K & K Equivalent": convert USD and
             FRA to K instead. Branches (Kassumbalesa etc.) are unchanged. */}
         {(() => {
+          // v1.10.157 — the big card value is a period-closing snapshot
+          // (opening + period activity = balance at end of `to`). When
+          // `to` is set to a past date, show "as of Jul 6" so users know
+          // the number isn't today's actual. Blank / today `to` → hide.
+          const isPastTo = !!to && to !== todayStr;
+          const asOfLabel = isPastTo
+            ? `as of ${new Date(to + 'T00:00:00').toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}`
+            : '';
           const usdNow  = stats.currentByCcy?.usd || 0;
           const fraNow  = stats.currentByCcy?.fra || 0;
           const kNow    = stats.currentByCcy?.k   || 0;
@@ -776,6 +784,11 @@ const CashBook = () => {
                   <div className="stat-value">
                     {hasPermission('CashBook:View') ? fmtCE(cashEqNow) : 'N/A'}
                   </div>
+                  {asOfLabel && (
+                    <div style={{ fontSize: 10.5, opacity: 0.9, marginTop: 2, fontStyle: 'italic', color: '#fbbf24' }}>
+                      {asOfLabel}
+                    </div>
+                  )}
                   <div style={{ fontSize: 11, opacity: 0.85, marginTop: 2 }}>
                     {t('opening')} {fmtCE(cashEqOpen)}
                   </div>
@@ -812,6 +825,11 @@ const CashBook = () => {
                   <div className="stat-value">
                     {hasPermission('CashBook:View') ? `≈ ${fmtK(kEqNow)}` : 'N/A'}
                   </div>
+                  {asOfLabel && (
+                    <div style={{ fontSize: 10.5, opacity: 0.9, marginTop: 2, fontStyle: 'italic', color: '#fbbf24' }}>
+                      {asOfLabel}
+                    </div>
+                  )}
                   <div style={{ fontSize: 11, opacity: 0.85, marginTop: 2 }}>
                     {t('opening')} ≈ {fmtK(kEqOpen)}
                   </div>
@@ -960,10 +978,16 @@ const CashBook = () => {
         const fmtUSD = (n) => `$${(parseFloat(n) || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
         const fmtFRA = (n) => `${(parseFloat(n) || 0).toLocaleString(undefined, { maximumFractionDigits: 0 })} FRA`;
         const fmtK   = (n) => `${(parseFloat(n) || 0).toLocaleString(undefined, { maximumFractionDigits: 0 })} K`;
+        // v1.10.162 — on Liquor use the folded openingByCcy sum (real
+        // start-of-period balance) instead of the raw seed. Fixes the
+        // "OPENING BALANCE K0 while balance walks from K203,625" confusion.
+        const liquorOpening = isLiquorStyle
+          ? (stats.openingByCcy?.usd || 0) + (stats.openingByCcy?.fra || 0) + (stats.openingByCcy?.k || 0)
+          : (stats.openingBalance || 0);
         const strip = [
           { key: 'opening',  label: t('openingBalance'),  color: '#1d4ed8', bg: '#eff6ff', border: '#bfdbfe',
             byCcy: stats.openingByCcy || { usd: 0, fra: 0, k: 0 },
-            single: stats.openingBalance },
+            single: liquorOpening },
           { key: 'receipts', label: t('receiptsCR'),      color: '#16a34a', bg: '#f0fdf4', border: '#bbf7d0',
             byCcy: perCcy.receipts, single: stats.totalReceipts },
           { key: 'payments', label: t('paymentsPV'),      color: '#dc2626', bg: '#fef2f2', border: '#fecaca',
@@ -1098,7 +1122,13 @@ const CashBook = () => {
                 if (activeCcy === 'usd') return fmtUsd(obUsd);
                 if (activeCcy === 'fra') return `${fmtRaw(obFra)} FRA`;
                 if (activeCcy === 'k')   return `${fmtRaw(obK)} K`;
-                if (isLiquorStyle) return fmtUsd(openingBal);
+                // v1.10.162 — on Liquor, show the FOLDED opening (sum of the
+                // three per-currency openings) so the OB row matches the
+                // per-row balance walk below (which starts from openingByCcy).
+                // Using the raw seed (openingBal) hid all pre-period activity
+                // and made the ledger read "OB K0 → Balance K203,625" for a
+                // net-zero transfer, which looked broken.
+                if (isLiquorStyle) return fmtUsd(obUsd + obFra + obK);
                 return (
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 2, lineHeight: 1.25 }}>
                     {showUSDccy && <span>{fmtUsd(obUsd)}</span>}
@@ -1113,14 +1143,20 @@ const CashBook = () => {
                   <td style={{ fontWeight: 600 }}>{t('openingBalance')}</td>
                   <td style={{ color: '#9ca3af', fontSize: 12 }}>OB</td>
                   <td></td>
-                  {isLiquorStyle ? (
+                  {isLiquorStyle ? (() => {
+                    // v1.10.162 — inflow cell also uses the folded opening
+                    // so it matches the OB row Balance column and the walk
+                    // starting point below.
+                    const obLiquor = obUsd + obFra + obK;
+                    return (
                     <>
-                      <td style={{ color: openingBal > 0 ? '#16a34a' : '#cbd5e1', fontWeight: 600, textAlign: 'right' }}>
-                        {openingBal > 0 ? `${curSym}${openingBal.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}` : '—'}
+                      <td style={{ color: obLiquor > 0 ? '#16a34a' : '#cbd5e1', fontWeight: 600, textAlign: 'right' }}>
+                        {obLiquor > 0 ? `${curSym}${obLiquor.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}` : '—'}
                       </td>
                       <td style={{ color: '#cbd5e1', textAlign: 'right' }}>—</td>
                     </>
-                  ) : (
+                    );
+                  })() : (
                     <>
                       {showUSDccy && <td style={{ color: obUsd ? '#16a34a' : '#cbd5e1', fontWeight: 600, textAlign: 'right' }}>{obUsd ? `${curSym}${obUsd.toLocaleString()}` : '—'}</td>}
                       {showFRAccy && <td style={{ color: obFra ? '#2563eb' : '#cbd5e1', fontWeight: 600, textAlign: 'right' }}>{obFra ? `${Math.round(obFra).toLocaleString()} FRA` : '—'}</td>}
