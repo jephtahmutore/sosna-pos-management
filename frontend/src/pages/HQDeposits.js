@@ -21,6 +21,7 @@ import {
   getCashDeposits, createCashDeposit, confirmCashDeposit, rejectCashDeposit, deleteCashDeposit,
   editCashDepositDate, editCashDeposit,
   uploadInvoiceAttachment,
+  getCashBookStats,
   isHqHost, getBranchSlug,
 } from '../services/api';
 import { useCurrency } from '../context/CurrencyContext';
@@ -70,6 +71,13 @@ const HQDeposits = () => {
   const [showSend, setShowSend] = useState(false);
   const [sendForm, setSendForm] = useState({ currency: defaultDepositCcy, amount: '', from_method: 'Cash', notes: '', deposit_date: todayStr(), attachments: [] });
   const [sending, setSending]   = useState(false);
+  // v1.10.170 — live cash-on-hand snapshot for the overdraft guard. Fetched
+  // when the Send Deposit modal opens on Liquor branches. Kept in state (not
+  // recomputed on every render) so the reference doesn't jump if the user
+  // changes the amount field. Guard is Liquor-only per user request — HQ /
+  // Kassumbalesa tri-currency deposits don't reduce cleanly to a single
+  // Cash & Cash Equivalent number.
+  const [cashOnHand, setCashOnHand] = useState(null);
   const [sendError, setSendError] = useState('');
   // v1.8.61 — multi-file upload state for the deposit slips.
   const fileInputRef = useRef(null);
@@ -113,6 +121,21 @@ const HQDeposits = () => {
     setAttError('');
     setSendForm({ currency: defaultDepositCcy, amount: '', from_method: 'Cash', notes: '', deposit_date: todayStr(), attachments: [] });
     setShowSend(true);
+    // v1.10.170 — on Liquor branches, pull the live Cash & Cash Equivalent
+    // so the modal can render the banner and gate the Save button. Skip on
+    // HQ / Kassumbalesa — guard doesn't apply to tri-currency deposits.
+    if (isLiquorStyle) {
+      setCashOnHand(null); // show "Loading…" until we have it
+      getCashBookStats({}).then(r => {
+        const s = r.data || {};
+        const total = (s.currentByMethod?.cash || 0)
+                    + (s.currentByMethod?.bank || 0)
+                    + (s.currentByMethod?.momo || 0);
+        setCashOnHand(total);
+      }).catch(() => setCashOnHand(0));
+    } else {
+      setCashOnHand(null);
+    }
   };
 
   // v1.8.61 — upload one or more files (file picker is multi-select).
@@ -601,6 +624,28 @@ const HQDeposits = () => {
               <p style={{ fontSize: 13, color: '#6b7280', marginTop: 0, marginBottom: 14 }}>
                 Record cash physically leaving this branch and going to HQ. No exchange happens — just enter the raw currency and amount. HQ marks it confirmed when they receive it.
               </p>
+              {/* v1.10.170 — Cash on Hand banner + overdraft preview. Liquor only. */}
+              {isLiquorStyle && cashOnHand !== null && (() => {
+                const amt = parseFloat(sendForm.amount || 0) || 0;
+                const overdraft = amt > cashOnHand + 0.0001;
+                const remaining = cashOnHand - amt;
+                const fmtK = (n) => `${curSym || 'K'} ${parseFloat(n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+                return (
+                  <div style={{ background: overdraft ? '#fee2e2' : '#eff6ff', border: `1px solid ${overdraft ? '#fecaca' : '#bfdbfe'}`, borderRadius: 8, padding: '8px 12px', marginBottom: 14, fontSize: 12, color: overdraft ? '#991b1b' : '#1e40af' }}>
+                    Cash on Hand: <strong>{fmtK(cashOnHand)}</strong>
+                    {amt > 0 && !overdraft && (
+                      <span style={{ color: '#0f766e', marginLeft: 10 }}>
+                        · After deposit: <strong>{fmtK(remaining)}</strong>
+                      </span>
+                    )}
+                    {overdraft && (
+                      <div style={{ marginTop: 4, fontWeight: 700 }}>
+                        ⚠ Deposit exceeds cash on hand. Short by {fmtK(amt - cashOnHand)}.
+                      </div>
+                    )}
+                  </div>
+                );
+              })()}
               <div className="form-row">
                 <div className="form-group">
                   <label>Currency</label>
@@ -719,17 +764,28 @@ const HQDeposits = () => {
                   {sendError}
                 </div>
               )}
-              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 14 }}>
-                <button onClick={() => setShowSend(false)}
-                  style={{ padding: '10px 24px', border: '1px solid #e5e7eb', borderRadius: 8, background: '#fff', cursor: 'pointer', fontSize: 14 }}>
-                  Cancel
-                </button>
-                <button onClick={handleSend} disabled={sending}
-                  style={{ padding: '10px 28px', background: sending ? '#9ca3af' : '#d97706', color: '#fff', border: 'none', borderRadius: 8, cursor: sending ? 'not-allowed' : 'pointer', fontSize: 14, fontWeight: 700, display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-                  <FiSend size={14} />
-                  {sending ? 'Sending...' : 'Send Deposit'}
-                </button>
-              </div>
+              {/* v1.10.170 — overdraft hard block on Liquor: disable Save
+                  when amount > Cash on Hand. Backend re-validates too so
+                  an offline device can't sneak past. */}
+              {(() => {
+                const amt = parseFloat(sendForm.amount || 0) || 0;
+                const wouldOverdraft = isLiquorStyle && cashOnHand !== null && amt > cashOnHand + 0.0001;
+                const disabled = sending || wouldOverdraft;
+                return (
+                  <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 14 }}>
+                    <button onClick={() => setShowSend(false)}
+                      style={{ padding: '10px 24px', border: '1px solid #e5e7eb', borderRadius: 8, background: '#fff', cursor: 'pointer', fontSize: 14 }}>
+                      Cancel
+                    </button>
+                    <button onClick={handleSend} disabled={disabled}
+                      title={wouldOverdraft ? 'Cannot deposit more than Cash on Hand.' : ''}
+                      style={{ padding: '10px 28px', background: disabled ? '#fca5a5' : '#d97706', color: '#fff', border: 'none', borderRadius: 8, cursor: disabled ? 'not-allowed' : 'pointer', fontSize: 14, fontWeight: 700, display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                      <FiSend size={14} />
+                      {sending ? 'Sending...' : 'Send Deposit'}
+                    </button>
+                  </div>
+                );
+              })()}
             </div>
           </div>
         </div>
