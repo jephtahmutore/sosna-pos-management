@@ -208,7 +208,24 @@ function sumMethod(tenantId, methodCol, dateClause, dateParams) {
   // the currency-column migration — they only have the method column.
   // Referencing usd/fra/k there throws "no such column", so those
   // tables keep the plain methodCol read (same as v1.10.95 hotfix).
-  const cxMap = {
+  //
+  // v1.10.165 — on Liquor branches the mirror OR-fallback double-counts
+  // corrupted rows (Simon Fuel PV had both fra_amount=2420 mirror AND
+  // cash_amount=2420 legacy — same K2,420 payment shown as MoMo K2,420
+  // AND Cash K2,420 = K4,840 phantom). Trust ONLY the legacy method
+  // columns on Liquor: manual Liquor PVs/CRs fill both sets identically
+  // so this reads the same number for a clean row, but silently ignores
+  // the redundant mirror for corrupted / half-populated rows.
+  let isLiquorK = false;
+  try {
+    const bs = db.prepare(`SELECT currency_mode FROM business_settings ORDER BY id ASC LIMIT 1`).get();
+    isLiquorK = (bs?.currency_mode || '').toUpperCase() === 'K';
+  } catch (_) { /* pre-migration DB */ }
+  const cxMap = isLiquorK ? {
+    cash_amount: 'COALESCE(cash_amount, 0)',
+    bank_amount: 'COALESCE(bank_amount, 0)',
+    momo_amount: 'COALESCE(momo_amount, 0)',
+  } : {
     cash_amount: 'CASE WHEN COALESCE(usd_amount, 0) > 0 THEN usd_amount ELSE COALESCE(cash_amount, 0) END',
     bank_amount: 'CASE WHEN COALESCE(k_amount,   0) > 0 THEN k_amount   ELSE COALESCE(bank_amount, 0) END',
     momo_amount: 'CASE WHEN COALESCE(fra_amount, 0) > 0 THEN fra_amount ELSE COALESCE(momo_amount, 0) END',
