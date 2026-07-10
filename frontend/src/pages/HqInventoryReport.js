@@ -17,25 +17,30 @@ const fmtQty   = (n) => parseFloat(n || 0).toLocaleString(undefined, { minimumFr
 // v1.10.149 — convert a raw base-unit stock count into the largest unit
 // present in units_json + remainder. Returns null when units_json is
 // missing/single-unit so the caller falls back to the plain "N unit" render.
-//   units_json = [{"unit":"Bottle","conversion":1},{"unit":"Box","conversion":24}]
-//   stock = 14046  → { primary: {qty:585, unit:'Box'}, remainder: {qty:6, unit:'Bottle'} }
+//   units_json shape (Sosna/Liquor):
+//     [{"name":"Bottle","conv":1,"is_base":true},
+//      {"name":"Box","conv":24,"price":30,"is_base":false}]
+//   stock = 13152 → { primary: {qty:548, unit:'Box'}, remainder: {qty:0, unit:'Bottle'} }
+// v1.10.153 — field names were wrong ("conversion" / "unit"); actual keys
+// in the DB are "conv" / "name". My filter always came up empty so the
+// report always fell back to plain Bottle rendering.
 function convertToLargestUnit(stock, unitsJson, baseUnit) {
   if (!unitsJson) return null;
   let units;
   try { units = typeof unitsJson === 'string' ? JSON.parse(unitsJson) : unitsJson; }
   catch (_) { return null; }
   if (!Array.isArray(units) || units.length < 2) return null;
-  // Largest = highest conversion factor > 1.
+  // Largest = highest conv factor > 1.
   const largest = units
-    .filter(u => parseFloat(u.conversion) > 1)
-    .sort((a, b) => parseFloat(b.conversion) - parseFloat(a.conversion))[0];
+    .filter(u => parseFloat(u.conv) > 1)
+    .sort((a, b) => parseFloat(b.conv) - parseFloat(a.conv))[0];
   if (!largest) return null;
-  const conv = parseFloat(largest.conversion) || 1;
-  const primaryQty  = Math.floor(stock / conv);
+  const conv = parseFloat(largest.conv) || 1;
+  const primaryQty   = Math.floor(stock / conv);
   const remainderQty = stock - (primaryQty * conv);
   if (primaryQty === 0) return null; // less than one Box — plain base render
   return {
-    primary:    { qty: primaryQty,   unit: largest.unit },
+    primary:    { qty: primaryQty,   unit: largest.name },
     remainder:  { qty: remainderQty, unit: baseUnit || 'Bottle' },
   };
 }
