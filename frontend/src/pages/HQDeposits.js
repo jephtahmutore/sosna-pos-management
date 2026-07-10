@@ -491,9 +491,29 @@ const HQDeposits = () => {
                             <span style={{ padding: '2px 10px', background: statusBg, color: statusColor, borderRadius: 999, fontSize: 10, fontWeight: 700 }}>
                               {d.status}
                             </span>
+                            {/* v1.10.168 — EDITED pill on CONFIRMED rows whose
+                                amount / method / notes / date were corrected
+                                post-confirm. Reason + editor render below,
+                                matching REJECTED / DELETED visual pattern. */}
+                            {d.status === 'CONFIRMED' && d.edited_at && (
+                              <span style={{ marginLeft: 6, padding: '2px 8px', background: '#fef3c7', color: '#92400e', borderRadius: 999, fontSize: 9, fontWeight: 700 }}
+                                    title={`Edited ${new Date(d.edited_at).toLocaleString()}`}>
+                                EDITED
+                              </span>
+                            )}
                             {d.status === 'REJECTED' && d.reject_reason && (
                               <div style={{ fontSize: 10, color: '#b91c1c', fontStyle: 'italic', marginTop: 3 }} title={d.reject_reason}>
                                 {d.reject_reason.length > 30 ? d.reject_reason.slice(0, 30) + '…' : d.reject_reason}
+                              </div>
+                            )}
+                            {d.status === 'CONFIRMED' && d.edited_at && d.edit_reason && (
+                              <div style={{ fontSize: 10, color: '#92400e', fontStyle: 'italic', marginTop: 3 }} title={d.edit_reason}>
+                                {d.edit_reason.length > 30 ? d.edit_reason.slice(0, 30) + '…' : d.edit_reason}
+                              </div>
+                            )}
+                            {d.status === 'CONFIRMED' && d.edited_at && d.edited_by_name && (
+                              <div style={{ fontSize: 9, color: '#94a3b8', marginTop: 2 }}>
+                                edited by {d.edited_by_name}
                               </div>
                             )}
                           </>
