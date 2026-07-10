@@ -36,33 +36,27 @@ router.get('/', auth, readOnlyGuard, (req, res) => {
 router.get('/stats', auth, readOnlyGuard, (req, res) => {
   try {
     const tenantId = req.user.tenantId;
-    // v1.10.158 — the legacy fallback usd_amount → cash_amount was
-    // duplicating K amounts into the USD bucket on HQ and Kassumbalesa.
-    // On multi-currency tenants, cash/bank/momo hold the K sub-method
-    // split (K·Cash / K·Bank / K·MoMo), NOT USD/FRA equivalents. So a
-    // K8,082 PV paid via K·Cash has usd_amount=0, k_amount=8082,
-    // cash_amount=8082 — and the CASE fell through to cash_amount as
-    // "USD 8082". Result: the USD KPI card ≈ the K KPI card.
+    // v1.10.159 — the v1.10.158 gate was wrong: HQ's business_settings
+    // has currency_mode='K' (only Kassumbalesa carries 'USD+FRA+K'),
+    // so isKOnly was true on HQ and the fallback stayed on. USD KPI
+    // still mirrored K.
     //
-    // Gate the fallback on currency_mode='K' (pure Liquor: Mansa /
-    // Lusaka) where cash/bank/momo mirror the K slots for pre-mirror
-    // rows. Multi-currency tenants read the currency columns directly.
-    // Same guard CashReceipt.js frontend uses at line 457.
-    let currencyMode = 'K';
-    try {
-      const s = db.prepare(`SELECT currency_mode FROM business_settings ORDER BY id ASC LIMIT 1`).get();
-      if (s && s.currency_mode) currencyMode = String(s.currency_mode).toUpperCase();
-    } catch (_) {}
-    const isKOnly = currencyMode === 'K';
-    const usdExpr = isKOnly
-      ? `COALESCE(SUM(CASE WHEN COALESCE(usd_amount,0) > 0 THEN usd_amount ELSE COALESCE(cash_amount,0) END), 0)`
-      : `COALESCE(SUM(usd_amount), 0)`;
-    const fraExpr = isKOnly
-      ? `COALESCE(SUM(CASE WHEN COALESCE(fra_amount,0) > 0 THEN fra_amount ELSE COALESCE(bank_amount,0) END), 0)`
-      : `COALESCE(SUM(fra_amount), 0)`;
-    const kExpr   = isKOnly
-      ? `COALESCE(SUM(CASE WHEN COALESCE(k_amount,  0) > 0 THEN k_amount   ELSE COALESCE(momo_amount,0) END), 0)`
-      : `COALESCE(SUM(k_amount), 0)`;
+    // Adopt the same per-row check CashReceipt /stats uses at v1.10.141:
+    // when a row's k_amount > 0 it's an HQ K PV where cash/bank/momo are
+    // K sub-drawers — skip the cash/bank fallback for USD/FRA. Rows
+    // where k_amount = 0 keep the legacy fallback (needed for Liquor
+    // AR-mint receipts and pre-v1.8.5 rows).
+    const usdExpr = `COALESCE(SUM(CASE
+      WHEN COALESCE(usd_amount,0) > 0 THEN usd_amount
+      WHEN COALESCE(k_amount,0)   > 0 THEN 0
+      ELSE COALESCE(cash_amount,0)
+    END), 0)`;
+    const fraExpr = `COALESCE(SUM(CASE
+      WHEN COALESCE(fra_amount,0) > 0 THEN fra_amount
+      WHEN COALESCE(k_amount,0)   > 0 THEN 0
+      ELSE COALESCE(bank_amount,0)
+    END), 0)`;
+    const kExpr   = `COALESCE(SUM(CASE WHEN COALESCE(k_amount,0) > 0 THEN k_amount ELSE COALESCE(momo_amount,0) END), 0)`;
     const totalsRow = (whereExtra, params) => db.prepare(
       `SELECT ${usdExpr} AS usd, ${fraExpr} AS fra, ${kExpr} AS k
        FROM payment_vouchers WHERE deleted_at IS NULL AND tenant_id = ?${whereExtra}`
