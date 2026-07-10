@@ -138,6 +138,14 @@ const PaymentVoucher = () => {
 
   const filteredTotal = filteredVouchers.reduce((s, v) => s + parseFloat(v.amount || 0), 0);
   const allTotal      = vouchers.reduce((s, v) => s + parseFloat(v.amount || 0), 0);
+  // v1.10.160 — per-currency filtered totals for the filter header (only
+  // used on non-Liquor). The single `filteredTotal` above stays for
+  // Liquor and the print paths.
+  const filteredTotals = filteredVouchers.reduce((s, v) => ({
+    usd: s.usd + (parseFloat(v.usd_amount) || 0),
+    fra: s.fra + (parseFloat(v.fra_amount) || 0),
+    k:   s.k   + (parseFloat(v.k_amount)   || 0),
+  }), { usd: 0, fra: 0, k: 0 });
   const hasFilter     = filterFrom || filterTo;
 
   const fmt2 = (v) => parseFloat(v || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -509,8 +517,18 @@ const PaymentVoucher = () => {
 
         <span style={{ marginLeft: 'auto', fontSize: 12, color: '#9ca3af' }}>
           {filteredVouchers.length} voucher{filteredVouchers.length !== 1 ? 's' : ''}
-          {hasFilter && (
+          {/* v1.10.160 — Liquor: single-currency total (unchanged).
+              Non-Liquor: split per currency so K PVs on HQ aren't
+              silently displayed as "$0.00" like they were pre-fix. */}
+          {hasFilter && isLiquorStyle && (
             <> &nbsp;·&nbsp; Total: <strong style={{ color: '#dc2626' }}>{curSym}{fmt2(filteredTotal)}</strong></>
+          )}
+          {hasFilter && !isLiquorStyle && (
+            <>
+              &nbsp;·&nbsp; USD <strong style={{ color: '#16a34a' }}>${fmt2(filteredTotals.usd)}</strong>
+              &nbsp;·&nbsp; FRA <strong style={{ color: '#7c3aed' }}>{Math.round(filteredTotals.fra).toLocaleString('en-US')}</strong>
+              &nbsp;·&nbsp; K <strong style={{ color: '#ea580c' }}>{Math.round(filteredTotals.k).toLocaleString('en-US')}</strong>
+            </>
           )}
         </span>
       </div>
