@@ -316,14 +316,27 @@ router.get('/inventory-report', hqAuth, (req, res) => {
     for (const t of tenants) {
       try {
         const db = getTenantDb(t.slug);
-        const settings = tryGet(db, `SELECT business_name FROM business_settings ORDER BY id ASC LIMIT 1`) || {};
+        // v1.10.149 — pull currency_mode so the frontend can show K vs $ per
+        // branch instead of hard-coding a $ prefix. K-only Liquor branches
+        // (Lusaka/Mansa) return 'K'; tri-currency Kassumbalesa returns the
+        // USD-base symbol.
+        const settings = tryGet(db, `SELECT business_name, currency_mode FROM business_settings ORDER BY id ASC LIMIT 1`) || {};
         const branchName = settings.business_name || t.business_name || t.slug;
-        byBranch[t.slug] = { name: branchName, products: 0, low: 0, stock_value: 0 };
+        const currencyMode = settings.currency_mode || 'K';
+        // Money on the branch DB is stored in its primary drawer currency:
+        //   'K'          → K (Liquor)
+        //   'USD+FRA'    → USD (Kassumbalesa)
+        //   'USD+FRA+K'  → USD (tri-currency also stores base as USD)
+        const currency = currencyMode === 'K' ? 'K' : 'USD';
+        byBranch[t.slug] = { name: branchName, products: 0, low: 0, stock_value: 0, currency, currency_mode: currencyMode };
 
         // Pull active products + category for context.
+        // v1.10.149 — also read units_json so the frontend can convert the
+        // raw base-unit current_stock into the largest unit + remainder
+        // (e.g. 14,046 Bottle → 585 Box + 6 Bottle when 1 Box = 24 Bottles).
         let sql = `
           SELECT p.id, p.name, p.unit, p.current_stock, p.min_stock,
-                 p.cost_price, p.selling_price, p.status,
+                 p.cost_price, p.selling_price, p.status, p.units_json,
                  c.name AS category_name
             FROM products p
             LEFT JOIN categories c ON c.id = p.category_id
@@ -350,6 +363,7 @@ router.get('/inventory-report', hqAuth, (req, res) => {
             name:        p.name,
             category:    p.category_name || '—',
             unit:        p.unit || '',
+            units_json:  p.units_json || null,
             current_stock: stock,
             min_stock:   min,
             cost_price:  cost,
@@ -357,6 +371,7 @@ router.get('/inventory-report', hqAuth, (req, res) => {
             value,
             low: isLow,
             status: p.status || 'Active',
+            currency,
           });
         }
       } catch (e) {
@@ -368,12 +383,18 @@ router.get('/inventory-report', hqAuth, (req, res) => {
     rows.sort((a, b) => b.value - a.value);
     const capped = rows.slice(0, LIMIT);
 
+    // v1.10.149 — split stock_value by currency so USD (Kassumbalesa) and K
+    // (Lusaka/Mansa) never get summed into a fake single number. Legacy
+    // `stock_value` field kept for backwards compat but callers should
+    // prefer `stock_value_by_currency`.
     const rollup = Object.values(byBranch).reduce((acc, b) => {
       acc.products    += b.products;
       acc.stock_value += b.stock_value;
       acc.low         += b.low;
+      const c = b.currency || 'USD';
+      acc.stock_value_by_currency[c] = (acc.stock_value_by_currency[c] || 0) + b.stock_value;
       return acc;
-    }, { products: 0, stock_value: 0, low: 0 });
+    }, { products: 0, stock_value: 0, low: 0, stock_value_by_currency: {} });
 
     res.json({
       branch, low_only: lowOnly, q,
