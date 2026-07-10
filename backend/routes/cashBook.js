@@ -102,18 +102,30 @@ function ccyReceiptsPayments(tenantId, slug, dateClause, dateParams) {
   const receipts = { usd: 0, fra: 0, k: 0 };
   const payments = { usd: 0, fra: 0, k: 0 };
   const num = (v) => parseFloat(v || 0) || 0;
+  // v1.10.161 — same currency-mode detection as the /cash-book handler
+  // (v1.10.156). On Liquor branches the mirror columns are always 0 and
+  // the real K amount lives in cash/bank/momo — route it there so the
+  // pre-period fold reads the same total as the ledger UNION does, and
+  // never routes it into `usd` (Liquor has no USD column).
+  let isLiquorK = false;
+  try {
+    const bs = db.prepare(`SELECT currency_mode FROM business_settings ORDER BY id ASC LIMIT 1`).get();
+    isLiquorK = (bs?.currency_mode || '').toUpperCase() === 'K';
+  } catch (_) { /* pre-migration DB */ }
+  const usdExprCR = isLiquorK
+    ? `0`
+    : `CASE WHEN COALESCE(usd_amount,0) > 0 THEN usd_amount WHEN COALESCE(k_amount,0) > 0 THEN 0 ELSE COALESCE(cash_amount,0) END`;
+  const kExprCR = isLiquorK
+    ? `CASE WHEN COALESCE(k_amount,0) > 0 THEN k_amount ELSE COALESCE(cash_amount,0) + COALESCE(bank_amount,0) + COALESCE(momo_amount,0) END`
+    : `COALESCE(k_amount, 0)`;
   // CR — cash_receipts.
-  // v1.10.142 — skip usd_amount→cash_amount fallback on rows where
-  // k_amount > 0 (marks HQ K CR whose cash_amount is a K sub-drawer,
-  // not a USD equivalent). Liquor AR-mint rows (k_amount = 0) still
-  // hit the fallback as intended.
-  receipts.usd += num(db.prepare(`SELECT COALESCE(SUM(CASE WHEN COALESCE(usd_amount,0)>0 THEN usd_amount WHEN COALESCE(k_amount,0)>0 THEN 0 ELSE COALESCE(cash_amount,0) END), 0) AS t FROM cash_receipts WHERE deleted_at IS NULL AND tenant_id = ?${dateClause}`).get(tenantId, ...dateParams).t);
+  receipts.usd += num(db.prepare(`SELECT COALESCE(SUM(${usdExprCR}), 0) AS t FROM cash_receipts WHERE deleted_at IS NULL AND tenant_id = ?${dateClause}`).get(tenantId, ...dateParams).t);
   receipts.fra += num(db.prepare(`SELECT COALESCE(SUM(fra_amount), 0) AS t FROM cash_receipts WHERE deleted_at IS NULL AND tenant_id = ?${dateClause}`).get(tenantId, ...dateParams).t);
-  receipts.k   += num(db.prepare(`SELECT COALESCE(SUM(k_amount), 0)   AS t FROM cash_receipts WHERE deleted_at IS NULL AND tenant_id = ?${dateClause}`).get(tenantId, ...dateParams).t);
+  receipts.k   += num(db.prepare(`SELECT COALESCE(SUM(${kExprCR}), 0) AS t FROM cash_receipts WHERE deleted_at IS NULL AND tenant_id = ?${dateClause}`).get(tenantId, ...dateParams).t);
   // PV — payment_vouchers.
-  payments.usd += num(db.prepare(`SELECT COALESCE(SUM(CASE WHEN COALESCE(usd_amount,0)>0 THEN usd_amount WHEN COALESCE(k_amount,0)>0 THEN 0 ELSE COALESCE(cash_amount,0) END), 0) AS t FROM payment_vouchers WHERE deleted_at IS NULL AND tenant_id = ?${dateClause}`).get(tenantId, ...dateParams).t);
+  payments.usd += num(db.prepare(`SELECT COALESCE(SUM(${usdExprCR}), 0) AS t FROM payment_vouchers WHERE deleted_at IS NULL AND tenant_id = ?${dateClause}`).get(tenantId, ...dateParams).t);
   payments.fra += num(db.prepare(`SELECT COALESCE(SUM(fra_amount), 0) AS t FROM payment_vouchers WHERE deleted_at IS NULL AND tenant_id = ?${dateClause}`).get(tenantId, ...dateParams).t);
-  payments.k   += num(db.prepare(`SELECT COALESCE(SUM(k_amount), 0)   AS t FROM payment_vouchers WHERE deleted_at IS NULL AND tenant_id = ?${dateClause}`).get(tenantId, ...dateParams).t);
+  payments.k   += num(db.prepare(`SELECT COALESCE(SUM(${kExprCR}), 0) AS t FROM payment_vouchers WHERE deleted_at IS NULL AND tenant_id = ?${dateClause}`).get(tenantId, ...dateParams).t);
   // v1.10.78 — AP payments now support triple-currency (usd/fra/k) on HQ
   // via the ap_payments columns added in the same version. Route each
   // currency to its own bucket; rows that pre-date v1.10.78 (only
@@ -655,14 +667,26 @@ router.get('/stats', auth, readOnlyGuard, (req, res) => {
     // outgoing from branch / add incoming for HQ) so the cards stay in
     // sync with the ledger entries endpoint.
     const slug = String(req.query.slug || '').toLowerCase();
+    // v1.10.161 — same Liquor-K detection as the / handler (v1.10.156)
+    // and ccyReceiptsPayments (this version). On Liquor, USD column
+    // hidden AND K reads cash+bank+momo when k_amount = 0. Keeps the
+    // /stats currentByCcy in lockstep with the ledger UNION so TOTALS
+    // BALANCE equals the ledger's running balance last row.
+    let isLiquorKStats = false;
+    try {
+      const bs = db.prepare(`SELECT currency_mode FROM business_settings ORDER BY id ASC LIMIT 1`).get();
+      isLiquorKStats = (bs?.currency_mode || '').toUpperCase() === 'K';
+    } catch (_) { /* pre-migration DB */ }
+    const usdExprStats = isLiquorKStats
+      ? `0`
+      : `CASE WHEN COALESCE(usd_amount,0) > 0 THEN usd_amount WHEN COALESCE(k_amount,0) > 0 THEN 0 ELSE COALESCE(cash_amount,0) END`;
+    const kExprStats = isLiquorKStats
+      ? `CASE WHEN COALESCE(k_amount,0) > 0 THEN k_amount ELSE COALESCE(cash_amount,0) + COALESCE(bank_amount,0) + COALESCE(momo_amount,0) END`
+      : `COALESCE(k_amount, 0)`;
     const sumCcy = (table, dateCol, col) => {
-      const usdExpr = `CASE WHEN COALESCE(${col === 'cash_amount' ? 'usd_amount' : col + '_TODO'},0) > 0 THEN ${col === 'cash_amount' ? 'usd_amount' : col} ELSE COALESCE(${col === 'cash_amount' ? 'cash_amount' : col},0) END`;
-      // Simpler: always pick the USD value via COALESCE.
-      // v1.10.142 — skip fallback when k_amount > 0 (HQ K CR/PV where
-      // cash_amount is a K sub-drawer, not a USD equivalent).
-      const usd = db.prepare(`SELECT COALESCE(SUM(CASE WHEN COALESCE(usd_amount,0)>0 THEN usd_amount WHEN COALESCE(k_amount,0)>0 THEN 0 ELSE COALESCE(cash_amount,0) END), 0) AS t FROM ${table} WHERE deleted_at IS NULL AND tenant_id = ?${df.replace(/date/g, dateCol)}`).get(tenantId, ...dp).t;
+      const usd = db.prepare(`SELECT COALESCE(SUM(${usdExprStats}), 0) AS t FROM ${table} WHERE deleted_at IS NULL AND tenant_id = ?${df.replace(/date/g, dateCol)}`).get(tenantId, ...dp).t;
       const fra = db.prepare(`SELECT COALESCE(SUM(fra_amount), 0) AS t FROM ${table} WHERE deleted_at IS NULL AND tenant_id = ?${df.replace(/date/g, dateCol)}`).get(tenantId, ...dp).t;
-      const kAmt= db.prepare(`SELECT COALESCE(SUM(k_amount), 0) AS t FROM ${table} WHERE deleted_at IS NULL AND tenant_id = ?${df.replace(/date/g, dateCol)}`).get(tenantId, ...dp).t;
+      const kAmt= db.prepare(`SELECT COALESCE(SUM(${kExprStats}), 0) AS t FROM ${table} WHERE deleted_at IS NULL AND tenant_id = ?${df.replace(/date/g, dateCol)}`).get(tenantId, ...dp).t;
       return { usd: parseFloat(usd), fra: parseFloat(fra), k: parseFloat(kAmt) };
     };
     const crByCcy = sumCcy('cash_receipts',    'date');
