@@ -99,7 +99,19 @@ router.post('/', auth, (req, res) => {
     // clients (send usd/fra/k only) still zero the sub-method columns.
     const hasTriCcy   = (usd_amount !== undefined || fra_amount !== undefined || k_amount !== undefined);
     const hasSubMeth  = (cash_amount !== undefined || bank_amount !== undefined || momo_amount !== undefined);
-    const isHqTriCcy  = hasTriCcy && hasSubMeth;
+    // v1.10.166 — isHqTriCcy must be gated on branch currency_mode too.
+    // A Liquor client that sends BOTH sets in one body (mirror + legacy)
+    // used to be misread as HQ, and the backend would write both — which
+    // is how PV-0031 (Simon Fuel, Lusaka) ended up with cash_amount = 2420
+    // AND fra_amount = 2420 for a single K2,420 Cash payment. On K-only
+    // branches (Liquor), always take the legacy path so only ONE column
+    // per bucket gets written.
+    let isLiquorK = false;
+    try {
+      const bs = db.prepare(`SELECT currency_mode FROM business_settings ORDER BY id ASC LIMIT 1`).get();
+      isLiquorK = (bs?.currency_mode || '').toUpperCase() === 'K';
+    } catch (_) { /* pre-migration DB — treat as tri-currency */ }
+    const isHqTriCcy  = hasTriCcy && hasSubMeth && !isLiquorK;
     const usdAmt = isHqTriCcy
       ? (parseFloat(usd_amount) || 0)
       : (parseFloat(usd_amount ?? cash_amount ?? 0) || 0);
@@ -150,7 +162,19 @@ router.put('/:id', auth, (req, res) => {
     // v1.10.133 — HQ K sub-method write (same detection as POST).
     const hasTriCcy   = (usd_amount !== undefined || fra_amount !== undefined || k_amount !== undefined);
     const hasSubMeth  = (cash_amount !== undefined || bank_amount !== undefined || momo_amount !== undefined);
-    const isHqTriCcy  = hasTriCcy && hasSubMeth;
+    // v1.10.166 — isHqTriCcy must be gated on branch currency_mode too.
+    // A Liquor client that sends BOTH sets in one body (mirror + legacy)
+    // used to be misread as HQ, and the backend would write both — which
+    // is how PV-0031 (Simon Fuel, Lusaka) ended up with cash_amount = 2420
+    // AND fra_amount = 2420 for a single K2,420 Cash payment. On K-only
+    // branches (Liquor), always take the legacy path so only ONE column
+    // per bucket gets written.
+    let isLiquorK = false;
+    try {
+      const bs = db.prepare(`SELECT currency_mode FROM business_settings ORDER BY id ASC LIMIT 1`).get();
+      isLiquorK = (bs?.currency_mode || '').toUpperCase() === 'K';
+    } catch (_) { /* pre-migration DB — treat as tri-currency */ }
+    const isHqTriCcy  = hasTriCcy && hasSubMeth && !isLiquorK;
     const usdAmt = isHqTriCcy ? (parseFloat(usd_amount) || 0) : (parseFloat(usd_amount ?? cash_amount ?? 0) || 0);
     const fraAmt = isHqTriCcy ? (parseFloat(fra_amount) || 0) : (parseFloat(fra_amount ?? bank_amount ?? 0) || 0);
     const kAmt   = isHqTriCcy ? (parseFloat(k_amount)   || 0) : (parseFloat(k_amount   ?? momo_amount ?? 0) || 0);

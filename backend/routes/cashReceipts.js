@@ -105,9 +105,19 @@ router.post('/', auth, (req, res) => {
     // Legacy cash/bank/momo accepted for back-compat with old clients.
     // amount column holds USD-equivalent (= usd_amount only) so legacy
     // reports keep working. Per-currency lives in the dedicated columns.
-    const usdAmt = parseFloat(usd_amount) || 0;
-    const fraAmt = parseFloat(fra_amount) || 0;
-    const kAmt   = parseFloat(k_amount)   || 0;
+    // v1.10.166 — on Liquor K-only branches force the mirror (usd/fra/k)
+    // to 0. The Liquor client sometimes sends BOTH mirror + legacy
+    // columns; keeping both means aggregate readers can double-count
+    // (see paymentVouchers.js:100 comment about Simon Fuel PV-0031).
+    // Legacy columns are the truth on Liquor.
+    let isLiquorK = false;
+    try {
+      const bs = db.prepare(`SELECT currency_mode FROM business_settings ORDER BY id ASC LIMIT 1`).get();
+      isLiquorK = (bs?.currency_mode || '').toUpperCase() === 'K';
+    } catch (_) { /* pre-migration DB */ }
+    const usdAmt = isLiquorK ? 0 : (parseFloat(usd_amount) || 0);
+    const fraAmt = isLiquorK ? 0 : (parseFloat(fra_amount) || 0);
+    const kAmt   = isLiquorK ? 0 : (parseFloat(k_amount)   || 0);
     const sumCcy = usdAmt + fraAmt + kAmt;
     const sumLegacy = (parseFloat(cash_amount) || 0) + (parseFloat(bank_amount) || 0) + (parseFloat(momo_amount) || 0);
     // v1.10.69 — when the client sent per-currency columns (sumCcy > 0)
@@ -164,9 +174,19 @@ router.put('/:id', auth, (req, res) => {
     const { received_from, description, payment_method, amount, date,
             cash_amount, bank_amount, momo_amount,
             usd_amount, fra_amount, k_amount } = req.body;
-    const usdAmt = parseFloat(usd_amount) || 0;
-    const fraAmt = parseFloat(fra_amount) || 0;
-    const kAmt   = parseFloat(k_amount)   || 0;
+    // v1.10.166 — on Liquor K-only branches force the mirror (usd/fra/k)
+    // to 0. The Liquor client sometimes sends BOTH mirror + legacy
+    // columns; keeping both means aggregate readers can double-count
+    // (see paymentVouchers.js:100 comment about Simon Fuel PV-0031).
+    // Legacy columns are the truth on Liquor.
+    let isLiquorK = false;
+    try {
+      const bs = db.prepare(`SELECT currency_mode FROM business_settings ORDER BY id ASC LIMIT 1`).get();
+      isLiquorK = (bs?.currency_mode || '').toUpperCase() === 'K';
+    } catch (_) { /* pre-migration DB */ }
+    const usdAmt = isLiquorK ? 0 : (parseFloat(usd_amount) || 0);
+    const fraAmt = isLiquorK ? 0 : (parseFloat(fra_amount) || 0);
+    const kAmt   = isLiquorK ? 0 : (parseFloat(k_amount)   || 0);
     const sumCcy = usdAmt + fraAmt + kAmt;
     const sumLegacy = (parseFloat(cash_amount) || 0) + (parseFloat(bank_amount) || 0) + (parseFloat(momo_amount) || 0);
     // v1.10.69 — when the client sent per-currency columns (sumCcy > 0)
