@@ -281,6 +281,9 @@ export const rejectCashDeposit  = (id, reason) => api.put(`/cash-deposits/${id}/
 // v1.10.143 — soft delete requires reason + admin attestation.
 export const deleteCashDeposit  = (id, data) => api.delete(`/cash-deposits/${id}`, { data });
 export const editCashDepositDate = (id, deposit_date) => api.put(`/cash-deposits/${id}/date`, { deposit_date });
+// v1.10.168 — full CONFIRMED-only edit (amount / from_method / notes / date).
+// Requires reason + admin attestation (adminId/adminName from verify-admin).
+export const editCashDeposit = (id, data) => api.put(`/cash-deposits/${id}/edit`, data);
 
 // HQ Purchases — Phase C v2: supplier purchases logged at HQ with
 // per-line destination branch. HQ has no warehouse / no source stock.

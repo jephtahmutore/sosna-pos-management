@@ -297,6 +297,78 @@ router.put('/:id/date', hqAuth, (req, res) => {
   }
 });
 
+// ─── PUT /cash-deposits/:id/edit — CONFIRMED-only full edit ─────────────────
+//
+// v1.10.168 — HQ can correct amount / from_method / notes / date on a
+// CONFIRMED deposit. Gated behind reason + admin password (same rigor
+// as the delete flow). PENDING deposits are NOT editable through this
+// route — HQ hasn't seen the physical cash yet, so if the amount is
+// wrong the correct action is Reject and let the branch resend, not
+// silent HQ rewrite. REJECTED / DELETED are also locked.
+//
+// Body: { deposit_date?, amount?, from_method?, notes?, reason, adminId, adminName }
+router.put('/:id/edit', hqAuth, (req, res) => {
+  try {
+    const row = masterDb.prepare('SELECT * FROM cash_deposits WHERE id = ?').get(req.params.id);
+    if (!row) return res.status(404).json({ error: 'Deposit not found' });
+    if (row.deleted_at) return res.status(400).json({ error: 'Deposit was deleted; cannot edit.' });
+    if (row.status !== 'CONFIRMED') {
+      return res.status(400).json({ error: `Only CONFIRMED deposits can be edited (current: ${row.status}). For PENDING, use Confirm or Reject.` });
+    }
+    const { deposit_date, amount, from_method, notes, reason, adminId, adminName } = req.body || {};
+    if (!reason || String(reason).trim().length < 3) {
+      return res.status(400).json({ error: 'Reason (min 3 chars) is required for audit.' });
+    }
+    if (!adminId) {
+      return res.status(400).json({ error: 'Admin authorization missing.' });
+    }
+    // Build the SET clause dynamically — only touch fields the client sent.
+    const sets = [];
+    const params = [];
+    if (deposit_date !== undefined) {
+      if (typeof deposit_date !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(deposit_date)) {
+        return res.status(400).json({ error: 'deposit_date must be YYYY-MM-DD.' });
+      }
+      sets.push('deposit_date = ?');
+      params.push(deposit_date);
+    }
+    if (amount !== undefined) {
+      const amt = parseFloat(amount);
+      if (!isFinite(amt) || amt <= 0) {
+        return res.status(400).json({ error: 'amount must be > 0.' });
+      }
+      sets.push('amount = ?');
+      params.push(amt);
+    }
+    if (from_method !== undefined) {
+      const VALID_METHODS = new Set(['Cash', 'Mobile Money', 'Bank']);
+      if (from_method !== null && !VALID_METHODS.has(from_method)) {
+        return res.status(400).json({ error: 'from_method must be Cash, Mobile Money, or Bank.' });
+      }
+      sets.push('from_method = ?');
+      params.push(from_method || null);
+    }
+    if (notes !== undefined) {
+      sets.push('notes = ?');
+      params.push(notes ? String(notes).trim() : null);
+    }
+    if (sets.length === 0) {
+      return res.status(400).json({ error: 'Nothing to edit — send at least one of deposit_date, amount, from_method, notes.' });
+    }
+    // Audit stamps always update.
+    sets.push('edited_at = datetime(\'now\')');
+    sets.push('edited_by = ?');           params.push(adminId);
+    sets.push('edited_by_name = ?');      params.push(adminName || null);
+    sets.push('edit_reason = ?');         params.push(String(reason).trim());
+    params.push(req.params.id);
+    masterDb.prepare(`UPDATE cash_deposits SET ${sets.join(', ')} WHERE id = ?`).run(...params);
+    const updated = masterDb.prepare('SELECT * FROM cash_deposits WHERE id = ?').get(req.params.id);
+    res.json(updated);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ─── DELETE /cash-deposits/:id — remove a deposit ───────────────────────────
 // v1.8.60 — allow deleting deposits to clean up mistakes / cancelled records.
 // v1.10.143 — now a SOFT delete gated by admin password verification. Hard

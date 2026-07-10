@@ -19,7 +19,7 @@ import {
 } from 'react-icons/fi';
 import {
   getCashDeposits, createCashDeposit, confirmCashDeposit, rejectCashDeposit, deleteCashDeposit,
-  editCashDepositDate,
+  editCashDepositDate, editCashDeposit,
   uploadInvoiceAttachment,
   isHqHost, getBranchSlug,
 } from '../services/api';
@@ -253,19 +253,32 @@ const HQDeposits = () => {
   // Same UX as handleConfirm's date-change path: prompt for a new date,
   // then require admin password before writing. Backend uses PUT /date
   // (not /confirm) because the row is already CONFIRMED.
-  const handleEditDate = (d) => {
-    const currentDate = d.deposit_date || new Date().toISOString().slice(0, 10);
-    const input = window.prompt(
-      `Edit accounting date for ${d.deposit_number}?\n\n` +
-      `Cash Book will move this deposit to the new date on BOTH sides\n` +
-      `(HQ inflow and branch outflow).`,
-      currentDate
-    );
-    if (input === null) return;
-    const trimmed = String(input).trim();
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) { alert('Date must be YYYY-MM-DD.'); return; }
-    if (trimmed === d.deposit_date) return; // no change
-    setPendingDateChange({ deposit: d, newDate: trimmed, mode: 'edit' });
+  // v1.10.168 — replaced the date-only prompt with a full Edit modal
+  // (see handleEditDeposit below).
+  const handleEditDate = (d) => handleEditDeposit(d);
+
+  // v1.10.168 — full CONFIRMED-only edit flow. Opens the Edit Deposit
+  // modal → user changes date / amount / from_method / notes → Reason
+  // (mandatory) → AdminPasswordPrompt → PUT /:id/edit. Both HQ Cash Book
+  // and the branch Cash Book reflect the corrected values on next refresh.
+  const [editRow, setEditRow]         = useState(null);
+  const [editStep, setEditStep]       = useState(null); // null | 'form' | 'password'
+  const [editForm, setEditForm]       = useState({ deposit_date: '', amount: '', from_method: '', notes: '' });
+  const [editReason, setEditReason]   = useState('');
+  const [editBusy, setEditBusy]       = useState(false);
+  const [editError, setEditError]     = useState('');
+  const handleEditDeposit = (d) => {
+    if (d.status !== 'CONFIRMED') return;
+    setEditRow(d);
+    setEditForm({
+      deposit_date: d.deposit_date || (d.created_at || '').slice(0, 10),
+      amount:       String(parseFloat(d.amount) || 0),
+      from_method:  d.from_method || '',
+      notes:        d.notes || '',
+    });
+    setEditReason('');
+    setEditError('');
+    setEditStep('form');
   };
 
   // v1.10.83 — runs after admin authorises the date change. In 'confirm'
@@ -520,16 +533,22 @@ const HQDeposits = () => {
                             </>
                           )}
                           {/* v1.10.84 — HQ can edit accounting date on CONFIRMED
-                              deposits. Admin-gated inside handleEditDate. */}
+                              deposits. Admin-gated inside handleEditDate.
+                              v1.10.168 — expanded to edit date + amount +
+                              from_method + notes with reason + admin password. */}
                           {onHq && d.status === 'CONFIRMED' && (
-                            <button onClick={() => handleEditDate(d)} title="Edit accounting date"
+                            <button onClick={() => handleEditDeposit(d)} title="Edit deposit (date / amount / method / notes)"
                               style={{ padding: '5px 10px', background: '#fff', color: '#2563eb', border: '1px solid #bfdbfe', borderRadius: 4, cursor: 'pointer', fontSize: 11, fontWeight: 700, display: 'inline-flex', alignItems: 'center', gap: 4 }}>
                               <FiEdit2 size={11} />
                             </button>
                           )}
-                          {/* Delete: branch can delete its own PENDING rows;
-                              HQ can delete anything (mistakes, duplicates). */}
-                          {(onHq || d.status === 'PENDING') && (
+                          {/* Delete: branch can cancel its own PENDING rows;
+                              HQ can soft-delete CONFIRMED / REJECTED rows.
+                              v1.10.168 — HQ can NO LONGER delete PENDING; use
+                              Confirm or Reject instead. Delete on PENDING is
+                              destructive without an audit trail motivation
+                              (Reject already covers "we don't accept this"). */}
+                          {((onHq && d.status !== 'PENDING') || (!onHq && d.status === 'PENDING')) && (
                             <button onClick={() => handleDelete(d)} title="Delete deposit"
                               style={{ padding: '5px 10px', background: '#fff', color: '#dc2626', border: '1px solid #fecaca', borderRadius: 4, cursor: 'pointer', fontSize: 11, fontWeight: 700, display: 'inline-flex', alignItems: 'center', gap: 4 }}>
                               <FiTrash2 size={11} />
@@ -739,6 +758,117 @@ const HQDeposits = () => {
         actionLabel={pendingDateChange?.mode === 'edit' ? 'Approve Date Edit' : 'Approve Date Change'}
         onConfirm={finishConfirmWithDate}
         onCancel={() => setPendingDateChange(null)}
+      />
+
+      {/* v1.10.168 — Edit Deposit flow (CONFIRMED-only, HQ only):
+           form → reason → admin password → PUT /:id/edit */}
+      {editStep === 'form' && editRow && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1500 }}
+             onClick={(e) => { if (e.target === e.currentTarget && !editBusy) setEditStep(null); }}>
+          <div onClick={e => e.stopPropagation()}
+               style={{ background: '#fff', borderRadius: 12, padding: 22, width: 520, maxWidth: 'calc(100vw - 32px)', boxShadow: '0 20px 60px rgba(0,0,0,0.3)' }}>
+            <h3 style={{ margin: '0 0 8px', fontSize: 16, color: '#1d4ed8' }}>Edit Deposit {editRow.deposit_number}</h3>
+            <p style={{ fontSize: 13, color: '#4b5563', margin: '0 0 14px', lineHeight: 1.5 }}>
+              {editRow.from_name || editRow.from_slug} · {editRow.currency}
+              <strong style={{ color: '#b45309', display: 'block', marginTop: 6 }}>
+                ⚠ HQ and the branch Cash Book will both reflect these changes.
+              </strong>
+            </p>
+
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 12 }}>
+              <div>
+                <label style={{ display: 'block', fontSize: 11, fontWeight: 700, color: '#374151', marginBottom: 4, textTransform: 'uppercase', letterSpacing: 0.4 }}>Deposit date</label>
+                <input type="date" value={editForm.deposit_date} disabled={editBusy}
+                  onChange={e => setEditForm(f => ({ ...f, deposit_date: e.target.value }))}
+                  style={{ width: '100%', padding: '9px 12px', border: '1px solid #d1d5db', borderRadius: 8, fontSize: 14, boxSizing: 'border-box' }} />
+              </div>
+              <div>
+                <label style={{ display: 'block', fontSize: 11, fontWeight: 700, color: '#374151', marginBottom: 4, textTransform: 'uppercase', letterSpacing: 0.4 }}>Amount ({editRow.currency})</label>
+                <input type="number" min="0" step="0.01" value={editForm.amount} disabled={editBusy}
+                  onChange={e => setEditForm(f => ({ ...f, amount: e.target.value }))}
+                  style={{ width: '100%', padding: '9px 12px', border: '1px solid #d1d5db', borderRadius: 8, fontSize: 14, boxSizing: 'border-box' }} />
+              </div>
+            </div>
+
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 2fr', gap: 10, marginBottom: 12 }}>
+              <div>
+                <label style={{ display: 'block', fontSize: 11, fontWeight: 700, color: '#374151', marginBottom: 4, textTransform: 'uppercase', letterSpacing: 0.4 }}>From (drawer)</label>
+                <select value={editForm.from_method} disabled={editBusy}
+                  onChange={e => setEditForm(f => ({ ...f, from_method: e.target.value }))}
+                  style={{ width: '100%', padding: '9px 12px', border: '1px solid #d1d5db', borderRadius: 8, fontSize: 14, boxSizing: 'border-box', background: '#fff' }}>
+                  <option value="">—</option>
+                  <option value="Cash">Cash</option>
+                  <option value="Bank">Bank</option>
+                  <option value="Mobile Money">Mobile Money</option>
+                </select>
+              </div>
+              <div>
+                <label style={{ display: 'block', fontSize: 11, fontWeight: 700, color: '#374151', marginBottom: 4, textTransform: 'uppercase', letterSpacing: 0.4 }}>Notes</label>
+                <input type="text" value={editForm.notes} disabled={editBusy}
+                  onChange={e => setEditForm(f => ({ ...f, notes: e.target.value }))}
+                  style={{ width: '100%', padding: '9px 12px', border: '1px solid #d1d5db', borderRadius: 8, fontSize: 14, boxSizing: 'border-box' }} />
+              </div>
+            </div>
+
+            <label style={{ display: 'block', fontSize: 11, fontWeight: 700, color: '#374151', marginBottom: 4, textTransform: 'uppercase', letterSpacing: 0.4 }}>Reason *</label>
+            <textarea rows={3} value={editReason} disabled={editBusy}
+              onChange={e => setEditReason(e.target.value)}
+              placeholder="e.g. branch reported wrong amount at deposit time — actual K 336,000"
+              style={{ width: '100%', padding: '10px 12px', border: '1px solid #d1d5db', borderRadius: 8, fontSize: 14, boxSizing: 'border-box', resize: 'vertical', minHeight: 60, fontFamily: 'inherit' }} />
+
+            {editError && <div style={{ marginTop: 10, color: '#b91c1c', fontSize: 12 }}>{editError}</div>}
+
+            <div style={{ display: 'flex', gap: 10, marginTop: 16, justifyContent: 'flex-end' }}>
+              <button onClick={() => { setEditStep(null); setEditRow(null); setEditReason(''); setEditError(''); }}
+                disabled={editBusy}
+                style={{ padding: '9px 18px', background: '#f3f4f6', color: '#374151', border: '1px solid #d1d5db', borderRadius: 8, fontSize: 13, cursor: editBusy ? 'not-allowed' : 'pointer' }}>
+                Cancel
+              </button>
+              <button
+                onClick={() => {
+                  if (editReason.trim().length < 3) { setEditError('Reason must be at least 3 characters.'); return; }
+                  const amt = parseFloat(editForm.amount);
+                  if (!isFinite(amt) || amt <= 0) { setEditError('Amount must be > 0.'); return; }
+                  setEditError('');
+                  setEditStep('password');
+                }}
+                disabled={editBusy || editReason.trim().length < 3 || !editForm.amount}
+                style={{ padding: '9px 18px', background: (editBusy || editReason.trim().length < 3 || !editForm.amount) ? '#93c5fd' : '#2563eb', color: '#fff', border: 'none', borderRadius: 8, fontSize: 13, fontWeight: 600, cursor: (editBusy || editReason.trim().length < 3 || !editForm.amount) ? 'not-allowed' : 'pointer' }}>
+                Continue → Admin auth
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <AdminPasswordPrompt
+        open={editStep === 'password'}
+        subject={editRow ? `${editRow.deposit_number} — ${editRow.currency} ${parseFloat(editRow.amount || 0).toLocaleString()}` : ''}
+        actionLabel="Save Edit"
+        onCancel={() => { if (!editBusy) setEditStep('form'); }}
+        onConfirm={async ({ adminId, adminName }) => {
+          setEditBusy(true); setEditError('');
+          try {
+            await editCashDeposit(editRow.id, {
+              deposit_date: editForm.deposit_date,
+              amount:       parseFloat(editForm.amount),
+              from_method:  editForm.from_method || null,
+              notes:        editForm.notes || null,
+              reason:       editReason.trim(),
+              adminId,
+              adminName,
+            });
+            setEditBusy(false);
+            setEditStep(null);
+            setEditRow(null);
+            setEditReason('');
+            await fetchDeposits();
+          } catch (err) {
+            setEditBusy(false);
+            setEditStep('form');
+            setEditError(err.response?.data?.error || 'Failed to save edit.');
+          }
+        }}
       />
 
       {/* v1.10.143 — Delete flow: reason → admin password → soft delete. */}

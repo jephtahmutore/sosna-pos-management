@@ -179,6 +179,15 @@ try {
   addMasterCol('cash_deposits', 'deleted_by',      'INTEGER');
   addMasterCol('cash_deposits', 'deleted_by_name', 'TEXT');
   addMasterCol('cash_deposits', 'delete_reason',   'TEXT');
+  // v1.10.168 — post-confirm edit audit trail. HQ can now correct
+  // amount / from_method / notes / date on a CONFIRMED deposit with
+  // reason + admin password. Original row keeps its create audit;
+  // these columns stamp the LATEST edit (last-write-wins on repeat
+  // edits — the reject/delete route is what preserves reversal audit).
+  addMasterCol('cash_deposits', 'edited_at',      'TEXT');
+  addMasterCol('cash_deposits', 'edited_by',      'INTEGER');
+  addMasterCol('cash_deposits', 'edited_by_name', 'TEXT');
+  addMasterCol('cash_deposits', 'edit_reason',    'TEXT');
 
   masterDb.exec(`
 
