@@ -56,7 +56,16 @@ export default function HqInventoryReport() {
   const [error, setError]       = useState('');
 
   useEffect(() => {
-    getHqBranches().then(r => setBranches(r.data?.branches || [])).catch(() => {});
+    // v1.10.154 — auto-select the first branch on load instead of showing
+    // "All branches" (which mixes currencies and slows the query). User
+    // can still switch to "All branches" from the dropdown.
+    getHqBranches().then(r => {
+      const list = r.data?.branches || [];
+      setBranches(list);
+      if (list.length > 0) {
+        setBranch(prev => (prev === 'all' ? list[0].slug : prev));
+      }
+    }).catch(() => {});
   }, []);
 
   const load = async () => {
@@ -74,7 +83,9 @@ export default function HqInventoryReport() {
     setLoading(false);
   };
 
-  useEffect(() => { load(); /* eslint-disable-next-line */ }, []);
+  // v1.10.154 — refetch whenever the branch state changes, so auto-select
+  // after branches load fires the query with the picked branch.
+  useEffect(() => { load(); /* eslint-disable-next-line */ }, [branch]);
 
   const perBranch = useMemo(() => {
     if (!data?.by_branch) return [];
@@ -210,6 +221,22 @@ export default function HqInventoryReport() {
                       // back to plain "N Bottle" when there's no larger unit.
                       const conv = convertToLargestUnit(r.current_stock, r.units_json, r.unit);
                       const ccy = r.currency || 'USD';
+                      // v1.10.154 — Cost column follows the On Hand unit. If we
+                      // display "548 Box", show per-Box cost ($0.82 × 24 = $19.68),
+                      // not the per-Bottle base cost. Value column unchanged
+                      // (total = base_cost × base_stock).
+                      let displayCost = r.cost_price;
+                      let costUnit = '';
+                      if (conv) {
+                        // Look up the conv factor of the largest unit from units_json.
+                        try {
+                          const units = typeof r.units_json === 'string' ? JSON.parse(r.units_json) : r.units_json;
+                          const largest = (units || []).find(u => u.name === conv.primary.unit);
+                          const cf = parseFloat(largest?.conv) || 1;
+                          displayCost = (parseFloat(r.cost_price) || 0) * cf;
+                          costUnit = `/ ${conv.primary.unit}`;
+                        } catch (_) { /* keep base cost */ }
+                      }
                       return (
                       <tr key={`${r.branch_slug}-${r.product_id}-${i}`}
                         style={{ borderTop: '1px solid #f1f5f9', background: r.low ? '#fffbeb' : '#fff' }}>
@@ -238,7 +265,11 @@ export default function HqInventoryReport() {
                           )}
                         </td>
                         <td style={{ ...td, textAlign: 'right' }}>{fmtQty(r.min_stock)}</td>
-                        <td style={{ ...td, textAlign: 'right' }}>{fmtMoney(r.cost_price, ccy)}</td>
+                        <td style={{ ...td, textAlign: 'right' }}
+                            title={`Base cost: ${fmtMoney(r.cost_price, ccy)} / ${r.unit || 'Bottle'}`}>
+                          {fmtMoney(displayCost, ccy)}
+                          {costUnit && <span style={{ fontSize: 11, color: '#94a3b8', fontWeight: 500 }}> {costUnit}</span>}
+                        </td>
                         <td style={{ ...td, textAlign: 'right', fontWeight: 700 }}>{fmtMoney(r.value, ccy)}</td>
                       </tr>
                       );
