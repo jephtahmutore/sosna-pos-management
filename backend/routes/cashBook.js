@@ -234,6 +234,38 @@ router.get('/', auth, readOnlyGuard, (req, res) => {
     const dateFilter = (from ? ' AND date >= ?' : '') + (to ? ' AND date <= ?' : '');
     const dParams = [...(from ? [from] : []), ...(to ? [to] : [])];
 
+    // v1.10.156 — detect Liquor-style K-only branches so the ledger UNION can
+    // fold the legacy cash/bank/momo columns into k_in. Liquor's AR-payment
+    // CRs (minted by customerPayments.js) fill only cash_amount / bank_amount
+    // / momo_amount — all three are K amounts on Liquor — and leave the
+    // usd/fra/k mirror at 0. Without this fallback, k_in = 0 and every AR
+    // payment on Lusaka/Mansa showed no K amount in the ledger and left the
+    // running K balance frozen. Fallback stays gated on isLiquorK so HQ K CRs
+    // (where cash_amount is a K sub-drawer and k_amount already = cash+bank
+    // +momo) don't double-count.
+    let isLiquorK = false;
+    try {
+      const bs = db.prepare(`SELECT currency_mode FROM business_settings ORDER BY id ASC LIMIT 1`).get();
+      isLiquorK = (bs?.currency_mode || '').toUpperCase() === 'K';
+    } catch (_) { /* pre-migration DB — treat as not Liquor */ }
+    const kInFallbackExpr  = isLiquorK
+      ? `CASE WHEN COALESCE(k_amount,0) > 0 THEN k_amount
+              ELSE COALESCE(cash_amount,0) + COALESCE(bank_amount,0) + COALESCE(momo_amount,0)
+         END`
+      : `COALESCE(k_amount, 0)`;
+    // Same idea for k_out on PV: Liquor PVs (also written by customerPayments
+    // helpers or manually) may only carry legacy columns on old rows.
+    const kOutFallbackExpr = kInFallbackExpr;
+    // On Liquor branches the ledger only shows K — usd_in / fra_in are
+    // hidden. Force them to 0 so the balance math doesn't silently split
+    // an AR-mint receipt across two invisible columns.
+    const usdInExpr = isLiquorK
+      ? `0`
+      : `CASE WHEN COALESCE(usd_amount,0) > 0 THEN usd_amount
+              WHEN COALESCE(k_amount,0)   > 0 THEN 0
+              ELSE COALESCE(cash_amount,0) END`;
+    const usdOutExpr = usdInExpr;
+
     // When a `from` is set, fold all prior activity into the displayed opening
     let openingBalance = opening.cash + opening.bank + opening.momo;
     let openingByMethod = { ...opening };
@@ -273,13 +305,11 @@ router.get('/', auth, readOnlyGuard, (req, res) => {
         -- CRs (Push 2, v1.10.132) cash_amount is a K sub-drawer, so the
         -- fallback rendered K·Cash amounts as USD in the ledger. Skip
         -- the fallback when k_amount > 0 (marks the row as HQ K CR).
-        CASE
-          WHEN COALESCE(usd_amount,0) > 0 THEN usd_amount
-          WHEN COALESCE(k_amount,0)   > 0 THEN 0
-          ELSE COALESCE(cash_amount,0)
-        END AS usd_in,
+        -- v1.10.156 — Liquor branches route the fallback into k_in
+        -- instead of usd_in (cash/bank/momo are all K on Liquor).
+        ${usdInExpr} AS usd_in,
         COALESCE(fra_amount, 0) AS fra_in,
-        COALESCE(k_amount,   0) AS k_in,
+        ${kInFallbackExpr} AS k_in,
         0 AS usd_out, 0 AS fra_out, 0 AS k_out
       FROM cash_receipts
       WHERE deleted_at IS NULL AND tenant_id = ?${dateFilter}
@@ -303,15 +333,11 @@ router.get('/', auth, readOnlyGuard, (req, res) => {
         END AS description,
         0 AS receipt_amount, amount AS payment_amount,
         0 AS usd_in, 0 AS fra_in, 0 AS k_in,
-        -- v1.10.142 — same fallback fix as CR above. HQ K·Cash PVs stop
-        -- polluting the USD outflow column.
-        CASE
-          WHEN COALESCE(usd_amount,0) > 0 THEN usd_amount
-          WHEN COALESCE(k_amount,0)   > 0 THEN 0
-          ELSE COALESCE(cash_amount,0)
-        END AS usd_out,
+        -- v1.10.156 — Liquor PV writes cash/bank/momo (all K) but leaves
+        -- the mirror at 0. Fall back to their sum on Liquor branches.
+        ${usdOutExpr} AS usd_out,
         COALESCE(fra_amount, 0) AS fra_out,
-        COALESCE(k_amount,   0) AS k_out
+        ${kOutFallbackExpr} AS k_out
       FROM payment_vouchers
       WHERE deleted_at IS NULL AND tenant_id = ?${dateFilter}
       UNION ALL
