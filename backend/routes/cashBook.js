@@ -115,8 +115,10 @@ function ccyReceiptsPayments(tenantId, slug, dateClause, dateParams) {
   const usdExprCR = isLiquorK
     ? `0`
     : `CASE WHEN COALESCE(usd_amount,0) > 0 THEN usd_amount WHEN COALESCE(k_amount,0) > 0 THEN 0 ELSE COALESCE(cash_amount,0) END`;
+  // v1.10.164 — see cashBook.js:kInFallbackExpr comment. Always sum
+  // cash+bank+momo on Liquor; k_amount alone is just the Bank bucket.
   const kExprCR = isLiquorK
-    ? `CASE WHEN COALESCE(k_amount,0) > 0 THEN k_amount ELSE COALESCE(cash_amount,0) + COALESCE(bank_amount,0) + COALESCE(momo_amount,0) END`
+    ? `COALESCE(cash_amount,0) + COALESCE(bank_amount,0) + COALESCE(momo_amount,0)`
     : `COALESCE(k_amount, 0)`;
   // CR — cash_receipts.
   receipts.usd += num(db.prepare(`SELECT COALESCE(SUM(${usdExprCR}), 0) AS t FROM cash_receipts WHERE deleted_at IS NULL AND tenant_id = ?${dateClause}`).get(tenantId, ...dateParams).t);
@@ -261,13 +263,16 @@ router.get('/', auth, readOnlyGuard, (req, res) => {
       const bs = db.prepare(`SELECT currency_mode FROM business_settings ORDER BY id ASC LIMIT 1`).get();
       isLiquorK = (bs?.currency_mode || '').toUpperCase() === 'K';
     } catch (_) { /* pre-migration DB — treat as not Liquor */ }
+    // v1.10.164 — on Liquor, ALWAYS use cash + bank + momo, never
+    // COALESCE to k_amount. Liquor's storage maps Bank → k_amount
+    // (mirror) + bank_amount (legacy), so k_amount alone is just the
+    // Bank bucket. Manual tri-method CRs (Cash + Bank + MoMo) had
+    // k_amount populated and my v1.10.156 conditional picked only
+    // that, dropping Cash + MoMo silently. cash+bank+momo captures
+    // all three buckets whether the mirror is filled or not.
     const kInFallbackExpr  = isLiquorK
-      ? `CASE WHEN COALESCE(k_amount,0) > 0 THEN k_amount
-              ELSE COALESCE(cash_amount,0) + COALESCE(bank_amount,0) + COALESCE(momo_amount,0)
-         END`
+      ? `COALESCE(cash_amount,0) + COALESCE(bank_amount,0) + COALESCE(momo_amount,0)`
       : `COALESCE(k_amount, 0)`;
-    // Same idea for k_out on PV: Liquor PVs (also written by customerPayments
-    // helpers or manually) may only carry legacy columns on old rows.
     const kOutFallbackExpr = kInFallbackExpr;
     // On Liquor branches the ledger only shows K — usd_in / fra_in are
     // hidden. Force them to 0 so the balance math doesn't silently split
@@ -689,8 +694,9 @@ router.get('/stats', auth, readOnlyGuard, (req, res) => {
     const usdExprStats = isLiquorKStats
       ? `0`
       : `CASE WHEN COALESCE(usd_amount,0) > 0 THEN usd_amount WHEN COALESCE(k_amount,0) > 0 THEN 0 ELSE COALESCE(cash_amount,0) END`;
+    // v1.10.164 — see kInFallbackExpr comment. Always cash+bank+momo on Liquor.
     const kExprStats = isLiquorKStats
-      ? `CASE WHEN COALESCE(k_amount,0) > 0 THEN k_amount ELSE COALESCE(cash_amount,0) + COALESCE(bank_amount,0) + COALESCE(momo_amount,0) END`
+      ? `COALESCE(cash_amount,0) + COALESCE(bank_amount,0) + COALESCE(momo_amount,0)`
       : `COALESCE(k_amount, 0)`;
     // v1.10.163 — fra=0 on Liquor same as ccyReceiptsPayments to stop
     // MoMo double-count (fra_amount mirror + momo_amount inside k fallback).
