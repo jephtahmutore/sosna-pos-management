@@ -317,7 +317,9 @@ export const deleteHqSupplierPayment = (paymentId) => api.delete(`/hq/suppliers/
 
 // HQ Damages — v1.3.1 cross-branch queue of branch-declared damages
 // waiting for HQ to confirm before sales-floor stock is decremented.
-export const getHqDamagesAwaiting = () => api.get('/hq/damages/awaiting');
+// v1.10.149 — status='pending'|'confirmed'|'rejected'|'all' so the HQ page
+// can browse past decisions instead of only the pending queue.
+export const getHqDamagesAwaiting = (status) => api.get('/hq/damages/awaiting', { params: status ? { status } : undefined });
 export const confirmHqDamage = (slug, id, data) => api.put(`/hq/damages/${slug}/${id}/confirm`, data || {});
 export const rejectHqDamage  = (slug, id, data) => api.put(`/hq/damages/${slug}/${id}/reject`,  data || {});
 

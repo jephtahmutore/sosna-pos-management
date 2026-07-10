@@ -17,16 +17,21 @@ export default function HqConfirmDamages() {
   const [loading, setLoading] = useState(false);
   const [acting, setActing]   = useState(null); // { row, mode, notes, submitting }
   const [toast, setToast]     = useState(null);
+  // v1.10.149 — tab lets HQ browse Pending queue + Confirmed / Rejected
+  // history. Auto-poll only on the Pending tab so a manager reviewing
+  // history doesn't lose their scroll position every 20s.
+  const [tab, setTab]         = useState('pending');
 
   const flash = (text, type) => {
     setToast({ text, type });
     setTimeout(() => setToast(null), type === 'error' ? 4500 : 2500);
   };
 
-  const refresh = async () => {
+  const refresh = async (statusOverride) => {
+    const status = statusOverride || tab;
     setLoading(true);
     try {
-      const r = await getHqDamagesAwaiting();
+      const r = await getHqDamagesAwaiting(status);
       setRows(r.data?.damages || []);
     } catch (err) {
       flash(err?.response?.data?.error || 'Failed to load', 'error');
@@ -35,10 +40,12 @@ export default function HqConfirmDamages() {
   };
 
   useEffect(() => {
-    refresh();
-    const id = setInterval(refresh, 20_000);
+    refresh(tab);
+    if (tab !== 'pending') return undefined;
+    const id = setInterval(() => refresh('pending'), 20_000);
     return () => clearInterval(id);
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab]);
 
   const submit = async () => {
     if (!acting) return;
@@ -78,32 +85,87 @@ export default function HqConfirmDamages() {
         }}>{toast.text}</div>
       )}
 
+      {/* v1.10.149 — status tabs */}
+      <div style={{ display: 'flex', gap: 4, marginBottom: 12, borderBottom: '1px solid #e5e7eb' }}>
+        {[
+          { key: 'pending',   label: 'Pending' },
+          { key: 'confirmed', label: 'Confirmed' },
+          { key: 'rejected',  label: 'Rejected' },
+          { key: 'all',       label: 'All' },
+        ].map(t => (
+          <button key={t.key} onClick={() => setTab(t.key)}
+            style={{
+              padding: '9px 16px', background: 'none', border: 'none', cursor: 'pointer',
+              borderBottom: tab === t.key ? '3px solid #0ea5e9' : '3px solid transparent',
+              color: tab === t.key ? '#0f172a' : '#64748b',
+              fontWeight: tab === t.key ? 700 : 500, fontSize: 13,
+            }}>
+            {t.label}{tab === t.key && rows.length > 0 ? ` (${rows.length})` : ''}
+          </button>
+        ))}
+      </div>
+
       <div style={{ background: '#fff', border: '1px solid #e5e7eb', borderRadius: 10, padding: 14 }}>
         {loading && rows.length === 0 ? (
           <p style={{ color: '#64748b' }}>Loading…</p>
         ) : rows.length === 0 ? (
-          <p style={{ color: '#94a3b8', fontStyle: 'italic' }}><FiInbox /> Nothing waiting.</p>
+          <p style={{ color: '#94a3b8', fontStyle: 'italic' }}>
+            <FiInbox /> {tab === 'pending' ? 'Nothing waiting.'
+                       : tab === 'confirmed' ? 'No confirmed damages yet.'
+                       : tab === 'rejected' ? 'No rejected damages.'
+                       : 'No damage records yet.'}
+          </p>
         ) : (
           <div style={{ display: 'grid', gap: 12 }}>
-            {rows.map(r => (
-              <div key={`${r.branch_slug}-${r.id}`} style={{ border: '1px solid #fde68a', background: '#fffbeb', borderRadius: 10, padding: 14 }}>
+            {rows.map(r => {
+              // v1.10.149 — status-aware styling. PENDING keeps its amber
+              // "attention" card; CONFIRMED goes green; REJECTED goes red.
+              const isPending   = r.status === 'PENDING';
+              const isConfirmed = r.status === 'CONFIRMED';
+              const isRejected  = r.status === 'REJECTED';
+              const cardStyle = isConfirmed
+                ? { border: '1px solid #a7f3d0', background: '#f0fdf4' }
+                : isRejected
+                  ? { border: '1px solid #fecaca', background: '#fef2f2' }
+                  : { border: '1px solid #fde68a', background: '#fffbeb' };
+              const accentColor = isConfirmed ? '#065f46' : isRejected ? '#991b1b' : '#92400e';
+              return (
+              <div key={`${r.branch_slug}-${r.id}`} style={{ ...cardStyle, borderRadius: 10, padding: 14 }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 10 }}>
                   <div>
-                    <div style={{ fontFamily: 'monospace', fontSize: 12, color: '#92400e' }}>{r.return_number}</div>
+                    <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                      <span style={{ fontFamily: 'monospace', fontSize: 12, color: accentColor }}>{r.return_number}</span>
+                      <span style={{
+                        fontSize: 10, fontWeight: 800, padding: '2px 8px', borderRadius: 10,
+                        textTransform: 'uppercase', letterSpacing: 0.4,
+                        background: isConfirmed ? '#dcfce7' : isRejected ? '#fee2e2' : '#fef3c7',
+                        color: accentColor,
+                      }}>{r.status}</span>
+                    </div>
                     <div style={{ fontSize: 14, fontWeight: 700, color: '#0f172a', marginTop: 2 }}>
                       {r.branch_name} <span style={{ fontSize: 11, color: '#94a3b8', fontWeight: 500 }}>({r.branch_slug})</span>
                     </div>
                     <div style={{ fontSize: 11, color: '#64748b', marginTop: 2 }}>
                       {r.date} · declared by {r.created_by_name || '—'}
                     </div>
+                    {!isPending && r.confirmed_at && (
+                      <div style={{ fontSize: 11, color: '#64748b', marginTop: 2 }}>
+                        {isConfirmed ? 'Confirmed' : 'Rejected'} {new Date(r.confirmed_at).toLocaleString()} · by {r.confirmed_by_name || 'HQ'}
+                      </div>
+                    )}
                   </div>
                   <div style={{ textAlign: 'right' }}>
-                    <div style={{ fontSize: 11, color: '#92400e', fontWeight: 700, textTransform: 'uppercase' }}>Est. value</div>
-                    <div style={{ fontSize: 18, fontWeight: 800, color: '#92400e' }}>{fmtMoney(r.est_value)}</div>
+                    <div style={{ fontSize: 11, color: accentColor, fontWeight: 700, textTransform: 'uppercase' }}>Est. value</div>
+                    <div style={{ fontSize: 18, fontWeight: 800, color: accentColor }}>{fmtMoney(r.est_value)}</div>
                   </div>
                 </div>
                 {r.notes && (
                   <p style={{ fontSize: 12, color: '#475569', fontStyle: 'italic', marginBottom: 8 }}>"{r.notes}"</p>
+                )}
+                {r.confirm_notes && (
+                  <div style={{ fontSize: 12, color: accentColor, background: 'rgba(255,255,255,0.6)', padding: '6px 10px', borderRadius: 6, marginBottom: 8 }}>
+                    <strong>{isConfirmed ? 'HQ note:' : 'HQ reason:'}</strong> {r.confirm_notes}
+                  </div>
                 )}
                 <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12, background: '#fff', borderRadius: 6, overflow: 'hidden' }}>
                   <thead style={{ background: '#f8fafc' }}>
@@ -134,18 +196,21 @@ export default function HqConfirmDamages() {
                     })}
                   </tbody>
                 </table>
-                <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 10 }}>
-                  <button onClick={() => setActing({ row: r, mode: 'reject', notes: '', submitting: false })}
-                    style={btn('#dc2626', true)}>
-                    <FiX size={12} /> Reject
-                  </button>
-                  <button onClick={() => setActing({ row: r, mode: 'confirm', notes: '', submitting: false })}
-                    style={btn('#16a34a')}>
-                    <FiCheck size={12} /> Confirm
-                  </button>
-                </div>
+                {isPending && (
+                  <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 10 }}>
+                    <button onClick={() => setActing({ row: r, mode: 'reject', notes: '', submitting: false })}
+                      style={btn('#dc2626', true)}>
+                      <FiX size={12} /> Reject
+                    </button>
+                    <button onClick={() => setActing({ row: r, mode: 'confirm', notes: '', submitting: false })}
+                      style={btn('#16a34a')}>
+                      <FiCheck size={12} /> Confirm
+                    </button>
+                  </div>
+                )}
               </div>
-            ))}
+              );
+            })}
           </div>
         )}
       </div>

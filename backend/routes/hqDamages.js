@@ -39,6 +39,18 @@ function safeAll(fn) { try { return fn() || []; } catch { return []; } }
 // so the operator can size up the variance before clicking Confirm.
 router.get('/awaiting', hqAuth, (req, res) => {
   try {
+    // v1.10.149 — accept ?status=pending|confirmed|rejected|all so HQ can
+    // browse a full audit trail of past damage decisions, not just the
+    // pending queue. Default stays 'pending' for backward compat with any
+    // stale frontend + the sidebar badge poller.
+    const statusFilter = String(req.query.status || 'pending').toLowerCase();
+    const statusMap = {
+      pending:   `status = 'PENDING'`,
+      confirmed: `status = 'CONFIRMED'`,
+      rejected:  `status = 'REJECTED'`,
+      all:       `status IN ('PENDING','CONFIRMED','REJECTED')`,
+    };
+    const statusClause = statusMap[statusFilter] || statusMap.pending;
     const tenants = listTenants();
     const rows = [];
     for (const t of tenants) {
@@ -48,10 +60,11 @@ router.get('/awaiting', hqAuth, (req, res) => {
         const branchName = settings?.business_name || t.business_name || t.slug;
         const headers = safeAll(() => db.prepare(`
           SELECT id, return_number, date, notes, total_items, created_by, sync_id, created_at,
+                 status, confirmed_by_name, confirmed_at, confirm_notes,
                  (SELECT TRIM(COALESCE(u.first_name,'') || ' ' || COALESCE(u.last_name,''))
                     FROM users u WHERE u.id = sales_returns.created_by) AS created_by_name
             FROM sales_returns
-           WHERE deleted_at IS NULL AND status = 'PENDING'
+           WHERE deleted_at IS NULL AND ${statusClause}
            ORDER BY date DESC, id DESC
            LIMIT 200
         `).all());
