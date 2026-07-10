@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { getPaymentVouchers, getPaymentVoucherStats, deletePaymentVoucher, getSettings, getPvTypes, createPvType, updatePvType, deletePvType } from '../services/api';
+import { getPaymentVouchers, getPaymentVoucherStats, deletePaymentVoucher, getSettings, getPvTypes, createPvType, updatePvType, deletePvType, isHqHost } from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import { useCurrency } from '../context/CurrencyContext';
 import { useLanguage } from '../context/LanguageContext';
@@ -16,11 +16,26 @@ const getCategoryColor = (cat) => {
   return map[cat] || 'badge-gray';
 };
 
+// v1.10.156 — mirrored from CashReceipt.js so the PV list can show the
+// same Payment Method badge column.
+const getPaymentColor = (method) => {
+  const map = { 'Cash': 'badge-green', 'Card': 'badge-blue', 'Check': 'badge-purple', 'Transfer': 'badge-orange' };
+  return map[method] || 'badge-gray';
+};
+
 const todayStr = new Date().toISOString().split('T')[0];
 
 const PaymentVoucher = () => {
   const { hasPermission } = useAuth();
-  const { symbol: curSym, isLiquorStyle } = useCurrency();
+  // v1.10.156 — same HQ override CashReceipt uses: HQ's tenant settings
+  // evaluate as isLiquorStyle=true (currency_mode='K' +
+  // payment_methods='cash_momo_bank') but HQ is a Head Office, not a
+  // Liquor branch — its PV list must show USD / FRA / K columns + a
+  // Payment Method badge, exactly like the CR list. Pure Liquor branches
+  // (Mansa / Lusaka) keep the current Cash / MoMo / Bank layout.
+  const { symbol: curSym, isLiquorStyle: rawLiquorStyle } = useCurrency();
+  const onHq = isHqHost();
+  const isLiquorStyle = rawLiquorStyle && !onHq;
   const { t } = useLanguage();
   // v1.8.25 — stats now include per-currency totals (today / month / all).
   const [stats, setStats]       = useState({
@@ -510,15 +525,11 @@ const PaymentVoucher = () => {
           <table className="data-table">
             <thead>
               <tr>
-                <th>{t('voucherNumber')}</th><th>{t('date')}</th><th>{t('paidFrom')}</th><th>{t('paidTo')}</th>
+                <th>{t('voucherNumber')}</th><th>{t('date')}</th><th>{t('paidTo')}</th>
                 <th>{t('description')}</th><th>{t('category')}</th>
-                {/* v1.8.25 — split Amount into 3 columns.
-                    v1.10.91 — headers depend on tenant profile:
-                      - Sosna tri-currency: USD ($) / FRA / K
-                      - Liquor K-only:      Cash / Mobile Money / Bank
-                    Previously Liquor rows displayed cash as USD, bank as
-                    FRA, momo as K (nonsense — a K200 cash PV showed as
-                    "$200 USD"). */}
+                {/* v1.10.156 — mirror CashReceipt layout: Payment Method
+                    badge on non-Liquor, Cash/MoMo/Bank cols on pure Liquor. */}
+                {isLiquorStyle ? null : <th>Payment Method</th>}
                 {isLiquorStyle ? (
                   <>
                     <th style={{ textAlign: 'right', color: '#16a34a' }}>CASH</th>
@@ -537,28 +548,35 @@ const PaymentVoucher = () => {
             </thead>
             <tbody>
               {filteredVouchers.map(v => {
-                // v1.10.155 — HQ tri-ccy PVs (Sosna Kassumbalesa etc.)
-                // store BOTH k_amount (K currency total) AND cash/bank/momo
-                // (sub-method split of that K). The earlier fallback
-                // `k_amount || bank_amount` grabbed k_amount into BANK,
-                // duplicating the same amount that already showed under
-                // CASH via cash_amount. Prefer sub-method columns whenever
-                // any of them are populated; fall back to the pure Liquor
-                // storage (usd=Cash, fra=MoMo, k=Bank) only when they're
-                // all zero (Mansa/Lusaka).
-                const hasSubMeth =
-                  (parseFloat(v.cash_amount)||0) +
-                  (parseFloat(v.bank_amount)||0) +
-                  (parseFloat(v.momo_amount)||0) > 0;
+                const pf = (x) => parseFloat(x || 0) || 0;
+                // v1.10.155 — HQ tri-ccy PVs store BOTH k_amount and
+                // cash/bank/momo (K sub-method split). Prefer sub-method
+                // columns when populated (isLiquorStyle path); non-Liquor
+                // path shows the currency columns directly.
+                const hasSubMeth = pf(v.cash_amount) + pf(v.bank_amount) + pf(v.momo_amount) > 0;
+                // Amount cells:
+                //   isLiquorStyle (Mansa/Lusaka): CASH/MoMo/Bank as before.
+                //   non-Liquor (HQ + Kassumbalesa): USD/FRA/K directly.
                 const va = isLiquorStyle
-                  ? (hasSubMeth ? parseFloat(v.cash_amount||0) : parseFloat(v.usd_amount || v.cash_amount || 0))
-                  : (parseFloat(v.usd_amount) > 0 ? parseFloat(v.usd_amount) : parseFloat(v.cash_amount || 0));
+                  ? (hasSubMeth ? pf(v.cash_amount) : pf(v.usd_amount || v.cash_amount))
+                  : (pf(v.usd_amount) > 0 ? pf(v.usd_amount) : (onHq ? 0 : pf(v.cash_amount)));
                 const vb = isLiquorStyle
-                  ? (hasSubMeth ? parseFloat(v.momo_amount||0) : parseFloat(v.fra_amount || v.momo_amount || 0))
-                  : (parseFloat(v.fra_amount) > 0 ? parseFloat(v.fra_amount) : parseFloat(v.bank_amount || 0));
+                  ? (hasSubMeth ? pf(v.momo_amount) : pf(v.fra_amount || v.momo_amount))
+                  : (pf(v.fra_amount) > 0 ? pf(v.fra_amount) : (onHq ? 0 : pf(v.bank_amount)));
                 const vc = isLiquorStyle
-                  ? (hasSubMeth ? parseFloat(v.bank_amount||0) : parseFloat(v.k_amount   || v.bank_amount || 0))
-                  : (parseFloat(v.k_amount)   > 0 ? parseFloat(v.k_amount)   : parseFloat(v.momo_amount || 0));
+                  ? (hasSubMeth ? pf(v.bank_amount) : pf(v.k_amount   || v.bank_amount))
+                  : (pf(v.k_amount)   > 0 ? pf(v.k_amount)   : (onHq ? 0 : pf(v.momo_amount)));
+                // v1.10.156 — Payment Method badge for non-Liquor rows.
+                // On HQ K PVs the sub-method sits in cash/bank/momo; pick
+                // the dominant one. On Kassumbalesa (also non-Liquor) the
+                // badge names the currency actually paid.
+                const kCash = onHq ? pf(v.cash_amount) : 0;
+                const kBank = onHq ? pf(v.bank_amount) : 0;
+                const kMomo = onHq ? pf(v.momo_amount) : 0;
+                const paymentMethod = onHq && vc > 0
+                  ? (kBank > kCash && kBank > kMomo ? 'K · Bank'
+                    : kMomo > kCash ? 'K · MoMo' : 'K · Cash')
+                  : (va > 0 ? 'USD' : vb > 0 ? 'FRA' : vc > 0 ? 'K' : (v.paid_from || 'Cash'));
                 const dash = <span style={{ color: '#cbd5e1' }}>—</span>;
                 const fmtA = (n) => isLiquorStyle ? `K${fmt2(n)}` : `$${fmt2(n)}`;
                 const fmtB = (n) => isLiquorStyle ? `K${fmt2(n)}` : Math.round(n).toLocaleString('en-US');
@@ -567,19 +585,12 @@ const PaymentVoucher = () => {
                 <tr key={v.id}>
                   <td style={{ fontWeight: 500 }}>{v.voucher_number}</td>
                   <td>{formatDate(v.date)}</td>
-                  <td>
-                    <span style={{
-                      fontSize: 11, fontWeight: 500, padding: '2px 8px', borderRadius: 20,
-                      background: v.paid_from === 'Cash Drawer' ? '#eff6ff' : '#f0fdf4',
-                      color: v.paid_from === 'Cash Drawer' ? '#2563eb' : '#16a34a',
-                      border: `1px solid ${v.paid_from === 'Cash Drawer' ? '#bfdbfe' : '#bbf7d0'}`,
-                    }}>
-                      {v.paid_from || 'Main cashier'}
-                    </span>
-                  </td>
                   <td>{v.paid_to}</td>
                   <td style={{ color: '#6b7280' }}>{v.description || '—'}</td>
                   <td><span className={`badge ${getCategoryColor(v.category)}`}>{v.category}</span></td>
+                  {!isLiquorStyle && (
+                    <td><span className={`badge ${getPaymentColor(paymentMethod)}`}>{paymentMethod}</span></td>
+                  )}
                   <td style={{ textAlign: 'right', color: va > 0 ? '#16a34a' : '', fontWeight: va > 0 ? 700 : 400 }}>{va > 0 ? fmtA(va) : dash}</td>
                   <td style={{ textAlign: 'right', color: vb > 0 ? '#7c3aed' : '', fontWeight: vb > 0 ? 700 : 400 }}>{vb > 0 ? fmtB(vb) : dash}</td>
                   <td style={{ textAlign: 'right', color: vc > 0 ? '#ea580c' : '', fontWeight: vc > 0 ? 700 : 400 }}>{vc > 0 ? fmtC(vc) : dash}</td>
@@ -633,23 +644,23 @@ const PaymentVoucher = () => {
               })}
             </tbody>
             <tfoot>
-              {/* v1.8.25 — per-currency footer totals. */}
+              {/* v1.10.156 — colSpan reflects new column layout:
+                    Liquor:     5 leading cols (Voucher/Date/Paid To/Desc/Category)
+                    non-Liquor: 6 leading cols (same + Payment Method) */}
               <tr style={{ fontWeight: 700, borderTop: '2px solid #e5e7eb', background: '#f9fafb' }}>
-                <td colSpan={6} style={{ padding: '10px 14px', textAlign: 'right', color: '#374151', fontSize: 13 }}>
+                <td colSpan={isLiquorStyle ? 5 : 6} style={{ padding: '10px 14px', textAlign: 'right', color: '#374151', fontSize: 13 }}>
                   Total ({filteredVouchers.length} voucher{filteredVouchers.length !== 1 ? 's' : ''})
                 </td>
                 {(() => {
-                  // v1.10.155 — per-bucket totals mirror the row logic
-                  // above (sub-method preferred for HQ tri-ccy, currency
-                  // columns fallback for pure Liquor).
+                  // v1.10.156 — per-bucket totals mirror the row logic
+                  // above (sub-method preferred for HQ tri-ccy in Liquor
+                  // layout, currency columns direct on non-Liquor).
+                  const pf = (x) => parseFloat(x || 0) || 0;
                   const pick = (v, sub, cur) => {
-                    const hasSubMeth =
-                      (parseFloat(v.cash_amount)||0) +
-                      (parseFloat(v.bank_amount)||0) +
-                      (parseFloat(v.momo_amount)||0) > 0;
+                    const hasSubMeth = pf(v.cash_amount) + pf(v.bank_amount) + pf(v.momo_amount) > 0;
                     return isLiquorStyle
-                      ? (hasSubMeth ? parseFloat(v[sub]||0) : parseFloat(v[cur] || v[sub] || 0))
-                      : (parseFloat(v[cur]) > 0 ? parseFloat(v[cur]) : parseFloat(v[sub] || 0));
+                      ? (hasSubMeth ? pf(v[sub]) : pf(v[cur] || v[sub]))
+                      : (pf(v[cur]) > 0 ? pf(v[cur]) : (onHq ? 0 : pf(v[sub])));
                   };
                   const ta = filteredVouchers.reduce((s, v) => s + pick(v, 'cash_amount', 'usd_amount'), 0);
                   const tb = filteredVouchers.reduce((s, v) => s + pick(v, 'momo_amount', 'fra_amount'), 0);
