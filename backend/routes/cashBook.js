@@ -120,11 +120,12 @@ function ccyReceiptsPayments(tenantId, slug, dateClause, dateParams) {
     : `COALESCE(k_amount, 0)`;
   // CR — cash_receipts.
   receipts.usd += num(db.prepare(`SELECT COALESCE(SUM(${usdExprCR}), 0) AS t FROM cash_receipts WHERE deleted_at IS NULL AND tenant_id = ?${dateClause}`).get(tenantId, ...dateParams).t);
-  receipts.fra += num(db.prepare(`SELECT COALESCE(SUM(fra_amount), 0) AS t FROM cash_receipts WHERE deleted_at IS NULL AND tenant_id = ?${dateClause}`).get(tenantId, ...dateParams).t);
+  // v1.10.163 — fra=0 on Liquor (mirror double-count with momo_amount inside k).
+  receipts.fra += num(db.prepare(`SELECT COALESCE(SUM(${isLiquorK ? '0' : 'fra_amount'}), 0) AS t FROM cash_receipts WHERE deleted_at IS NULL AND tenant_id = ?${dateClause}`).get(tenantId, ...dateParams).t);
   receipts.k   += num(db.prepare(`SELECT COALESCE(SUM(${kExprCR}), 0) AS t FROM cash_receipts WHERE deleted_at IS NULL AND tenant_id = ?${dateClause}`).get(tenantId, ...dateParams).t);
   // PV — payment_vouchers.
   payments.usd += num(db.prepare(`SELECT COALESCE(SUM(${usdExprCR}), 0) AS t FROM payment_vouchers WHERE deleted_at IS NULL AND tenant_id = ?${dateClause}`).get(tenantId, ...dateParams).t);
-  payments.fra += num(db.prepare(`SELECT COALESCE(SUM(fra_amount), 0) AS t FROM payment_vouchers WHERE deleted_at IS NULL AND tenant_id = ?${dateClause}`).get(tenantId, ...dateParams).t);
+  payments.fra += num(db.prepare(`SELECT COALESCE(SUM(${isLiquorK ? '0' : 'fra_amount'}), 0) AS t FROM payment_vouchers WHERE deleted_at IS NULL AND tenant_id = ?${dateClause}`).get(tenantId, ...dateParams).t);
   payments.k   += num(db.prepare(`SELECT COALESCE(SUM(${kExprCR}), 0) AS t FROM payment_vouchers WHERE deleted_at IS NULL AND tenant_id = ?${dateClause}`).get(tenantId, ...dateParams).t);
   // v1.10.78 — AP payments now support triple-currency (usd/fra/k) on HQ
   // via the ap_payments columns added in the same version. Route each
@@ -271,12 +272,20 @@ router.get('/', auth, readOnlyGuard, (req, res) => {
     // On Liquor branches the ledger only shows K — usd_in / fra_in are
     // hidden. Force them to 0 so the balance math doesn't silently split
     // an AR-mint receipt across two invisible columns.
+    // v1.10.163 — fra_in must also be 0 on Liquor. Liquor's mapping
+    // stores MoMo in BOTH fra_amount (mirror) AND momo_amount (legacy).
+    // The k_in fallback already sums cash+bank+momo, so leaving fra_in
+    // populated would double-count MoMo in the frontend inflow calc
+    // (usd_in + fra_in + k_in). CR-0003 (Sales/doris) showed +K371,553
+    // in the ledger vs K317,208 real, off by MoMo 54,345.
     const usdInExpr = isLiquorK
       ? `0`
       : `CASE WHEN COALESCE(usd_amount,0) > 0 THEN usd_amount
               WHEN COALESCE(k_amount,0)   > 0 THEN 0
               ELSE COALESCE(cash_amount,0) END`;
     const usdOutExpr = usdInExpr;
+    const fraInExpr = isLiquorK ? `0` : `COALESCE(fra_amount, 0)`;
+    const fraOutExpr = fraInExpr;
 
     // When a `from` is set, fold all prior activity into the displayed opening
     let openingBalance = opening.cash + opening.bank + opening.momo;
@@ -320,7 +329,7 @@ router.get('/', auth, readOnlyGuard, (req, res) => {
         -- v1.10.156 — Liquor branches route the fallback into k_in
         -- instead of usd_in (cash/bank/momo are all K on Liquor).
         ${usdInExpr} AS usd_in,
-        COALESCE(fra_amount, 0) AS fra_in,
+        ${fraInExpr} AS fra_in,
         ${kInFallbackExpr} AS k_in,
         0 AS usd_out, 0 AS fra_out, 0 AS k_out
       FROM cash_receipts
@@ -348,7 +357,7 @@ router.get('/', auth, readOnlyGuard, (req, res) => {
         -- v1.10.156 — Liquor PV writes cash/bank/momo (all K) but leaves
         -- the mirror at 0. Fall back to their sum on Liquor branches.
         ${usdOutExpr} AS usd_out,
-        COALESCE(fra_amount, 0) AS fra_out,
+        ${fraOutExpr} AS fra_out,
         ${kOutFallbackExpr} AS k_out
       FROM payment_vouchers
       WHERE deleted_at IS NULL AND tenant_id = ?${dateFilter}
@@ -683,9 +692,12 @@ router.get('/stats', auth, readOnlyGuard, (req, res) => {
     const kExprStats = isLiquorKStats
       ? `CASE WHEN COALESCE(k_amount,0) > 0 THEN k_amount ELSE COALESCE(cash_amount,0) + COALESCE(bank_amount,0) + COALESCE(momo_amount,0) END`
       : `COALESCE(k_amount, 0)`;
+    // v1.10.163 — fra=0 on Liquor same as ccyReceiptsPayments to stop
+    // MoMo double-count (fra_amount mirror + momo_amount inside k fallback).
+    const fraExprStats = isLiquorKStats ? `0` : `fra_amount`;
     const sumCcy = (table, dateCol, col) => {
       const usd = db.prepare(`SELECT COALESCE(SUM(${usdExprStats}), 0) AS t FROM ${table} WHERE deleted_at IS NULL AND tenant_id = ?${df.replace(/date/g, dateCol)}`).get(tenantId, ...dp).t;
-      const fra = db.prepare(`SELECT COALESCE(SUM(fra_amount), 0) AS t FROM ${table} WHERE deleted_at IS NULL AND tenant_id = ?${df.replace(/date/g, dateCol)}`).get(tenantId, ...dp).t;
+      const fra = db.prepare(`SELECT COALESCE(SUM(${fraExprStats}), 0) AS t FROM ${table} WHERE deleted_at IS NULL AND tenant_id = ?${df.replace(/date/g, dateCol)}`).get(tenantId, ...dp).t;
       const kAmt= db.prepare(`SELECT COALESCE(SUM(${kExprStats}), 0) AS t FROM ${table} WHERE deleted_at IS NULL AND tenant_id = ?${df.replace(/date/g, dateCol)}`).get(tenantId, ...dp).t;
       return { usd: parseFloat(usd), fra: parseFloat(fra), k: parseFloat(kAmt) };
     };
