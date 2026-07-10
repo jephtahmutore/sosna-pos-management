@@ -1,10 +1,10 @@
 import React, { useState, useEffect } from 'react';
-import { getCashBook, getCashBookStats, setOpeningBalance, getSettings, getSalesRangeSummary, createCashTransfer, getCashTransfers, deleteCashTransfer, isHqHost, getBranchSlug, getCurrentFxRate } from '../services/api';
+import { getCashBook, getCashBookStats, setOpeningBalance, getSettings, getSalesRangeSummary, createCashTransfer, getCashTransfers, deleteCashTransfer, createCashDeposit, getCashDeposits, deleteCashDeposit, isHqHost, getBranchSlug, getCurrentFxRate } from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import CurrencyExchangePanel from '../components/CurrencyExchangePanel';
 import { useCurrency } from '../context/CurrencyContext';
 import { useLanguage } from '../context/LanguageContext';
-import { FiTrendingUp, FiTrendingDown, FiDollarSign, FiEdit2, FiSave, FiX, FiPrinter, FiFilter, FiRefreshCw, FiRepeat } from 'react-icons/fi';
+import { FiTrendingUp, FiTrendingDown, FiDollarSign, FiEdit2, FiSave, FiX, FiPrinter, FiFilter, FiRefreshCw, FiRepeat, FiSend } from 'react-icons/fi';
 import Portal from '../utils/Portal';
 import useModalScrollLock from '../utils/useModalScrollLock';
 const CashBook = () => {
@@ -66,6 +66,16 @@ const CashBook = () => {
   // v1.10.138 — K sub-drawer transfers list (HQ Transfers tab).
   const [transferList, setTransferList] = useState([]);
   const [transferListLoading, setTransferListLoading] = useState(false);
+  // v1.10.167 — Liquor Deposits tab: send deposits to HQ + list branch's
+  // outgoing deposits, right inside Cash Book. Overdraft-guarded on save.
+  const [depositList, setDepositList] = useState([]);
+  const [depositListLoading, setDepositListLoading] = useState(false);
+  const [showDeposit, setShowDeposit] = useState(false);
+  const [depositForm, setDepositForm] = useState({
+    amount: '', from_method: 'Cash', notes: '', deposit_date: todayStr,
+  });
+  const [depositSaving, setDepositSaving] = useState(false);
+  const [depositError, setDepositError] = useState('');
 
   // v1.8.59 — HQ Deposit moved to its own page (Accounting → HQ Deposits)
   // to keep Cash Book focused on ledger view and to avoid conflating
@@ -176,6 +186,71 @@ const CashBook = () => {
     if (onHq) refreshTransferList();
     // eslint-disable-next-line
   }, [onHq]);
+
+  // v1.10.167 — Liquor Deposits tab data.
+  const refreshDepositList = async () => {
+    if (!isLiquorStyle) return;
+    setDepositListLoading(true);
+    try {
+      const slug = getBranchSlug() || (typeof window !== 'undefined' ? window.location.hostname.split('.')[0] : '');
+      const r = await getCashDeposits({ from_slug: slug });
+      setDepositList(Array.isArray(r.data) ? r.data : []);
+    } catch (_) {
+      setDepositList([]);
+    }
+    setDepositListLoading(false);
+  };
+  const handleSaveDeposit = async () => {
+    setDepositError('');
+    const amt = parseFloat(depositForm.amount || 0) || 0;
+    if (!(amt > 0)) { setDepositError('Enter an amount greater than zero.'); return; }
+    // Client-side hard block: can't deposit more than Cash & Cash Equivalent.
+    // Backend re-validates (safer if a device is offline / stale stats).
+    const cashOnHand = (stats.currentByMethod?.cash || 0)
+                     + (stats.currentByMethod?.bank || 0)
+                     + (stats.currentByMethod?.momo || 0);
+    if (amt > cashOnHand + 0.0001) {
+      setDepositError(`Deposit exceeds cash on hand (${curSym}${cashOnHand.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}). Reduce the amount or record the actual cash first.`);
+      return;
+    }
+    setDepositSaving(true);
+    try {
+      const slug = getBranchSlug() || (typeof window !== 'undefined' ? window.location.hostname.split('.')[0] : '');
+      await createCashDeposit({
+        from_slug:    slug,
+        currency:     'K',
+        amount:       amt,
+        from_method:  depositForm.from_method,
+        notes:        depositForm.notes || null,
+        deposit_date: depositForm.deposit_date,
+      });
+      setShowDeposit(false);
+      setDepositForm(f => ({ ...f, amount: '', notes: '', deposit_date: todayStr }));
+      await refreshDepositList();
+      await fetchData(from, to);
+    } catch (err) {
+      setDepositError(err.response?.data?.error || 'Failed to send deposit.');
+    } finally {
+      setDepositSaving(false);
+    }
+  };
+  const handleDeletePendingDeposit = async (d) => {
+    if (d.status !== 'PENDING') return;
+    if (!window.confirm(`Delete this PENDING deposit ${d.deposit_number} of K${parseFloat(d.amount).toLocaleString()}?`)) return;
+    try {
+      // Branch-side quick delete of PENDING is allowed on the backend
+      // without reason/admin (v1.10.143 applies to CONFIRMED/all).
+      await deleteCashDeposit(d.id, { reason: 'Branch cancelled pending deposit', adminId: authUser?.id, adminName: `${authUser?.firstName || ''} ${authUser?.lastName || ''}`.trim() || null });
+      await refreshDepositList();
+      await fetchData(from, to);
+    } catch (err) {
+      alert(err.response?.data?.error || 'Failed to delete deposit');
+    }
+  };
+  useEffect(() => {
+    if (isLiquorStyle) refreshDepositList();
+    // eslint-disable-next-line
+  }, [isLiquorStyle]);
 
   const handleSaveOB = async () => {
     setSavingOB(true);
@@ -570,6 +645,16 @@ const CashBook = () => {
           >
             <FiRepeat size={15} /> Exchange
           </button>
+          {/* v1.10.167 — Send a HQ Deposit right from Cash Book on Liquor
+              branches. Overdraft-guarded — can't exceed Cash & Cash Equivalent. */}
+          {isLiquorStyle && (
+            <button
+              onClick={() => { setDepositError(''); setDepositForm(f => ({ ...f, amount: '', notes: '', deposit_date: todayStr })); setShowDeposit(true); }}
+              style={{ display: 'inline-flex', alignItems: 'center', gap: 7, padding: '10px 20px', borderRadius: 10, border: 'none', backgroundColor: '#ea580c', color: '#fff', cursor: 'pointer', fontSize: 13, fontWeight: 700 }}
+            >
+              <FiSend size={15} /> Deposit
+            </button>
+          )}
           <button
             onClick={handlePrint}
             style={{ display: 'inline-flex', alignItems: 'center', gap: 7, padding: '10px 20px', borderRadius: 10, border: 'none', backgroundColor: '#16a34a', color: '#fff', cursor: 'pointer', fontSize: 13, fontWeight: 700 }}
@@ -591,6 +676,10 @@ const CashBook = () => {
           // column. Removing them from the ledger doesn't move any Cash
           // Book total — transfers are net-zero across sub-drawers.
           { key: 'transfers', label: 'Transfers', show: onHq },
+          // v1.10.167 — HQ Deposits list right inside Cash Book on Liquor
+          // branches (they no longer need to leave for the HQ Deposits page
+          // to see or send a deposit).
+          { key: 'deposits',  label: 'Deposits',  show: isLiquorStyle },
         ].filter(t => t.show).map(tab => (
           <button key={tab.key} onClick={() => setActiveTab(tab.key)}
             style={{
@@ -694,6 +783,97 @@ const CashBook = () => {
                         </td>
                       </tr>
                     ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* v1.10.167 — Liquor Deposits tab: send + list branch's outgoing HQ deposits. */}
+      {activeTab === 'deposits' && isLiquorStyle && (
+        <div style={{ background: '#fff', border: '1px solid #e5e7eb', borderRadius: 12, marginTop: 4 }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 16px', borderBottom: '1px solid #f1f5f9' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <FiSend color="#ea580c" />
+              <h3 style={{ margin: 0, fontSize: 14, fontWeight: 700, color: '#0f172a' }}>HQ Deposits (from this branch)</h3>
+              <span style={{ fontSize: 11, color: '#94a3b8' }}>· {depositList.length} entr{depositList.length === 1 ? 'y' : 'ies'}</span>
+            </div>
+            <button onClick={() => { setDepositError(''); setDepositForm(f => ({ ...f, amount: '', notes: '', deposit_date: todayStr })); setShowDeposit(true); }}
+              style={{ padding: '6px 12px', borderRadius: 6, border: '1.5px solid #ea580c', background: '#ea580c', color: '#fff', cursor: 'pointer', fontSize: 12, fontWeight: 700, display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+              <FiSend size={13} /> New Deposit
+            </button>
+          </div>
+          <div style={{ padding: '0 8px 8px' }}>
+            {depositListLoading ? (
+              <div style={{ padding: 18, color: '#94a3b8', fontSize: 13 }}>Loading…</div>
+            ) : depositList.length === 0 ? (
+              <div style={{ padding: 18, color: '#94a3b8', fontSize: 13 }}>No deposits yet. Use "New Deposit" to send cash to HQ.</div>
+            ) : (
+              <div style={{ overflowX: 'auto' }}>
+                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+                  <thead>
+                    <tr style={{ background: '#f8fafc', color: '#64748b', fontSize: 11, textTransform: 'uppercase', letterSpacing: 0.4 }}>
+                      <th style={{ textAlign: 'left', padding: '8px 12px', fontWeight: 700 }}>Date</th>
+                      <th style={{ textAlign: 'left', padding: '8px 12px', fontWeight: 700 }}>Ref</th>
+                      <th style={{ textAlign: 'left', padding: '8px 12px', fontWeight: 700 }}>From</th>
+                      <th style={{ textAlign: 'right', padding: '8px 12px', fontWeight: 700 }}>Amount</th>
+                      <th style={{ textAlign: 'left', padding: '8px 12px', fontWeight: 700 }}>Notes</th>
+                      <th style={{ textAlign: 'left', padding: '8px 12px', fontWeight: 700 }}>Status</th>
+                      <th style={{ textAlign: 'left', padding: '8px 12px', fontWeight: 700 }}>Confirmed</th>
+                      <th style={{ textAlign: 'right', padding: '8px 12px', fontWeight: 700 }}></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {depositList.map(d => {
+                      const statusBg = d.deleted_at ? '#fee2e2'
+                        : d.status === 'CONFIRMED' ? '#dcfce7'
+                        : d.status === 'REJECTED'  ? '#fee2e2'
+                        : '#fef3c7';
+                      const statusColor = d.deleted_at ? '#991b1b'
+                        : d.status === 'CONFIRMED' ? '#166534'
+                        : d.status === 'REJECTED'  ? '#991b1b'
+                        : '#92400e';
+                      const statusLabel = d.deleted_at ? 'DELETED' : d.status;
+                      return (
+                        <tr key={d.id} style={{ borderTop: '1px solid #f1f5f9', opacity: d.deleted_at ? 0.6 : 1 }}>
+                          <td style={{ padding: '8px 12px', color: '#0f172a' }}>{d.deposit_date || (d.created_at || '').slice(0, 10)}</td>
+                          <td style={{ padding: '8px 12px', color: '#64748b', fontFamily: 'monospace', fontSize: 11 }}>{d.deposit_number}</td>
+                          <td style={{ padding: '8px 12px', color: '#475569', fontSize: 12 }}>{d.from_method || '—'}</td>
+                          <td style={{ padding: '8px 12px', textAlign: 'right', fontWeight: 700, color: '#0f172a' }}>
+                            {curSym}{parseFloat(d.amount || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                          </td>
+                          <td style={{ padding: '8px 12px', color: '#475569', fontSize: 12 }}>{d.notes || '—'}</td>
+                          <td style={{ padding: '8px 12px' }}>
+                            <span style={{ padding: '2px 10px', background: statusBg, color: statusColor, borderRadius: 999, fontSize: 10, fontWeight: 700 }}>
+                              {statusLabel}
+                            </span>
+                            {d.deleted_at && d.delete_reason && (
+                              <div style={{ fontSize: 10, color: '#b91c1c', fontStyle: 'italic', marginTop: 3 }} title={d.delete_reason}>
+                                {d.delete_reason.length > 30 ? d.delete_reason.slice(0, 30) + '…' : d.delete_reason}
+                              </div>
+                            )}
+                            {d.status === 'REJECTED' && d.reject_reason && (
+                              <div style={{ fontSize: 10, color: '#b91c1c', fontStyle: 'italic', marginTop: 3 }} title={d.reject_reason}>
+                                {d.reject_reason.length > 30 ? d.reject_reason.slice(0, 30) + '…' : d.reject_reason}
+                              </div>
+                            )}
+                          </td>
+                          <td style={{ padding: '8px 12px', color: '#64748b', fontSize: 11 }}>
+                            {d.confirmed_at ? new Date(d.confirmed_at).toLocaleString() : '—'}
+                          </td>
+                          <td style={{ padding: '8px 12px', textAlign: 'right' }}>
+                            {d.status === 'PENDING' && !d.deleted_at && (
+                              <button onClick={() => handleDeletePendingDeposit(d)} title="Cancel this pending deposit"
+                                style={{ background: 'none', border: 'none', color: '#dc2626', cursor: 'pointer', fontSize: 12, fontWeight: 600 }}>
+                                <FiX />
+                              </button>
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>
@@ -1485,6 +1665,96 @@ const CashBook = () => {
         );
       })()}
       </>)}{/* end activeTab === 'ledger' wrapper (v1.8.6) */}
+
+      {/* v1.10.167 — Send Deposit Modal (Liquor branches only). Overdraft-
+          guarded — amount can't exceed Cash & Cash Equivalent. Backend
+          re-validates so an offline device can't sneak past. */}
+      {showDeposit && isLiquorStyle && (() => {
+        const cashOnHand = (stats.currentByMethod?.cash || 0)
+                         + (stats.currentByMethod?.bank || 0)
+                         + (stats.currentByMethod?.momo || 0);
+        const amt = parseFloat(depositForm.amount || 0) || 0;
+        const wouldOverdraft = amt > cashOnHand + 0.0001;
+        const fmtK = (n) => `${curSym}${parseFloat(n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+        return (
+          <Portal>
+          <div className="modal-overlay" onClick={() => !depositSaving && setShowDeposit(false)}>
+            <div className="modal" onClick={e => e.stopPropagation()} style={{ maxWidth: 480 }}>
+              <div className="modal-header">
+                <h2>Send Deposit to HQ</h2>
+                <button className="modal-close" onClick={() => !depositSaving && setShowDeposit(false)}><FiX /></button>
+              </div>
+              <div className="modal-body">
+                <p style={{ fontSize: 13, color: '#6b7280', marginTop: 0, marginBottom: 14 }}>
+                  Record cash leaving this branch for HQ. HQ confirms when the money arrives.
+                </p>
+
+                <div style={{ background: '#eff6ff', border: '1px solid #bfdbfe', borderRadius: 8, padding: '8px 12px', marginBottom: 14, fontSize: 12, color: '#1e40af' }}>
+                  Cash on Hand: <strong>{fmtK(cashOnHand)}</strong>
+                </div>
+
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 14 }}>
+                  <div className="form-group" style={{ marginBottom: 0 }}>
+                    <label>From (drawer) *</label>
+                    <select value={depositForm.from_method} onChange={e => setDepositForm({ ...depositForm, from_method: e.target.value })} disabled={depositSaving}>
+                      <option value="Cash">Cash</option>
+                      <option value="Bank">Bank</option>
+                      <option value="Mobile Money">Mobile Money</option>
+                    </select>
+                  </div>
+                  <div className="form-group" style={{ marginBottom: 0 }}>
+                    <label>Date</label>
+                    <input type="date" max={todayStr} value={depositForm.deposit_date}
+                      onChange={e => setDepositForm({ ...depositForm, deposit_date: e.target.value })}
+                      disabled={depositSaving} />
+                  </div>
+                </div>
+
+                <div className="form-group">
+                  <label>Amount ({curSym}) *</label>
+                  <input type="number" min="0" step="0.01" placeholder="0.00"
+                    value={depositForm.amount}
+                    onChange={e => setDepositForm({ ...depositForm, amount: e.target.value })}
+                    disabled={depositSaving} />
+                  {amt > 0 && !wouldOverdraft && (
+                    <small style={{ color: '#0f766e', fontSize: 12, display: 'block', marginTop: 4 }}>
+                      After deposit: <strong>{fmtK(cashOnHand - amt)}</strong> remaining
+                    </small>
+                  )}
+                  {wouldOverdraft && (
+                    <small style={{ color: '#dc2626', fontSize: 12, display: 'block', marginTop: 4, fontWeight: 600 }}>
+                      ⚠ Deposit exceeds cash on hand ({fmtK(cashOnHand)}). Short by {fmtK(amt - cashOnHand)}.
+                    </small>
+                  )}
+                </div>
+
+                <div className="form-group">
+                  <label>Notes (optional)</label>
+                  <input type="text" placeholder="e.g. weekly sales dropoff, driver name"
+                    value={depositForm.notes}
+                    onChange={e => setDepositForm({ ...depositForm, notes: e.target.value })}
+                    disabled={depositSaving} />
+                </div>
+
+                {depositError && (
+                  <div style={{ background: '#fee2e2', color: '#dc2626', padding: '10px 14px', borderRadius: 8, fontSize: 13, marginBottom: 12 }}>{depositError}</div>
+                )}
+
+                <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10 }}>
+                  <button onClick={() => setShowDeposit(false)} disabled={depositSaving}
+                    style={{ padding: '10px 24px', border: '1px solid #e5e7eb', borderRadius: 8, background: '#fff', cursor: depositSaving ? 'not-allowed' : 'pointer', fontSize: 14 }}>Cancel</button>
+                  <button onClick={handleSaveDeposit} disabled={depositSaving || amt <= 0 || wouldOverdraft}
+                    style={{ padding: '10px 28px', background: (depositSaving || amt <= 0 || wouldOverdraft) ? '#fca5a5' : '#ea580c', color: '#fff', border: 'none', borderRadius: 8, cursor: (depositSaving || amt <= 0 || wouldOverdraft) ? 'not-allowed' : 'pointer', fontSize: 14, fontWeight: 600 }}>
+                    <FiSend style={{ marginRight: 4, verticalAlign: 'middle' }} />
+                    {depositSaving ? 'Sending…' : 'Send Deposit'}
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+          </Portal>
+        );
+      })()}
 
       {/* Cash Transfer Modal — moves money between Cash / Bank / Mobile Money buckets */}
       {showTransfer && (

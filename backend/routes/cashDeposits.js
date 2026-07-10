@@ -74,6 +74,61 @@ router.post('/', hqAuth, (req, res) => {
     const amt = parseFloat(amount || 0) || 0;
     if (!(amt > 0)) return res.status(400).json({ error: 'amount must be > 0' });
 
+    // v1.10.167 — overdraft guard on Liquor branches. The branch can't
+    // deposit more than it has on hand, otherwise Cash & Cash Equivalent
+    // goes negative and the books stop reflecting physical reality.
+    // Reads currency_mode from the source branch's own DB; only fires
+    // when currency_mode = 'K' (Lusaka / Mansa). Sosna tri-currency
+    // branches skip the guard (per-currency drawer semantics don't
+    // cleanly reduce to a single Cash & Cash Equivalent number).
+    try {
+      const branchDb = getTenantDb(from_slug);
+      const bs = branchDb.prepare(`SELECT currency_mode FROM business_settings ORDER BY id ASC LIMIT 1`).get();
+      const isLiquorK = (bs?.currency_mode || '').toUpperCase() === 'K';
+      if (isLiquorK) {
+        // Live Cash & Cash Equivalent on Liquor = seed opening + all-time
+        // CR (cash+bank+momo) - all-time PV (cash+bank+momo) - all-time AP
+        // - all-time confirmed & non-deleted deposits from this branch.
+        const seed = branchDb.prepare(`
+          SELECT COALESCE(SUM(receipt_amount), 0) AS s
+            FROM cash_book
+           WHERE type = 'opening' AND deleted_at IS NULL
+             AND reference IN ('OB', 'OB-CASH', 'OB-BANK', 'OB-MOMO')
+        `).get()?.s || 0;
+        const crAll = branchDb.prepare(`
+          SELECT COALESCE(SUM(
+            COALESCE(cash_amount,0) + COALESCE(bank_amount,0) + COALESCE(momo_amount,0)
+          ), 0) AS s FROM cash_receipts WHERE deleted_at IS NULL
+        `).get()?.s || 0;
+        const pvAll = branchDb.prepare(`
+          SELECT COALESCE(SUM(
+            COALESCE(cash_amount,0) + COALESCE(bank_amount,0) + COALESCE(momo_amount,0)
+          ), 0) AS s FROM payment_vouchers WHERE deleted_at IS NULL
+        `).get()?.s || 0;
+        let apAll = 0;
+        try {
+          apAll = branchDb.prepare(`
+            SELECT COALESCE(SUM(amount), 0) AS s FROM ap_payments WHERE deleted_at IS NULL
+          `).get()?.s || 0;
+        } catch (_) { /* ap_payments may not exist on branch */ }
+        const priorDeposits = masterDb.prepare(`
+          SELECT COALESCE(SUM(amount), 0) AS s
+            FROM cash_deposits
+           WHERE from_slug = ? AND currency = 'K'
+             AND status IN ('PENDING', 'CONFIRMED')
+             AND deleted_at IS NULL
+        `).get(from_slug)?.s || 0;
+        const cashOnHand = seed + crAll - pvAll - apAll - priorDeposits;
+        if (amt > cashOnHand + 0.0001) {
+          return res.status(400).json({
+            error: `Deposit exceeds cash on hand (K ${cashOnHand.toLocaleString(undefined, { maximumFractionDigits: 2 })}). Reduce the amount or record the actual cash first.`,
+            cash_on_hand: cashOnHand,
+            attempted:    amt,
+          });
+        }
+      }
+    } catch (_) { /* branch DB unavailable — skip guard, don't block */ }
+
     // v1.10.48 — from_method: physical drawer on Liquor branches
     // ('Cash' | 'Mobile Money' | 'Bank'). Optional; NULL on Sosna
     // tri-currency deposits (they're currency-anchored). Frontend gate
