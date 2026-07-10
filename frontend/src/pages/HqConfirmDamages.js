@@ -44,8 +44,7 @@ export default function HqConfirmDamages() {
     if (tab !== 'pending') return undefined;
     const id = setInterval(() => refresh('pending'), 20_000);
     return () => clearInterval(id);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tab]);
+  }, [tab]);// eslint deps: refresh is stable via closure over tab; no need to add.
 
   const submit = async () => {
     if (!acting) return;
