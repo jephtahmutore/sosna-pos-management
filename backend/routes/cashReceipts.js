@@ -145,6 +145,26 @@ router.post('/', auth, (req, res) => {
       : (sumCcy > 0
           ? { cash: 0, bank: 0, momo: 0 }
           : deriveCRSplits(payment_method, amount));
+    // v1.10.172 — HQ save guards (same rules as paymentVouchers.js):
+    // (1) USD/FRA no-mirror on HQ: if the payload set usd_amount or
+    //     fra_amount, force sub-drawer cells to 0. cash/bank/momo are
+    //     K-only sub-drawers on HQ, not currency mirrors.
+    // (2) K invariant: if k_amount > 0, sub-drawers must sum to it.
+    //     Prevents orphaned K rows (like PV NHIMA on Jul 11).
+    if (!isLiquorK) {
+      if (usdAmt > 0 || fraAmt > 0) {
+        splits.cash = 0; splits.bank = 0; splits.momo = 0;
+      }
+      if (kAmt > 0) {
+        const subSum = splits.cash + splits.bank + splits.momo;
+        if (subSum <= 0) {
+          return res.status(400).json({ error: 'K amount must be assigned to a sub-drawer (K·Cash / K·Bank / K·MoMo). Pick a drawer and try again.' });
+        }
+        if (Math.abs(kAmt - subSum) > 0.01) {
+          return res.status(400).json({ error: `K sub-drawer split (${subSum}) must equal K total (${kAmt}).` });
+        }
+      }
+    }
     // v1.10.46 — trust client's amount when both column sets are populated
     // (Liquor Cash-Report auto-CR path from v1.10.44). Otherwise fall back
     // to the pre-v1.10.46 clamp so Sosna single-currency behaviour is
@@ -226,6 +246,26 @@ router.put('/:id', auth, (req, res) => {
       : (sumCcy > 0
           ? { cash: 0, bank: 0, momo: 0 }
           : deriveCRSplits(payment_method, amount));
+    // v1.10.172 — HQ save guards (same rules as paymentVouchers.js):
+    // (1) USD/FRA no-mirror on HQ: if the payload set usd_amount or
+    //     fra_amount, force sub-drawer cells to 0. cash/bank/momo are
+    //     K-only sub-drawers on HQ, not currency mirrors.
+    // (2) K invariant: if k_amount > 0, sub-drawers must sum to it.
+    //     Prevents orphaned K rows (like PV NHIMA on Jul 11).
+    if (!isLiquorK) {
+      if (usdAmt > 0 || fraAmt > 0) {
+        splits.cash = 0; splits.bank = 0; splits.momo = 0;
+      }
+      if (kAmt > 0) {
+        const subSum = splits.cash + splits.bank + splits.momo;
+        if (subSum <= 0) {
+          return res.status(400).json({ error: 'K amount must be assigned to a sub-drawer (K·Cash / K·Bank / K·MoMo). Pick a drawer and try again.' });
+        }
+        if (Math.abs(kAmt - subSum) > 0.01) {
+          return res.status(400).json({ error: `K sub-drawer split (${subSum}) must equal K total (${kAmt}).` });
+        }
+      }
+    }
     // v1.10.46 — when the client explicitly sends BOTH the currency columns
     // and the method-split columns (Liquor from v1.10.44), it means all
     // three slots are the same currency and the client's `amount` is the

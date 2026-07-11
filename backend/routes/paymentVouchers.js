@@ -128,9 +128,33 @@ router.post('/', auth, (req, res) => {
     const kAmt   = isHqTriCcy
       ? (parseFloat(k_amount) || 0)
       : (parseFloat(k_amount   ?? momo_amount ?? 0) || 0);
-    const cashAmt = isHqTriCcy ? (parseFloat(cash_amount) || 0) : 0;
-    const bankAmt = isHqTriCcy ? (parseFloat(bank_amount) || 0) : 0;
-    const momoAmt = isHqTriCcy ? (parseFloat(momo_amount) || 0) : 0;
+    let cashAmt = isHqTriCcy ? (parseFloat(cash_amount) || 0) : 0;
+    let bankAmt = isHqTriCcy ? (parseFloat(bank_amount) || 0) : 0;
+    let momoAmt = isHqTriCcy ? (parseFloat(momo_amount) || 0) : 0;
+    // v1.10.172 — HQ save guards.
+    // (1) USD/FRA no-mirror: cash/bank/momo are K sub-drawers on HQ, NOT
+    //     currency mirrors. If the payload set usd_amount or fra_amount,
+    //     force the sub-drawer cells to 0 so no mirror-style row gets
+    //     written (which is how legacy PV-0001, 0003, 0018-0020 ended up
+    //     with usd_amount = cash_amount).
+    // (2) K invariant: if k_amount > 0, at least one sub-drawer must carry
+    //     it, and the three must sum to k_amount. Reject 400 on either
+    //     orphaned K (all sub-drawers 0) or unbalanced split. Prevents the
+    //     NHIMA-style row (k_amount = 3044.76, no drawer picked).
+    if (isHqTriCcy) {
+      if (usdAmt > 0 || fraAmt > 0) {
+        cashAmt = 0; bankAmt = 0; momoAmt = 0;
+      }
+      if (kAmt > 0) {
+        const subSum = cashAmt + bankAmt + momoAmt;
+        if (subSum <= 0) {
+          return res.status(400).json({ error: 'K amount must be assigned to a sub-drawer (K·Cash / K·Bank / K·MoMo). Pick a drawer and try again.' });
+        }
+        if (Math.abs(kAmt - subSum) > 0.01) {
+          return res.status(400).json({ error: `K sub-drawer split (${subSum}) must equal K total (${kAmt}).` });
+        }
+      }
+    }
     const sumSplits = usdAmt + fraAmt + kAmt;
     // For the legacy total `amount` column we use whatever the caller sent
     // (the USD-equivalent header), falling back to USD-only if missing.
@@ -192,9 +216,33 @@ router.put('/:id', auth, (req, res) => {
     const usdAmt = isHqTriCcy ? (parseFloat(usd_amount) || 0) : (parseFloat(usd_amount ?? cash_amount ?? 0) || 0);
     const fraAmt = isHqTriCcy ? (parseFloat(fra_amount) || 0) : (parseFloat(fra_amount ?? bank_amount ?? 0) || 0);
     const kAmt   = isHqTriCcy ? (parseFloat(k_amount)   || 0) : (parseFloat(k_amount   ?? momo_amount ?? 0) || 0);
-    const cashAmt = isHqTriCcy ? (parseFloat(cash_amount) || 0) : 0;
-    const bankAmt = isHqTriCcy ? (parseFloat(bank_amount) || 0) : 0;
-    const momoAmt = isHqTriCcy ? (parseFloat(momo_amount) || 0) : 0;
+    let cashAmt = isHqTriCcy ? (parseFloat(cash_amount) || 0) : 0;
+    let bankAmt = isHqTriCcy ? (parseFloat(bank_amount) || 0) : 0;
+    let momoAmt = isHqTriCcy ? (parseFloat(momo_amount) || 0) : 0;
+    // v1.10.172 — HQ save guards.
+    // (1) USD/FRA no-mirror: cash/bank/momo are K sub-drawers on HQ, NOT
+    //     currency mirrors. If the payload set usd_amount or fra_amount,
+    //     force the sub-drawer cells to 0 so no mirror-style row gets
+    //     written (which is how legacy PV-0001, 0003, 0018-0020 ended up
+    //     with usd_amount = cash_amount).
+    // (2) K invariant: if k_amount > 0, at least one sub-drawer must carry
+    //     it, and the three must sum to k_amount. Reject 400 on either
+    //     orphaned K (all sub-drawers 0) or unbalanced split. Prevents the
+    //     NHIMA-style row (k_amount = 3044.76, no drawer picked).
+    if (isHqTriCcy) {
+      if (usdAmt > 0 || fraAmt > 0) {
+        cashAmt = 0; bankAmt = 0; momoAmt = 0;
+      }
+      if (kAmt > 0) {
+        const subSum = cashAmt + bankAmt + momoAmt;
+        if (subSum <= 0) {
+          return res.status(400).json({ error: 'K amount must be assigned to a sub-drawer (K·Cash / K·Bank / K·MoMo). Pick a drawer and try again.' });
+        }
+        if (Math.abs(kAmt - subSum) > 0.01) {
+          return res.status(400).json({ error: `K sub-drawer split (${subSum}) must equal K total (${kAmt}).` });
+        }
+      }
+    }
     const sumSplits = usdAmt + fraAmt + kAmt;
     const totalAmount = parseFloat(amount) > 0 ? parseFloat(amount) : (sumSplits > 0 ? usdAmt : 0);
     // invoice_attachment: pass null to clear, omit to keep existing
