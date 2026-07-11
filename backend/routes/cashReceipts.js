@@ -145,13 +145,11 @@ router.post('/', auth, (req, res) => {
       : (sumCcy > 0
           ? { cash: 0, bank: 0, momo: 0 }
           : deriveCRSplits(payment_method, amount));
-    // v1.10.172 — HQ save guards (same rules as paymentVouchers.js):
-    // (1) USD/FRA no-mirror on HQ: if the payload set usd_amount or
-    //     fra_amount, force sub-drawer cells to 0. cash/bank/momo are
-    //     K-only sub-drawers on HQ, not currency mirrors.
-    // (2) K invariant: if k_amount > 0, sub-drawers must sum to it.
-    //     Prevents orphaned K rows (like PV NHIMA on Jul 11).
-    if (!isLiquorK) {
+    // v1.10.172 — HQ save guards (same rules as paymentVouchers.js).
+    // v1.10.172a — gate on HQ host explicitly. Kassumbalesa is
+    // tri-currency but does NOT use K sub-drawers (cash-only branch,
+    // k_amount alone is correct there).
+    if (!isLiquorK && HQ_HOSTS_CR.has(hostCR)) {
       if (usdAmt > 0 || fraAmt > 0) {
         splits.cash = 0; splits.bank = 0; splits.momo = 0;
       }
@@ -246,13 +244,11 @@ router.put('/:id', auth, (req, res) => {
       : (sumCcy > 0
           ? { cash: 0, bank: 0, momo: 0 }
           : deriveCRSplits(payment_method, amount));
-    // v1.10.172 — HQ save guards (same rules as paymentVouchers.js):
-    // (1) USD/FRA no-mirror on HQ: if the payload set usd_amount or
-    //     fra_amount, force sub-drawer cells to 0. cash/bank/momo are
-    //     K-only sub-drawers on HQ, not currency mirrors.
-    // (2) K invariant: if k_amount > 0, sub-drawers must sum to it.
-    //     Prevents orphaned K rows (like PV NHIMA on Jul 11).
-    if (!isLiquorK) {
+    // v1.10.172 — HQ save guards (same rules as paymentVouchers.js).
+    // v1.10.172a — gate on HQ host explicitly. Kassumbalesa is
+    // tri-currency but does NOT use K sub-drawers (cash-only branch,
+    // k_amount alone is correct there).
+    if (!isLiquorK && HQ_HOSTS_CR.has(hostCR)) {
       if (usdAmt > 0 || fraAmt > 0) {
         splits.cash = 0; splits.bank = 0; splits.momo = 0;
       }

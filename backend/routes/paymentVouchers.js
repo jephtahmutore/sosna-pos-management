@@ -141,7 +141,11 @@ router.post('/', auth, (req, res) => {
     //     it, and the three must sum to k_amount. Reject 400 on either
     //     orphaned K (all sub-drawers 0) or unbalanced split. Prevents the
     //     NHIMA-style row (k_amount = 3044.76, no drawer picked).
-    if (isHqTriCcy) {
+    // v1.10.172a — gate on HQ host explicitly. Kassumbalesa is tri-currency
+    // but does NOT use K sub-drawers (cash-only branch, k_amount alone is
+    // correct there). Applying the invariant to Kassumbalesa would false-
+    // reject legitimate K PVs.
+    if (isHqTriCcy && HQ_HOSTS_PV.has(hostPV)) {
       if (usdAmt > 0 || fraAmt > 0) {
         cashAmt = 0; bankAmt = 0; momoAmt = 0;
       }
@@ -229,7 +233,11 @@ router.put('/:id', auth, (req, res) => {
     //     it, and the three must sum to k_amount. Reject 400 on either
     //     orphaned K (all sub-drawers 0) or unbalanced split. Prevents the
     //     NHIMA-style row (k_amount = 3044.76, no drawer picked).
-    if (isHqTriCcy) {
+    // v1.10.172a — gate on HQ host explicitly. Kassumbalesa is tri-currency
+    // but does NOT use K sub-drawers (cash-only branch, k_amount alone is
+    // correct there). Applying the invariant to Kassumbalesa would false-
+    // reject legitimate K PVs.
+    if (isHqTriCcy && HQ_HOSTS_PV.has(hostPV)) {
       if (usdAmt > 0 || fraAmt > 0) {
         cashAmt = 0; bankAmt = 0; momoAmt = 0;
       }
