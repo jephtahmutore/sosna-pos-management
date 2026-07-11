@@ -110,11 +110,23 @@ router.post('/', auth, (req, res) => {
     // columns; keeping both means aggregate readers can double-count
     // (see paymentVouchers.js:100 comment about Simon Fuel PV-0031).
     // Legacy columns are the truth on Liquor.
+    // v1.10.171 — HQ safety net. If the request host is an HQ host, force
+    // isLiquorK=false regardless of what business_settings.currency_mode
+    // says. HQ shipped with currency_mode='K' (leftover from the Liquor
+    // fork template) and that mis-tag silently dropped k_amount on HQ
+    // CRs/PVs. Belt + suspenders: even if the DB gets nuked again, HQ
+    // can't fall into the Liquor code path.
+    const HQ_HOSTS_CR = new Set(['sosnazm.com', 'www.sosnazm.com']);
+    const hostCR = String(req.hostname || req.headers?.host || '').toLowerCase();
     let isLiquorK = false;
-    try {
-      const bs = db.prepare(`SELECT currency_mode FROM business_settings ORDER BY id ASC LIMIT 1`).get();
-      isLiquorK = (bs?.currency_mode || '').toUpperCase() === 'K';
-    } catch (_) { /* pre-migration DB */ }
+    if (HQ_HOSTS_CR.has(hostCR)) {
+      isLiquorK = false;
+    } else {
+      try {
+        const bs = db.prepare(`SELECT currency_mode FROM business_settings ORDER BY id ASC LIMIT 1`).get();
+        isLiquorK = (bs?.currency_mode || '').toUpperCase() === 'K';
+      } catch (_) { /* pre-migration DB */ }
+    }
     const usdAmt = isLiquorK ? 0 : (parseFloat(usd_amount) || 0);
     const fraAmt = isLiquorK ? 0 : (parseFloat(fra_amount) || 0);
     const kAmt   = isLiquorK ? 0 : (parseFloat(k_amount)   || 0);
@@ -179,11 +191,23 @@ router.put('/:id', auth, (req, res) => {
     // columns; keeping both means aggregate readers can double-count
     // (see paymentVouchers.js:100 comment about Simon Fuel PV-0031).
     // Legacy columns are the truth on Liquor.
+    // v1.10.171 — HQ safety net. If the request host is an HQ host, force
+    // isLiquorK=false regardless of what business_settings.currency_mode
+    // says. HQ shipped with currency_mode='K' (leftover from the Liquor
+    // fork template) and that mis-tag silently dropped k_amount on HQ
+    // CRs/PVs. Belt + suspenders: even if the DB gets nuked again, HQ
+    // can't fall into the Liquor code path.
+    const HQ_HOSTS_CR = new Set(['sosnazm.com', 'www.sosnazm.com']);
+    const hostCR = String(req.hostname || req.headers?.host || '').toLowerCase();
     let isLiquorK = false;
-    try {
-      const bs = db.prepare(`SELECT currency_mode FROM business_settings ORDER BY id ASC LIMIT 1`).get();
-      isLiquorK = (bs?.currency_mode || '').toUpperCase() === 'K';
-    } catch (_) { /* pre-migration DB */ }
+    if (HQ_HOSTS_CR.has(hostCR)) {
+      isLiquorK = false;
+    } else {
+      try {
+        const bs = db.prepare(`SELECT currency_mode FROM business_settings ORDER BY id ASC LIMIT 1`).get();
+        isLiquorK = (bs?.currency_mode || '').toUpperCase() === 'K';
+      } catch (_) { /* pre-migration DB */ }
+    }
     const usdAmt = isLiquorK ? 0 : (parseFloat(usd_amount) || 0);
     const fraAmt = isLiquorK ? 0 : (parseFloat(fra_amount) || 0);
     const kAmt   = isLiquorK ? 0 : (parseFloat(k_amount)   || 0);

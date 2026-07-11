@@ -11,6 +11,35 @@ try { masterDb = require('../config/masterDb').masterDb; } catch (_) { /* offlin
 
 const HQ_INBOX_SLUGS = new Set(['hq', 'sosna', 'sosnazm']);
 
+// v1.10.171 — belt-and-suspenders check: if the request is for an HQ host,
+// force isLiquorK=false regardless of what business_settings.currency_mode
+// says. Reason: HQ shipped v1 with currency_mode='K' (leftover from the
+// Liquor fork template), which flipped every K reader into Liquor mode and
+// silently dropped k_amount on HQ PVs/CRs (NHIMA · PV-C0AB98-0025 showed
+// dashes for K3,044.76 on Jul 11). Reading the slug OR the host means even
+// if the DB gets nuked back to 'K' during a bad migration, HQ can't fall
+// into the wrong code path.
+function isHqRequest(req) {
+  try {
+    const slug = String(req.query?.slug || '').toLowerCase();
+    if (HQ_INBOX_SLUGS.has(slug)) return true;
+    const host = String(req.hostname || req.headers?.host || '').toLowerCase();
+    // sosnazm.com / www.sosnazm.com / hq.something / localhost fall through
+    // to the currency_mode check — we only short-circuit on obvious HQ hosts.
+    if (host === 'sosnazm.com' || host === 'www.sosnazm.com') return true;
+    return false;
+  } catch (_) { return false; }
+}
+function detectLiquorK(db, req) {
+  if (isHqRequest(req)) return false;
+  try {
+    const bs = db.prepare(`SELECT currency_mode FROM business_settings ORDER BY id ASC LIMIT 1`).get();
+    return (bs?.currency_mode || '').toUpperCase() === 'K';
+  } catch (_) {
+    return false;
+  }
+}
+
 // Opening balances are stored as up to 3 rows in cash_book with type='opening':
 //   reference='OB-CASH' / 'OB-BANK' / 'OB-MOMO'
 // A pre-existing single 'OB' row (legacy) is treated as the Cash opening.
@@ -107,11 +136,18 @@ function ccyReceiptsPayments(tenantId, slug, dateClause, dateParams) {
   // the real K amount lives in cash/bank/momo — route it there so the
   // pre-period fold reads the same total as the ledger UNION does, and
   // never routes it into `usd` (Liquor has no USD column).
+  // v1.10.171 — slug-based HQ override. If the caller is HQ (slug in the
+  // HQ_INBOX_SLUGS set) force isLiquorK=false regardless of what
+  // business_settings.currency_mode says — HQ shipped with 'K' by mistake.
   let isLiquorK = false;
-  try {
-    const bs = db.prepare(`SELECT currency_mode FROM business_settings ORDER BY id ASC LIMIT 1`).get();
-    isLiquorK = (bs?.currency_mode || '').toUpperCase() === 'K';
-  } catch (_) { /* pre-migration DB */ }
+  if (HQ_INBOX_SLUGS.has(String(slug || '').toLowerCase())) {
+    isLiquorK = false;
+  } else {
+    try {
+      const bs = db.prepare(`SELECT currency_mode FROM business_settings ORDER BY id ASC LIMIT 1`).get();
+      isLiquorK = (bs?.currency_mode || '').toUpperCase() === 'K';
+    } catch (_) { /* pre-migration DB */ }
+  }
   const usdExprCR = isLiquorK
     ? `0`
     : `CASE WHEN COALESCE(usd_amount,0) > 0 THEN usd_amount WHEN COALESCE(k_amount,0) > 0 THEN 0 ELSE COALESCE(cash_amount,0) END`;
@@ -195,7 +231,7 @@ function ccyReceiptsPayments(tenantId, slug, dateClause, dateParams) {
 // Capital Injection + Loan Disbursement → inflow (like CR).
 // Capital Drawing + Dividend + Loan Principal + Loan Interest → outflow (like PV).
 // Also computes net transfer effect for this method (in - out).
-function sumMethod(tenantId, methodCol, dateClause, dateParams) {
+function sumMethod(tenantId, methodCol, dateClause, dateParams, hqSlug) {
   // v1.10.99 — CR / PV / AP tables carry BOTH currency columns
   // (usd/fra/k) and method columns (cash/bank/momo). On Liquor, the
   // modal writes drawer amounts into the currency column and leaves the
@@ -216,11 +252,19 @@ function sumMethod(tenantId, methodCol, dateClause, dateParams) {
   // columns on Liquor: manual Liquor PVs/CRs fill both sets identically
   // so this reads the same number for a clean row, but silently ignores
   // the redundant mirror for corrupted / half-populated rows.
+  // v1.10.171 — HQ override: if the caller passed an HQ slug, force
+  // isLiquorK=false regardless of currency_mode. Prevents HQ ever falling
+  // into the Liquor code path if business_settings.currency_mode is
+  // mis-set (as it was on the shipped HQ instance).
   let isLiquorK = false;
-  try {
-    const bs = db.prepare(`SELECT currency_mode FROM business_settings ORDER BY id ASC LIMIT 1`).get();
-    isLiquorK = (bs?.currency_mode || '').toUpperCase() === 'K';
-  } catch (_) { /* pre-migration DB */ }
+  if (HQ_INBOX_SLUGS.has(String(hqSlug || '').toLowerCase())) {
+    isLiquorK = false;
+  } else {
+    try {
+      const bs = db.prepare(`SELECT currency_mode FROM business_settings ORDER BY id ASC LIMIT 1`).get();
+      isLiquorK = (bs?.currency_mode || '').toUpperCase() === 'K';
+    } catch (_) { /* pre-migration DB */ }
+  }
   const cxMap = isLiquorK ? {
     cash_amount: 'COALESCE(cash_amount, 0)',
     bank_amount: 'COALESCE(bank_amount, 0)',
@@ -275,11 +319,9 @@ router.get('/', auth, readOnlyGuard, (req, res) => {
     // running K balance frozen. Fallback stays gated on isLiquorK so HQ K CRs
     // (where cash_amount is a K sub-drawer and k_amount already = cash+bank
     // +momo) don't double-count.
-    let isLiquorK = false;
-    try {
-      const bs = db.prepare(`SELECT currency_mode FROM business_settings ORDER BY id ASC LIMIT 1`).get();
-      isLiquorK = (bs?.currency_mode || '').toUpperCase() === 'K';
-    } catch (_) { /* pre-migration DB — treat as not Liquor */ }
+    // v1.10.171 — HQ safety net (see detectLiquorK / isHqRequest at top).
+    const isLiquorK = detectLiquorK(db, req);
+    const hqSlugForSubcalls = isHqRequest(req) ? 'hq' : null;
     // v1.10.164 — on Liquor, ALWAYS use cash + bank + momo, never
     // COALESCE to k_amount. Liquor's storage maps Bank → k_amount
     // (mirror) + bank_amount (legacy), so k_amount alone is just the
@@ -316,7 +358,7 @@ router.get('/', auth, readOnlyGuard, (req, res) => {
       const beforeClause = ' AND date < ?';
       ['cash_amount', 'bank_amount', 'momo_amount'].forEach((col) => {
         const key = col.replace('_amount', '');
-        const m = sumMethod(tenantId, col, beforeClause, [from]);
+        const m = sumMethod(tenantId, col, beforeClause, [from], hqSlugForSubcalls);
         openingByMethod[key] = openingByMethod[key]
           + m.cr + m.capIn + m.loanIn
           - m.pv - m.ap - m.capOut - m.div - m.loanPrin - m.loanInt
@@ -634,17 +676,21 @@ router.get('/stats', auth, readOnlyGuard, (req, res) => {
     const df = (from ? ' AND date >= ?' : '') + (to ? ' AND date <= ?' : '');
     const dp = [...(from ? [from] : []), ...(to ? [to] : [])];
 
+    // v1.10.171 — HQ safety net: if this is an HQ request, tag every
+    // sumMethod call with an HQ slug so its own isLiquorK check
+    // short-circuits to tri-currency behaviour.
+    const hqSlugForStats = isHqRequest(req) ? 'hq' : null;
     // Period inflows/outflows for each method
-    const cash = sumMethod(tenantId, 'cash_amount', df, dp);
-    const bank = sumMethod(tenantId, 'bank_amount', df, dp);
-    const momo = sumMethod(tenantId, 'momo_amount', df, dp);
+    const cash = sumMethod(tenantId, 'cash_amount', df, dp, hqSlugForStats);
+    const bank = sumMethod(tenantId, 'bank_amount', df, dp, hqSlugForStats);
+    const momo = sumMethod(tenantId, 'momo_amount', df, dp, hqSlugForStats);
 
     // Folded openings (carry pre-period activity into the opening when a `from` is set)
     let openingByMethod = { ...opening };
     if (from) {
       ['cash_amount', 'bank_amount', 'momo_amount'].forEach((col) => {
         const key = col.replace('_amount', '');
-        const b = sumMethod(tenantId, col, ' AND date < ?', [from]);
+        const b = sumMethod(tenantId, col, ' AND date < ?', [from], hqSlugForStats);
         openingByMethod[key] = openingByMethod[key]
           + b.cr + b.capIn + b.loanIn
           - b.pv - b.ap - b.capOut - b.div - b.loanPrin - b.loanInt
@@ -703,11 +749,8 @@ router.get('/stats', auth, readOnlyGuard, (req, res) => {
     // hidden AND K reads cash+bank+momo when k_amount = 0. Keeps the
     // /stats currentByCcy in lockstep with the ledger UNION so TOTALS
     // BALANCE equals the ledger's running balance last row.
-    let isLiquorKStats = false;
-    try {
-      const bs = db.prepare(`SELECT currency_mode FROM business_settings ORDER BY id ASC LIMIT 1`).get();
-      isLiquorKStats = (bs?.currency_mode || '').toUpperCase() === 'K';
-    } catch (_) { /* pre-migration DB */ }
+    // v1.10.171 — HQ safety net (see detectLiquorK / isHqRequest at top).
+    const isLiquorKStats = detectLiquorK(db, req);
     const usdExprStats = isLiquorKStats
       ? `0`
       : `CASE WHEN COALESCE(usd_amount,0) > 0 THEN usd_amount WHEN COALESCE(k_amount,0) > 0 THEN 0 ELSE COALESCE(cash_amount,0) END`;

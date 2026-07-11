@@ -106,11 +106,18 @@ router.post('/', auth, (req, res) => {
     // AND fra_amount = 2420 for a single K2,420 Cash payment. On K-only
     // branches (Liquor), always take the legacy path so only ONE column
     // per bucket gets written.
+    // v1.10.171 — HQ safety net (see cashReceipts.js comment).
+    const HQ_HOSTS_PV = new Set(['sosnazm.com', 'www.sosnazm.com']);
+    const hostPV = String(req.hostname || req.headers?.host || '').toLowerCase();
     let isLiquorK = false;
-    try {
-      const bs = db.prepare(`SELECT currency_mode FROM business_settings ORDER BY id ASC LIMIT 1`).get();
-      isLiquorK = (bs?.currency_mode || '').toUpperCase() === 'K';
-    } catch (_) { /* pre-migration DB — treat as tri-currency */ }
+    if (HQ_HOSTS_PV.has(hostPV)) {
+      isLiquorK = false;
+    } else {
+      try {
+        const bs = db.prepare(`SELECT currency_mode FROM business_settings ORDER BY id ASC LIMIT 1`).get();
+        isLiquorK = (bs?.currency_mode || '').toUpperCase() === 'K';
+      } catch (_) { /* pre-migration DB — treat as tri-currency */ }
+    }
     const isHqTriCcy  = hasTriCcy && hasSubMeth && !isLiquorK;
     const usdAmt = isHqTriCcy
       ? (parseFloat(usd_amount) || 0)
@@ -169,11 +176,18 @@ router.put('/:id', auth, (req, res) => {
     // AND fra_amount = 2420 for a single K2,420 Cash payment. On K-only
     // branches (Liquor), always take the legacy path so only ONE column
     // per bucket gets written.
+    // v1.10.171 — HQ safety net (see cashReceipts.js comment).
+    const HQ_HOSTS_PV = new Set(['sosnazm.com', 'www.sosnazm.com']);
+    const hostPV = String(req.hostname || req.headers?.host || '').toLowerCase();
     let isLiquorK = false;
-    try {
-      const bs = db.prepare(`SELECT currency_mode FROM business_settings ORDER BY id ASC LIMIT 1`).get();
-      isLiquorK = (bs?.currency_mode || '').toUpperCase() === 'K';
-    } catch (_) { /* pre-migration DB — treat as tri-currency */ }
+    if (HQ_HOSTS_PV.has(hostPV)) {
+      isLiquorK = false;
+    } else {
+      try {
+        const bs = db.prepare(`SELECT currency_mode FROM business_settings ORDER BY id ASC LIMIT 1`).get();
+        isLiquorK = (bs?.currency_mode || '').toUpperCase() === 'K';
+      } catch (_) { /* pre-migration DB — treat as tri-currency */ }
+    }
     const isHqTriCcy  = hasTriCcy && hasSubMeth && !isLiquorK;
     const usdAmt = isHqTriCcy ? (parseFloat(usd_amount) || 0) : (parseFloat(usd_amount ?? cash_amount ?? 0) || 0);
     const fraAmt = isHqTriCcy ? (parseFloat(fra_amount) || 0) : (parseFloat(fra_amount ?? bank_amount ?? 0) || 0);
