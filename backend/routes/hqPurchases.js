@@ -411,6 +411,40 @@ router.put('/items/:itemId/confirm', hqAuth, (req, res) => {
     const branchSideCreatedBy = null;
     const qty = parseFloat(item.received_qty) || 0;
 
+    // v1.10.174 — WAC blend on confirm-received.
+    // Missed callsite from the v1.10.55 WAC redesign: hqGrns.js /generate
+    // and transfers.js /receive both blend avg_cost_price atomically with
+    // the current_stock bump, but the confirm-received endpoint here only
+    // bumped current_stock — so a first delivery to a branch left
+    // avg_cost_price = NULL and the Item Details page displayed K 0.00
+    // for products that had never been received before (e.g. Caso Lager
+    // 750 ML on Lusaka from HQP-2026-00002, Jul 2).
+    //
+    // Read the PO header for cost_currency + fx_rate_used (step 1) and
+    // the destination's currency_mode (step 2). On K-only destinations
+    // (Mansa / Lusaka) we keep the raw cost as K — the toUsd() path would
+    // deflate it by the FX rate and store USD in a K-only WAC. On
+    // multi-currency destinations (Kassumbalesa) we normalise to USD the
+    // same way hqGrns.js does.
+    const purchase = masterDb.prepare(
+      `SELECT cost_currency, fx_rate_used FROM hq_purchases WHERE id = ?`
+    ).get(item.purchase_id);
+    const poCurrency = String(purchase?.cost_currency || '').toUpperCase();
+    const poRate     = parseFloat(purchase?.fx_rate_used || 0) || 0;
+    const toUsd = (up) => {
+      const c = parseFloat(up || 0) || 0;
+      if (c <= 0) return 0;
+      if (!poCurrency || poCurrency === 'USD') return c;
+      return poRate > 0 ? c / poRate : c;
+    };
+    let destIsKOnly = true; // safe default — Liquor branches are the norm
+    try {
+      const destSettings = toDb.prepare(
+        `SELECT currency_mode FROM business_settings ORDER BY id ASC LIMIT 1`
+      ).get();
+      destIsKOnly = String(destSettings?.currency_mode || 'K').toUpperCase() === 'K';
+    } catch (_) { /* pre-migration branch DB — keep default */ }
+
     toDb.transaction(() => {
       // Find product at branch by sync_id (preferred) then name; auto-
       // create from the line snapshot if neither matches. Same logic as
@@ -443,13 +477,32 @@ router.put('/items/:itemId/confirm', hqAuth, (req, res) => {
         ).get(info.lastInsertRowid);
       }
 
-      const baseQty = qty * conversionToBase(prod, item.unit);
+      const conv = conversionToBase(prod, item.unit);
+      const baseQty = qty * conv;
+      // v1.10.174 — cost per LINE unit in the currency the destination
+      // stores WAC in. K-only branches keep K as K; multi-ccy branches
+      // normalise to USD via the PO's FX rate.
+      const cpPerLineUnit = destIsKOnly
+        ? (parseFloat(item.cost_price || 0) || 0)
+        : toUsd(item.cost_price);
+      const cpPerBase = conv > 0 ? cpPerLineUnit / conv : cpPerLineUnit;
+      // Atomic bump + blend — same shape as hqGrns.js:1354-1367 and
+      // transfers.js:452-465. Seeds avg_cost_price on first delivery,
+      // blends on every subsequent one.
       toDb.prepare(`
-        UPDATE products SET current_stock = current_stock + ?,
-                            updated_at = datetime('now'),
-                            synced = 0
+        UPDATE products
+           SET current_stock  = current_stock + ?,
+               avg_cost_price = CASE
+                 WHEN avg_cost_price IS NULL OR current_stock <= 0
+                   THEN ?
+                 ELSE ROUND(
+                   (current_stock * avg_cost_price + ? * ?)
+                   / (current_stock + ?), 4)
+               END,
+               updated_at     = datetime('now'),
+               synced         = 0
          WHERE sync_id = ?
-      `).run(baseQty, prod.sync_id);
+      `).run(baseQty, cpPerBase, baseQty, cpPerBase, baseQty, prod.sync_id);
       toDb.prepare(`
         INSERT INTO stock_movements (product_id, product_sync_id, location, movement_type,
                                      quantity, reference_type, reference_sync_id,
