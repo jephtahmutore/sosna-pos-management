@@ -101,6 +101,68 @@ router.get('/net', auth, readOnlyGuard, (req, res) => {
   }
 });
 
+// v1.10.177 — Phase 1 of the "USD & USD Equivalent on HQ" rework.
+// GET /api/currency-exchanges/blended-rate
+// Aggregates every book-scope USD→K exchange the tenant has ever recorded
+// (append-only ledger — corrections are reverse entries, never deletes)
+// to compute the pool's weighted-average acquisition rate for K:
+//
+//   blended_k_per_usd = SUM(to_amount [K])  ÷  SUM(from_amount [USD])
+//
+// This is what the HQ Cash Book will convert K balances to USD with,
+// instead of today's live market rate. Phase 2 will make this pool-level
+// atomic (native K + exchange K counters that update on every CR/PV/AP).
+// For Phase 1 the rate is derived read-only from the exchange history —
+// no schema changes, no writes elsewhere.
+router.get('/blended-rate', auth, readOnlyGuard, (req, res) => {
+  try {
+    // USD→K side (how much USD you spent to get K in the pool)
+    const usdToK = db.prepare(`
+      SELECT
+        COALESCE(SUM(from_amount), 0) AS total_from_usd,
+        COALESCE(SUM(to_amount),   0) AS total_to_k,
+        COUNT(*) AS n
+      FROM currency_exchanges
+      WHERE tenant_id = ? AND scope = 'book'
+        AND from_currency = 'USD' AND to_currency = 'K'
+    `).get(req.user.tenantId);
+    const totalUsd = parseFloat(usdToK.total_from_usd) || 0;
+    const totalK   = parseFloat(usdToK.total_to_k)     || 0;
+    const blendedKPerUsd = totalUsd > 0 ? totalK / totalUsd : 0;
+    // FRA blended (kept alongside for symmetry — same idea but for FRA→K).
+    // If no FRA exchange history, returns 0 and the frontend falls back to
+    // today's live FRA rate.
+    const usdToFra = db.prepare(`
+      SELECT
+        COALESCE(SUM(from_amount), 0) AS total_from_usd,
+        COALESCE(SUM(to_amount),   0) AS total_to_fra,
+        COUNT(*) AS n
+      FROM currency_exchanges
+      WHERE tenant_id = ? AND scope = 'book'
+        AND from_currency = 'USD' AND to_currency = 'FRA'
+    `).get(req.user.tenantId);
+    const totalUsdFra = parseFloat(usdToFra.total_from_usd) || 0;
+    const totalFra    = parseFloat(usdToFra.total_to_fra)   || 0;
+    const blendedFraPerUsd = totalUsdFra > 0 ? totalFra / totalUsdFra : 0;
+    res.json({
+      k: {
+        total_from_usd: totalUsd,
+        total_to_k:     totalK,
+        blended_k_per_usd: blendedKPerUsd,
+        exchange_count: usdToK.n,
+      },
+      fra: {
+        total_from_usd:   totalUsdFra,
+        total_to_fra:     totalFra,
+        blended_fra_per_usd: blendedFraPerUsd,
+        exchange_count: usdToFra.n,
+      },
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ─── Create (admin/manager only) ─────────────────────────────────────────────
 router.post('/', auth, (req, res) => {
   try {

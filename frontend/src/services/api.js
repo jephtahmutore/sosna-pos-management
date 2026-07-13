@@ -118,6 +118,8 @@ export const bulkSivStoreToSales = (password) => api.post('/products/bulk-siv-st
 // v1.8.6 — Currency Exchanges (append-only ledger, scope='drawer'|'book').
 export const getCurrencyExchanges = (params = {}) => api.get('/currency-exchanges', { params });
 export const getCurrencyExchangesNet = (params = {}) => api.get('/currency-exchanges/net', { params });
+// v1.10.177 — pool-blended K/USD rate from exchange history (HQ Cash Book Phase 1).
+export const getBlendedFxRate       = () => api.get('/currency-exchanges/blended-rate');
 export const createCurrencyExchange = (data) => api.post('/currency-exchanges', data);
 export const importProducts = (file) => {
   const form = new FormData();

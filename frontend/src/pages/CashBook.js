@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { getCashBook, getCashBookStats, setOpeningBalance, getSettings, getSalesRangeSummary, createCashTransfer, getCashTransfers, deleteCashTransfer, createCashDeposit, getCashDeposits, deleteCashDeposit, isHqHost, getBranchSlug, getCurrentFxRate } from '../services/api';
+import { getCashBook, getCashBookStats, setOpeningBalance, getSettings, getSalesRangeSummary, createCashTransfer, getCashTransfers, deleteCashTransfer, createCashDeposit, getCashDeposits, deleteCashDeposit, isHqHost, getBranchSlug, getCurrentFxRate, getBlendedFxRate } from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import CurrencyExchangePanel from '../components/CurrencyExchangePanel';
 import { useCurrency } from '../context/CurrencyContext';
@@ -35,6 +35,14 @@ const CashBook = () => {
   // v1.10.18 — live FX so Cash & Cash Equivalents can convert FRA + K to
   // USD-equivalent instead of naively summing raw numbers.
   const [fx, setFx] = useState({ buyFRA: 0, sellFRA: 0, buyK: 0, sellK: 0 });
+  // v1.10.177 — HQ Cash Book Phase 1: blended K/USD rate derived from the
+  // book-scope currency_exchanges history. This is the pool-weighted
+  // acquisition rate for K (what USD you actually spent to build up the K
+  // in the Cash Book), not today's live market rate. Used to convert the
+  // K & FRA balances into USD-equivalent on the primary HQ tile so
+  // "USD & USD Equivalent" reflects real cost basis rather than today's
+  // spot. Falls back to fx.buyK when there's no exchange history yet.
+  const [blendedFx, setBlendedFx] = useState({ kPerUsd: 0, kCount: 0, fraPerUsd: 0, fraCount: 0 });
   const [businessInfo, setBusinessInfo] = useState({});
   const [showListPrint, setShowListPrint] = useState(false);
   const [openingBal, setOpeningBal] = useState(0);
@@ -123,6 +131,17 @@ const CashBook = () => {
         sellFRA: parseFloat(d.sell_rate    ?? d.sellRate    ?? d.sell_rate_fra  ?? 0) || 0,
         buyK:    parseFloat(d.buy_rate_k   ?? d.buyRateK    ?? 0) || 0,
         sellK:   parseFloat(d.sell_rate_k  ?? d.sellRateK   ?? 0) || 0,
+      });
+    }).catch(() => {});
+    // v1.10.177 — pull the pool-blended rate from exchange history so the
+    // HQ primary tile can display USD-equivalent at true cost basis.
+    getBlendedFxRate().then(r => {
+      const d = r.data || {};
+      setBlendedFx({
+        kPerUsd:   parseFloat(d.k?.blended_k_per_usd     || 0) || 0,
+        kCount:    parseInt(d.k?.exchange_count          || 0) || 0,
+        fraPerUsd: parseFloat(d.fra?.blended_fra_per_usd || 0) || 0,
+        fraCount:  parseInt(d.fra?.exchange_count        || 0) || 0,
       });
     }).catch(() => {});
   }, []); // eslint-disable-line
@@ -981,17 +1000,29 @@ const CashBook = () => {
           }
 
           if (onHq) {
-            // K-anchored: K + USD×sellK + FRA×(sellK / buyFRA)
-            // sellK  = 1 USD sells for X K   → USD_native × sellK  = K
-            // buyFRA = 1 USD buys  X FRA     → FRA / buyFRA         = USD, then × sellK → K
-            const usdToK = fx.sellK > 0 ? fx.sellK : 0;
-            const fraToK = (fx.sellK > 0 && fx.buyFRA > 0) ? (fx.sellK / fx.buyFRA) : 0;
-            const kEqNow  = kNow  + usdNow  * usdToK + fraNow  * fraToK;
-            const kEqOpen = kOpen + usdOpen * usdToK + fraOpen * fraToK;
-            const fmtK = (n) => `K${(parseFloat(n) || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+            // v1.10.177 — Phase 1 of the cash-pool cost-basis rework.
+            // Flipped from K-anchored to USD-anchored to answer the real
+            // question: "how much USD does this cash pool actually
+            // represent, at the rate we ACQUIRED the K — not today's spot?"
+            //
+            // Priority for the K → USD rate:
+            //   1. blendedFx.kPerUsd  — pool weighted-average from the
+            //      book-scope currency_exchanges history (real cost basis).
+            //   2. fx.buyK            — today's live buy rate. Fallback for
+            //      tenants with no exchange history yet.
+            //
+            // Same idea for FRA → USD (blended-then-live fallback).
+            const kPerUsd = blendedFx.kPerUsd > 0 ? blendedFx.kPerUsd : (fx.buyK > 0 ? fx.buyK : 0);
+            const fraPerUsd = blendedFx.fraPerUsd > 0 ? blendedFx.fraPerUsd : (fx.buyFRA > 0 ? fx.buyFRA : 0);
+            const usdEqNow  = usdNow  + (kPerUsd   > 0 ? kNow   / kPerUsd   : 0) + (fraPerUsd > 0 ? fraNow  / fraPerUsd : 0);
+            const usdEqOpen = usdOpen + (kPerUsd   > 0 ? kOpen  / kPerUsd   : 0) + (fraPerUsd > 0 ? fraOpen / fraPerUsd : 0);
+            const fmt = (n) => `$${(parseFloat(n) || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+            const rateSource = blendedFx.kPerUsd > 0
+              ? `pool-blended · ${blendedFx.kCount} exchange${blendedFx.kCount === 1 ? '' : 's'}`
+              : (fx.buyK > 0 ? 'live rate (no exchange history)' : 'no rate set');
             const rateLabel = [
-              fx.sellK  > 0 && `1 USD = ${fx.sellK.toLocaleString()} K`,
-              fraToK    > 0 && `1 FRA ≈ ${fraToK.toFixed(4)} K`,
+              kPerUsd   > 0 && `1 USD ≈ ${kPerUsd.toLocaleString(undefined, { maximumFractionDigits: 4 })} K`,
+              fraPerUsd > 0 && `1 USD ≈ ${fraPerUsd.toLocaleString(undefined, { maximumFractionDigits: 4 })} FRA`,
             ].filter(Boolean).join(' · ');
             return (
               <div
@@ -1001,9 +1032,9 @@ const CashBook = () => {
               >
                 <div className="stat-icon"><FiDollarSign /></div>
                 <div>
-                  <div className="stat-label">K &amp; K Equivalent</div>
+                  <div className="stat-label">USD &amp; USD Equivalent</div>
                   <div className="stat-value">
-                    {hasPermission('CashBook:View') ? `≈ ${fmtK(kEqNow)}` : 'N/A'}
+                    {hasPermission('CashBook:View') ? `≈ ${fmt(usdEqNow)}` : 'N/A'}
                   </div>
                   {asOfLabel && (
                     <div style={{ fontSize: 10.5, opacity: 0.9, marginTop: 2, fontStyle: 'italic', color: '#fbbf24' }}>
@@ -1011,13 +1042,16 @@ const CashBook = () => {
                     </div>
                   )}
                   <div style={{ fontSize: 11, opacity: 0.85, marginTop: 2 }}>
-                    {t('opening')} ≈ {fmtK(kEqOpen)}
+                    {t('opening')} ≈ {fmt(usdEqOpen)}
                   </div>
                   {rateLabel && (
                     <div style={{ fontSize: 10, opacity: 0.7, marginTop: 2, fontStyle: 'italic' }}>
                       @ {rateLabel}
                     </div>
                   )}
+                  <div style={{ fontSize: 9.5, opacity: 0.6, marginTop: 1, fontStyle: 'italic' }}>
+                    {rateSource}
+                  </div>
                 </div>
               </div>
             );
