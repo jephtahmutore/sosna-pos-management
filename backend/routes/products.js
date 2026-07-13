@@ -48,8 +48,18 @@ router.get('/', auth, readOnlyGuard, (req, res) => {
                        ), 0)
                      ELSE COALESCE(sales_agg.sales_balance, 0)
                    END as sales_balance,
-                   CASE WHEN COALESCE(grn_qty.total_qty, 0) > 0
-                     THEN ROUND(COALESCE(grn_qty.total_cost, 0) / grn_qty.total_qty, 2)
+                   -- v1.10.176 — prefer the stored products.avg_cost_price
+                   -- (written atomically by hqGrns.js /generate, transfers.js
+                   -- /receive, hqPurchases.js /confirm — the v1.10.55 WAC
+                   -- redesign). Fall back to the live grn_items aggregation
+                   -- for older products where p.avg_cost_price was never set
+                   -- (no PO ever received under the redesign), and finally
+                   -- to p.cost_price for products with no GRN history at all.
+                   -- Same read-priority pattern profitHelper.js uses for COGS.
+                   CASE
+                     WHEN COALESCE(p.avg_cost_price, 0) > 0 THEN p.avg_cost_price
+                     WHEN COALESCE(grn_qty.total_qty, 0) > 0
+                       THEN ROUND(COALESCE(grn_qty.total_cost, 0) / grn_qty.total_qty, 2)
                      ELSE p.cost_price
                    END as avg_cost_price,
                    COALESCE(opening_agg.opening_balance_qty, 0) as opening_balance_qty
