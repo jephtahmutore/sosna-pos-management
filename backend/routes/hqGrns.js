@@ -274,6 +274,40 @@ router.post('/:slug/:syncId/confirm', hqAuth, (req, res) => {
 
     const confirmerName = req.user.firstName || req.user.email || 'HQ';
 
+    // v1.10.175 — WAC blend on HQ-confirm-GRN (previously missed callsite).
+    // Same class of bug as v1.10.174 (hqPurchases.js /confirm) — the atomic
+    // blend that hqGrns.js /generate and transfers.js /receive already had
+    // was never ported here. Stock post ran, WAC stayed at 0.
+    //
+    // Cost + currency come from the linked HQ PO header (grn.linked_purchase_sync_id).
+    // For legacy standalone GRNs (no link), fall back to it.unit_price as-is.
+    // Destination K-only branches keep K raw; multi-ccy destinations normalise
+    // to USD via toUsd() — same guard hqGrns.js /generate uses at line 1342.
+    let poCurrency = '';
+    let poRate     = 0;
+    if (grn.linked_purchase_sync_id) {
+      try {
+        const purchase = masterDb.prepare(
+          `SELECT cost_currency, fx_rate_used FROM hq_purchases WHERE sync_id = ?`
+        ).get(grn.linked_purchase_sync_id);
+        poCurrency = String(purchase?.cost_currency || '').toUpperCase();
+        poRate     = parseFloat(purchase?.fx_rate_used || 0) || 0;
+      } catch (_) { /* master.db unavailable — fall back to raw unit_price */ }
+    }
+    const toUsd = (up) => {
+      const c = parseFloat(up || 0) || 0;
+      if (c <= 0) return 0;
+      if (!poCurrency || poCurrency === 'USD') return c;
+      return poRate > 0 ? c / poRate : c;
+    };
+    let destIsKOnly = true;
+    try {
+      const destSettings = db.prepare(
+        `SELECT currency_mode FROM business_settings ORDER BY id ASC LIMIT 1`
+      ).get();
+      destIsKOnly = String(destSettings?.currency_mode || 'K').toUpperCase() === 'K';
+    } catch (_) { /* pre-migration branch DB — keep default */ }
+
     db.transaction(() => {
       // Per-line stock movements at sales floor + current_stock bump.
       // Same pattern as legacy GRN POST but always location='sales',
@@ -286,13 +320,31 @@ router.post('/:slug/:syncId/confirm', hqAuth, (req, res) => {
         `).get(it.product_sync_id);
         if (!prod) continue; // line points at a deleted product — skip rather than crash
 
-        const baseQty = parseFloat(it.quantity) * conversionToBase(prod, it.unit || prod.unit);
+        const conv = conversionToBase(prod, it.unit || prod.unit);
+        const baseQty = parseFloat(it.quantity) * conv;
+        // v1.10.175 — cost per LINE unit in the currency the destination
+        // stores WAC in. K-only branches keep K as K; multi-ccy branches
+        // normalise via the PO's FX rate.
+        const cpPerLineUnit = destIsKOnly
+          ? (parseFloat(it.unit_price || 0) || 0)
+          : toUsd(it.unit_price);
+        const cpPerBase = conv > 0 ? cpPerLineUnit / conv : cpPerLineUnit;
+        // Atomic bump + blend — same shape as hqGrns.js:1354-1367
+        // (/generate) and transfers.js:452-465 (/receive).
         db.prepare(`
-          UPDATE products SET current_stock = current_stock + ?,
-                              updated_at    = datetime('now'),
-                              synced        = 0
+          UPDATE products
+             SET current_stock  = current_stock + ?,
+                 avg_cost_price = CASE
+                   WHEN avg_cost_price IS NULL OR current_stock <= 0
+                     THEN ?
+                   ELSE ROUND(
+                     (current_stock * avg_cost_price + ? * ?)
+                     / (current_stock + ?), 4)
+                 END,
+                 updated_at     = datetime('now'),
+                 synced         = 0
            WHERE sync_id = ?
-        `).run(baseQty, prod.sync_id);
+        `).run(baseQty, cpPerBase, baseQty, cpPerBase, baseQty, prod.sync_id);
 
         db.prepare(`
           INSERT INTO stock_movements
