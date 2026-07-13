@@ -42,7 +42,10 @@ const CashBook = () => {
   // K & FRA balances into USD-equivalent on the primary HQ tile so
   // "USD & USD Equivalent" reflects real cost basis rather than today's
   // spot. Falls back to fx.buyK when there's no exchange history yet.
-  const [blendedFx, setBlendedFx] = useState({ kPerUsd: 0, kCount: 0, fraPerUsd: 0, fraCount: 0 });
+  // v1.10.178 — Phase 1.5: also carry the total K historically received
+  // via exchanges so the native-K portion can be split out and valued at
+  // today's live rate instead of the blended acquisition rate.
+  const [blendedFx, setBlendedFx] = useState({ kPerUsd: 0, kCount: 0, kTotalReceived: 0, fraPerUsd: 0, fraCount: 0, fraTotalReceived: 0 });
   const [businessInfo, setBusinessInfo] = useState({});
   const [showListPrint, setShowListPrint] = useState(false);
   const [openingBal, setOpeningBal] = useState(0);
@@ -138,10 +141,12 @@ const CashBook = () => {
     getBlendedFxRate().then(r => {
       const d = r.data || {};
       setBlendedFx({
-        kPerUsd:   parseFloat(d.k?.blended_k_per_usd     || 0) || 0,
-        kCount:    parseInt(d.k?.exchange_count          || 0) || 0,
-        fraPerUsd: parseFloat(d.fra?.blended_fra_per_usd || 0) || 0,
-        fraCount:  parseInt(d.fra?.exchange_count        || 0) || 0,
+        kPerUsd:          parseFloat(d.k?.blended_k_per_usd     || 0) || 0,
+        kCount:           parseInt(d.k?.exchange_count          || 0) || 0,
+        kTotalReceived:   parseFloat(d.k?.total_to_k            || 0) || 0,
+        fraPerUsd:        parseFloat(d.fra?.blended_fra_per_usd || 0) || 0,
+        fraCount:         parseInt(d.fra?.exchange_count        || 0) || 0,
+        fraTotalReceived: parseFloat(d.fra?.total_to_fra        || 0) || 0,
       });
     }).catch(() => {});
   }, []); // eslint-disable-line
@@ -1000,29 +1005,44 @@ const CashBook = () => {
           }
 
           if (onHq) {
-            // v1.10.177 — Phase 1 of the cash-pool cost-basis rework.
-            // Flipped from K-anchored to USD-anchored to answer the real
-            // question: "how much USD does this cash pool actually
-            // represent, at the rate we ACQUIRED the K — not today's spot?"
-            //
-            // Priority for the K → USD rate:
-            //   1. blendedFx.kPerUsd  — pool weighted-average from the
-            //      book-scope currency_exchanges history (real cost basis).
-            //   2. fx.buyK            — today's live buy rate. Fallback for
-            //      tenants with no exchange history yet.
-            //
-            // Same idea for FRA → USD (blended-then-live fallback).
-            const kPerUsd = blendedFx.kPerUsd > 0 ? blendedFx.kPerUsd : (fx.buyK > 0 ? fx.buyK : 0);
-            const fraPerUsd = blendedFx.fraPerUsd > 0 ? blendedFx.fraPerUsd : (fx.buyFRA > 0 ? fx.buyFRA : 0);
-            const usdEqNow  = usdNow  + (kPerUsd   > 0 ? kNow   / kPerUsd   : 0) + (fraPerUsd > 0 ? fraNow  / fraPerUsd : 0);
-            const usdEqOpen = usdOpen + (kPerUsd   > 0 ? kOpen  / kPerUsd   : 0) + (fraPerUsd > 0 ? fraOpen / fraPerUsd : 0);
+            // v1.10.177 → v1.10.178 — Phase 1.5 of the cash-pool rework.
+            // Split each foreign-currency balance into two portions:
+            //   (a) exchange-derived — bounded by cumulative historical
+            //       inflow from USD→ccy exchanges. Valued at the pool's
+            //       weighted-average acquisition rate (real cost basis).
+            //   (b) native — the excess above what could have come from
+            //       exchange history. Valued at today's live market rate,
+            //       because native K/FRA never cost USD to acquire; today's
+            //       spot is the fair-value equivalent.
+            // If current balance ≤ historical exchange inflow (some was
+            // already spent), native = 0 and everything uses the blended
+            // rate. If balance > exchange inflow, the excess is native.
+            const blendKPerUsd  = blendedFx.kPerUsd   > 0 ? blendedFx.kPerUsd   : 0;
+            const blendFraPerUsd = blendedFx.fraPerUsd > 0 ? blendedFx.fraPerUsd : 0;
+            const todayKPerUsd   = fx.buyK   > 0 ? fx.buyK   : 0;
+            const todayFraPerUsd = fx.buyFRA > 0 ? fx.buyFRA : 0;
+            const splitCcy = (bal, blendRate, todayRate, historicalInflow) => {
+              const exchange = Math.min(Math.max(bal, 0), Math.max(historicalInflow, 0));
+              const native = Math.max(0, bal - exchange);
+              const exchangeRate = blendRate > 0 ? blendRate : todayRate;
+              const nativeRate   = todayRate > 0 ? todayRate : blendRate;
+              const exchangeUsd = exchangeRate > 0 ? exchange / exchangeRate : 0;
+              const nativeUsd   = nativeRate   > 0 ? native   / nativeRate   : 0;
+              return { exchange, native, exchangeUsd, nativeUsd };
+            };
+            const kSplit    = splitCcy(kNow,   blendKPerUsd,   todayKPerUsd,   blendedFx.kTotalReceived);
+            const fraSplit  = splitCcy(fraNow, blendFraPerUsd, todayFraPerUsd, blendedFx.fraTotalReceived);
+            const kOpenSp   = splitCcy(kOpen,  blendKPerUsd,   todayKPerUsd,   blendedFx.kTotalReceived);
+            const fraOpenSp = splitCcy(fraOpen,blendFraPerUsd, todayFraPerUsd, blendedFx.fraTotalReceived);
+            const usdEqNow  = usdNow  + kSplit.exchangeUsd  + kSplit.nativeUsd  + fraSplit.exchangeUsd  + fraSplit.nativeUsd;
+            const usdEqOpen = usdOpen + kOpenSp.exchangeUsd + kOpenSp.nativeUsd + fraOpenSp.exchangeUsd + fraOpenSp.nativeUsd;
             const fmt = (n) => `$${(parseFloat(n) || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
             const rateSource = blendedFx.kPerUsd > 0
-              ? `pool-blended · ${blendedFx.kCount} exchange${blendedFx.kCount === 1 ? '' : 's'}`
-              : (fx.buyK > 0 ? 'live rate (no exchange history)' : 'no rate set');
+              ? `${blendedFx.kCount} exchange${blendedFx.kCount === 1 ? '' : 's'} → blended for exchange-K · today's rate for native-K`
+              : (fx.buyK > 0 ? 'live rate (no exchange history yet)' : 'no rate set');
             const rateLabel = [
-              kPerUsd   > 0 && `1 USD ≈ ${kPerUsd.toLocaleString(undefined, { maximumFractionDigits: 4 })} K`,
-              fraPerUsd > 0 && `1 USD ≈ ${fraPerUsd.toLocaleString(undefined, { maximumFractionDigits: 4 })} FRA`,
+              blendKPerUsd  > 0 && `blended 1 USD ≈ ${blendKPerUsd.toLocaleString(undefined, { maximumFractionDigits: 4 })} K`,
+              todayKPerUsd  > 0 && blendKPerUsd > 0 && `today 1 USD = ${todayKPerUsd.toLocaleString(undefined, { maximumFractionDigits: 4 })} K`,
             ].filter(Boolean).join(' · ');
             return (
               <div
