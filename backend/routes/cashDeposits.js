@@ -20,6 +20,11 @@ const jwt = require('jsonwebtoken');
 const { randomUUID } = require('crypto');
 const { listTenants, isRegistered, masterDb } = require('../config/masterDb');
 const { getTenantDb } = require('../config/tenantDb');
+// v1.10.180 — Phase 2b: HQ receives K deposits from branches. K deposits
+// are native (they came from customer sales at the branch level, no USD
+// basis was ever spent). Pool_native_k grows on confirm.
+const hqDb = require('../config/database');
+const { poolInflowNative } = require('../config/cashPoolHelper');
 
 function hqAuth(req, res, next) {
   try {
@@ -236,6 +241,14 @@ router.put('/:id/confirm', hqAuth, (req, res) => {
                confirmed_by = ?, confirmed_by_name = ?, confirmed_at = datetime('now')
          WHERE id = ?
       `).run(bodyToMethod, req.user.id, confirmedByName, req.params.id);
+    }
+    // v1.10.180 — Phase 2b: K portion of the confirmed deposit lands in
+    // HQ's Cash Book as native K (customer sales K remitted from branch).
+    // hqDb (backend/sosna.db) holds the pool counters on business_settings.
+    const kAmt = parseFloat(row.k_amount) || 0;
+    if (kAmt > 0) {
+      try { poolInflowNative(hqDb, kAmt); }
+      catch (poolErr) { console.warn('[cash-pool] deposit confirm inflow failed:', poolErr.message); }
     }
     const updated = masterDb.prepare('SELECT * FROM cash_deposits WHERE id = ?').get(req.params.id);
     res.json(updated);

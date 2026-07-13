@@ -4,6 +4,8 @@ const { auth, readOnlyGuard } = require('../middleware/auth');
 const syncConfig = require('../config/syncConfig');
 const { randomUUID } = require('crypto');
 const { recalculateDailyProfit } = require('../config/profitHelper');
+// v1.10.180 — Phase 2b: PV with k_amount > 0 drains K from the pool.
+const { poolInflowNative, poolDrainK } = require('../config/cashPoolHelper');
 
 // Derive per-method splits from the voucher's paid_from string. Substring match
 // (paid_from is free text like "Main cashier", "Bank — FNB", "MTN MoMo") so
@@ -163,22 +165,29 @@ router.post('/', auth, (req, res) => {
     // For the legacy total `amount` column we use whatever the caller sent
     // (the USD-equivalent header), falling back to USD-only if missing.
     const totalAmount = parseFloat(amount) > 0 ? parseFloat(amount) : (sumSplits > 0 ? usdAmt : 0);
-    const info = db.prepare(
-      `INSERT INTO payment_vouchers (voucher_number, paid_to, description, category, amount,
-                                     cash_amount, bank_amount, momo_amount,
-                                     usd_amount, fra_amount, k_amount,
-                                     date, paid_from, cashier_id, invoice_attachment, created_by,
-                                     sync_id, tenant_id, branch_id, device_id, synced, created_at, updated_at)
-       VALUES (?,?,?,?,?, ?,?,?, ?,?,?, ?,?,?,?,?, ?,?,?,?, 0,datetime('now'),datetime('now'))`
-    ).run(voucherNum, paid_to, description, category, totalAmount,
-          cashAmt, bankAmt, momoAmt,
-          usdAmt, fraAmt, kAmt,
-          date || new Date().toISOString().split('T')[0],
-          resolvedPaidFrom,
-          cashierId,
-          invoice_attachment || null,
-          req.user.id,
-          randomUUID(), tenantId, branchId, deviceId);
+    // v1.10.180 — atomic ledger INSERT + K-pool drain. K portion of the
+    // voucher pulls K out of the pool (pro-rata across native + exchange
+    // so the rate stays put). USD/FRA portions don't touch the K pool.
+    const info = db.transaction(() => {
+      const insInfo = db.prepare(
+        `INSERT INTO payment_vouchers (voucher_number, paid_to, description, category, amount,
+                                       cash_amount, bank_amount, momo_amount,
+                                       usd_amount, fra_amount, k_amount,
+                                       date, paid_from, cashier_id, invoice_attachment, created_by,
+                                       sync_id, tenant_id, branch_id, device_id, synced, created_at, updated_at)
+         VALUES (?,?,?,?,?, ?,?,?, ?,?,?, ?,?,?,?,?, ?,?,?,?, 0,datetime('now'),datetime('now'))`
+      ).run(voucherNum, paid_to, description, category, totalAmount,
+            cashAmt, bankAmt, momoAmt,
+            usdAmt, fraAmt, kAmt,
+            date || new Date().toISOString().split('T')[0],
+            resolvedPaidFrom,
+            cashierId,
+            invoice_attachment || null,
+            req.user.id,
+            randomUUID(), tenantId, branchId, deviceId);
+      if (kAmt > 0) poolDrainK(db, kAmt);
+      return insInfo;
+    })();
     const row = db.prepare('SELECT * FROM payment_vouchers WHERE id = ?').get(info.lastInsertRowid);
     recalculateDailyProfit(db, row.date, req.user.tenantId);
     res.status(201).json(row);
@@ -277,7 +286,18 @@ router.put('/:id', auth, (req, res) => {
          cashAmt, bankAmt, momoAmt,
          usdAmt, fraAmt, kAmt,
          pvDate, resolvedPaidFrom, invoice_attachment || null, req.params.id];
-    const info = db.prepare(sql).run(...args);
+    // v1.10.180 — atomic UPDATE + pool delta. If the K amount changed
+    // during the edit, apply the difference to the pool: an increase
+    // drains more K, a decrease refunds native K. Zero delta is a no-op.
+    const oldRow = db.prepare('SELECT k_amount FROM payment_vouchers WHERE id = ?').get(req.params.id);
+    const oldKAmt = parseFloat(oldRow?.k_amount) || 0;
+    const kDelta = kAmt - oldKAmt;
+    const info = db.transaction(() => {
+      const r = db.prepare(sql).run(...args);
+      if (kDelta > 0)      poolDrainK(db, kDelta);
+      else if (kDelta < 0) poolInflowNative(db, -kDelta);
+      return r;
+    })();
     if (info.changes === 0) return res.status(404).json({ error: 'Voucher not found' });
     const row = db.prepare('SELECT * FROM payment_vouchers WHERE id = ?').get(req.params.id);
     recalculateDailyProfit(db, pvDate, req.user.tenantId);
@@ -289,9 +309,21 @@ router.put('/:id', auth, (req, res) => {
 
 router.delete('/:id', auth, (req, res) => {
   try {
-    const pv = db.prepare('SELECT date FROM payment_vouchers WHERE id = ? AND deleted_at IS NULL').get(req.params.id);
-    const info = db.prepare("UPDATE payment_vouchers SET deleted_at=datetime('now'), updated_at=datetime('now'), synced=0 WHERE id=? AND deleted_at IS NULL").run(req.params.id);
-    if (info.changes === 0) return res.status(404).json({ error: 'Voucher not found' });
+    // v1.10.180 — deleting a K PV reverses the pool drain. We add the K
+    // amount back as native (the reverse of the pro-rata drain — we can't
+    // reconstruct which portion was native vs exchange at drain time, so
+    // treat the reversal as native inflow. Any slight rate drift from
+    // this asymmetry is bounded by the clamp in poolDrainK and won't
+    // accumulate on typical operations).
+    const pv = db.prepare('SELECT date, k_amount FROM payment_vouchers WHERE id = ? AND deleted_at IS NULL').get(req.params.id);
+    if (!pv) return res.status(404).json({ error: 'Voucher not found' });
+    const kAmt = parseFloat(pv.k_amount) || 0;
+    const done = db.transaction(() => {
+      const info = db.prepare("UPDATE payment_vouchers SET deleted_at=datetime('now'), updated_at=datetime('now'), synced=0 WHERE id=? AND deleted_at IS NULL").run(req.params.id);
+      if (kAmt > 0) poolInflowNative(db, kAmt);
+      return info;
+    })();
+    if (done.changes === 0) return res.status(404).json({ error: 'Voucher not found' });
     if (pv) recalculateDailyProfit(db, pv.date, req.user.tenantId);
     res.json({ message: 'Payment voucher deleted.' });
   } catch (error) {

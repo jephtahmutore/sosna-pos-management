@@ -3,6 +3,8 @@ const db = require('../config/database');
 const { auth, readOnlyGuard } = require('../middleware/auth');
 const syncConfig = require('../config/syncConfig');
 const { randomUUID } = require('crypto');
+// v1.10.180 — Phase 2b: AP paid in K drains K from the pool.
+const { poolInflowNative, poolDrainK } = require('../config/cashPoolHelper');
 
 // GET /api/ap-payments
 router.get('/', auth, readOnlyGuard, (req, res) => {
@@ -81,19 +83,26 @@ router.post('/', auth, (req, res) => {
     const supplierSyncId = req.body.supplier_sync_id
       || (supplier_id ? db.prepare('SELECT sync_id FROM suppliers WHERE id = ?').get(supplier_id)?.sync_id : null)
       || null;
-    const info = db.prepare(`
-      INSERT INTO ap_payments (payment_number, supplier_id, supplier_sync_id, supplier_name,
-                                amount, cash_amount, bank_amount, momo_amount,
-                                usd_amount, fra_amount, k_amount,
-                                description, date, paid_from, invoice_attachment, created_by,
-                                sync_id, tenant_id, branch_id, device_id, synced, created_at, updated_at)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,datetime('now'),datetime('now'))
-    `).run(paymentNum, supplier_id || null, supplierSyncId, supplier_name || null,
-           total, cash, bank, momo,
-           usd, fra, kAmt,
-           description || null, date || new Date().toISOString().split('T')[0],
-           derivedPaidFrom, invoice_attachment || null, req.user.id,
-           randomUUID(), tenantId, branchId, deviceId);
+    // v1.10.180 — atomic ledger INSERT + K-pool drain. K portion of the
+    // AP payment pulls K out of the pool. USD/FRA portions don't touch
+    // the K pool (they'd need FRA/USD equivalents, deferred beyond 2b).
+    const info = db.transaction(() => {
+      const insInfo = db.prepare(`
+        INSERT INTO ap_payments (payment_number, supplier_id, supplier_sync_id, supplier_name,
+                                  amount, cash_amount, bank_amount, momo_amount,
+                                  usd_amount, fra_amount, k_amount,
+                                  description, date, paid_from, invoice_attachment, created_by,
+                                  sync_id, tenant_id, branch_id, device_id, synced, created_at, updated_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,datetime('now'),datetime('now'))
+      `).run(paymentNum, supplier_id || null, supplierSyncId, supplier_name || null,
+             total, cash, bank, momo,
+             usd, fra, kAmt,
+             description || null, date || new Date().toISOString().split('T')[0],
+             derivedPaidFrom, invoice_attachment || null, req.user.id,
+             randomUUID(), tenantId, branchId, deviceId);
+      if (kAmt > 0) poolDrainK(db, kAmt);
+      return insInfo;
+    })();
     res.status(201).json(db.prepare('SELECT * FROM ap_payments WHERE id = ?').get(info.lastInsertRowid));
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -132,7 +141,16 @@ router.put('/:id', auth, (req, res) => {
 // DELETE /api/ap-payments/:id
 router.delete('/:id', auth, (req, res) => {
   try {
-    db.prepare("UPDATE ap_payments SET deleted_at=datetime('now'), updated_at=datetime('now'), synced=0 WHERE id=?").run(req.params.id);
+    // v1.10.180 — reversing a K AP payment refunds native K to the pool
+    // (same asymmetry note as PV delete: we can't reconstruct the drain's
+    // native/exchange split retrospectively, so treat the refund as
+    // native. Bounded and rare enough not to accumulate meaningful drift).
+    const row = db.prepare('SELECT k_amount FROM ap_payments WHERE id = ? AND deleted_at IS NULL').get(req.params.id);
+    const kAmt = parseFloat(row?.k_amount) || 0;
+    db.transaction(() => {
+      db.prepare("UPDATE ap_payments SET deleted_at=datetime('now'), updated_at=datetime('now'), synced=0 WHERE id=?").run(req.params.id);
+      if (kAmt > 0) poolInflowNative(db, kAmt);
+    })();
     res.json({ message: 'Payment deleted' });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });

@@ -3,6 +3,8 @@ const db = require('../config/database');
 const { auth, readOnlyGuard } = require('../middleware/auth');
 const syncConfig = require('../config/syncConfig');
 const { randomUUID } = require('crypto');
+// v1.10.180 — Phase 2b: CR with k_amount > 0 pushes native K into the pool.
+const { poolInflowNative, poolDrainK } = require('../config/cashPoolHelper');
 
 // Derive per-method splits (cash/bank/momo) from the receipt's payment_method.
 // Mirrors the migration backfill rules so on-startup backfills and live INSERTs
@@ -171,16 +173,23 @@ router.post('/', auth, (req, res) => {
     const totalAmount = clientTotalMatchesLiquor
       ? parseFloat(amount)
       : (sumCcy > 0 ? usdAmt : (sumLegacy > 0 ? sumLegacy : parseFloat(amount) || 0));
-    const info = db.prepare(
-      `INSERT INTO cash_receipts (receipt_number, received_from, description, payment_method, amount,
-                                  cash_amount, bank_amount, momo_amount,
-                                  usd_amount, fra_amount, k_amount,
-                                  date, created_by, sync_id, tenant_id, branch_id, device_id, synced, created_at, updated_at)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,datetime('now'),datetime('now'))`
-    ).run(receiptNum, received_from, description, payment_method, totalAmount,
-          splits.cash, splits.bank, splits.momo,
-          usdAmt, fraAmt, kAmt,
-          crDate, req.user.id, randomUUID(), tenantId, branchId, deviceId);
+    // v1.10.180 — atomic ledger INSERT + K-pool inflow. K portion of the
+    // receipt is native (customer paid K, no USD basis). If the INSERT
+    // fails the pool update rolls back with it.
+    const info = db.transaction(() => {
+      const insInfo = db.prepare(
+        `INSERT INTO cash_receipts (receipt_number, received_from, description, payment_method, amount,
+                                    cash_amount, bank_amount, momo_amount,
+                                    usd_amount, fra_amount, k_amount,
+                                    date, created_by, sync_id, tenant_id, branch_id, device_id, synced, created_at, updated_at)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,datetime('now'),datetime('now'))`
+      ).run(receiptNum, received_from, description, payment_method, totalAmount,
+            splits.cash, splits.bank, splits.momo,
+            usdAmt, fraAmt, kAmt,
+            crDate, req.user.id, randomUUID(), tenantId, branchId, deviceId);
+      if (kAmt > 0) poolInflowNative(db, kAmt);
+      return insInfo;
+    })();
     const row = db.prepare('SELECT * FROM cash_receipts WHERE id = ?').get(info.lastInsertRowid);
     res.status(201).json(row);
   } catch (error) {
@@ -192,7 +201,14 @@ router.delete('/:id', auth, (req, res) => {
   try {
     const row = db.prepare('SELECT * FROM cash_receipts WHERE id = ? AND deleted_at IS NULL AND tenant_id = ?').get(req.params.id, req.user.tenantId);
     if (!row) return res.status(404).json({ error: 'Receipt not found' });
-    db.prepare("UPDATE cash_receipts SET deleted_at=datetime('now'), updated_at=datetime('now'), synced=0 WHERE id=?").run(req.params.id);
+    // v1.10.180 — deleting a K CR reverses the native inflow the POST
+    // recorded. Drain the K amount from the pool (pro-rata across native
+    // and exchange, same as any K outflow).
+    const kAmt = parseFloat(row.k_amount) || 0;
+    db.transaction(() => {
+      db.prepare("UPDATE cash_receipts SET deleted_at=datetime('now'), updated_at=datetime('now'), synced=0 WHERE id=?").run(req.params.id);
+      if (kAmt > 0) poolDrainK(db, kAmt);
+    })();
     res.json({ message: 'Receipt deleted.' });
   } catch (error) {
     res.status(500).json({ error: error.message });

@@ -15,6 +15,8 @@ const db = require('../config/database');
 const { auth, readOnlyGuard } = require('../middleware/auth');
 const syncConfig = require('../config/syncConfig');
 const { randomUUID } = require('crypto');
+// v1.10.180 — Phase 2b: pool counters update atomically with the ledger row.
+const { poolInflowExchange, poolDrainK } = require('../config/cashPoolHelper');
 
 const VALID_CURRENCIES = new Set(['USD', 'FRA', 'K']);
 
@@ -201,21 +203,38 @@ router.post('/', auth, (req, res) => {
       ? String(from_method) : null;
     const toMethodClean = (to_currency === 'K' && VALID_METHODS.has(String(to_method)))
       ? String(to_method) : null;
-    const info = db.prepare(`
-      INSERT INTO currency_exchanges
-        (sync_id, scope, date, time,
-         from_currency, from_amount, to_currency, to_amount, rate,
-         notes, cashier_id, created_by, tenant_id, branch_id, device_id, synced,
-         from_method, to_method)
-      VALUES (?,?,?,?, ?,?,?,?,?, ?,?,?,?,?,?, 0, ?,?)
-    `).run(
-      sId, scope, day, tm,
-      from_currency, fromAmt, to_currency, toAmt, rate,
-      (notes ? String(notes).trim() : null),
-      scope === 'drawer' ? (parseInt(cashier_id) || 0) : null,
-      req.user.id, req.user.tenantId, cfg.branchId || null, cfg.deviceId || null,
-      fromMethodClean, toMethodClean,
-    );
+    // v1.10.180 — wrap the ledger INSERT and pool-counter update in one
+    // transaction. If either fails, both roll back so the pool never
+    // drifts from the exchange ledger. Only 'book' scope touches the HQ
+    // K-pool ('drawer' scope is per-cashier till, unrelated).
+    const info = db.transaction(() => {
+      const insInfo = db.prepare(`
+        INSERT INTO currency_exchanges
+          (sync_id, scope, date, time,
+           from_currency, from_amount, to_currency, to_amount, rate,
+           notes, cashier_id, created_by, tenant_id, branch_id, device_id, synced,
+           from_method, to_method)
+        VALUES (?,?,?,?, ?,?,?,?,?, ?,?,?,?,?,?, 0, ?,?)
+      `).run(
+        sId, scope, day, tm,
+        from_currency, fromAmt, to_currency, toAmt, rate,
+        (notes ? String(notes).trim() : null),
+        scope === 'drawer' ? (parseInt(cashier_id) || 0) : null,
+        req.user.id, req.user.tenantId, cfg.branchId || null, cfg.deviceId || null,
+        fromMethodClean, toMethodClean,
+      );
+      if (scope === 'book') {
+        if (from_currency === 'USD' && to_currency === 'K') {
+          // Bought K with USD → new exchange K + USD basis.
+          poolInflowExchange(db, toAmt, fromAmt);
+        } else if (from_currency === 'K' && to_currency === 'USD') {
+          // Sold K for USD → drain both counters pro-rata (rate holds).
+          poolDrainK(db, fromAmt);
+        }
+        // USD→FRA, FRA→K, etc. don't touch the K pool (Phase 2b is K-only).
+      }
+      return insInfo;
+    })();
     const row = db.prepare(`SELECT * FROM currency_exchanges WHERE id = ?`).get(info.lastInsertRowid);
     res.status(201).json(row);
   } catch (e) {
