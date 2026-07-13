@@ -1067,6 +1067,89 @@ function initTenantDb(db) {
   // 'USD+FRA' (via Settings UI later, or one-off UPDATE for now).
   addCol('business_settings', 'currency_mode', "TEXT NOT NULL DEFAULT 'K'");
 
+  // v1.10.179 — HQ Cash Book Phase 2 foundation: authoritative K-pool
+  // counters. Instead of deriving the blended acquisition rate from
+  // currency_exchanges history on every read (Phase 1.5), the pool state
+  // lives on business_settings and gets maintained atomically by every
+  // K-affecting endpoint (Phase 2b — write paths land in the next push).
+  //
+  //   pool_native_k    — K accumulated from customer sales (no USD cost)
+  //   pool_exchange_k  — K acquired via USD→K exchanges, still in pool
+  //   pool_usd_basis   — USD spent to acquire pool_exchange_k
+  //   pool_backfilled_at — set once when the initial state is captured;
+  //                        the migration checks this to guarantee the
+  //                        backfill runs exactly once even if the app
+  //                        restarts many times.
+  //
+  // Blended rate at any moment = pool_exchange_k / pool_usd_basis.
+  // Total USD-equivalent of the K pool =
+  //   pool_exchange_k / blended_rate  +  pool_native_k / today_market_rate.
+  addCol('business_settings', 'pool_native_k',      'REAL NOT NULL DEFAULT 0');
+  addCol('business_settings', 'pool_exchange_k',    'REAL NOT NULL DEFAULT 0');
+  addCol('business_settings', 'pool_usd_basis',     'REAL NOT NULL DEFAULT 0');
+  addCol('business_settings', 'pool_backfilled_at', 'TEXT');
+
+  // v1.10.179 — one-shot backfill for the K-pool counters.
+  // Idempotent via pool_backfilled_at: once set, this whole block is a
+  // no-op on subsequent app restarts. Safe to keep in migrations forever.
+  //
+  // The backfill captures a snapshot of what's derivable from history:
+  //   pool_exchange_k = SUM(K received from USD→K exchanges) − SUM(K sold in K→USD)
+  //   pool_usd_basis  = SUM(USD spent on USD→K exchanges) − pro-rata drain
+  //                     for K→USD outflows
+  //   pool_native_k   = 0
+  //
+  // The native counter starts at 0 because we can't cheaply reconstruct
+  // how much of the historical native-K inflow is still sitting in the
+  // pool vs. how much has been spent. Once Phase 2b write paths land, the
+  // counter grows correctly from every new CR/PV/AP. In the meantime the
+  // Cash Book read logic (v1.10.178) continues to derive the native
+  // portion from the current K balance minus the pool_exchange_k, so the
+  // tile stays correct even before the writes are hooked up.
+  try {
+    const settingsRow = db.prepare(
+      `SELECT id, pool_backfilled_at, tenant_id FROM business_settings ORDER BY id ASC LIMIT 1`
+    ).get();
+    if (settingsRow && !settingsRow.pool_backfilled_at) {
+      const tenantId = settingsRow.tenant_id;
+      // USD→K side: cumulative inflow of exchange K and its USD cost.
+      const usdToK = db.prepare(`
+        SELECT COALESCE(SUM(to_amount), 0)   AS total_k,
+               COALESCE(SUM(from_amount), 0) AS total_usd
+        FROM currency_exchanges
+        WHERE tenant_id = ? AND scope = 'book'
+          AND from_currency = 'USD' AND to_currency = 'K'
+      `).get(tenantId);
+      // K→USD side: how much of the exchange K was later converted back.
+      const kToUsd = db.prepare(`
+        SELECT COALESCE(SUM(from_amount), 0) AS total_k
+        FROM currency_exchanges
+        WHERE tenant_id = ? AND scope = 'book'
+          AND from_currency = 'K' AND to_currency = 'USD'
+      `).get(tenantId);
+      const totalInflowK  = parseFloat(usdToK.total_k)   || 0;
+      const totalInflowUsd= parseFloat(usdToK.total_usd) || 0;
+      const totalOutflowK = parseFloat(kToUsd.total_k)   || 0;
+      const netExchangeK = Math.max(0, totalInflowK - totalOutflowK);
+      // Pro-rata the USD basis to the remaining exchange K
+      const netUsdBasis = totalInflowK > 0
+        ? totalInflowUsd * (netExchangeK / totalInflowK)
+        : 0;
+      db.prepare(`
+        UPDATE business_settings
+           SET pool_native_k      = 0,
+               pool_exchange_k    = ?,
+               pool_usd_basis     = ?,
+               pool_backfilled_at = datetime('now')
+         WHERE id = ?
+      `).run(netExchangeK, netUsdBasis, settingsRow.id);
+      const blended = netUsdBasis > 0 ? (netExchangeK / netUsdBasis).toFixed(4) : 'n/a';
+      console.log(`[cash-pool backfill] exchange_K=${netExchangeK}, usd_basis=$${netUsdBasis.toFixed(2)}, blended=${blended}`);
+    }
+  } catch (e) {
+    console.warn('[cash-pool backfill] skipped:', e.message);
+  }
+
   // Multi-unit support — JSON array of { name, conv, price, is_base } stored on the product.
   // The base unit (conv=1) is always the smallest packaging (e.g. PCS for sosna).
   // Other rows are larger packagings: { name:"Box", conv:24, price:40 } means 1 box = 24 base units.

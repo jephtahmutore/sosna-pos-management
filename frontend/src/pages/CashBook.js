@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { getCashBook, getCashBookStats, setOpeningBalance, getSettings, getSalesRangeSummary, createCashTransfer, getCashTransfers, deleteCashTransfer, createCashDeposit, getCashDeposits, deleteCashDeposit, isHqHost, getBranchSlug, getCurrentFxRate, getBlendedFxRate } from '../services/api';
+import { getCashBook, getCashBookStats, setOpeningBalance, getSettings, getSalesRangeSummary, createCashTransfer, getCashTransfers, deleteCashTransfer, createCashDeposit, getCashDeposits, deleteCashDeposit, isHqHost, getBranchSlug, getCurrentFxRate, getBlendedFxRate, getCashPool } from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import CurrencyExchangePanel from '../components/CurrencyExchangePanel';
 import { useCurrency } from '../context/CurrencyContext';
@@ -46,6 +46,11 @@ const CashBook = () => {
   // via exchanges so the native-K portion can be split out and valued at
   // today's live rate instead of the blended acquisition rate.
   const [blendedFx, setBlendedFx] = useState({ kPerUsd: 0, kCount: 0, kTotalReceived: 0, fraPerUsd: 0, fraCount: 0, fraTotalReceived: 0 });
+  // v1.10.179 — HQ Cash Book Phase 2 foundation: authoritative K-pool
+  // state from business_settings. When present, the tile prefers this
+  // over the history-derived blendedFx (which stays as a fallback for
+  // tenants that haven't been backfilled yet).
+  const [cashPool, setCashPool] = useState({ nativeK: 0, exchangeK: 0, usdBasis: 0, blendedRate: 0, backfilledAt: null });
   const [businessInfo, setBusinessInfo] = useState({});
   const [showListPrint, setShowListPrint] = useState(false);
   const [openingBal, setOpeningBal] = useState(0);
@@ -147,6 +152,20 @@ const CashBook = () => {
         fraPerUsd:        parseFloat(d.fra?.blended_fra_per_usd || 0) || 0,
         fraCount:         parseInt(d.fra?.exchange_count        || 0) || 0,
         fraTotalReceived: parseFloat(d.fra?.total_to_fra        || 0) || 0,
+      });
+    }).catch(() => {});
+    // v1.10.179 — HQ Cash Book Phase 2 foundation: pull the authoritative
+    // K-pool counters. When Phase 2b lands, these are updated live by
+    // every K-affecting endpoint. For now they hold the backfilled
+    // snapshot; the tile prefers pool_exchange_k for the split.
+    getCashPool().then(r => {
+      const d = r.data || {};
+      setCashPool({
+        nativeK:       parseFloat(d.pool_native_k     || 0) || 0,
+        exchangeK:     parseFloat(d.pool_exchange_k   || 0) || 0,
+        usdBasis:      parseFloat(d.pool_usd_basis    || 0) || 0,
+        blendedRate:   parseFloat(d.blended_k_per_usd || 0) || 0,
+        backfilledAt:  d.backfilled_at || null,
       });
     }).catch(() => {});
   }, []); // eslint-disable-line
@@ -1017,7 +1036,16 @@ const CashBook = () => {
             // If current balance ≤ historical exchange inflow (some was
             // already spent), native = 0 and everything uses the blended
             // rate. If balance > exchange inflow, the excess is native.
-            const blendKPerUsd  = blendedFx.kPerUsd   > 0 ? blendedFx.kPerUsd   : 0;
+            // v1.10.179 — prefer the authoritative pool counters when the
+            // backfill has run. Falls back to the history-derived Phase 1.5
+            // values for tenants that haven't been backfilled yet.
+            const poolActive     = !!cashPool.backfilledAt;
+            const blendKPerUsd   = poolActive && cashPool.blendedRate > 0
+              ? cashPool.blendedRate
+              : (blendedFx.kPerUsd   > 0 ? blendedFx.kPerUsd   : 0);
+            const kHistoricalInflow = poolActive
+              ? cashPool.exchangeK
+              : blendedFx.kTotalReceived;
             const blendFraPerUsd = blendedFx.fraPerUsd > 0 ? blendedFx.fraPerUsd : 0;
             const todayKPerUsd   = fx.buyK   > 0 ? fx.buyK   : 0;
             const todayFraPerUsd = fx.buyFRA > 0 ? fx.buyFRA : 0;
@@ -1030,16 +1058,18 @@ const CashBook = () => {
               const nativeUsd   = nativeRate   > 0 ? native   / nativeRate   : 0;
               return { exchange, native, exchangeUsd, nativeUsd };
             };
-            const kSplit    = splitCcy(kNow,   blendKPerUsd,   todayKPerUsd,   blendedFx.kTotalReceived);
+            const kSplit    = splitCcy(kNow,   blendKPerUsd,   todayKPerUsd,   kHistoricalInflow);
             const fraSplit  = splitCcy(fraNow, blendFraPerUsd, todayFraPerUsd, blendedFx.fraTotalReceived);
-            const kOpenSp   = splitCcy(kOpen,  blendKPerUsd,   todayKPerUsd,   blendedFx.kTotalReceived);
+            const kOpenSp   = splitCcy(kOpen,  blendKPerUsd,   todayKPerUsd,   kHistoricalInflow);
             const fraOpenSp = splitCcy(fraOpen,blendFraPerUsd, todayFraPerUsd, blendedFx.fraTotalReceived);
             const usdEqNow  = usdNow  + kSplit.exchangeUsd  + kSplit.nativeUsd  + fraSplit.exchangeUsd  + fraSplit.nativeUsd;
             const usdEqOpen = usdOpen + kOpenSp.exchangeUsd + kOpenSp.nativeUsd + fraOpenSp.exchangeUsd + fraOpenSp.nativeUsd;
             const fmt = (n) => `$${(parseFloat(n) || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-            const rateSource = blendedFx.kPerUsd > 0
-              ? `${blendedFx.kCount} exchange${blendedFx.kCount === 1 ? '' : 's'} → blended for exchange-K · today's rate for native-K`
-              : (fx.buyK > 0 ? 'live rate (no exchange history yet)' : 'no rate set');
+            const rateSource = poolActive
+              ? `pool counters · blended for exchange-K · today's rate for native-K`
+              : (blendedFx.kPerUsd > 0
+                  ? `${blendedFx.kCount} exchange${blendedFx.kCount === 1 ? '' : 's'} → blended for exchange-K · today's rate for native-K`
+                  : (fx.buyK > 0 ? 'live rate (no exchange history yet)' : 'no rate set'));
             const rateLabel = [
               blendKPerUsd  > 0 && `blended 1 USD ≈ ${blendKPerUsd.toLocaleString(undefined, { maximumFractionDigits: 4 })} K`,
               todayKPerUsd  > 0 && blendKPerUsd > 0 && `today 1 USD = ${todayKPerUsd.toLocaleString(undefined, { maximumFractionDigits: 4 })} K`,

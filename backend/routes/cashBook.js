@@ -1265,4 +1265,38 @@ router.delete('/transfers/:id', auth, (req, res) => {
   }
 });
 
+// v1.10.179 — HQ Cash Book Phase 2 foundation: read the authoritative
+// K-pool state.
+//
+//   GET /api/cash-book/pool
+//
+// Returns the three pool counters plus the derived blended rate. The
+// counters are maintained by future Phase 2b write paths (CR / PV /
+// AP / exchange), and seeded once at deploy by the backfill in
+// migrations.js. Until Phase 2b lands, the counters stay at their
+// backfilled snapshot — the frontend Cash Book tile still renders
+// correctly because the read-time split (native = current_K − exchange_K)
+// keeps working against the stored exchange counter.
+router.get('/pool', auth, readOnlyGuard, (req, res) => {
+  try {
+    const row = db.prepare(`
+      SELECT pool_native_k, pool_exchange_k, pool_usd_basis, pool_backfilled_at
+      FROM business_settings ORDER BY id ASC LIMIT 1
+    `).get();
+    const nativeK    = parseFloat(row?.pool_native_k    || 0) || 0;
+    const exchangeK  = parseFloat(row?.pool_exchange_k  || 0) || 0;
+    const usdBasis   = parseFloat(row?.pool_usd_basis   || 0) || 0;
+    const blendedRate = usdBasis > 0 ? exchangeK / usdBasis : 0;
+    res.json({
+      pool_native_k:      nativeK,
+      pool_exchange_k:    exchangeK,
+      pool_usd_basis:     usdBasis,
+      blended_k_per_usd:  blendedRate,
+      backfilled_at:      row?.pool_backfilled_at || null,
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 module.exports = router;

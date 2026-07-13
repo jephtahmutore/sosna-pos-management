@@ -8,7 +8,7 @@ import {
 } from 'react-icons/fi';
 import {
   getHqBranches, getHqPurchases, getHqPurchase, createHqPurchase, getHqSuppliers, createHqSupplier,
-  cancelHqPurchaseItem, cancelHqPurchase, getProducts,
+  cancelHqPurchaseItem, cancelHqPurchase, getProducts, getCashPool,
 } from '../services/api';
 import printHtml from '../utils/printHtml';
 
@@ -210,6 +210,16 @@ function CreatePurchaseModal({ branches, onClose, onCreated, onError }) {
   // just store the number as K.
   const [costCurrency, setCostCurrency] = useState('K');
   const [fxRate, setFxRate] = useState('');
+  // v1.10.179 — HQ Cash Book Phase 2 foundation: pull the pool-blended
+  // K/USD rate once on mount so we can pre-fill the FX field on new K POs
+  // destined to tri-currency branches (Kassumbalesa). Removes the manual
+  // step of the operator computing the rate from the exchange ledger.
+  const [poolBlendedRate, setPoolBlendedRate] = useState(0);
+  useEffect(() => {
+    getCashPool().then(r => {
+      setPoolBlendedRate(parseFloat(r.data?.blended_k_per_usd || 0) || 0);
+    }).catch(() => {});
+  }, []);
   const destBranch = branches.find(b => b.slug === destinationSlug);
   const destIsTriCcy = (() => {
     const cm = String(destBranch?.currency_mode || 'K').toUpperCase();
@@ -217,7 +227,18 @@ function CreatePurchaseModal({ branches, onClose, onCreated, onError }) {
   })();
   // Reset FX inputs whenever destination changes — a new destination
   // could flip us in/out of the tri-currency prompt.
-  useEffect(() => { setCostCurrency('K'); setFxRate(''); }, [destinationSlug]);
+  // v1.10.179 — when the destination IS tri-currency and we have a
+  // pool-blended rate from Cash Book, seed the FX field with it so the
+  // operator gets the honest historical acquisition rate as the default.
+  // Can still be overridden.
+  useEffect(() => {
+    setCostCurrency('K');
+    if (destIsTriCcy && poolBlendedRate > 0) {
+      setFxRate(String(poolBlendedRate.toFixed(4)));
+    } else {
+      setFxRate('');
+    }
+  }, [destinationSlug, destIsTriCcy, poolBlendedRate]);
   const [submitting, setSubmitting] = useState(false);
 
   // v1.9.0 — quick-add HQ supplier (same pattern as GRN page).

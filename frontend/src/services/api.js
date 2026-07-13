@@ -501,6 +501,8 @@ export const deletePvType = (id) => api.delete(`/pv-types/${id}`);
 // Cash Book
 export const getCashBook = (params) => api.get('/cash-book', { params });
 export const getCashBookStats = (params) => api.get('/cash-book/stats', { params });
+// v1.10.179 — HQ Cash Book Phase 2: authoritative K-pool counters + blended rate.
+export const getCashPool = () => api.get('/cash-book/pool');
 // Accepts either a single number (legacy: sets Cash opening) OR an object { cash, bank, momo }.
 export const setOpeningBalance = (data) =>
   api.post('/cash-book/opening-balance', typeof data === 'object' ? data : { amount: data });
