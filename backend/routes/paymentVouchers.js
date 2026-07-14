@@ -102,6 +102,26 @@ router.post('/', auth, (req, res) => {
     const { branchId, deviceId } = syncConfig.getConfig();
     const cashierId = cashier_id !== undefined ? parseInt(cashier_id) : 0;
     const resolvedPaidFrom = paid_from || 'Main cashier';
+    // v1.10.183 — hard-block PV creation into a Cash Drawer for a day/cashier
+    // that already has a saved Cash Report. Otherwise the CR was minted
+    // with expensesByCcy=0 (no PVs existed at save time), and the new PV
+    // would silently drift the Cash Book below reconciled state. The user
+    // must delete the saved Cash Report (admin action) or re-save it via
+    // the Edit flow — either path re-mints the CR with the up-to-date
+    // Total cash in. Landed cost vouchers are excluded (they're separate
+    // from drawer expenses — v1.10.182).
+    if (!isLandedCost && resolvedPaidFrom === 'Cash Drawer' && cashierId > 0) {
+      const pvDate = date || new Date().toISOString().split('T')[0];
+      const savedReport = db.prepare(
+        `SELECT id FROM cash_reports
+          WHERE date = ? AND cashier_id = ? AND deleted_at IS NULL AND tenant_id = ?`
+      ).get(pvDate, cashierId, tenantId);
+      if (savedReport) {
+        return res.status(400).json({
+          error: `Cash Report for this cashier on ${pvDate} is already saved. To add this expense, first Edit the saved Cash Report (or Delete it) so the new expense is picked up in the reconciliation.`,
+        });
+      }
+    }
     // v1.8.5 — triple-currency. Each in its own currency. Legacy
     // cash/bank/momo still accepted but zeroed when usd/fra/k are sent.
     // v1.10.133 — on HQ, cash/bank/momo now hold the K sub-method split
