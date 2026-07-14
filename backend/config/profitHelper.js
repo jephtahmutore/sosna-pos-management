@@ -32,9 +32,24 @@ function recalculateDailyProfit(db, date, tenantId) {
     `).get(date, tenantId);
 
     // COGS: sale movements × snapshotted cost price
+    // v1.10.181 — WAC redesign push 4 (profit-side): add p.avg_cost_price
+    // to the fallback chain, right after the historical daily_cost_snapshot.
+    // The v1.10.55 blend writes today's WAC to products.avg_cost_price;
+    // before this fix, the read chain skipped it entirely and fell back
+    // to either the frozen snapshot (for old dates), a live grn_items
+    // aggregate, or the static cost_price — none of which reflect a
+    // fresh WAC blend from a recent GRN.
+    //
+    // Ordering rationale:
+    //   1. dcs.avg_cost_price — historical accuracy for OLD dates
+    //   2. p.avg_cost_price   — live WAC for RECENT dates before dcs snapshot fires
+    //   3. grn_items aggregate — approximation for products with no stored WAC yet
+    //   4. p.cost_price       — static hint, last resort
+    // NULLIF drops p.avg_cost_price=0 so we fall through when it was never
+    // written (fresh product) instead of anchoring COGS at zero.
     const cogsRow = db.prepare(`
       SELECT COALESCE(SUM(ABS(sm.quantity) *
-        COALESCE(dcs.avg_cost_price,
+        COALESCE(dcs.avg_cost_price, NULLIF(p.avg_cost_price, 0),
           CASE WHEN COALESCE(grn_agg.total_qty,0)+COALESCE(prod_agg.total_qty,0) > 0
             THEN (COALESCE(grn_agg.total_cost,0)+COALESCE(prod_agg.total_cost,0)) /
                  (COALESCE(grn_agg.total_qty,0)+COALESCE(prod_agg.total_qty,0))
@@ -86,10 +101,13 @@ function recalculateDailyProfit(db, date, tenantId) {
 
     // Damages — items destroyed/expired (recorded via Sales Damages page).
     // Cost = ABS(qty) × avg_cost_price for sales_return movements at 'sales' location.
-    // Uses the same cost basis as COGS (snapshot-first, falling back to GRN+production avg, then cost_price).
+    // v1.10.181 — same fallback-chain fix as COGS above. p.avg_cost_price
+    // sits between the historical snapshot and the grn_items aggregate so
+    // the WAC blend that hqGrns.js /generate wrote actually reaches the
+    // damage cost calculation.
     const damageRow = db.prepare(`
       SELECT COALESCE(SUM(ABS(sm.quantity) *
-        COALESCE(dcs.avg_cost_price,
+        COALESCE(dcs.avg_cost_price, NULLIF(p.avg_cost_price, 0),
           CASE WHEN COALESCE(grn_agg.total_qty,0)+COALESCE(prod_agg.total_qty,0) > 0
             THEN (COALESCE(grn_agg.total_cost,0)+COALESCE(prod_agg.total_cost,0)) /
                  (COALESCE(grn_agg.total_qty,0)+COALESCE(prod_agg.total_qty,0))

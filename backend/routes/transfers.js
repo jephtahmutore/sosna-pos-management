@@ -425,19 +425,53 @@ router.put('/:id/receive', hqAuth, (req, res) => {
     // v1.10.55 — WAC redesign push 3: blend delivery cost into destination
     // avg_cost_price. Delivery CP is derived from the transfer's declared
     // FX rate (captured at Send time in v1.10.54). Same formula as HQ GRN
-    // generate — never overwrites, always blends. Storage on items_json
-    // already has cost_price_usd pre-computed for tri-currency destinations;
-    // K-only destinations fall back to the raw cost_price (native K).
+    // generate — never overwrites, always blends.
+    //
+    // v1.10.181 — WAC redesign push 5 (transfer FX symmetry):
+    // Previously the delivery cost was ALWAYS converted to USD, on the
+    // assumption that every destination stored WAC in USD. That's true
+    // for Kassumbalesa (tri-currency, USD-anchored) but WRONG for
+    // Mansa / Lusaka (K-only). A Kassumbalesa→Lusaka transfer of stock
+    // costing $10/bottle would land on Lusaka as "K 10/bottle" — deflated
+    // by ~25× relative to reality (~K 250/bottle at rate 25). Symptom:
+    // Lusaka WAC crashes, next K 300 sale reports huge fake profit.
+    //
+    // Fix: convert delivery cost to the DESTINATION's WAC currency, not
+    // universally to USD. Same shape as hqPurchases.js v1.10.174 —
+    // read destination's currency_mode and route accordingly.
+    let destIsKOnly = false;
+    try {
+      const destSettings = toDb.prepare(
+        `SELECT currency_mode FROM business_settings ORDER BY id ASC LIMIT 1`
+      ).get();
+      destIsKOnly = String(destSettings?.currency_mode || 'K').toUpperCase() === 'K';
+    } catch (_) { /* pre-migration branch DB — assume K-only Liquor default */
+      destIsKOnly = true;
+    }
     const trCcy  = String(row.cost_currency || '').toUpperCase();
     const trRate = parseFloat(row.fx_rate_used || 0) || 0;
-    const toUsdT = (it) => {
+    // Returns the delivery cost in the destination's WAC currency.
+    // - K-only dest: convert to K (USD source × rate, or K source as-is)
+    // - Multi-ccy dest: convert to USD (K source / rate, or USD source as-is)
+    const toDestCcy = (it) => {
       // Prefer the pre-computed field on the item (stored by v1.10.54).
-      const preC = parseFloat(it.cost_price_usd || 0);
-      if (preC > 0) return preC;
-      const c = parseFloat(it.cost_price || 0) || 0;
-      if (c <= 0) return 0;
-      if (!trCcy || trCcy === 'USD') return c;
-      return trRate > 0 ? c / trRate : c;
+      // Note: cost_price_usd is USD-denominated regardless of transfer
+      // currency, so only use it when the destination stores in USD.
+      const preUsd = parseFloat(it.cost_price_usd || 0);
+      const rawC   = parseFloat(it.cost_price     || 0) || 0;
+      if (destIsKOnly) {
+        // Destination stores WAC in K.
+        if (!trCcy || trCcy === 'K') return rawC;               // K→K, no conversion
+        if (trCcy === 'USD') {                                    // USD→K, multiply by rate
+          return trRate > 0 ? rawC * trRate : rawC;
+        }
+        return rawC; // FRA→K or unknown — leave as-is, one-off case
+      }
+      // Multi-currency dest (Kassumbalesa) stores WAC in USD.
+      if (preUsd > 0) return preUsd;
+      if (rawC <= 0) return 0;
+      if (!trCcy || trCcy === 'USD') return rawC;                // USD→USD, no conversion
+      return trRate > 0 ? rawC / trRate : rawC;                  // K→USD, divide by rate
     };
     toDb.transaction(() => {
       const movStmt = toDb.prepare(`
@@ -509,15 +543,15 @@ router.put('/:id/receive', hqAuth, (req, res) => {
             receivedBy,
             randomUUID(), null, null, null
           );
-          // v1.10.55 — WAC blend at destination: baseQty × delivery_cp_usd
-          // added to the weighted mean of existing stock. cost_price on
-          // items_json is per BASE unit (transfer create normalises to base
-          // there too, or Send modal converts before submit).
-          const deliveryCpUsd = toUsdT(it);
+          // v1.10.55 → v1.10.181 — WAC blend at destination in the
+          // destination's WAC currency. toDestCcy returns USD for
+          // Kassumbalesa, K for Mansa/Lusaka (correct denomination for
+          // each branch's avg_cost_price column).
+          const deliveryCp = toDestCcy(it);
           upd.run(
             baseQty,
-            deliveryCpUsd,
-            baseQty, deliveryCpUsd,
+            deliveryCp,
+            baseQty, deliveryCp,
             baseQty,
             prod.sync_id
           );
