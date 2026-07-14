@@ -1436,6 +1436,58 @@ router.post('/generate', hqAuth, (req, res) => {
                synced        = 0
          WHERE sync_id = ?
       `);
+      // v1.10.182 — Landed Cost Voucher absorption. Sum all unapplied LCVs
+      // attached to this PO (in HQ's own DB where PVs live), then spread
+      // the total across the RECEIVED base units so each unit carries a
+      // proportional share of the delivery cost in its WAC. Cash already
+      // left the Cash Book when the LCV was created; here we transfer
+      // that cash from "expense" to "inventory value" via the WAC blend.
+      //
+      // Allocation method: per base unit (bottle), summed across all
+      // received lines. Simple and defensible — assumes trucks charge
+      // per crate/bottle, not per dollar of goods. If mixed-item POs need
+      // value-weighted allocation later, we swap the divisor here.
+      //
+      // LCV currency handling: uses the PO's cost_currency. If PO is in K
+      // and the LCV amount is K, no conversion. If PO is in USD, LCV must
+      // also be USD (the frontend enforces this).
+      let landedCostPerBaseTotal = 0;
+      let lcvSyncIdsToMark = [];
+      // HQ PVs live in backend/sosna.db (defaultDb) per v1.10.76 note.
+      const hqDb = require('../config/database').defaultDb;
+      try {
+        if (!hqDb) throw new Error('defaultDb unavailable');
+        const lcvRows = hqDb.prepare(`
+          SELECT sync_id, amount
+            FROM payment_vouchers
+           WHERE linked_purchase_sync_id = ?
+             AND is_landed_cost = 1
+             AND deleted_at IS NULL
+             AND applied_to_grn_sync_id IS NULL
+        `).all(purchase_sync_id);
+        const totalLandedRaw = lcvRows.reduce((s, r) => s + (parseFloat(r.amount) || 0), 0);
+        // Convert LCV total to destination WAC currency same way line cost is.
+        const totalLandedInWacCcy = toUsd(totalLandedRaw);
+        // Total received base units across all lines (for pro-rata denominator).
+        const totalReceivedBase = validItems.reduce((s, it) => {
+          if (!it.product_sync_id) return s;
+          const qty = parseFloat(it.quantity) || 0;
+          if (qty <= 0) return s;
+          const prodRow = branchDb.prepare(
+            `SELECT unit, alt_unit, conversion_factor, units_json FROM products WHERE sync_id = ? AND deleted_at IS NULL`
+          ).get(it.product_sync_id);
+          if (!prodRow) return s;
+          const cv = conversionToBase(prodRow, it.unit || prodRow.unit);
+          return s + qty * cv;
+        }, 0);
+        if (totalReceivedBase > 0 && totalLandedInWacCcy > 0) {
+          landedCostPerBaseTotal = totalLandedInWacCcy / totalReceivedBase;
+        }
+        lcvSyncIdsToMark = lcvRows.map(r => r.sync_id);
+      } catch (lcvErr) {
+        console.warn('[hq.grns.generate] LCV read failed:', lcvErr.message);
+      }
+
       for (const it of validItems) {
         if (!it.product_sync_id) continue; // extra items without a known product — skip stock posting
         const qty = parseFloat(it.quantity) || 0;
@@ -1456,8 +1508,11 @@ router.post('/generate', hqAuth, (req, res) => {
         // delivery cost is per-LINE-unit ($320/crate). Convert to per
         // BASE unit for the WAC blend since current_stock + avg_cost_price
         // are both denominated in base units.
+        // v1.10.182 — landed cost per base unit added to the per-base
+        // goods cost, so the WAC blend absorbs delivery into inventory.
         const deliveryCpUsdPerLineUnit = toUsd(it.unit_price);
-        const deliveryCpUsdPerBase = conv > 0 ? deliveryCpUsdPerLineUnit / conv : deliveryCpUsdPerLineUnit;
+        const goodsCpUsdPerBase = conv > 0 ? deliveryCpUsdPerLineUnit / conv : deliveryCpUsdPerLineUnit;
+        const deliveryCpUsdPerBase = goodsCpUsdPerBase + landedCostPerBaseTotal;
         updWithWac.run(
           baseQty,                     // current_stock += baseQty
           deliveryCpUsdPerBase,        // seed value when avg was NULL or stock was 0
@@ -1536,6 +1591,25 @@ router.post('/generate', hqAuth, (req, res) => {
             randomUUID(), null, null, null,
             branchMovementAt
           );
+        }
+      }
+      // v1.10.182 — mark the LCVs applied to this GRN so they don't get
+      // absorbed again on a rerun. Uses the hqDb defined above in this
+      // same try scope (backend/sosna.db, per v1.10.76 note).
+      if (hqDb && Array.isArray(lcvSyncIdsToMark) && lcvSyncIdsToMark.length > 0) {
+        try {
+          const markLcv = hqDb.prepare(`
+            UPDATE payment_vouchers
+               SET applied_to_grn_sync_id = ?,
+                   updated_at = datetime('now'),
+                   synced = 0
+             WHERE sync_id = ? AND applied_to_grn_sync_id IS NULL
+          `);
+          for (const sId of lcvSyncIdsToMark) {
+            markLcv.run(grnSyncId, sId);
+          }
+        } catch (lcvMarkErr) {
+          console.warn('[hq.grns.generate] LCV mark-applied failed:', lcvMarkErr.message);
         }
       }
     } catch (err) {

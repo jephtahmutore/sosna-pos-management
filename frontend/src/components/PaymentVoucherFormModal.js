@@ -3,7 +3,7 @@
 // fields, same Types dropdown (from pv_types). Caller can lock paid_from
 // to a fixed value (e.g. "Cash Drawer" for cash-report use).
 import React, { useEffect, useState } from 'react';
-import { getPvTypes, createPaymentVoucher, updatePaymentVoucher, isHqHost } from '../services/api';
+import { getPvTypes, createPaymentVoucher, updatePaymentVoucher, isHqHost, getHqPurchases } from '../services/api';
 import { useCurrency } from '../context/CurrencyContext';
 import Portal from '../utils/Portal';
 import InvoiceAttachment from './InvoiceAttachment';
@@ -62,14 +62,28 @@ const PaymentVoucherFormModal = ({
     cash_amount: '', bank_amount: '', momo_amount: '',
     date: todayStr(), paid_from: defaultPaidFrom || 'Main cashier',
     invoice_attachment: null,
+    // v1.10.182 — Landed Cost Voucher fields. When is_landed_cost is on,
+    // the amount is absorbed into the linked PO's WAC at Generate GRN
+    // time and excluded from profit-report expenses.
+    is_landed_cost: false,
+    linked_purchase_sync_id: '',
   });
+  // v1.10.182 — list of open HQ purchases to pick from when creating an LCV.
+  // Only fetched on HQ (LCVs only make sense there — POs live on HQ's DB).
+  const [openPurchases, setOpenPurchases] = useState([]);
   const [error, setError]   = useState('');
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
     if (!open) return;
     getPvTypes().then(r => setPvTypes(Array.isArray(r.data) ? r.data : [])).catch(() => setPvTypes([]));
-  }, [open]);
+    // v1.10.182 — LCV picker options. Only meaningful on HQ.
+    if (onHq) {
+      getHqPurchases({ status: 'OPEN' })
+        .then(r => setOpenPurchases(Array.isArray(r.data) ? r.data : []))
+        .catch(() => setOpenPurchases([]));
+    }
+  }, [open, onHq]);
 
   // Reset form whenever the modal is opened / editVoucher changes.
   useEffect(() => {
@@ -99,6 +113,8 @@ const PaymentVoucherFormModal = ({
         date:        editVoucher.date ? editVoucher.date.split('T')[0] : (defaultDate || todayStr()),
         paid_from:   editVoucher.paid_from   || defaultPaidFrom || 'Main cashier',
         invoice_attachment: editVoucher.invoice_attachment || null,
+        is_landed_cost:          !!editVoucher.is_landed_cost,
+        linked_purchase_sync_id: editVoucher.linked_purchase_sync_id || '',
       });
     } else {
       setForm({
@@ -109,6 +125,8 @@ const PaymentVoucherFormModal = ({
         date: defaultDate || todayStr(),
         paid_from: defaultPaidFrom || 'Main cashier',
         invoice_attachment: null,
+        is_landed_cost: false,
+        linked_purchase_sync_id: '',
       });
     }
     setError('');
@@ -138,6 +156,10 @@ const PaymentVoucherFormModal = ({
     // a Liquor cashier paid via MoMo or Bank.
     const totalUsd = effectiveLiquorStyle ? (usd + fra + k) : usd;
     if (usd <= 0 && fra <= 0 && k <= 0) return setError(effectiveLiquorStyle ? 'Enter an amount in Cash, Mobile Money, or Bank.' : 'Enter an amount in at least one currency.');
+    // v1.10.182 — LCV validation: must attach to a purchase.
+    if (form.is_landed_cost && !form.linked_purchase_sync_id) {
+      return setError('Landed cost vouchers must attach to a purchase — pick one from the dropdown.');
+    }
 
     if (editVoucher) {
       if (!window.confirm('Are you sure you want to update this record?')) return;
@@ -162,6 +184,10 @@ const PaymentVoucherFormModal = ({
         date:        form.date,
         paid_from:   resolvedPaidFrom,
         invoice_attachment: form.invoice_attachment,
+        // v1.10.182 — LCV flags. Backend validates that is_landed_cost=1
+        // requires linked_purchase_sync_id; if unchecked both are false/null.
+        is_landed_cost:          !!form.is_landed_cost,
+        linked_purchase_sync_id: form.is_landed_cost ? (form.linked_purchase_sync_id || null) : null,
         ...(extraPayload || {}),
       };
       const res = editVoucher
@@ -222,6 +248,44 @@ const PaymentVoucherFormModal = ({
                 <label>Paid From</label>
                 <input value={form.paid_from} disabled
                   style={{ background: '#f3f4f6', fontWeight: 600, cursor: 'not-allowed' }} />
+              </div>
+            )}
+
+            {/* v1.10.182 — Landed Cost Voucher toggle. HQ-only feature.
+                When checked, the amount is absorbed into the picked PO's
+                WAC at Generate GRN time and does NOT appear as a period
+                expense on the profit report. Cash still leaves the Cash
+                Book (transporter is paid) — this just changes the
+                accounting classification from "expense" to
+                "inventory value". */}
+            {onHq && !editVoucher && (
+              <div className="form-group" style={{ padding: 12, background: '#fef3c7', border: '1px solid #fde68a', borderRadius: 8, marginTop: 8 }}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', fontWeight: 600, color: '#92400e' }}>
+                  <input type="checkbox"
+                    checked={!!form.is_landed_cost}
+                    onChange={e => setForm({ ...form, is_landed_cost: e.target.checked, linked_purchase_sync_id: e.target.checked ? form.linked_purchase_sync_id : '' })} />
+                  This is a Landed Cost (delivery / transport / customs)
+                </label>
+                <div style={{ fontSize: 11, color: '#78350f', marginTop: 4, marginLeft: 24 }}>
+                  Amount is absorbed into the picked PO's inventory value — not booked as an expense.
+                </div>
+                {form.is_landed_cost && (
+                  <div style={{ marginTop: 10 }}>
+                    <label style={{ display: 'block', fontSize: 12, fontWeight: 600, color: '#78350f', marginBottom: 4 }}>
+                      Attach to Purchase <span style={{ color: '#dc2626' }}>*</span>
+                    </label>
+                    <select value={form.linked_purchase_sync_id}
+                      onChange={e => setForm({ ...form, linked_purchase_sync_id: e.target.value })}
+                      style={{ width: '100%', padding: '6px 8px', borderRadius: 6, border: '1px solid #d97706', background: '#fff' }}>
+                      <option value="">— pick a PO —</option>
+                      {openPurchases.map(p => (
+                        <option key={p.sync_id} value={p.sync_id}>
+                          {p.purchase_number} · {p.supplier_name || 'no supplier'} · {p.date}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                )}
               </div>
             )}
 

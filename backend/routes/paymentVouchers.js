@@ -87,7 +87,16 @@ router.post('/', auth, (req, res) => {
   try {
     const { paid_to, description, category, amount, date, paid_from, cashier_id, invoice_attachment,
             cash_amount, bank_amount, momo_amount,
-            usd_amount, fra_amount, k_amount } = req.body;
+            usd_amount, fra_amount, k_amount,
+            // v1.10.182 — Landed Cost Voucher fields. When is_landed_cost=1
+            // the amount is absorbed into the linked PO's WAC at Generate
+            // GRN time and excluded from profit-report expenses.
+            is_landed_cost, linked_purchase_sync_id } = req.body;
+    const isLandedCost = is_landed_cost ? 1 : 0;
+    const linkedPurchaseSyncId = linked_purchase_sync_id || null;
+    if (isLandedCost && !linkedPurchaseSyncId) {
+      return res.status(400).json({ error: 'Landed cost vouchers must attach to a purchase (linked_purchase_sync_id required).' });
+    }
     const voucherNum = syncConfig.generateNumber('PV', 'payment_vouchers');
     const tenantId = syncConfig.getTenantId(req);
     const { branchId, deviceId } = syncConfig.getConfig();
@@ -174,8 +183,9 @@ router.post('/', auth, (req, res) => {
                                        cash_amount, bank_amount, momo_amount,
                                        usd_amount, fra_amount, k_amount,
                                        date, paid_from, cashier_id, invoice_attachment, created_by,
+                                       is_landed_cost, linked_purchase_sync_id,
                                        sync_id, tenant_id, branch_id, device_id, synced, created_at, updated_at)
-         VALUES (?,?,?,?,?, ?,?,?, ?,?,?, ?,?,?,?,?, ?,?,?,?, 0,datetime('now'),datetime('now'))`
+         VALUES (?,?,?,?,?, ?,?,?, ?,?,?, ?,?,?,?,?, ?,?, ?,?,?,?, 0,datetime('now'),datetime('now'))`
       ).run(voucherNum, paid_to, description, category, totalAmount,
             cashAmt, bankAmt, momoAmt,
             usdAmt, fraAmt, kAmt,
@@ -184,6 +194,7 @@ router.post('/', auth, (req, res) => {
             cashierId,
             invoice_attachment || null,
             req.user.id,
+            isLandedCost, linkedPurchaseSyncId,
             randomUUID(), tenantId, branchId, deviceId);
       if (kAmt > 0) poolDrainK(db, kAmt);
       return insInfo;

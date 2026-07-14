@@ -83,10 +83,17 @@ function recalculateDailyProfit(db, date, tenantId) {
       FROM cash_reports WHERE date = ? AND deleted_at IS NULL AND tenant_id = ?
     `).get(date, tenantId);
 
-    // Expenses for the day (Payment Vouchers)
+    // Expenses for the day (Payment Vouchers).
+    // v1.10.182 — exclude Landed Cost Vouchers. LCVs are cash outflows
+    // that get absorbed into inventory WAC at Generate GRN time; counting
+    // them as expenses ALSO would double-count them (once in COGS via
+    // WAC, once as period expense). Landed cost is the "asset transfer"
+    // case: cash → inventory, no P&L impact until the item sells.
     const pvRow = db.prepare(`
       SELECT COALESCE(SUM(amount), 0) AS pv_total
-      FROM payment_vouchers WHERE date = ? AND deleted_at IS NULL AND tenant_id = ?
+      FROM payment_vouchers
+       WHERE date = ? AND deleted_at IS NULL AND tenant_id = ?
+         AND (is_landed_cost IS NULL OR is_landed_cost = 0)
     `).get(date, tenantId);
 
     // Stock Variance — from Stock Reconciliation only (replaces the old daily_actual_balance + stock_adjustments)

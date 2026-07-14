@@ -1089,6 +1089,22 @@ function initTenantDb(db) {
   addCol('business_settings', 'pool_usd_basis',     'REAL NOT NULL DEFAULT 0');
   addCol('business_settings', 'pool_backfilled_at', 'TEXT');
 
+  // v1.10.182 — Landed Cost Voucher (LCV) support.
+  // An LCV is a Payment Voucher tagged as delivery / transport / customs
+  // cost that attaches to a specific HQ purchase. Cash STILL leaves the
+  // Cash Book (transporter is paid), but the amount is absorbed into the
+  // destination branch's WAC via the linked PO instead of hitting P&L
+  // as an expense. Prevents the double-counting trap where delivery
+  // shows up both in COGS (via WAC) AND as a period expense.
+  //
+  //   is_landed_cost           — 1 if this PV is delivery/landed cost, 0 otherwise
+  //   linked_purchase_sync_id  — HQ purchase.sync_id this landed cost attaches to
+  //   applied_to_grn_sync_id   — set on Generate GRN; NULL means not yet consumed.
+  //                              Prevents double-application if the GRN reruns.
+  addCol('payment_vouchers', 'is_landed_cost',           'INTEGER NOT NULL DEFAULT 0');
+  addCol('payment_vouchers', 'linked_purchase_sync_id',  'TEXT');
+  addCol('payment_vouchers', 'applied_to_grn_sync_id',   'TEXT');
+
   // v1.10.179 — one-shot backfill for the K-pool counters.
   // Idempotent via pool_backfilled_at: once set, this whole block is a
   // no-op on subsequent app restarts. Safe to keep in migrations forever.
