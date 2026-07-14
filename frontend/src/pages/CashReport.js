@@ -1189,13 +1189,30 @@ const CashReport = () => {
                       style={{ width: 26, height: 26, borderRadius: 6, border: '1px solid rgba(255,255,255,0.5)', background: 'rgba(255,255,255,0.15)', color: '#fff', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                       <FiEye size={13} />
                     </button>
-                    <button
-                      onClick={() => openVoucherForm(c.ccy)}
-                      disabled={!selectedCashier}
-                      title={!selectedCashier ? 'Select a cashier first' : `Add ${c.ccy} expense voucher`}
-                      style={{ width: 26, height: 26, borderRadius: 6, border: '1px solid rgba(255,255,255,0.5)', background: selectedCashier ? 'rgba(255,255,255,0.95)' : 'rgba(255,255,255,0.3)', color: selectedCashier ? c.color : '#fff', cursor: selectedCashier ? 'pointer' : 'not-allowed', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 700 }}>
-                      <FiPlus size={14} />
-                    </button>
+                    {/* v1.10.184 — disable the "+ Add expense" button once
+                        the Cash Report for this day/cashier is saved. The
+                        backend already rejects late drawer PVs (v1.10.183),
+                        but this makes the UX obvious: the button is greyed
+                        out with a clear tooltip pointing to Edit. Clicking
+                        Edit re-enables it. */}
+                    {(() => {
+                      const lockedBySaved = !editMode && !!savedReportId;
+                      const canAdd = !!selectedCashier && !lockedBySaved;
+                      const tooltip = !selectedCashier
+                        ? 'Select a cashier first'
+                        : lockedBySaved
+                          ? 'Cash Report is saved — click Edit to add another expense'
+                          : `Add ${c.ccy} expense voucher`;
+                      return (
+                        <button
+                          onClick={() => openVoucherForm(c.ccy)}
+                          disabled={!canAdd}
+                          title={tooltip}
+                          style={{ width: 26, height: 26, borderRadius: 6, border: '1px solid rgba(255,255,255,0.5)', background: canAdd ? 'rgba(255,255,255,0.95)' : 'rgba(255,255,255,0.3)', color: canAdd ? c.color : '#fff', cursor: canAdd ? 'pointer' : 'not-allowed', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 700 }}>
+                          <FiPlus size={14} />
+                        </button>
+                      );
+                    })()}
                   </div>
                 </div>
 
