@@ -30,6 +30,7 @@ import HqInventoryReport from './pages/HqInventoryReport';
 import HqCashPosition from './pages/HqCashPosition';
 import StockTransfers from './pages/StockTransfers';
 import HqPurchases from './pages/HqPurchases';
+import CostOfDelivery from './pages/CostOfDelivery';
 import HqSuppliers from './pages/HqSuppliers';
 import HqConfirmGrn from './pages/HqConfirmGrn';
 import HqGrnArchive from './pages/HqGrnArchive';
@@ -283,6 +284,7 @@ function AppRoutes() {
         <Route path="hq/inventory-report" element={<HqRoute><HqInventoryReport /></HqRoute>} />
         <Route path="hq/cash-position"    element={<HqRoute><HqCashPosition /></HqRoute>} />
         <Route path="hq/purchases"        element={<HqRoute><HqPurchases /></HqRoute>} />
+        <Route path="hq/cost-of-delivery" element={<HqRoute><CostOfDelivery /></HqRoute>} />
         <Route path="hq/confirm-grn"      element={<HqRoute><HqConfirmGrn /></HqRoute>} />
         <Route path="hq/grn-archive"      element={<HqRoute><HqGrnArchive /></HqRoute>} />
         <Route path="hq/variances"        element={<HqRoute><HqVariances /></HqRoute>} />

@@ -21,12 +21,20 @@ function derivePVSplits(paid_from, amount) {
 
 router.get('/', auth, readOnlyGuard, (req, res) => {
   try {
-    const { date, paid_from, cashier_id } = req.query;
+    const { date, paid_from, cashier_id, is_landed_cost, exclude_landed_cost } = req.query;
     let q = 'SELECT * FROM payment_vouchers WHERE deleted_at IS NULL AND tenant_id = ?';
     const params = [req.user.tenantId];
     if (date)      { params.push(date);      q += ' AND date = ?'; }
     if (paid_from) { params.push(paid_from); q += ' AND paid_from = ?'; }
     if (cashier_id !== undefined) { params.push(parseInt(cashier_id)); q += ' AND cashier_id = ?'; }
+    // v1.10.185 — LCV filters for the Cost of Delivery page and to
+    // keep the regular PV list free of LCVs. Both switches accept '1'.
+    if (is_landed_cost === '1' || is_landed_cost === 1 || is_landed_cost === 'true') {
+      q += ' AND is_landed_cost = 1';
+    }
+    if (exclude_landed_cost === '1' || exclude_landed_cost === 1 || exclude_landed_cost === 'true') {
+      q += ' AND (is_landed_cost IS NULL OR is_landed_cost = 0)';
+    }
     q += ' ORDER BY date DESC';
     const rows = db.prepare(q).all(...params);
     res.json(rows);
@@ -89,13 +97,22 @@ router.post('/', auth, (req, res) => {
             cash_amount, bank_amount, momo_amount,
             usd_amount, fra_amount, k_amount,
             // v1.10.182 — Landed Cost Voucher fields. When is_landed_cost=1
-            // the amount is absorbed into the linked PO's WAC at Generate
-            // GRN time and excluded from profit-report expenses.
-            is_landed_cost, linked_purchase_sync_id } = req.body;
+            // the amount is absorbed into the linked reference's WAC and
+            // excluded from profit-report expenses.
+            // v1.10.185 — LCV can now attach to either a PO OR a transfer
+            // (exactly one). Uniform delivery-cost model across both flows.
+            is_landed_cost, linked_purchase_sync_id, linked_transfer_sync_id } = req.body;
     const isLandedCost = is_landed_cost ? 1 : 0;
     const linkedPurchaseSyncId = linked_purchase_sync_id || null;
-    if (isLandedCost && !linkedPurchaseSyncId) {
-      return res.status(400).json({ error: 'Landed cost vouchers must attach to a purchase (linked_purchase_sync_id required).' });
+    const linkedTransferSyncId = linked_transfer_sync_id || null;
+    if (isLandedCost) {
+      const linkCount = (linkedPurchaseSyncId ? 1 : 0) + (linkedTransferSyncId ? 1 : 0);
+      if (linkCount === 0) {
+        return res.status(400).json({ error: 'Landed cost vouchers must attach to either a purchase or a transfer.' });
+      }
+      if (linkCount > 1) {
+        return res.status(400).json({ error: 'Landed cost vouchers can attach to only ONE reference — either a purchase or a transfer, not both.' });
+      }
     }
     const voucherNum = syncConfig.generateNumber('PV', 'payment_vouchers');
     const tenantId = syncConfig.getTenantId(req);
@@ -203,9 +220,9 @@ router.post('/', auth, (req, res) => {
                                        cash_amount, bank_amount, momo_amount,
                                        usd_amount, fra_amount, k_amount,
                                        date, paid_from, cashier_id, invoice_attachment, created_by,
-                                       is_landed_cost, linked_purchase_sync_id,
+                                       is_landed_cost, linked_purchase_sync_id, linked_transfer_sync_id,
                                        sync_id, tenant_id, branch_id, device_id, synced, created_at, updated_at)
-         VALUES (?,?,?,?,?, ?,?,?, ?,?,?, ?,?,?,?,?, ?,?, ?,?,?,?, 0,datetime('now'),datetime('now'))`
+         VALUES (?,?,?,?,?, ?,?,?, ?,?,?, ?,?,?,?,?, ?,?,?, ?,?,?,?, 0,datetime('now'),datetime('now'))`
       ).run(voucherNum, paid_to, description, category, totalAmount,
             cashAmt, bankAmt, momoAmt,
             usdAmt, fraAmt, kAmt,
@@ -214,7 +231,7 @@ router.post('/', auth, (req, res) => {
             cashierId,
             invoice_attachment || null,
             req.user.id,
-            isLandedCost, linkedPurchaseSyncId,
+            isLandedCost, linkedPurchaseSyncId, linkedTransferSyncId,
             randomUUID(), tenantId, branchId, deviceId);
       if (kAmt > 0) poolDrainK(db, kAmt);
       return insInfo;

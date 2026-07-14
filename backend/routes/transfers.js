@@ -473,6 +473,55 @@ router.put('/:id/receive', hqAuth, (req, res) => {
       if (!trCcy || trCcy === 'USD') return rawC;                // USD→USD, no conversion
       return trRate > 0 ? rawC / trRate : rawC;                  // K→USD, divide by rate
     };
+    // v1.10.185 — Landed Cost Voucher absorption for inter-branch transfers.
+    // LCVs live on HQ's own DB (backend/sosna.db). Sum unapplied LCVs
+    // linked to this transfer, convert to destination currency, spread
+    // across received base units. Same shape as hqGrns.js /generate.
+    let landedCostPerBaseTotal = 0;
+    let lcvSyncIdsToMark = [];
+    const hqDb = require('../config/database').defaultDb;
+    try {
+      if (hqDb) {
+        const lcvRows = hqDb.prepare(`
+          SELECT sync_id, amount
+            FROM payment_vouchers
+           WHERE linked_transfer_sync_id = ?
+             AND is_landed_cost = 1
+             AND deleted_at IS NULL
+             AND applied_to_transfer_sync_id IS NULL
+        `).all(row.sync_id);
+        const totalLandedRaw = lcvRows.reduce((s, r) => s + (parseFloat(r.amount) || 0), 0);
+        // LCV amount is in HQ's home currency (K). Convert to destination WAC currency.
+        //   destIsKOnly=true  → LCV is K, dest is K → no conversion
+        //   destIsKOnly=false → LCV is K, dest is USD → divide by transfer rate
+        let totalLandedInWacCcy;
+        if (destIsKOnly) {
+          totalLandedInWacCcy = totalLandedRaw;
+        } else {
+          totalLandedInWacCcy = trRate > 0 ? totalLandedRaw / trRate : totalLandedRaw;
+        }
+        // Compute total received base units across all lines (denominator).
+        const totalReceivedBase = items.reduce((s, it) => {
+          const recvOv = recvByPsid.get(it.product_sync_id);
+          const recvQ = recvOv && recvOv.received_qty !== undefined
+            ? Math.max(0, parseFloat(recvOv.received_qty) || 0)
+            : (parseFloat(it.quantity) || 0);
+          if (recvQ <= 0) return s;
+          const prodRow = toDb.prepare(
+            `SELECT unit, alt_unit, conversion_factor, units_json FROM products WHERE sync_id = ? AND deleted_at IS NULL`
+          ).get(it.product_sync_id);
+          const cv = prodRow ? conversionToBase(prodRow, it.unit) : 1;
+          return s + recvQ * cv;
+        }, 0);
+        if (totalReceivedBase > 0 && totalLandedInWacCcy > 0) {
+          landedCostPerBaseTotal = totalLandedInWacCcy / totalReceivedBase;
+        }
+        lcvSyncIdsToMark = lcvRows.map(r => r.sync_id);
+      }
+    } catch (lcvErr) {
+      console.warn('[transfers.receive] LCV read failed:', lcvErr.message);
+    }
+
     toDb.transaction(() => {
       const movStmt = toDb.prepare(`
         INSERT INTO stock_movements (product_id, product_sync_id, location, movement_type,
@@ -547,7 +596,14 @@ router.put('/:id/receive', hqAuth, (req, res) => {
           // destination's WAC currency. toDestCcy returns USD for
           // Kassumbalesa, K for Mansa/Lusaka (correct denomination for
           // each branch's avg_cost_price column).
-          const deliveryCp = toDestCcy(it);
+          // Transfer items store cost_price per BASE unit (per v1.10.54)
+          // so no division-by-conv needed here — unlike hqGrns which
+          // stores per-line-unit.
+          // v1.10.185 — add per-base landed cost from LCVs linked to this
+          // transfer, so delivery cost gets absorbed into the destination's
+          // WAC same way it does for PO deliveries at hqGrns.js /generate.
+          const goodsCpPerBase = toDestCcy(it);
+          const deliveryCp = goodsCpPerBase + landedCostPerBaseTotal;
           upd.run(
             baseQty,
             deliveryCp,
@@ -578,6 +634,25 @@ router.put('/:id/receive', hqAuth, (req, res) => {
         }
       }
     })();
+
+    // v1.10.185 — mark LCVs applied so a rerun of the receive endpoint
+    // (in the unlikely case) doesn't absorb the same delivery cost twice.
+    if (hqDb && Array.isArray(lcvSyncIdsToMark) && lcvSyncIdsToMark.length > 0) {
+      try {
+        const markLcv = hqDb.prepare(`
+          UPDATE payment_vouchers
+             SET applied_to_transfer_sync_id = ?,
+                 updated_at = datetime('now'),
+                 synced = 0
+           WHERE sync_id = ? AND applied_to_transfer_sync_id IS NULL
+        `);
+        for (const sId of lcvSyncIdsToMark) {
+          markLcv.run(row.sync_id, sId);
+        }
+      } catch (lcvMarkErr) {
+        console.warn('[transfers.receive] LCV mark-applied failed:', lcvMarkErr.message);
+      }
+    }
 
     // Persist variances in master.db (outside the tenant transaction).
     if (varianceInserts.length > 0) {

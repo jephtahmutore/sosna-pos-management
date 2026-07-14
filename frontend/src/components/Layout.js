@@ -306,6 +306,7 @@ const Layout = () => {
       '/hq/cash-position': 'HQ Cash Position',
       '/hq/products': 'HQ Products',
       '/hq/purchases': 'HQ Purchases',
+      '/hq/cost-of-delivery': 'Cost of Delivery',
       '/hq/confirm-grn': 'Generate GRN',
       '/hq/grn-archive': 'GRN Archive',
       '/hq/variances':   'Transit Variances',
@@ -508,6 +509,15 @@ const Layout = () => {
                   {hq && (
                     <div className={`nav-item ${isActive('/hq/purchases') ? 'active' : ''}`} onClick={() => navigate('/hq/purchases')}>
                       <FiClipboard className="nav-icon" /> <span>HQ Purchases</span>
+                    </div>
+                  )}
+                  {/* v1.10.185 — Cost of Delivery lives next to HQ Purchases
+                      because it's the same conceptual family (procurement
+                      side). Landed cost attached to a PO or a transfer,
+                      absorbed into WAC on GRN / transfer receive. */}
+                  {hq && (
+                    <div className={`nav-item ${isActive('/hq/cost-of-delivery') ? 'active' : ''}`} onClick={() => navigate('/hq/cost-of-delivery')}>
+                      <FiTruck className="nav-icon" /> <span>Cost of Delivery</span>
                     </div>
                   )}
                   {hq && (

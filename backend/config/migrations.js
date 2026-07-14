@@ -1104,6 +1104,12 @@ function initTenantDb(db) {
   addCol('payment_vouchers', 'is_landed_cost',           'INTEGER NOT NULL DEFAULT 0');
   addCol('payment_vouchers', 'linked_purchase_sync_id',  'TEXT');
   addCol('payment_vouchers', 'applied_to_grn_sync_id',   'TEXT');
+  // v1.10.185 — LCV can also attach to an inter-branch transfer.
+  // Transfers between branches also carry delivery cost (truck from
+  // Kassumbalesa to Lusaka). Same absorption model as PO-linked LCVs,
+  // just applied at transfers.js /receive time instead of Generate GRN.
+  addCol('payment_vouchers', 'linked_transfer_sync_id',   'TEXT');
+  addCol('payment_vouchers', 'applied_to_transfer_sync_id','TEXT');
 
   // v1.10.179 — one-shot backfill for the K-pool counters.
   // Idempotent via pool_backfilled_at: once set, this whole block is a

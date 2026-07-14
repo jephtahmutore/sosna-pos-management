@@ -251,43 +251,11 @@ const PaymentVoucherFormModal = ({
               </div>
             )}
 
-            {/* v1.10.182 — Landed Cost Voucher toggle. HQ-only feature.
-                When checked, the amount is absorbed into the picked PO's
-                WAC at Generate GRN time and does NOT appear as a period
-                expense on the profit report. Cash still leaves the Cash
-                Book (transporter is paid) — this just changes the
-                accounting classification from "expense" to
-                "inventory value". */}
-            {onHq && !editVoucher && (
-              <div className="form-group" style={{ padding: 12, background: '#fef3c7', border: '1px solid #fde68a', borderRadius: 8, marginTop: 8 }}>
-                <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', fontWeight: 600, color: '#92400e' }}>
-                  <input type="checkbox"
-                    checked={!!form.is_landed_cost}
-                    onChange={e => setForm({ ...form, is_landed_cost: e.target.checked, linked_purchase_sync_id: e.target.checked ? form.linked_purchase_sync_id : '' })} />
-                  This is a Landed Cost (delivery / transport / customs)
-                </label>
-                <div style={{ fontSize: 11, color: '#78350f', marginTop: 4, marginLeft: 24 }}>
-                  Amount is absorbed into the picked PO's inventory value — not booked as an expense.
-                </div>
-                {form.is_landed_cost && (
-                  <div style={{ marginTop: 10 }}>
-                    <label style={{ display: 'block', fontSize: 12, fontWeight: 600, color: '#78350f', marginBottom: 4 }}>
-                      Attach to Purchase <span style={{ color: '#dc2626' }}>*</span>
-                    </label>
-                    <select value={form.linked_purchase_sync_id}
-                      onChange={e => setForm({ ...form, linked_purchase_sync_id: e.target.value })}
-                      style={{ width: '100%', padding: '6px 8px', borderRadius: 6, border: '1px solid #d97706', background: '#fff' }}>
-                      <option value="">— pick a PO —</option>
-                      {openPurchases.map(p => (
-                        <option key={p.sync_id} value={p.sync_id}>
-                          {p.purchase_number} · {p.supplier_name || 'no supplier'} · {p.date}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                )}
-              </div>
-            )}
+            {/* v1.10.185 — Landed Cost Voucher toggle removed. Delivery /
+                transport / customs cost now has a dedicated HQ page at
+                /hq/cost-of-delivery. Single source of truth prevents
+                confusion between "normal expense" and "landed cost" on
+                the same modal. PV modal is back to pure expense entry. */}
 
             {/* Amount split across methods — mirrors the AP Record Payment modal.
                 v1.10.133 — HQ layout: USD + FRA on row 1, K sub-methods
