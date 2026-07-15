@@ -1172,41 +1172,13 @@ function initTenantDb(db) {
     console.warn('[cash-pool backfill] skipped:', e.message);
   }
 
-  // v1.10.190 — one-shot backfill for Liquor PVs that landed with all
-  // sub-drawer columns (cash_amount / bank_amount / momo_amount) at 0
-  // even though amount > 0. Cash Book on Liquor sums cash+bank+momo,
-  // so those rows were phantom outflows — invisible in Cash Book, and
-  // the running balance was overstated by their total. Root cause was
-  // in PaymentVoucherFormModal + backend paymentVouchers (both patched
-  // in v1.10.190); this backfill fixes rows written before the patch.
-  //
-  // Mirror preserves Liquor slot mapping (Cash→usd, MoMo→fra, Bank→k)
-  // so the sum matches the row's total amount exactly. Idempotent —
-  // WHERE clause self-limits, so re-runs after fix are no-ops.
-  try {
-    const bs = db.prepare(`SELECT currency_mode FROM business_settings ORDER BY id ASC LIMIT 1`).get();
-    const isLiquorKMigr = String(bs?.currency_mode || '').toUpperCase() === 'K';
-    if (isLiquorKMigr) {
-      const info = db.prepare(`
-        UPDATE payment_vouchers
-           SET cash_amount = COALESCE(usd_amount, 0),
-               momo_amount = COALESCE(fra_amount, 0),
-               bank_amount = COALESCE(k_amount,   0),
-               updated_at  = datetime('now'),
-               synced      = 0
-         WHERE deleted_at IS NULL
-           AND amount > 0
-           AND COALESCE(cash_amount, 0) = 0
-           AND COALESCE(bank_amount, 0) = 0
-           AND COALESCE(momo_amount, 0) = 0
-      `).run();
-      if (info.changes > 0) {
-        console.log(`[pv sub-drawer backfill] mirrored ${info.changes} Liquor PV row(s)`);
-      }
-    }
-  } catch (e) {
-    console.warn('[pv sub-drawer backfill] skipped:', e.message);
-  }
+  // v1.10.193 — REMOVED the v1.10.190 Liquor PV sub-drawer backfill.
+  // Root cause fixed in v1.10.190 (PaymentVoucherFormModal + backend
+  // paymentVouchers). Leaving the backfill in would silently mirror any
+  // future regression on every restart, hiding it from Cash Book — same
+  // failure pattern as the v1.8.68 usd_change_given backfill deleted in
+  // v1.10.109. If a legacy row is still miscoloured, run the one-off
+  // repair manually.
 
   // Multi-unit support — JSON array of { name, conv, price, is_base } stored on the product.
   // The base unit (conv=1) is always the smallest packaging (e.g. PCS for sosna).
@@ -1337,54 +1309,14 @@ function initTenantDb(db) {
   addCol('orders',             'cash_received',        'REAL NOT NULL DEFAULT 0');
   addCol('orders',             'momo_received',        'REAL NOT NULL DEFAULT 0');
   addCol('orders',             'bank_received',        'REAL NOT NULL DEFAULT 0');
-  // One-time backfill for existing orders — slot everything into the matching bucket
-  // based on the legacy payment_method so historical Cash Reports still total correctly.
-  try {
-    db.prepare(`
-      UPDATE orders
-      SET cash_received = CASE
-            WHEN payment_method IN ('Cash', 'Credit', 'Partial-Credit') THEN amount_received
-            ELSE 0 END,
-          momo_received = CASE
-            WHEN payment_method = 'Mobile Money' THEN amount_received
-            ELSE 0 END,
-          bank_received = CASE
-            WHEN payment_method IN ('Transfer', 'Bank', 'Bank Transfer') THEN amount_received
-            ELSE 0 END
-      WHERE deleted_at IS NULL
-        AND COALESCE(cash_received, 0) = 0
-        AND COALESCE(momo_received, 0) = 0
-        AND COALESCE(bank_received, 0) = 0
-        AND amount_received > 0
-    `).run();
-  } catch (e) { /* ignore */ }
-
-  // One-time backfill: link any unlinked order whose customer_name matches exactly ONE
-  // existing customer in the same tenant. Ambiguous duplicates stay NULL — they must be
-  // claimed explicitly so we don't guess wrong.
-  try {
-    db.prepare(`
-      UPDATE orders
-      SET customer_sync_id = (
-        SELECT c.sync_id FROM customers c
-        WHERE c.name = orders.customer_name
-          AND c.deleted_at IS NULL
-          AND c.tenant_id = orders.tenant_id
-        GROUP BY c.name
-        HAVING COUNT(*) = 1
-      ),
-      customer_id = (
-        SELECT c.id FROM customers c
-        WHERE c.name = orders.customer_name
-          AND c.deleted_at IS NULL
-          AND c.tenant_id = orders.tenant_id
-        GROUP BY c.name
-        HAVING COUNT(*) = 1
-      )
-      WHERE customer_sync_id IS NULL
-        AND customer_name IS NOT NULL AND customer_name != ''
-    `).run();
-  } catch (e) { /* ignore */ }
+  // v1.10.193 — REMOVED two backfills that ran on every restart:
+  //   (a) legacy payment_method → cash_received/momo_received/bank_received
+  //   (b) orders → customer_id auto-link by unambiguous name
+  // Both would silently mutate NEW data if a future write path missed the
+  // per-currency buckets or if a new customer was later added with the
+  // same name as an old unlinked order. The initial run already applied
+  // for every deployed DB; if a truly-legacy row still needs seeding, do
+  // it via a one-off repair.
   addCol('grn',                'supplier_sync_id',  'TEXT');
   addCol('ap_payments',        'supplier_sync_id',  'TEXT');
   addCol('daily_actual_balance','product_sync_id',  'TEXT');
@@ -1495,28 +1427,11 @@ function initTenantDb(db) {
     }
   } catch (_) {}
 
-  // ─── One-time backfill: link orders to a customer where name is unambiguous.
-  // Orders created before customer_id linkage existed only carry customer_name (text).
-  // For every distinct (tenant, customer_name) where exactly ONE active customer matches,
-  // link those orders to that customer. Names with multiple customers stay unassigned
-  // so the user can disambiguate via the merge tool.
-  try {
-    const matches = db.prepare(`
-      SELECT o.tenant_id, o.customer_name,
-             MIN(c.id) AS cid, MIN(c.sync_id) AS sid, COUNT(c.id) AS cnt
-      FROM orders o
-      JOIN customers c ON c.name = o.customer_name AND c.tenant_id = o.tenant_id AND c.deleted_at IS NULL
-      WHERE o.customer_id IS NULL AND o.customer_name IS NOT NULL AND o.customer_name != ''
-        AND o.deleted_at IS NULL
-      GROUP BY o.tenant_id, o.customer_name
-      HAVING COUNT(c.id) = 1
-    `).all();
-    const linkStmt = db.prepare(`
-      UPDATE orders SET customer_id = ?, customer_sync_id = ?
-      WHERE tenant_id = ? AND customer_name = ? AND customer_id IS NULL AND deleted_at IS NULL
-    `);
-    for (const m of matches) linkStmt.run(m.cid, m.sid, m.tenant_id, m.customer_name);
-  } catch (_) {}
+  // v1.10.193 — REMOVED (see also the deleted one earlier in this file).
+  // Second, near-duplicate copy of the orders → customer_id auto-link
+  // backfill. Same reason for removal: on every restart it would guess
+  // and could wrongly link a newly-added same-named customer to an old
+  // sale. Use the merge tool for legacy fix-ups.
 
   // ── Cash Reports per-cashier migration ────────────────────────────────────
   // The original schema had UNIQUE on the `date` column alone, which blocked
