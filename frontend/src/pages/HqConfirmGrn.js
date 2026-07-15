@@ -316,12 +316,23 @@ function GenerateGrnModal({ purchase, items, extras, onClose, onGenerated }) {
     if (!ccy || ccy === 'USD') return c;
     return rate > 0 ? c / rate : c;
   };
-  const wacCcyLabel = (() => {
+  // v1.10.189 — Label must follow what toWacCcy actually produced, not
+  // the PO's cost_currency. On tri-currency branches (Kassumbalesa), a
+  // K-priced PO with fx_rate_used > 0 gets converted K → USD by
+  // toWacCcy, so the preview value is USD even though cost_currency='K'.
+  // Reading cost_currency alone slapped a K label on a USD number.
+  const wacCcy = (() => {
     const c = String(purchase?.cost_currency || '').toUpperCase();
-    if (!c || c === 'USD') return '$';
-    if (c === 'K')         return 'K';
-    if (c === 'FRA')       return 'F ';
-    return c + ' ';
+    const rate = parseFloat(purchase?.fx_rate_used || 0) || 0;
+    if (!c || c === 'USD') return 'USD';
+    if (rate > 0)          return 'USD';
+    return c;
+  })();
+  const wacCcyLabel = (() => {
+    if (wacCcy === 'USD') return '$';
+    if (wacCcy === 'K')   return 'K';
+    if (wacCcy === 'FRA') return 'F ';
+    return wacCcy + ' ';
   })();
   const fmtWac = (n) => `${wacCcyLabel}${parseFloat(n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
