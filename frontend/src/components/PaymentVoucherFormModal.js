@@ -166,9 +166,15 @@ const PaymentVoucherFormModal = ({
     }
     setSaving(true);
     try {
+      // v1.10.190 — when the modal isn't opened from Cash Report
+      // (lockPaidFrom=false, i.e. the + New Voucher button on the PV
+      // page), paid_from should be 'Main cashier' — the general petty-
+      // cash pool, not a specific cashier's drawer. Prior 'Cash drawer'
+      // (lowercase 'd') also broke case-sensitive queries in Cash
+      // Report / Cash Book.
       let resolvedPaidFrom = form.paid_from;
       if (!lockPaidFrom) {
-        resolvedPaidFrom = 'Cash drawer';
+        resolvedPaidFrom = 'Main cashier';
       }
       const payload = {
         paid_to:     form.paid_to.trim(),
@@ -180,7 +186,16 @@ const PaymentVoucherFormModal = ({
         k_amount:    k,
         // v1.10.133 — HQ K sub-method split. Backend paymentVouchers.js
         // stores cash_amount / bank_amount / momo_amount when present.
-        ...(onHq ? { cash_amount: kCash, bank_amount: kBank, momo_amount: kMomo } : {}),
+        // v1.10.190 — Liquor branches also need the sub-drawer mirror.
+        // The Liquor UI relabels usd/fra/k as Cash/MoMo/Bank but only
+        // wrote the currency columns; Cash Book sums cash+bank+momo on
+        // Liquor, so PVs came out as K0 outflow (invisible balance).
+        // Mirror the slot values into their matching sub-drawer.
+        ...(onHq
+          ? { cash_amount: kCash, bank_amount: kBank, momo_amount: kMomo }
+          : effectiveLiquorStyle
+            ? { cash_amount: usd, momo_amount: fra, bank_amount: k }
+            : {}),
         date:        form.date,
         paid_from:   resolvedPaidFrom,
         invoice_attachment: form.invoice_attachment,

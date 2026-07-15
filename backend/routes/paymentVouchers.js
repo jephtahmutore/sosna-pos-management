@@ -182,9 +182,25 @@ router.post('/', auth, (req, res) => {
     const kAmt   = isHqTriCcy
       ? (parseFloat(k_amount) || 0)
       : (parseFloat(k_amount   ?? momo_amount ?? 0) || 0);
-    let cashAmt = isHqTriCcy ? (parseFloat(cash_amount) || 0) : 0;
-    let bankAmt = isHqTriCcy ? (parseFloat(bank_amount) || 0) : 0;
-    let momoAmt = isHqTriCcy ? (parseFloat(momo_amount) || 0) : 0;
+    // v1.10.190 — Liquor branches also populate cash/bank/momo so that
+    // Cash Book's Liquor sum (cash+bank+momo) sees the outflow. Prior
+    // logic force-zeroed them on non-HQ writes; Liquor PVs then landed
+    // invisibly in Cash Book (see PV-2026-EBD2A7-0036, K130 phantom on
+    // Mansa; K8,420 on Lusaka across 4 rows). Client already mirrors
+    // (frontend v1.10.190) but derive here too so any other path stays
+    // honest. Liquor slot mapping: Cash→usd, MoMo→fra, Bank→k.
+    let cashAmt, bankAmt, momoAmt;
+    if (isHqTriCcy) {
+      cashAmt = parseFloat(cash_amount) || 0;
+      bankAmt = parseFloat(bank_amount) || 0;
+      momoAmt = parseFloat(momo_amount) || 0;
+    } else if (isLiquorK) {
+      cashAmt = cash_amount !== undefined ? (parseFloat(cash_amount) || 0) : usdAmt;
+      bankAmt = bank_amount !== undefined ? (parseFloat(bank_amount) || 0) : kAmt;
+      momoAmt = momo_amount !== undefined ? (parseFloat(momo_amount) || 0) : fraAmt;
+    } else {
+      cashAmt = 0; bankAmt = 0; momoAmt = 0;
+    }
     // v1.10.172 — HQ save guards.
     // (1) USD/FRA no-mirror: cash/bank/momo are K sub-drawers on HQ, NOT
     //     currency mirrors. If the payload set usd_amount or fra_amount,
@@ -295,9 +311,19 @@ router.put('/:id', auth, (req, res) => {
     const usdAmt = isHqTriCcy ? (parseFloat(usd_amount) || 0) : (parseFloat(usd_amount ?? cash_amount ?? 0) || 0);
     const fraAmt = isHqTriCcy ? (parseFloat(fra_amount) || 0) : (parseFloat(fra_amount ?? bank_amount ?? 0) || 0);
     const kAmt   = isHqTriCcy ? (parseFloat(k_amount)   || 0) : (parseFloat(k_amount   ?? momo_amount ?? 0) || 0);
-    let cashAmt = isHqTriCcy ? (parseFloat(cash_amount) || 0) : 0;
-    let bankAmt = isHqTriCcy ? (parseFloat(bank_amount) || 0) : 0;
-    let momoAmt = isHqTriCcy ? (parseFloat(momo_amount) || 0) : 0;
+    // v1.10.190 — Liquor sub-drawer mirror (see POST comment).
+    let cashAmt, bankAmt, momoAmt;
+    if (isHqTriCcy) {
+      cashAmt = parseFloat(cash_amount) || 0;
+      bankAmt = parseFloat(bank_amount) || 0;
+      momoAmt = parseFloat(momo_amount) || 0;
+    } else if (isLiquorK) {
+      cashAmt = cash_amount !== undefined ? (parseFloat(cash_amount) || 0) : usdAmt;
+      bankAmt = bank_amount !== undefined ? (parseFloat(bank_amount) || 0) : kAmt;
+      momoAmt = momo_amount !== undefined ? (parseFloat(momo_amount) || 0) : fraAmt;
+    } else {
+      cashAmt = 0; bankAmt = 0; momoAmt = 0;
+    }
     // v1.10.172 — HQ save guards.
     // (1) USD/FRA no-mirror: cash/bank/momo are K sub-drawers on HQ, NOT
     //     currency mirrors. If the payload set usd_amount or fra_amount,

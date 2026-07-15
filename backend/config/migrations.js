@@ -1172,6 +1172,42 @@ function initTenantDb(db) {
     console.warn('[cash-pool backfill] skipped:', e.message);
   }
 
+  // v1.10.190 — one-shot backfill for Liquor PVs that landed with all
+  // sub-drawer columns (cash_amount / bank_amount / momo_amount) at 0
+  // even though amount > 0. Cash Book on Liquor sums cash+bank+momo,
+  // so those rows were phantom outflows — invisible in Cash Book, and
+  // the running balance was overstated by their total. Root cause was
+  // in PaymentVoucherFormModal + backend paymentVouchers (both patched
+  // in v1.10.190); this backfill fixes rows written before the patch.
+  //
+  // Mirror preserves Liquor slot mapping (Cash→usd, MoMo→fra, Bank→k)
+  // so the sum matches the row's total amount exactly. Idempotent —
+  // WHERE clause self-limits, so re-runs after fix are no-ops.
+  try {
+    const bs = db.prepare(`SELECT currency_mode FROM business_settings ORDER BY id ASC LIMIT 1`).get();
+    const isLiquorKMigr = String(bs?.currency_mode || '').toUpperCase() === 'K';
+    if (isLiquorKMigr) {
+      const info = db.prepare(`
+        UPDATE payment_vouchers
+           SET cash_amount = COALESCE(usd_amount, 0),
+               momo_amount = COALESCE(fra_amount, 0),
+               bank_amount = COALESCE(k_amount,   0),
+               updated_at  = datetime('now'),
+               synced      = 0
+         WHERE deleted_at IS NULL
+           AND amount > 0
+           AND COALESCE(cash_amount, 0) = 0
+           AND COALESCE(bank_amount, 0) = 0
+           AND COALESCE(momo_amount, 0) = 0
+      `).run();
+      if (info.changes > 0) {
+        console.log(`[pv sub-drawer backfill] mirrored ${info.changes} Liquor PV row(s)`);
+      }
+    }
+  } catch (e) {
+    console.warn('[pv sub-drawer backfill] skipped:', e.message);
+  }
+
   // Multi-unit support — JSON array of { name, conv, price, is_base } stored on the product.
   // The base unit (conv=1) is always the smallest packaging (e.g. PCS for sosna).
   // Other rows are larger packagings: { name:"Box", conv:24, price:40 } means 1 box = 24 base units.
