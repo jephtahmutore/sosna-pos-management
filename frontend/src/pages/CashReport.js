@@ -1720,12 +1720,14 @@ const CashReport = () => {
               // k_received as cash / momo / bank. Render with K symbol + 2 dec.
               const fmtK = (n) => `${curSym}${parseFloat(n||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}`;
               const totalExp = usdEx + fraEx + kEx;
-              // v1.10.192 — Liquor consolidated totals (mirror Redsea).
-              // r.total / r.expected are the row's stored sum-across-methods;
-              // rowDiff is the signed variance, rowStatus is OK / Slight ± /
-              // Surplus / Short from getStatus() (unchanged from Sosna).
-              const rowTotal    = parseFloat(r.total    || 0) || 0;
-              const rowExpected = parseFloat(r.expected || 0) || 0;
+              // v1.10.194 — Liquor consolidated totals derived live from the
+              // per-currency columns (usd/fra/k which hold Cash/MoMo/Bank on
+              // Liquor). r.total / r.expected on the stored row are legacy
+              // fields — sometimes hold just the Cash bucket, sometimes the
+              // USD-equivalent — not the true sum-across-methods. Computing
+              // here mirrors the counter cards at the top of Cash Report.
+              const rowTotal    = usdR + fraR + kR;
+              const rowExpected = usdE + fraE + kE;
               const rowDiff     = rowTotal - rowExpected;
               const rowStatus   = getStatus(rowDiff);
               return (
