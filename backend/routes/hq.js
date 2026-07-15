@@ -438,36 +438,67 @@ router.get('/cash-position', hqAuth, (req, res) => {
     // populated on legacy rows. Use a COALESCE fallback so single-currency
     // tenants (lusaka1, mansa1 — bank/momo never enter the picture) still
     // total correctly via the legacy column.
-    const sumIn = (db, datePrefix, span) => {
+    // v1.10.153 — two fixes:
+    //   (a) COALESCE(paid_at, created_at) on the date bucket. single_pos
+    //       orders (Mansa, Lusaka) never set paid_at, so the previous
+    //       filter excluded 100% of their sales from Today AND MTD.
+    //   (b) Route amounts by branch currency_mode:
+    //       - K-only (Mansa, Lusaka): cash_received holds K, not USD. All
+    //         cash / momo / bank / cr / cp / pv amounts land in K bucket.
+    //       - USD+FRA or USD+FRA+K (Kassumbalesa): the existing split
+    //         (cash_received → USD, fra_received → FRA, k_received → K) is
+    //         correct because the POS records each currency separately.
+    const sumIn = (db, datePrefix, span, isKOnly) => {
       const wherePref = span === 'today' ? `= ?` : `LIKE ? || '%'`;
       const dateArg   = datePrefix;
-      const param     = (col) => `substr(COALESCE(${col}, ''), 1, ${span === 'today' ? 10 : 7}) ${wherePref}`;
+      const len       = span === 'today' ? 10 : 7;
+      const paramPaid = `substr(COALESCE(paid_at, created_at, ''), 1, ${len}) ${wherePref}`;
+      const paramDate = (col) => `substr(COALESCE(${col}, ''), 1, ${len}) ${wherePref}`;
+      if (isKOnly) {
+        // Everything the POS + AR channels take in — cash, momo, bank on
+        // orders (Liquor-style), plus manual CR + customer_payments —
+        // aggregates into K. No USD or FRA rows on this branch.
+        const row = tryGet(db, `
+          SELECT
+            (SELECT COALESCE(SUM(COALESCE(cash_received,0) + COALESCE(momo_received,0) + COALESCE(bank_received,0)), 0)
+               FROM orders WHERE deleted_at IS NULL
+                 AND (status IS NULL OR status IN ('PAID','DISPATCHED'))
+                 AND ${paramPaid}) AS sales_k,
+            (SELECT COALESCE(SUM(COALESCE(cash_amount,0) + COALESCE(momo_amount,0) + COALESCE(bank_amount,0)), 0)
+               FROM cash_receipts WHERE deleted_at IS NULL AND ${paramDate('date')}) AS cr_k,
+            (SELECT COALESCE(SUM(COALESCE(cash_amount,0) + COALESCE(momo_amount,0) + COALESCE(bank_amount,0)), 0)
+               FROM customer_payments WHERE deleted_at IS NULL AND ${paramDate('payment_date')}) AS cp_k
+        `, [dateArg, dateArg, dateArg]);
+        const r = row || {};
+        return { usd: 0, fra: 0, k: (r.sales_k || 0) + (r.cr_k || 0) + (r.cp_k || 0) };
+      }
+      // Multi-currency branch (USD+FRA or USD+FRA+K): read per-currency splits.
       const row = tryGet(db, `
         SELECT
           (SELECT COALESCE(SUM(cash_received), 0)
              FROM orders WHERE deleted_at IS NULL
                AND (status IS NULL OR status IN ('PAID','DISPATCHED'))
-               AND ${param('paid_at')}) AS sales_usd,
+               AND ${paramPaid}) AS sales_usd,
           (SELECT COALESCE(SUM(fra_received), 0)
              FROM orders WHERE deleted_at IS NULL
                AND (status IS NULL OR status IN ('PAID','DISPATCHED'))
-               AND ${param('paid_at')}) AS sales_fra,
+               AND ${paramPaid}) AS sales_fra,
           (SELECT COALESCE(SUM(k_received), 0)
              FROM orders WHERE deleted_at IS NULL
                AND (status IS NULL OR status IN ('PAID','DISPATCHED'))
-               AND ${param('paid_at')}) AS sales_k,
+               AND ${paramPaid}) AS sales_k,
           (SELECT COALESCE(SUM(CASE WHEN COALESCE(usd_amount,0) > 0 THEN usd_amount ELSE COALESCE(cash_amount,0) END), 0)
-             FROM cash_receipts WHERE deleted_at IS NULL AND ${param('date')}) AS cr_usd,
+             FROM cash_receipts WHERE deleted_at IS NULL AND ${paramDate('date')}) AS cr_usd,
           (SELECT COALESCE(SUM(fra_amount), 0)
-             FROM cash_receipts WHERE deleted_at IS NULL AND ${param('date')}) AS cr_fra,
+             FROM cash_receipts WHERE deleted_at IS NULL AND ${paramDate('date')}) AS cr_fra,
           (SELECT COALESCE(SUM(k_amount), 0)
-             FROM cash_receipts WHERE deleted_at IS NULL AND ${param('date')}) AS cr_k,
+             FROM cash_receipts WHERE deleted_at IS NULL AND ${paramDate('date')}) AS cr_k,
           (SELECT COALESCE(SUM(CASE WHEN COALESCE(usd_amount,0) > 0 THEN usd_amount ELSE COALESCE(cash_amount,0) END), 0)
-             FROM customer_payments WHERE deleted_at IS NULL AND ${param('payment_date')}) AS cp_usd,
+             FROM customer_payments WHERE deleted_at IS NULL AND ${paramDate('payment_date')}) AS cp_usd,
           (SELECT COALESCE(SUM(fra_amount), 0)
-             FROM customer_payments WHERE deleted_at IS NULL AND ${param('payment_date')}) AS cp_fra,
+             FROM customer_payments WHERE deleted_at IS NULL AND ${paramDate('payment_date')}) AS cp_fra,
           (SELECT COALESCE(SUM(k_amount), 0)
-             FROM customer_payments WHERE deleted_at IS NULL AND ${param('payment_date')}) AS cp_k
+             FROM customer_payments WHERE deleted_at IS NULL AND ${paramDate('payment_date')}) AS cp_k
       `, [dateArg, dateArg, dateArg, dateArg, dateArg, dateArg, dateArg, dateArg, dateArg]);
       const r = row || {};
       return {
@@ -477,8 +508,21 @@ router.get('/cash-position', hqAuth, (req, res) => {
       };
     };
 
-    const sumOut = (db, datePrefix, span) => {
-      const param = (col) => `substr(COALESCE(${col}, ''), 1, ${span === 'today' ? 10 : 7}) = ?`;
+    const sumOut = (db, datePrefix, span, isKOnly) => {
+      const len   = span === 'today' ? 10 : 7;
+      const wherePref = span === 'today' ? `= ?` : `LIKE ? || '%'`;
+      const param = (col) => `substr(COALESCE(${col}, ''), 1, ${len}) ${wherePref}`;
+      if (isKOnly) {
+        const row = tryGet(db, `
+          SELECT
+            (SELECT COALESCE(SUM(COALESCE(cash_amount,0) + COALESCE(momo_amount,0) + COALESCE(bank_amount,0)), 0)
+               FROM payment_vouchers WHERE deleted_at IS NULL AND ${param('date')}) AS pv_k,
+            (SELECT COALESCE(SUM(COALESCE(cash_amount,0) + COALESCE(momo_amount,0) + COALESCE(bank_amount,0)), 0)
+               FROM ap_payments WHERE deleted_at IS NULL AND ${param('date')}) AS ap_k
+        `, [datePrefix, datePrefix]);
+        const r = row || {};
+        return { usd: 0, fra: 0, k: (r.pv_k || 0) + (r.ap_k || 0) };
+      }
       const row = tryGet(db, `
         SELECT
           (SELECT COALESCE(SUM(CASE WHEN COALESCE(usd_amount,0) > 0 THEN usd_amount ELSE COALESCE(cash_amount,0) END), 0)
@@ -501,14 +545,16 @@ router.get('/cash-position', hqAuth, (req, res) => {
     for (const t of tenants) {
       try {
         const db = getTenantDb(t.slug);
-        const settings = tryGet(db, `SELECT business_name FROM business_settings ORDER BY id ASC LIMIT 1`) || {};
-        const todayIn  = sumIn(db,  todayPrefix, 'today');
-        const todayOut = sumOut(db, todayPrefix, 'today');
-        const mtdIn    = sumIn(db,  monthPrefix, 'mtd');
-        const mtdOut   = sumOut(db, monthPrefix, 'mtd');
+        const settings = tryGet(db, `SELECT business_name, currency_mode FROM business_settings ORDER BY id ASC LIMIT 1`) || {};
+        const isKOnly = String(settings.currency_mode || 'K').toUpperCase() === 'K';
+        const todayIn  = sumIn(db,  todayPrefix, 'today', isKOnly);
+        const todayOut = sumOut(db, todayPrefix, 'today', isKOnly);
+        const mtdIn    = sumIn(db,  monthPrefix, 'mtd',   isKOnly);
+        const mtdOut   = sumOut(db, monthPrefix, 'mtd',   isKOnly);
         branches.push({
           slug: t.slug,
           name: settings.business_name || t.business_name || t.slug,
+          currency_mode: settings.currency_mode || 'K',
           today: {
             in:  todayIn,
             out: todayOut,

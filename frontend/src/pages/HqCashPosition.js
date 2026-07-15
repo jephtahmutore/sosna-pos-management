@@ -104,7 +104,7 @@ export default function HqCashPosition() {
                     <FiAlertTriangle style={{ verticalAlign: 'middle', marginRight: 4 }} /> {b.error}
                   </div>
                 ) : (
-                  <BranchTable data={b[period]} />
+                  <BranchTable data={b[period]} currencyMode={b.currency_mode} />
                 )}
               </div>
             ))}
@@ -155,7 +155,16 @@ function RollupRow({ rollup }) {
   );
 }
 
-function BranchTable({ data }) {
+// v1.10.153 — filter the currency rows by the branch's own currency_mode
+// so K-only branches don't show empty USD / FRA rows. Multi-currency
+// branches (USD+FRA or USD+FRA+K) keep all three rows.
+function BranchTable({ data, currencyMode }) {
+  const mode = String(currencyMode || 'K').toUpperCase();
+  const rows = mode === 'K'
+    ? ['k']
+    : mode === 'USD+FRA'
+      ? ['usd', 'fra']
+      : ['usd', 'fra', 'k']; // USD+FRA+K
   return (
     <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
       <thead>
@@ -167,7 +176,7 @@ function BranchTable({ data }) {
         </tr>
       </thead>
       <tbody>
-        {CCY_LIST.map(ccy => (
+        {rows.map(ccy => (
           <tr key={ccy} style={{ borderTop: '1px solid #f1f5f9' }}>
             <td style={{ ...td, fontWeight: 700 }}>{CCY_LABEL[ccy]}</td>
             <td style={{ ...td, textAlign: 'right', color: '#047857' }}>{fmtCcy(data.in[ccy], ccy)}</td>
