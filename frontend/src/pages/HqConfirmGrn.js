@@ -403,7 +403,8 @@ function GenerateGrnModal({ purchase, items, extras, onClose, onGenerated }) {
     if (!prod) return null;
     const q = parseFloat(row.quantity) || 0;
     if (q <= 0) return null;
-    const conv = convToBase(prod, row.unit || prod.unit);
+    const displayUnit = row.unit || prod.unit || 'base';
+    const conv = convToBase(prod, displayUnit);
     const goodsCpPerLine = toWacCcy(row.unit_price);
     const goodsCpPerBase = conv > 0 ? goodsCpPerLine / conv : goodsCpPerLine;
     const cpPerBase = goodsCpPerBase + landedPerBase;
@@ -418,8 +419,35 @@ function GenerateGrnModal({ purchase, items, extras, onClose, onGenerated }) {
     } else {
       newWac = (curStk * curWac + baseQty * cpPerBase) / (curStk + baseQty);
     }
-    return { curStk, curWac, cpPerBase, newWac };
+    // v1.10.199 — also return the per-DISPLAY-UNIT values (usually Box or
+    // Crate) so the modal can show numbers in the same unit the operator
+    // entered on the line. Users think in Boxes, not in the atomic base
+    // (Bottle / PCS). Preserves per-base fields for anything still
+    // needing them.
+    return {
+      curStk, curWac, cpPerBase, newWac,
+      displayUnit,
+      conv,
+      curWacPerDisplay: curWac * conv,
+      newWacPerDisplay: newWac * conv,
+      cpPerDisplay:     cpPerBase * conv,
+    };
   };
+  // Shared display unit for the tfoot delivery-cost line: pick the first
+  // line's unit that has a conv > 1 (usually Box). Falls back to 'base'
+  // if all lines are already in the atomic base unit.
+  const displayUnitForFoot = (() => {
+    for (const r of grnLines) {
+      if (!r.product_sync_id) continue;
+      const prod = productCosts[r.product_sync_id];
+      if (!prod) continue;
+      const u = r.unit || prod.unit;
+      const c = convToBase(prod, u);
+      if (c > 1) return { name: u, conv: c };
+    }
+    return { name: 'base unit', conv: 1 };
+  })();
+  const landedPerDisplayFoot = landedPerBase * displayUnitForFoot.conv;
   const damageUnits = grnLines.reduce((s, r) => s + (parseFloat(r.damaged_quantity) || 0), 0);
   const netStockValue = Math.max(0, total - damageTotal);
   const finalPayable = Math.max(0, total - cnTotal);
@@ -534,8 +562,10 @@ function GenerateGrnModal({ purchase, items, extras, onClose, onGenerated }) {
                 <th style={{ ...th, textAlign: 'right' }}>Total</th>
                 {/* v1.10.188 — New WAC preview. Blended cost that will
                     land in this product's avg_cost_price at the branch
-                    after Save. Includes goods cost + LCV per-base share. */}
-                <th style={{ ...th, textAlign: 'right', color: '#c2410c' }} title="Blended WAC after Save — includes delivery cost share">New WAC / base</th>
+                    after Save. Includes goods cost + LCV per-base share.
+                    v1.10.199 — display per LINE UNIT (usually Box) so
+                    operators can read it against the Unit Cost column. */}
+                <th style={{ ...th, textAlign: 'right', color: '#c2410c' }} title="Blended WAC after Save — includes delivery cost share, shown in the line's unit">New WAC / unit</th>
               </tr>
             </thead>
             <tbody>
@@ -570,19 +600,22 @@ function GenerateGrnModal({ purchase, items, extras, onClose, onGenerated }) {
                         style={{ width: 90, padding: '5px 8px', border: '1px solid #d1d5db', borderRadius: 5, fontSize: 12, textAlign: 'right' }} />
                     </td>
                     <td style={{ ...td, textAlign: 'right', fontWeight: 700, color: '#16a34a' }}>{fmtMoney(line)}</td>
-                    {/* v1.10.188 — New WAC preview cell */}
+                    {/* v1.10.188 — New WAC preview cell.
+                        v1.10.199 — values shown in line unit (e.g. Box)
+                        instead of atomic base (e.g. Bottle). */}
                     <td style={{ ...td, textAlign: 'right', color: '#c2410c' }}>
                       {(() => {
                         const w = wacPreview(r);
                         if (!w) return <span style={{ color: '#cbd5e1' }}>—</span>;
                         const bumped = w.curWac > 0 && w.newWac > w.curWac + 0.001;
                         const dropped = w.curWac > 0 && w.newWac < w.curWac - 0.001;
+                        const deltaPerDisplay = Math.abs(w.newWacPerDisplay - w.curWacPerDisplay);
                         return (
                           <div>
-                            <div style={{ fontWeight: 700 }}>{fmtWac(w.newWac)}</div>
+                            <div style={{ fontWeight: 700 }}>{fmtWac(w.newWacPerDisplay)} <span style={{ fontSize: 10, color: '#9a3412' }}>/ {w.displayUnit}</span></div>
                             {w.curWac > 0 && (
                               <div style={{ fontSize: 10, color: bumped ? '#dc2626' : (dropped ? '#16a34a' : '#94a3b8') }}>
-                                was {fmtWac(w.curWac)} · {bumped ? '▲' : (dropped ? '▼' : '=')} {fmtWac(Math.abs(w.newWac - w.curWac))}
+                                was {fmtWac(w.curWacPerDisplay)} · {bumped ? '▲' : (dropped ? '▼' : '=')} {fmtWac(deltaPerDisplay)}
                               </div>
                             )}
                             {w.curWac <= 0 && (
@@ -604,8 +637,8 @@ function GenerateGrnModal({ purchase, items, extras, onClose, onGenerated }) {
               </tr>
               {landedPerBase > 0 && (
                 <tr style={{ background: '#fff7ed' }}>
-                  <td colSpan={6} style={{ ...td, textAlign: 'right', fontWeight: 700, color: '#7c2d12' }}>Delivery cost per base unit (spread)</td>
-                  <td style={{ ...td, textAlign: 'right', fontWeight: 800, color: '#c2410c' }}>+{fmtWac(landedPerBase)}</td>
+                  <td colSpan={6} style={{ ...td, textAlign: 'right', fontWeight: 700, color: '#7c2d12' }}>Delivery cost per {displayUnitForFoot.name} (spread)</td>
+                  <td style={{ ...td, textAlign: 'right', fontWeight: 800, color: '#c2410c' }}>+{fmtWac(landedPerDisplayFoot)}</td>
                   <td style={{ ...td }}></td>
                 </tr>
               )}
