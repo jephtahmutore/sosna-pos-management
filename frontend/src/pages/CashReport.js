@@ -1620,11 +1620,15 @@ const CashReport = () => {
           Sosna tri-ccy style (Kassumbalesa) keeps the gradient per-
           currency cards — legitimate when each currency is its own drawer. */}
       {filteredReports.length > 0 && isLiquorStyle && (() => {
-        const sumCol = (col) => filteredReports.reduce((s, r) => s + (parseFloat(r[col] || 0) || 0), 0);
-        // Expected pulls per-currency snapshots (usd_expected on Liquor = Cash expected,
-        // fra_expected = MoMo expected, k_expected = Bank expected — all in K).
-        const totalExpected = sumCol('usd_expected') + sumCol('fra_expected') + sumCol('k_expected');
-        // Cash On Hand = 5-column Liquor formula: Cash + MoMo + Bank + Credit + Expenses.
+        // v1.10.197 — tile math MUST use the exact same source as the row
+        // Total / Expected columns below, otherwise the tile Difference
+        // won't reconcile with Σ (rowDiff). Prior version summed
+        // per-currency snapshot columns for Expected (usd_expected +
+        // fra_expected + k_expected), but on Liquor those are often 0
+        // on legacy rows while r.expected (dailyRevenue) holds the truth.
+        // Now: sum r.expected for Expected, and per-row rowTotal (same
+        // 5-column Liquor formula the row uses) for Cash on Hand.
+        const totalExpected = filteredReports.reduce((s, r) => s + (parseFloat(r.expected || 0) || 0), 0);
         const totalAfterChange = filteredReports.reduce((s, r) => {
           const usdR = parseFloat(r.usd_received || r.cash || 0);
           const fraR = parseFloat(r.fra_received || r.mobile_money || 0);
