@@ -1660,42 +1660,44 @@ const CashReport = () => {
         <h3 style={{ padding: '12px 16px', fontSize: 15, fontWeight: 600, borderBottom: '1px solid #e5e7eb' }}>Report History</h3>
         <table className="data-table">
           <thead>
-            {/* v1.9.32 — Report History columns follow the same axis swap as
-                the counter cards. Liquor branches see Cash / MoMo / Bank
-                with their diffs; Sosna branches see USD / FRA / K. */}
+            {/* v1.10.192 — Report History columns.
+                Liquor style → Bank | MoMo | Cash | Expenses | Credit |
+                               Total | Expected | Diff | Status | Comment
+                               (mirrors Redsea layout — no per-column diffs,
+                               single consolidated Difference + Status at end).
+                Sosna style  → per-currency columns (unchanged). */}
             <tr>
               <th>Date</th><th>Cashier</th>
               {isLiquorStyle ? (
                 <>
-                  <th style={{ color: '#16a34a' }}>Cash ({curSym})</th><th>Diff</th>
-                  <th style={{ color: '#ea580c' }}>MoMo ({curSym})</th><th>Diff</th>
-                  <th style={{ color: '#2563eb' }}>Bank ({curSym})</th><th>Diff</th>
+                  <th style={{ color: '#2563eb' }}>Bank ({curSym})</th>
+                  <th style={{ color: '#ea580c' }}>MoMo ({curSym})</th>
+                  <th style={{ color: '#16a34a' }}>Cash ({curSym})</th>
+                  <th style={{ color: '#dc2626' }}>Expenses ({curSym})</th>
+                  <th>Credit Sales</th>
+                  <th>Total ({curSym})</th>
+                  <th>Expected ({curSym})</th>
+                  <th>Difference</th>
+                  <th>Status</th>
+                  <th>Comment</th>
                 </>
               ) : (
                 <>
                   <th style={{ color: '#16a34a' }}>USD ($)</th><th>Diff $</th>
                   <th style={{ color: '#7c3aed' }}>FRA</th><th>Diff FRA</th>
                   <th style={{ color: '#ea580c' }}>K</th><th>Diff K</th>
-                </>
-              )}
-              {/* v1.8.26 — expenses split into 3 sub-columns.
-                  v1.9.32 — single Expenses column on Liquor branches. */}
-              {isLiquorStyle ? (
-                <th style={{ color: '#dc2626' }}>Expenses ({curSym})</th>
-              ) : (
-                <>
                   <th style={{ color: '#16a34a' }}>Exp $</th>
                   <th style={{ color: '#7c3aed' }}>Exp FRA</th>
                   <th style={{ color: '#ea580c' }}>Exp K</th>
+                  <th>Credit Sales</th>
+                  <th>Comment</th>
                 </>
               )}
-              <th>Credit Sales</th>
-              <th>Comment</th>
             </tr>
           </thead>
           <tbody>
             {filteredReports.length === 0 ? (
-              <tr><td colSpan={isLiquorStyle ? 11 : 13} style={{ textAlign: 'center', color: '#9ca3af', padding: 40 }}>No reports found for the selected period.</td></tr>
+              <tr><td colSpan={isLiquorStyle ? 12 : 13} style={{ textAlign: 'center', color: '#9ca3af', padding: 40 }}>No reports found for the selected period.</td></tr>
             ) : filteredReports.map(r => {
               const usdR = parseFloat(r.usd_received || r.cash || 0);
               const fraR = parseFloat(r.fra_received || r.mobile_money || 0);
@@ -1718,19 +1720,30 @@ const CashReport = () => {
               // k_received as cash / momo / bank. Render with K symbol + 2 dec.
               const fmtK = (n) => `${curSym}${parseFloat(n||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}`;
               const totalExp = usdEx + fraEx + kEx;
+              // v1.10.192 — Liquor consolidated totals (mirror Redsea).
+              // r.total / r.expected are the row's stored sum-across-methods;
+              // rowDiff is the signed variance, rowStatus is OK / Slight ± /
+              // Surplus / Short from getStatus() (unchanged from Sosna).
+              const rowTotal    = parseFloat(r.total    || 0) || 0;
+              const rowExpected = parseFloat(r.expected || 0) || 0;
+              const rowDiff     = rowTotal - rowExpected;
+              const rowStatus   = getStatus(rowDiff);
               return (
                 <tr key={r.id} style={{ cursor: 'pointer' }} onClick={() => { const cid = r.cashier_id ? String(r.cashier_id) : ''; setSelectedCashier(cid); loadDate(r.date.split('T')[0], cid); }}>
                   <td style={{ fontWeight: 500 }}>{formatDate(r.date)}</td>
                   <td style={{ fontSize: 12, color: '#6b7280' }}>{r.cashier_name || '—'}</td>
                   {isLiquorStyle ? (
                     <>
-                      <td>{fmtK(usdR)}</td>
-                      <td style={{ fontWeight: 600, color: diffColor(usdD, 0.01) }}>{sign(usdD)}{fmtK(usdD)}</td>
-                      <td>{fmtK(fraR)}</td>
-                      <td style={{ fontWeight: 600, color: diffColor(fraD, 0.01) }}>{sign(fraD)}{fmtK(fraD)}</td>
                       <td>{fmtK(kR)}</td>
-                      <td style={{ fontWeight: 600, color: diffColor(kD, 0.01) }}>{sign(kD)}{fmtK(kD)}</td>
+                      <td>{fmtK(fraR)}</td>
+                      <td>{fmtK(usdR)}</td>
                       <td style={{ color: totalExp > 0 ? '#dc2626' : '' }}>{totalExp > 0 ? fmtK(totalExp) : dash}</td>
+                      <td>{fmtK(parseFloat(r.pending || 0))}</td>
+                      <td style={{ fontWeight: 600 }}>{fmtK(rowTotal)}</td>
+                      <td style={{ fontWeight: 500 }}>{fmtK(rowExpected)}</td>
+                      <td style={{ fontWeight: 600, color: statusColor(rowStatus) }}>{sign(rowDiff)}{fmtK(rowDiff)}</td>
+                      <td><span className={`badge ${statusBadge(rowStatus)}`}>{rowStatus}</span></td>
+                      <td style={{ color: '#6b7280', fontSize: 12, maxWidth: 150, overflow: 'hidden', textOverflow: 'ellipsis' }}>{r.comment || '—'}</td>
                     </>
                   ) : (
                     <>
@@ -1743,10 +1756,10 @@ const CashReport = () => {
                       <td style={{ color: usdEx > 0 ? '#dc2626' : '' }}>{usdEx > 0 ? `$${usdEx.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : dash}</td>
                       <td style={{ color: fraEx > 0 ? '#dc2626' : '' }}>{fraEx > 0 ? fraEx.toLocaleString(undefined, { maximumFractionDigits: 0 }) : dash}</td>
                       <td style={{ color: kEx > 0 ? '#dc2626' : '' }}>{kEx > 0 ? kEx.toLocaleString(undefined, { maximumFractionDigits: 0 }) : dash}</td>
+                      <td>{curSym}{parseFloat(r.pending || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+                      <td style={{ color: '#6b7280', fontSize: 12, maxWidth: 150, overflow: 'hidden', textOverflow: 'ellipsis' }}>{r.comment || '—'}</td>
                     </>
                   )}
-                  <td>{curSym}{parseFloat(r.pending || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
-                  <td style={{ color: '#6b7280', fontSize: 12, maxWidth: 150, overflow: 'hidden', textOverflow: 'ellipsis' }}>{r.comment || '—'}</td>
                 </tr>
               );
             })}
