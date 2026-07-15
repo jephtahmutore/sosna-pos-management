@@ -1720,14 +1720,17 @@ const CashReport = () => {
               // k_received as cash / momo / bank. Render with K symbol + 2 dec.
               const fmtK = (n) => `${curSym}${parseFloat(n||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}`;
               const totalExp = usdEx + fraEx + kEx;
-              // v1.10.194 — Liquor consolidated totals derived live from the
-              // per-currency columns (usd/fra/k which hold Cash/MoMo/Bank on
-              // Liquor). r.total / r.expected on the stored row are legacy
-              // fields — sometimes hold just the Cash bucket, sometimes the
-              // USD-equivalent — not the true sum-across-methods. Computing
-              // here mirrors the counter cards at the top of Cash Report.
-              const rowTotal    = usdR + fraR + kR;
-              const rowExpected = usdE + fraE + kE;
+              // v1.10.195 — Liquor consolidated totals using the reference
+              // Liquor formula (frontend/src/pages/CashReport.js:222 in the
+              // Liquor project):
+              //   total = MoMo + Cash + Bank + Credit Sales + Expenses
+              // Sosna's stored r.total is a legacy USD-bucket-only value
+              // (line 470: `const total = usd + pend + exp`), which drops
+              // MoMo + Bank entirely — hence the wrong Report History Total
+              // on every Mansa row with MoMo/Bank activity. Compute live so
+              // the row Total reconciles with the row Expected (dailyRevenue).
+              const rowTotal    = usdR + fraR + kR + parseFloat(r.pending || 0) + totalExp;
+              const rowExpected = parseFloat(r.expected || 0) || 0;
               const rowDiff     = rowTotal - rowExpected;
               const rowStatus   = getStatus(rowDiff);
               return (
