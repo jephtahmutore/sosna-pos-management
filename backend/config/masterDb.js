@@ -694,6 +694,35 @@ try {
   addMasterCol('hq_purchase_items', 'updated_at', 'TEXT');
   addMasterCol('hq_purchases',       'updated_at', 'TEXT');
 
+  // v1.10.187 — one-shot backfill: PO headers whose every line is
+  // already CONFIRMED / CANCELLED / BRANCH_REJECTED but still sit in
+  // OPEN. The hqGrns.js /generate path (pre-v1.10.187) forgot to
+  // promote the header, so zombie-OPEN POs accumulated and kept
+  // showing up in the Cost-of-Delivery attach picker. Idempotent —
+  // becomes a no-op once every candidate has been flipped.
+  try {
+    const promoted = masterDb.prepare(`
+      UPDATE hq_purchases
+         SET status = 'COMPLETED', updated_at = datetime('now')
+       WHERE status = 'OPEN'
+         AND NOT EXISTS (
+           SELECT 1 FROM hq_purchase_items
+            WHERE purchase_id = hq_purchases.id
+              AND status IN ('AWAITING_GRN','GRN_SUBMITTED','RECEIPT_REPORTED')
+         )
+         AND EXISTS (
+           SELECT 1 FROM hq_purchase_items
+            WHERE purchase_id = hq_purchases.id
+              AND status = 'CONFIRMED'
+         )
+    `).run();
+    if (promoted.changes > 0) {
+      console.log(`[hq_purchases backfill] promoted ${promoted.changes} zombie-OPEN → COMPLETED`);
+    }
+  } catch (e) {
+    console.warn('[hq_purchases backfill] skipped:', e.message);
+  }
+
   console.log('[master] Master DB ready:', masterDbPath);
 } catch (e) {
   console.warn('[master] Could not open master DB (Electron mode — VPS-only features disabled):', e.message);

@@ -9,11 +9,11 @@
 // linked_purchase_sync_id OR linked_transfer_sync_id set. Uses the
 // existing PV endpoints — no new backend routes needed.
 import React, { useEffect, useState } from 'react';
-import { FiPlus, FiRefreshCw, FiTruck } from 'react-icons/fi';
+import { FiPlus, FiRefreshCw, FiTruck, FiEdit2, FiTrash2 } from 'react-icons/fi';
 import Portal from '../utils/Portal';
 import useModalScrollLock from '../utils/useModalScrollLock';
 import {
-  getPaymentVouchers, createPaymentVoucher,
+  getPaymentVouchers, createPaymentVoucher, updatePaymentVoucher, deletePaymentVoucher,
   getHqPurchases, getPendingTransfersAll,
 } from '../services/api';
 
@@ -24,6 +24,10 @@ export default function CostOfDelivery() {
   const [lcvs, setLcvs]         = useState([]);
   const [loading, setLoading]   = useState(true);
   const [showModal, setShowModal] = useState(false);
+  // v1.10.187 — edit target. Null = New; row = Edit that row's LCV.
+  // Modal is reused for both flows; behaviour switches on the presence
+  // of `editing`.
+  const [editing, setEditing]   = useState(null);
   const [error, setError]       = useState('');
   useModalScrollLock(showModal);
 
@@ -40,6 +44,16 @@ export default function CostOfDelivery() {
   const totalAmount = lcvs.reduce((s, l) => s + (parseFloat(l.amount) || 0), 0);
   const pendingCount = lcvs.filter(l => !l.applied_to_grn_sync_id && !l.applied_to_transfer_sync_id).length;
 
+  const handleDelete = async (l) => {
+    if (!window.confirm(`Delete this delivery cost of K${parseFloat(l.amount || 0).toFixed(2)} to ${l.paid_to}?`)) return;
+    try {
+      await deletePaymentVoucher(l.id);
+      refresh();
+    } catch (err) {
+      setError(err.response?.data?.error || 'Failed to delete.');
+    }
+  };
+
   return (
     <div className="page-content">
       <div className="page-header">
@@ -52,7 +66,7 @@ export default function CostOfDelivery() {
             style={{ padding: '8px 14px', background: '#fff', color: '#374151', border: '1px solid #d1d5db', borderRadius: 6, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 6 }}>
             <FiRefreshCw size={14} /> Refresh
           </button>
-          <button onClick={() => setShowModal(true)}
+          <button onClick={() => { setEditing(null); setShowModal(true); }}
             style={{ padding: '8px 14px', background: '#c2410c', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 6, fontWeight: 600 }}>
             <FiPlus size={14} /> New Delivery Cost
           </button>
@@ -97,6 +111,7 @@ export default function CostOfDelivery() {
                 <th style={{ textAlign: 'right' }}>Amount</th>
                 <th>Paid From</th>
                 <th>Status</th>
+                <th style={{ textAlign: 'right' }}>Actions</th>
               </tr>
             </thead>
             <tbody>
@@ -126,6 +141,26 @@ export default function CostOfDelivery() {
                         {applied ? 'Applied' : 'Pending'}
                       </span>
                     </td>
+                    <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
+                      {/* v1.10.187 — Edit/Delete only on Pending. Applied
+                          LCVs are baked into WAC (server also rejects). */}
+                      {applied ? (
+                        <span style={{ fontSize: 11, color: '#9ca3af', fontStyle: 'italic' }}>Locked</span>
+                      ) : (
+                        <>
+                          <button onClick={() => { setEditing(l); setShowModal(true); }}
+                            title="Edit"
+                            style={{ background: 'none', border: '1px solid #d1d5db', borderRadius: 4, padding: '4px 8px', cursor: 'pointer', color: '#374151', marginRight: 6 }}>
+                            <FiEdit2 size={12} />
+                          </button>
+                          <button onClick={() => handleDelete(l)}
+                            title="Delete"
+                            style={{ background: 'none', border: '1px solid #fecaca', borderRadius: 4, padding: '4px 8px', cursor: 'pointer', color: '#dc2626' }}>
+                            <FiTrash2 size={12} />
+                          </button>
+                        </>
+                      )}
+                    </td>
                   </tr>
                 );
               })}
@@ -134,24 +169,47 @@ export default function CostOfDelivery() {
         )}
       </div>
 
-      {showModal && <NewLcvModal onClose={() => setShowModal(false)} onSaved={() => { setShowModal(false); refresh(); }} />}
+      {showModal && (
+        <NewLcvModal
+          editing={editing}
+          onClose={() => { setShowModal(false); setEditing(null); }}
+          onSaved={() => { setShowModal(false); setEditing(null); refresh(); }}
+        />
+      )}
     </div>
   );
 }
 
-// ─── New Delivery Cost modal ────────────────────────────────────────────────
-function NewLcvModal({ onClose, onSaved }) {
-  const [refType, setRefType] = useState('PO'); // 'PO' | 'Transfer'
+// ─── New / Edit Delivery Cost modal ─────────────────────────────────────────
+// v1.10.187 — reused for both New and Edit. When `editing` is a row,
+// the modal pre-fills the fields, hides the PO/Transfer picker (link is
+// immutable — the whole point of Edit is to fix amount/description, not
+// re-anchor), and calls updatePaymentVoucher on save.
+function NewLcvModal({ editing, onClose, onSaved }) {
+  const isEdit = !!editing;
+  // Derive the reference type from the existing row (for the summary
+  // line at the top). New form defaults to PO.
+  const initialRefType = isEdit
+    ? (editing.linked_transfer_sync_id ? 'Transfer' : 'PO')
+    : 'PO';
+  const [refType, setRefType] = useState(initialRefType);
   const [openPOs, setOpenPOs] = useState([]);
   const [openTransfers, setOpenTransfers] = useState([]);
+  // Pick the K sub-drawer method from the existing PV columns for edits.
+  const deriveMethod = (row) => {
+    if (!row) return 'Cash';
+    if (parseFloat(row.bank_amount) > 0) return 'Bank';
+    if (parseFloat(row.momo_amount) > 0) return 'Mobile Money';
+    return 'Cash';
+  };
   const [form, setForm] = useState({
-    date: todayStr(),
-    linked_ref: '',
-    paid_to: '',
-    amount: '',
-    paid_from: 'Cash Drawer',
-    method: 'Cash', // Cash | Bank | Mobile Money — for K sub-drawer
-    description: '',
+    date:        isEdit ? (editing.date || todayStr()) : todayStr(),
+    linked_ref:  isEdit ? (editing.linked_purchase_sync_id || editing.linked_transfer_sync_id || '') : '',
+    paid_to:     isEdit ? (editing.paid_to || '') : '',
+    amount:      isEdit ? String(editing.amount || '') : '',
+    paid_from:   'Cash Drawer',
+    method:      deriveMethod(editing),
+    description: isEdit ? (editing.description || '') : '',
   });
   const [saving, setSaving] = useState(false);
   const [error, setError]   = useState('');
@@ -160,29 +218,31 @@ function NewLcvModal({ onClose, onSaved }) {
     // v1.10.186 — both list endpoints return { purchases: [...] } /
     // { transfers: [...] }, not bare arrays. And /transfers/outgoing
     // requires a slug, so we use the HQ-wide /pending-all endpoint.
+    // Edit mode doesn't need the pickers (link is immutable).
+    if (isEdit) return;
     getHqPurchases({ status: 'OPEN' })
       .then(r => setOpenPOs(Array.isArray(r.data?.purchases) ? r.data.purchases : []))
       .catch(() => setOpenPOs([]));
     getPendingTransfersAll()
       .then(r => setOpenTransfers(Array.isArray(r.data?.transfers) ? r.data.transfers : []))
       .catch(() => setOpenTransfers([]));
-  }, []);
+  }, [isEdit]);
 
-  // Reset the picker when switching type.
-  useEffect(() => { setForm(f => ({ ...f, linked_ref: '' })); }, [refType]);
+  // Reset the picker when switching type. Skip on edit — link is locked.
+  useEffect(() => { if (!isEdit) setForm(f => ({ ...f, linked_ref: '' })); }, [refType, isEdit]);
 
   const handleSave = async () => {
     setError('');
     const amt = parseFloat(form.amount || 0) || 0;
     if (!form.paid_to.trim()) return setError('Paid To is required.');
     if (!(amt > 0))            return setError('Amount must be greater than zero.');
-    if (!form.linked_ref)      return setError(`Pick a ${refType} to attach the delivery cost to.`);
+    if (!isEdit && !form.linked_ref) return setError(`Pick a ${refType} to attach the delivery cost to.`);
     setSaving(true);
     try {
       const kCash = form.method === 'Cash'         ? amt : 0;
       const kBank = form.method === 'Bank'         ? amt : 0;
       const kMomo = form.method === 'Mobile Money' ? amt : 0;
-      await createPaymentVoucher({
+      const payload = {
         paid_to:      form.paid_to.trim(),
         description:  form.description.trim() || `Delivery cost for ${refType}`,
         category:     'Other',
@@ -193,10 +253,20 @@ function NewLcvModal({ onClose, onSaved }) {
         momo_amount:  kMomo,
         date:         form.date,
         paid_from:    'Cash Drawer',
-        is_landed_cost:            true,
-        linked_purchase_sync_id:   refType === 'PO'       ? form.linked_ref : null,
-        linked_transfer_sync_id:   refType === 'Transfer' ? form.linked_ref : null,
-      });
+      };
+      if (isEdit) {
+        // PUT keeps the existing link + is_landed_cost flag — server
+        // doesn't accept re-anchoring an LCV (would break the WAC
+        // absorption contract).
+        await updatePaymentVoucher(editing.id, payload);
+      } else {
+        await createPaymentVoucher({
+          ...payload,
+          is_landed_cost:          true,
+          linked_purchase_sync_id: refType === 'PO'       ? form.linked_ref : null,
+          linked_transfer_sync_id: refType === 'Transfer' ? form.linked_ref : null,
+        });
+      }
       onSaved && onSaved();
     } catch (err) {
       setError(err.response?.data?.error || 'Failed to save.');
@@ -215,7 +285,7 @@ function NewLcvModal({ onClose, onSaved }) {
       <div className="modal-overlay">
         <div className="modal" onClick={e => e.stopPropagation()}>
           <div className="modal-header">
-            <h3>New Delivery Cost</h3>
+            <h3>{isEdit ? 'Edit Delivery Cost' : 'New Delivery Cost'}</h3>
             <button className="modal-close" onClick={onClose}>×</button>
           </div>
           <div className="modal-body">
@@ -231,29 +301,49 @@ function NewLcvModal({ onClose, onSaved }) {
                 <label>Date</label>
                 <input type="date" value={form.date} onChange={e => setForm({ ...form, date: e.target.value })} />
               </div>
-              <div className="form-group">
-                <label>Attach to</label>
-                <select value={refType} onChange={e => setRefType(e.target.value)}>
-                  <option value="PO">Purchase (PO)</option>
-                  <option value="Transfer">Inter-branch Transfer</option>
-                </select>
-              </div>
-            </div>
-
-            <div className="form-group">
-              <label>{refType === 'PO' ? 'Purchase' : 'Transfer'} <span style={{ color: '#dc2626' }}>*</span></label>
-              <select value={form.linked_ref} onChange={e => setForm({ ...form, linked_ref: e.target.value })}>
-                <option value="">— pick a {refType} —</option>
-                {refOptions.map(r => (
-                  <option key={r.sync_id} value={r.sync_id}>{refLabel(r)}</option>
-                ))}
-              </select>
-              {refOptions.length === 0 && (
-                <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 4 }}>
-                  No open {refType === 'PO' ? 'purchases' : 'transfers'} available.
+              {!isEdit && (
+                <div className="form-group">
+                  <label>Attach to</label>
+                  <select value={refType} onChange={e => setRefType(e.target.value)}>
+                    <option value="PO">Purchase (PO)</option>
+                    <option value="Transfer">Inter-branch Transfer</option>
+                  </select>
                 </div>
               )}
             </div>
+
+            {isEdit ? (
+              // v1.10.187 — link is immutable on Edit. Show what it's
+              // anchored to as a read-only chip so the user knows.
+              <div className="form-group">
+                <label>Attached to</label>
+                <div style={{ padding: '8px 12px', background: '#f3f4f6', borderRadius: 6, fontSize: 13, color: '#374151' }}>
+                  <span style={{ padding: '2px 8px', fontSize: 11, fontWeight: 700, borderRadius: 20,
+                    background: refType === 'PO' ? '#dbeafe' : '#fef3c7',
+                    color: refType === 'PO' ? '#1d4ed8' : '#92400e', marginRight: 8 }}>
+                    {refType === 'PO' ? 'PO' : 'Transfer'}
+                  </span>
+                  <span style={{ fontFamily: 'monospace', fontSize: 12, color: '#6b7280' }}>
+                    {(form.linked_ref || '').slice(0, 12)}…
+                  </span>
+                </div>
+              </div>
+            ) : (
+              <div className="form-group">
+                <label>{refType === 'PO' ? 'Purchase' : 'Transfer'} <span style={{ color: '#dc2626' }}>*</span></label>
+                <select value={form.linked_ref} onChange={e => setForm({ ...form, linked_ref: e.target.value })}>
+                  <option value="">— pick a {refType} —</option>
+                  {refOptions.map(r => (
+                    <option key={r.sync_id} value={r.sync_id}>{refLabel(r)}</option>
+                  ))}
+                </select>
+                {refOptions.length === 0 && (
+                  <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 4 }}>
+                    No open {refType === 'PO' ? 'purchases' : 'transfers'} available.
+                  </div>
+                )}
+              </div>
+            )}
 
             <div className="form-group">
               <label>Paid To <span style={{ color: '#dc2626' }}>*</span></label>
@@ -284,7 +374,7 @@ function NewLcvModal({ onClose, onSaved }) {
           <div className="modal-footer">
             <button className="btn btn-secondary" onClick={onClose} disabled={saving}>Cancel</button>
             <button className="btn btn-primary" onClick={handleSave} disabled={saving}>
-              {saving ? 'Saving…' : 'Save Delivery Cost'}
+              {saving ? 'Saving…' : (isEdit ? 'Update Delivery Cost' : 'Save Delivery Cost')}
             </button>
           </div>
         </div>

@@ -14,6 +14,7 @@ import React, { useEffect, useState } from 'react';
 import { FiRefreshCw, FiInbox, FiFileText, FiPaperclip } from 'react-icons/fi';
 import {
   getAwaitingGeneration, getHqReceipt, generateHqGrn,
+  getPaymentVouchers,
 } from '../services/api';
 
 // v1.10.105 — currency-aware money formatter. HQ POs can be billed in
@@ -241,6 +242,29 @@ function GenerateGrnModal({ purchase, items, extras, onClose, onGenerated }) {
   const [notes, setNotes]   = useState('');
   const [error, setError]   = useState('');
   const [saving, setSaving] = useState(false);
+
+  // v1.10.187 — pull LCVs already attached to this PO so the operator
+  // sees the delivery cost that will be absorbed into inventory WAC on
+  // Generate. Loaded once when the modal opens; refresh isn't needed
+  // because the modal is short-lived.
+  const [attachedLcvs, setAttachedLcvs] = useState([]);
+  useEffect(() => {
+    if (!purchase?.sync_id) return;
+    getPaymentVouchers({
+      is_landed_cost: 1,
+      linked_purchase_sync_id: purchase.sync_id,
+    })
+      .then(r => {
+        const rows = Array.isArray(r.data) ? r.data : [];
+        // Pending only — Applied rows are already baked into an older
+        // GRN and would be absorbed again if re-Generated. Server also
+        // skips already-applied at absorption time (v1.10.182), but
+        // filter here so the UI stays honest.
+        setAttachedLcvs(rows.filter(l => !l.applied_to_grn_sync_id));
+      })
+      .catch(() => setAttachedLcvs([]));
+  }, [purchase?.sync_id]);
+  const lcvTotal = attachedLcvs.reduce((s, l) => s + (parseFloat(l.amount) || 0), 0);
 
   // v1.10.67 — inline Credit Notes. Each entry:
   //   { reason, amount, notes, items: [ {product_sync_id, product_name, unit, quantity, unit_value} ] }
@@ -556,6 +580,39 @@ function GenerateGrnModal({ purchase, items, extras, onClose, onGenerated }) {
               </div>
             )}
           </div>
+
+          {/* v1.10.187 — Delivery costs (LCVs) attached to this PO.
+              Read-only surface; user manages LCVs on the Cost of Delivery
+              page. Shows here so the operator knows what will be baked
+              into inventory WAC on Generate GRN. NOT part of Final
+              Payable (LCV is paid to the transporter, not the supplier). */}
+          {attachedLcvs.length > 0 && (
+            <div style={{ marginBottom: 14, padding: 12, background: '#fff7ed', border: '1px solid #fed7aa', borderRadius: 8 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                <div style={{ fontSize: 13, fontWeight: 700, color: '#7c2d12' }}>
+                  Delivery Costs Attached ({attachedLcvs.length})
+                </div>
+                <div style={{ fontSize: 12, color: '#7c2d12' }}>
+                  Absorbed into inventory WAC on Save · does NOT change Final Payable
+                </div>
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                {attachedLcvs.map(l => (
+                  <div key={l.id} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, color: '#78350f', padding: '4px 8px', background: '#fffbeb', borderRadius: 4 }}>
+                    <div>
+                      <span style={{ color: '#9a3412', fontWeight: 600 }}>{l.paid_to || '—'}</span>
+                      {l.description && <span style={{ color: '#a8a29e', marginLeft: 8 }}>· {l.description}</span>}
+                      <span style={{ color: '#a8a29e', marginLeft: 8 }}>· {l.date}</span>
+                    </div>
+                    <div style={{ fontWeight: 700 }}>K{parseFloat(l.amount || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
+                  </div>
+                ))}
+                <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 4, fontSize: 13, fontWeight: 700, color: '#c2410c' }}>
+                  Delivery total: K{lcvTotal.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                </div>
+              </div>
+            </div>
+          )}
 
           {/* Final payable summary — highlighted so HQ sees the true net. */}
           <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 32, alignItems: 'baseline', marginBottom: 12, padding: '10px 14px', background: '#ecfdf5', border: '1px solid #a7f3d0', borderRadius: 8 }}>

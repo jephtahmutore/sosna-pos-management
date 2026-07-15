@@ -21,7 +21,8 @@ function derivePVSplits(paid_from, amount) {
 
 router.get('/', auth, readOnlyGuard, (req, res) => {
   try {
-    const { date, paid_from, cashier_id, is_landed_cost, exclude_landed_cost } = req.query;
+    const { date, paid_from, cashier_id, is_landed_cost, exclude_landed_cost,
+            linked_purchase_sync_id, linked_transfer_sync_id } = req.query;
     let q = 'SELECT * FROM payment_vouchers WHERE deleted_at IS NULL AND tenant_id = ?';
     const params = [req.user.tenantId];
     if (date)      { params.push(date);      q += ' AND date = ?'; }
@@ -35,6 +36,11 @@ router.get('/', auth, readOnlyGuard, (req, res) => {
     if (exclude_landed_cost === '1' || exclude_landed_cost === 1 || exclude_landed_cost === 'true') {
       q += ' AND (is_landed_cost IS NULL OR is_landed_cost = 0)';
     }
+    // v1.10.187 — narrow to a single PO / transfer's LCVs. Powers the
+    // Generate GRN modal's "delivery costs attached" section and the
+    // future Transfer Receive modal.
+    if (linked_purchase_sync_id) { params.push(linked_purchase_sync_id); q += ' AND linked_purchase_sync_id = ?'; }
+    if (linked_transfer_sync_id) { params.push(linked_transfer_sync_id); q += ' AND linked_transfer_sync_id = ?'; }
     q += ' ORDER BY date DESC';
     const rows = db.prepare(q).all(...params);
     res.json(rows);
@@ -246,6 +252,18 @@ router.post('/', auth, (req, res) => {
 
 router.put('/:id', auth, (req, res) => {
   try {
+    // v1.10.187 — block edits on an Applied LCV. Its amount was baked
+    // into the destination branch's WAC at Generate GRN / Transfer
+    // Receive time; changing it now would silently drift the inventory
+    // cost basis away from books. To adjust after the fact, the user
+    // creates a fresh LCV against the same reference before the next
+    // GRN, or reverses via a manual WAC adjustment.
+    const currentPv = db.prepare(
+      'SELECT is_landed_cost, applied_to_grn_sync_id, applied_to_transfer_sync_id FROM payment_vouchers WHERE id = ? AND deleted_at IS NULL'
+    ).get(req.params.id);
+    if (currentPv?.is_landed_cost && (currentPv.applied_to_grn_sync_id || currentPv.applied_to_transfer_sync_id)) {
+      return res.status(400).json({ error: 'This delivery cost has already been absorbed into inventory WAC and cannot be edited. Create a new delivery cost for any adjustment.' });
+    }
     const { paid_to, description, category, amount, date, paid_from, invoice_attachment,
             cash_amount, bank_amount, momo_amount,
             usd_amount, fra_amount, k_amount } = req.body;
@@ -363,8 +381,14 @@ router.delete('/:id', auth, (req, res) => {
     // treat the reversal as native inflow. Any slight rate drift from
     // this asymmetry is bounded by the clamp in poolDrainK and won't
     // accumulate on typical operations).
-    const pv = db.prepare('SELECT date, k_amount FROM payment_vouchers WHERE id = ? AND deleted_at IS NULL').get(req.params.id);
+    const pv = db.prepare('SELECT date, k_amount, is_landed_cost, applied_to_grn_sync_id, applied_to_transfer_sync_id FROM payment_vouchers WHERE id = ? AND deleted_at IS NULL').get(req.params.id);
     if (!pv) return res.status(404).json({ error: 'Voucher not found' });
+    // v1.10.187 — same rule as edit: an Applied LCV is baked into WAC
+    // and cannot be soft-deleted from the ledger without a compensating
+    // WAC reversal (out of scope here).
+    if (pv.is_landed_cost && (pv.applied_to_grn_sync_id || pv.applied_to_transfer_sync_id)) {
+      return res.status(400).json({ error: 'This delivery cost has already been absorbed into inventory WAC and cannot be deleted.' });
+    }
     const kAmt = parseFloat(pv.k_amount) || 0;
     const done = db.transaction(() => {
       const info = db.prepare("UPDATE payment_vouchers SET deleted_at=datetime('now'), updated_at=datetime('now'), synced=0 WHERE id=? AND deleted_at IS NULL").run(req.params.id);

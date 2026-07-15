@@ -1176,6 +1176,24 @@ router.post('/generate', hqAuth, (req, res) => {
            AND status = 'RECEIPT_REPORTED'
       `).run(grnSyncId, grnNumber, generatorId, generatorName, purchase_sync_id);
 
+      // v1.10.187 — auto-promote header to COMPLETED once every line is
+      // done. Mirrors the /confirm endpoint's logic at :462-474. Without
+      // this, /generate leaves the header OPEN forever and the PO keeps
+      // showing up in Cost-of-Delivery pickers (and in HQ Purchases as
+      // still-open) even though there is no room for a fresh GRN.
+      const hdrRow = masterDb.prepare(`SELECT id FROM hq_purchases WHERE sync_id = ?`).get(purchase_sync_id);
+      if (hdrRow?.id) {
+        const cnt = masterDb.prepare(`
+          SELECT SUM(CASE WHEN status IN ('AWAITING_GRN','GRN_SUBMITTED','RECEIPT_REPORTED') THEN 1 ELSE 0 END) AS open,
+                 SUM(CASE WHEN status = 'CONFIRMED' THEN 1 ELSE 0 END) AS confirmed
+            FROM hq_purchase_items WHERE purchase_id = ?
+        `).get(hdrRow.id);
+        if ((cnt.open || 0) === 0) {
+          masterDb.prepare(`UPDATE hq_purchases SET status = ?, updated_at = datetime('now') WHERE id = ?`)
+            .run((cnt.confirmed || 0) > 0 ? 'COMPLETED' : 'CANCELLED', hdrRow.id);
+        }
+      }
+
       // 3. CNs (if any)
       // v1.10.67 — Stock-affecting reasons (Crate Return, Bottle Return,
       // Goods Return) now carry an items[] array; each item row goes into
