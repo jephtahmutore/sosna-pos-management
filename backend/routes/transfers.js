@@ -109,6 +109,23 @@ router.get('/source-products', hqAuth, (req, res) => {
 // operator can see their full send history; status filter narrows it.
 // v1.9.22 — date range filter added so the History tabs can scope to a
 // date window (and avoid hitting the LIMIT 500 ceiling on busy branches).
+// GET /api/transfers/pending-all
+// HQ-only. Lists every PENDING transfer across ALL branches. Powers the
+// Cost-of-Delivery attach picker where HQ needs to pick any in-flight
+// transfer regardless of from/to slug. v1.10.186.
+router.get('/pending-all', hqAuth, (req, res) => {
+  try {
+    const rows = masterDb.prepare(
+      `SELECT * FROM stock_transfers
+        WHERE status = 'PENDING'
+        ORDER BY created_at DESC LIMIT 500`
+    ).all().map(parseItems);
+    res.json({ transfers: rows });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 router.get('/outgoing', hqAuth, (req, res) => {
   try {
     const slug   = String(req.query.slug || '').toLowerCase();

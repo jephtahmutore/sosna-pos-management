@@ -264,6 +264,7 @@ export const generateHqGrn         = (payload) => api.post('/hq/grns/generate', 
 // from either the HQ X-Branch header (if set) or the host's subdomain.
 export const getTransferSourceProducts = (slug) => api.get('/transfers/source-products', { params: { slug } });
 export const getOutgoingTransfers = (params) => api.get('/transfers/outgoing', { params });
+export const getPendingTransfersAll = () => api.get('/transfers/pending-all');
 export const getIncomingTransfers = (params) => api.get('/transfers/incoming', { params });
 export const createTransfer = (data) => api.post('/transfers', data);
 export const receiveTransfer = (id, data) => api.put(`/transfers/${id}/receive`, data || {});

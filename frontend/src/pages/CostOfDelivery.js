@@ -14,7 +14,7 @@ import Portal from '../utils/Portal';
 import useModalScrollLock from '../utils/useModalScrollLock';
 import {
   getPaymentVouchers, createPaymentVoucher,
-  getHqPurchases, getOutgoingTransfers,
+  getHqPurchases, getPendingTransfersAll,
 } from '../services/api';
 
 const fmtK = (n) => `K${parseFloat(n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
@@ -157,11 +157,14 @@ function NewLcvModal({ onClose, onSaved }) {
   const [error, setError]   = useState('');
 
   useEffect(() => {
+    // v1.10.186 — both list endpoints return { purchases: [...] } /
+    // { transfers: [...] }, not bare arrays. And /transfers/outgoing
+    // requires a slug, so we use the HQ-wide /pending-all endpoint.
     getHqPurchases({ status: 'OPEN' })
-      .then(r => setOpenPOs(Array.isArray(r.data) ? r.data : []))
+      .then(r => setOpenPOs(Array.isArray(r.data?.purchases) ? r.data.purchases : []))
       .catch(() => setOpenPOs([]));
-    getOutgoingTransfers({ status: 'PENDING' })
-      .then(r => setOpenTransfers(Array.isArray(r.data) ? r.data : []))
+    getPendingTransfersAll()
+      .then(r => setOpenTransfers(Array.isArray(r.data?.transfers) ? r.data.transfers : []))
       .catch(() => setOpenTransfers([]));
   }, []);
 
