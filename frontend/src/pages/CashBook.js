@@ -1750,15 +1750,18 @@ const CashBook = () => {
       })()}
       </>)}{/* end activeTab === 'ledger' wrapper (v1.8.6) */}
 
-      {/* v1.10.167 — Send Deposit Modal (Liquor branches only). Overdraft-
-          guarded — amount can't exceed Cash & Cash Equivalent. Backend
-          re-validates so an offline device can't sneak past. */}
+      {/* v1.10.167 — Send Deposit Modal (Liquor branches only).
+          v1.10.198 — overdraft guard is now PER-DRAWER, not pooled. Prior
+          version summed cash + bank + momo, so an operator could deposit
+          more Mobile Money than Mobile Money physically had, as long as
+          the pooled total covered it. Now the check reads the specific
+          drawer's balance from stats.currentByMethod. Backend mirrors. */}
       {showDeposit && isLiquorStyle && (() => {
-        const cashOnHand = (stats.currentByMethod?.cash || 0)
-                         + (stats.currentByMethod?.bank || 0)
-                         + (stats.currentByMethod?.momo || 0);
+        const drawerKey = { 'Cash': 'cash', 'Bank': 'bank', 'Mobile Money': 'momo' }[depositForm.from_method] || 'cash';
+        const drawerLabel = depositForm.from_method || 'Cash';
+        const drawerBalance = parseFloat(stats.currentByMethod?.[drawerKey] || 0) || 0;
         const amt = parseFloat(depositForm.amount || 0) || 0;
-        const wouldOverdraft = amt > cashOnHand + 0.0001;
+        const wouldOverdraft = amt > drawerBalance + 0.0001;
         const fmtK = (n) => `${curSym}${parseFloat(n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
         return (
           <Portal>
@@ -1774,7 +1777,7 @@ const CashBook = () => {
                 </p>
 
                 <div style={{ background: '#eff6ff', border: '1px solid #bfdbfe', borderRadius: 8, padding: '8px 12px', marginBottom: 14, fontSize: 12, color: '#1e40af' }}>
-                  Cash on Hand: <strong>{fmtK(cashOnHand)}</strong>
+                  {drawerLabel} balance: <strong>{fmtK(drawerBalance)}</strong>
                 </div>
 
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 14 }}>
@@ -1802,12 +1805,12 @@ const CashBook = () => {
                     disabled={depositSaving} />
                   {amt > 0 && !wouldOverdraft && (
                     <small style={{ color: '#0f766e', fontSize: 12, display: 'block', marginTop: 4 }}>
-                      After deposit: <strong>{fmtK(cashOnHand - amt)}</strong> remaining
+                      After deposit: <strong>{fmtK(drawerBalance - amt)}</strong> remaining in {drawerLabel}
                     </small>
                   )}
                   {wouldOverdraft && (
                     <small style={{ color: '#dc2626', fontSize: 12, display: 'block', marginTop: 4, fontWeight: 600 }}>
-                      ⚠ Deposit exceeds cash on hand ({fmtK(cashOnHand)}). Short by {fmtK(amt - cashOnHand)}.
+                      ⚠ Exceeds {drawerLabel} balance ({fmtK(drawerBalance)}). Short by {fmtK(amt - drawerBalance)}.
                     </small>
                   )}
                 </div>
