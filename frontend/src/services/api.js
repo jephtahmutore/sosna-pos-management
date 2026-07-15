@@ -257,6 +257,13 @@ export const confirmBranchReceipt = (purchaseSyncId, payload) =>
 export const getAwaitingGeneration = () => api.get('/hq/grns/awaiting-generation');
 export const getHqReceipt          = (syncId) => api.get(`/hq/grns/receipt/${syncId}`);
 export const generateHqGrn         = (payload) => api.post('/hq/grns/generate', payload);
+// v1.10.188 — snapshot of current on-hand + WAC for a set of products
+// at a branch. Powers the New WAC preview column on the Generate GRN
+// modal. Backend: hqGrns.js router.get('/product-costs/:slug').
+export const getHqProductCosts = (slug, syncIds) =>
+  api.get(`/hq/grns/product-costs/${encodeURIComponent(slug)}`, {
+    params: { sync_ids: Array.isArray(syncIds) ? syncIds.join(',') : String(syncIds || '') },
+  });
 
 // Stock Transfers (Phase C — HQ Warehouse). Stored in master.db so source
 // + destination see the same row. Works the same on HQ and on per-branch

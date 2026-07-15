@@ -43,6 +43,35 @@ function hqAuth(req, res, next) {
 // Lists every branch's GRNs that are sitting at hq_status='PENDING_HQ_CONFIRM',
 // grouped/sorted newest first. One row per GRN with summary totals + the
 // originating PO# so HQ can quickly fan through the queue.
+// v1.10.188 — Product-cost snapshot for a branch. Powers the "New WAC"
+// preview in the Generate GRN modal so the operator can see what the
+// blended cost will be before pressing Save. Read-only — no writes.
+// Response: [{ sync_id, current_stock, avg_cost_price, unit, alt_unit,
+//             conversion_factor, units_json }] — enough for the client
+// to run the same base-unit blend that /generate uses server-side.
+router.get('/product-costs/:slug', hqAuth, (req, res) => {
+  try {
+    const slug = String(req.params.slug || '').toLowerCase();
+    const rawIds = String(req.query.sync_ids || '');
+    const syncIds = rawIds.split(',').map(s => s.trim()).filter(Boolean);
+    if (!syncIds.length) return res.json({ products: [] });
+    if (!isRegistered(slug)) return res.status(404).json({ error: 'Branch not registered' });
+    const branchDb = getTenantDb(slug);
+    if (!branchDb) return res.status(500).json({ error: 'Branch DB unavailable' });
+    const placeholders = syncIds.map(() => '?').join(',');
+    const rows = branchDb.prepare(`
+      SELECT sync_id, current_stock, avg_cost_price,
+             unit, alt_unit, conversion_factor, units_json
+        FROM products
+       WHERE sync_id IN (${placeholders}) AND deleted_at IS NULL
+    `).all(...syncIds);
+    res.json({ products: rows });
+  } catch (error) {
+    console.error('[hq.grns.product-costs] failed:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 router.get('/awaiting', hqAuth, (req, res) => {
   try {
     const tenants = listTenants();

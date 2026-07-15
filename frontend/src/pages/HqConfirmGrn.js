@@ -11,11 +11,33 @@
 //      stock posts to branch sales floor, hq_grns row created.
 
 import React, { useEffect, useState } from 'react';
-import { FiRefreshCw, FiInbox, FiFileText, FiPaperclip } from 'react-icons/fi';
+import { FiRefreshCw, FiInbox, FiFileText, FiPaperclip, FiPlus } from 'react-icons/fi';
 import {
   getAwaitingGeneration, getHqReceipt, generateHqGrn,
-  getPaymentVouchers,
+  getPaymentVouchers, getHqProductCosts,
 } from '../services/api';
+import LcvModal from '../components/LcvModal';
+
+// v1.10.188 — mirror of backend/config/unitsHelper.js:conversionToBase.
+// Used to compute base-unit quantities for the New WAC preview, so the
+// client-side math matches the /generate blend byte-for-byte.
+function convToBase(product, lineUnit) {
+  if (!product) return 1;
+  const u = String(lineUnit || '').trim().toLowerCase();
+  if (!u) return 1;
+  if (product.unit && product.unit.toLowerCase() === u) return 1;
+  if (product.units_json) {
+    try {
+      const arr = JSON.parse(product.units_json);
+      const match = Array.isArray(arr) && arr.find(x => (x.name || '').toLowerCase() === u);
+      if (match && parseFloat(match.conv) > 0) return parseFloat(match.conv);
+    } catch (_) { /* fall through */ }
+  }
+  if (product.alt_unit && product.alt_unit.toLowerCase() === u && parseFloat(product.conversion_factor) > 0) {
+    return parseFloat(product.conversion_factor);
+  }
+  return 1;
+}
 
 // v1.10.105 — currency-aware money formatter. HQ POs can be billed in
 // USD, K, or FRA; the modal was hardcoding `$` and lying on K/FRA POs.
@@ -245,10 +267,10 @@ function GenerateGrnModal({ purchase, items, extras, onClose, onGenerated }) {
 
   // v1.10.187 — pull LCVs already attached to this PO so the operator
   // sees the delivery cost that will be absorbed into inventory WAC on
-  // Generate. Loaded once when the modal opens; refresh isn't needed
-  // because the modal is short-lived.
+  // Generate. Loaded once when the modal opens; refresh runs after an
+  // inline "Add Delivery Cost" save.
   const [attachedLcvs, setAttachedLcvs] = useState([]);
-  useEffect(() => {
+  const refreshLcvs = () => {
     if (!purchase?.sync_id) return;
     getPaymentVouchers({
       is_landed_cost: 1,
@@ -256,15 +278,52 @@ function GenerateGrnModal({ purchase, items, extras, onClose, onGenerated }) {
     })
       .then(r => {
         const rows = Array.isArray(r.data) ? r.data : [];
-        // Pending only — Applied rows are already baked into an older
-        // GRN and would be absorbed again if re-Generated. Server also
-        // skips already-applied at absorption time (v1.10.182), but
-        // filter here so the UI stays honest.
         setAttachedLcvs(rows.filter(l => !l.applied_to_grn_sync_id));
       })
       .catch(() => setAttachedLcvs([]));
-  }, [purchase?.sync_id]);
+  };
+  useEffect(() => { refreshLcvs(); }, [purchase?.sync_id]);
   const lcvTotal = attachedLcvs.reduce((s, l) => s + (parseFloat(l.amount) || 0), 0);
+  const [showAddLcv, setShowAddLcv] = useState(false);
+
+  // v1.10.188 — snapshot of current on-hand + WAC at the destination
+  // branch for every product on this PO. Powers the New WAC column.
+  // Fetched once when the modal opens; the preview stays fresh because
+  // all math (unit_price × qty, LCV per-base share, blend) runs in JS.
+  const [productCosts, setProductCosts] = useState({}); // sync_id → row
+  useEffect(() => {
+    const slug = purchase?.confirmed_branch_slug;
+    const ids = items.map(it => it.product_sync_id).filter(Boolean);
+    if (!slug || ids.length === 0) return;
+    getHqProductCosts(slug, ids)
+      .then(r => {
+        const rows = Array.isArray(r.data?.products) ? r.data.products : [];
+        const map = {};
+        for (const p of rows) map[p.sync_id] = p;
+        setProductCosts(map);
+      })
+      .catch(() => setProductCosts({}));
+  }, [purchase?.confirmed_branch_slug, items]);
+
+  // Currency conversion mirror of hqGrns.js /generate's toUsd (line 1412).
+  // Kept name-neutral because K-only branches actually store WAC in K
+  // — the fx_rate is typically 0/1 there so this becomes a no-op.
+  const toWacCcy = (raw) => {
+    const c = parseFloat(raw || 0) || 0;
+    if (c <= 0) return 0;
+    const ccy  = String(purchase?.cost_currency || '').toUpperCase();
+    const rate = parseFloat(purchase?.fx_rate_used || 0) || 0;
+    if (!ccy || ccy === 'USD') return c;
+    return rate > 0 ? c / rate : c;
+  };
+  const wacCcyLabel = (() => {
+    const c = String(purchase?.cost_currency || '').toUpperCase();
+    if (!c || c === 'USD') return '$';
+    if (c === 'K')         return 'K';
+    if (c === 'FRA')       return 'F ';
+    return c + ' ';
+  })();
+  const fmtWac = (n) => `${wacCcyLabel}${parseFloat(n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
   // v1.10.67 — inline Credit Notes. Each entry:
   //   { reason, amount, notes, items: [ {product_sync_id, product_name, unit, quantity, unit_value} ] }
@@ -308,6 +367,48 @@ function GenerateGrnModal({ purchase, items, extras, onClose, onGenerated }) {
   // Total booked as a P&L expense, WAC untouched.
   const damageTotal = grnLines.reduce((s, r) =>
     s + (parseFloat(r.damaged_quantity) || 0) * (parseFloat(r.unit_price) || 0), 0);
+
+  // v1.10.188 — New WAC preview. Mirrors hqGrns.js /generate math:
+  //   1. Total received base units across lines (denominator for LCV
+  //      pro-rata) — landed cost per base unit.
+  //   2. Per line: goods_cp_per_base + landed_cp_per_base = the cost
+  //      that will be blended into the destination WAC.
+  //   3. Blend with current on-hand: (curStk × curWAC + baseQty × cp)
+  //      / (curStk + baseQty).
+  // All in WAC currency via toWacCcy.
+  const totalReceivedBase = grnLines.reduce((s, r) => {
+    if (!r.product_sync_id) return s;
+    const q = parseFloat(r.quantity) || 0;
+    if (q <= 0) return s;
+    const conv = convToBase(productCosts[r.product_sync_id], r.unit || productCosts[r.product_sync_id]?.unit);
+    return s + q * conv;
+  }, 0);
+  const landedPerBase = (totalReceivedBase > 0 && lcvTotal > 0)
+    ? toWacCcy(lcvTotal) / totalReceivedBase
+    : 0;
+  const wacPreview = (row) => {
+    if (!row.product_sync_id) return null;
+    const prod = productCosts[row.product_sync_id];
+    if (!prod) return null;
+    const q = parseFloat(row.quantity) || 0;
+    if (q <= 0) return null;
+    const conv = convToBase(prod, row.unit || prod.unit);
+    const goodsCpPerLine = toWacCcy(row.unit_price);
+    const goodsCpPerBase = conv > 0 ? goodsCpPerLine / conv : goodsCpPerLine;
+    const cpPerBase = goodsCpPerBase + landedPerBase;
+    const baseQty = q * conv;
+    const curStk = parseFloat(prod.current_stock) || 0;
+    const curWac = parseFloat(prod.avg_cost_price) || 0;
+    let newWac;
+    if (curWac <= 0 || curStk <= 0) {
+      // Seed case in backend UPDATE ... CASE ... — new WAC is just the
+      // effective cost of this receipt.
+      newWac = cpPerBase;
+    } else {
+      newWac = (curStk * curWac + baseQty * cpPerBase) / (curStk + baseQty);
+    }
+    return { curStk, curWac, cpPerBase, newWac };
+  };
   const damageUnits = grnLines.reduce((s, r) => s + (parseFloat(r.damaged_quantity) || 0), 0);
   const netStockValue = Math.max(0, total - damageTotal);
   const finalPayable = Math.max(0, total - cnTotal);
@@ -420,6 +521,10 @@ function GenerateGrnModal({ purchase, items, extras, onClose, onGenerated }) {
                 <th style={th}>Unit</th>
                 <th style={{ ...th, textAlign: 'right' }}>Unit Cost</th>
                 <th style={{ ...th, textAlign: 'right' }}>Total</th>
+                {/* v1.10.188 — New WAC preview. Blended cost that will
+                    land in this product's avg_cost_price at the branch
+                    after Save. Includes goods cost + LCV per-base share. */}
+                <th style={{ ...th, textAlign: 'right', color: '#c2410c' }} title="Blended WAC after Save — includes delivery cost share">New WAC / base</th>
               </tr>
             </thead>
             <tbody>
@@ -454,6 +559,28 @@ function GenerateGrnModal({ purchase, items, extras, onClose, onGenerated }) {
                         style={{ width: 90, padding: '5px 8px', border: '1px solid #d1d5db', borderRadius: 5, fontSize: 12, textAlign: 'right' }} />
                     </td>
                     <td style={{ ...td, textAlign: 'right', fontWeight: 700, color: '#16a34a' }}>{fmtMoney(line)}</td>
+                    {/* v1.10.188 — New WAC preview cell */}
+                    <td style={{ ...td, textAlign: 'right', color: '#c2410c' }}>
+                      {(() => {
+                        const w = wacPreview(r);
+                        if (!w) return <span style={{ color: '#cbd5e1' }}>—</span>;
+                        const bumped = w.curWac > 0 && w.newWac > w.curWac + 0.001;
+                        const dropped = w.curWac > 0 && w.newWac < w.curWac - 0.001;
+                        return (
+                          <div>
+                            <div style={{ fontWeight: 700 }}>{fmtWac(w.newWac)}</div>
+                            {w.curWac > 0 && (
+                              <div style={{ fontSize: 10, color: bumped ? '#dc2626' : (dropped ? '#16a34a' : '#94a3b8') }}>
+                                was {fmtWac(w.curWac)} · {bumped ? '▲' : (dropped ? '▼' : '=')} {fmtWac(Math.abs(w.newWac - w.curWac))}
+                              </div>
+                            )}
+                            {w.curWac <= 0 && (
+                              <div style={{ fontSize: 10, color: '#94a3b8' }}>seed (no prior stock)</div>
+                            )}
+                          </div>
+                        );
+                      })()}
+                    </td>
                   </tr>
                 );
               })}
@@ -462,16 +589,26 @@ function GenerateGrnModal({ purchase, items, extras, onClose, onGenerated }) {
               <tr style={{ borderTop: '2px solid #e5e7eb', background: '#f9fafb' }}>
                 <td colSpan={6} style={{ ...td, textAlign: 'right', fontWeight: 700 }}>Items subtotal</td>
                 <td style={{ ...td, textAlign: 'right', fontWeight: 800, color: '#16a34a' }}>{fmtMoney(total)}</td>
+                <td style={{ ...td }}></td>
               </tr>
+              {landedPerBase > 0 && (
+                <tr style={{ background: '#fff7ed' }}>
+                  <td colSpan={6} style={{ ...td, textAlign: 'right', fontWeight: 700, color: '#7c2d12' }}>Delivery cost per base unit (spread)</td>
+                  <td style={{ ...td, textAlign: 'right', fontWeight: 800, color: '#c2410c' }}>+{fmtWac(landedPerBase)}</td>
+                  <td style={{ ...td }}></td>
+                </tr>
+              )}
               {damageTotal > 0 && (
                 <>
                   <tr style={{ background: '#fef2f2' }}>
                     <td colSpan={6} style={{ ...td, textAlign: 'right', fontWeight: 700, color: '#991b1b' }}>Damages (booked as loss)</td>
                     <td style={{ ...td, textAlign: 'right', fontWeight: 800, color: '#dc2626' }}>−{fmtMoney(damageTotal)}</td>
+                    <td style={{ ...td }}></td>
                   </tr>
                   <tr style={{ background: '#f1f5f9' }}>
                     <td colSpan={6} style={{ ...td, textAlign: 'right', fontWeight: 700 }}>Net stock value</td>
                     <td style={{ ...td, textAlign: 'right', fontWeight: 800, color: '#0f172a' }}>{fmtMoney(netStockValue)}</td>
+                    <td style={{ ...td }}></td>
                   </tr>
                 </>
               )}
@@ -581,21 +718,32 @@ function GenerateGrnModal({ purchase, items, extras, onClose, onGenerated }) {
             )}
           </div>
 
-          {/* v1.10.187 — Delivery costs (LCVs) attached to this PO.
-              Read-only surface; user manages LCVs on the Cost of Delivery
-              page. Shows here so the operator knows what will be baked
-              into inventory WAC on Generate GRN. NOT part of Final
-              Payable (LCV is paid to the transporter, not the supplier). */}
-          {attachedLcvs.length > 0 && (
-            <div style={{ marginBottom: 14, padding: 12, background: '#fff7ed', border: '1px solid #fed7aa', borderRadius: 8 }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
-                <div style={{ fontSize: 13, fontWeight: 700, color: '#7c2d12' }}>
-                  Delivery Costs Attached ({attachedLcvs.length})
-                </div>
+          {/* v1.10.187 / v1.10.188 — Delivery costs (LCVs) attached to
+              this PO. Shows every Pending LCV plus an inline "+ Add
+              Delivery Cost" button (v1.10.188) so users can add the
+              balance payment (e.g. half-on-loading, half-on-arrival)
+              without leaving the modal. Not part of Final Payable — LCV
+              is paid to the transporter, not the supplier. */}
+          <div style={{ marginBottom: 14, padding: 12, background: '#fff7ed', border: '1px solid #fed7aa', borderRadius: 8 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8, gap: 12, flexWrap: 'wrap' }}>
+              <div style={{ fontSize: 13, fontWeight: 700, color: '#7c2d12' }}>
+                Delivery Costs Attached ({attachedLcvs.length})
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
                 <div style={{ fontSize: 12, color: '#7c2d12' }}>
                   Absorbed into inventory WAC on Save · does NOT change Final Payable
                 </div>
+                <button type="button" onClick={() => setShowAddLcv(true)}
+                  style={{ padding: '5px 10px', background: '#c2410c', color: '#fff', border: 'none', borderRadius: 5, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 12, fontWeight: 600 }}>
+                  <FiPlus size={12} /> Add Delivery Cost
+                </button>
               </div>
+            </div>
+            {attachedLcvs.length === 0 ? (
+              <div style={{ fontSize: 12, color: '#a8a29e', padding: '6px 4px' }}>
+                No delivery costs attached to this PO yet. Add one to fold it into inventory WAC on Save.
+              </div>
+            ) : (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
                 {attachedLcvs.map(l => (
                   <div key={l.id} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, color: '#78350f', padding: '4px 8px', background: '#fffbeb', borderRadius: 4 }}>
@@ -611,7 +759,18 @@ function GenerateGrnModal({ purchase, items, extras, onClose, onGenerated }) {
                   Delivery total: K{lcvTotal.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                 </div>
               </div>
-            </div>
+            )}
+          </div>
+
+          {/* v1.10.188 — inline LcvModal for the "+ Add Delivery Cost"
+              button. PO pre-locked so the user can't accidentally attach
+              to the wrong reference from this context. */}
+          {showAddLcv && (
+            <LcvModal
+              lockedRef={{ type: 'PO', syncId: purchase.sync_id }}
+              onClose={() => setShowAddLcv(false)}
+              onSaved={() => { setShowAddLcv(false); refreshLcvs(); }}
+            />
           )}
 
           {/* Final payable summary — highlighted so HQ sees the true net. */}

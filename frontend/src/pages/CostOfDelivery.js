@@ -10,15 +10,13 @@
 // existing PV endpoints — no new backend routes needed.
 import React, { useEffect, useState } from 'react';
 import { FiPlus, FiRefreshCw, FiTruck, FiEdit2, FiTrash2 } from 'react-icons/fi';
-import Portal from '../utils/Portal';
 import useModalScrollLock from '../utils/useModalScrollLock';
+import LcvModal from '../components/LcvModal';
 import {
-  getPaymentVouchers, createPaymentVoucher, updatePaymentVoucher, deletePaymentVoucher,
-  getHqPurchases, getPendingTransfersAll,
+  getPaymentVouchers, deletePaymentVoucher,
 } from '../services/api';
 
 const fmtK = (n) => `K${parseFloat(n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-const todayStr = () => new Date().toISOString().split('T')[0];
 
 export default function CostOfDelivery() {
   const [lcvs, setLcvs]         = useState([]);
@@ -170,7 +168,7 @@ export default function CostOfDelivery() {
       </div>
 
       {showModal && (
-        <NewLcvModal
+        <LcvModal
           editing={editing}
           onClose={() => { setShowModal(false); setEditing(null); }}
           onSaved={() => { setShowModal(false); setEditing(null); refresh(); }}
@@ -180,205 +178,3 @@ export default function CostOfDelivery() {
   );
 }
 
-// ─── New / Edit Delivery Cost modal ─────────────────────────────────────────
-// v1.10.187 — reused for both New and Edit. When `editing` is a row,
-// the modal pre-fills the fields, hides the PO/Transfer picker (link is
-// immutable — the whole point of Edit is to fix amount/description, not
-// re-anchor), and calls updatePaymentVoucher on save.
-function NewLcvModal({ editing, onClose, onSaved }) {
-  const isEdit = !!editing;
-  // Derive the reference type from the existing row (for the summary
-  // line at the top). New form defaults to PO.
-  const initialRefType = isEdit
-    ? (editing.linked_transfer_sync_id ? 'Transfer' : 'PO')
-    : 'PO';
-  const [refType, setRefType] = useState(initialRefType);
-  const [openPOs, setOpenPOs] = useState([]);
-  const [openTransfers, setOpenTransfers] = useState([]);
-  // Pick the K sub-drawer method from the existing PV columns for edits.
-  const deriveMethod = (row) => {
-    if (!row) return 'Cash';
-    if (parseFloat(row.bank_amount) > 0) return 'Bank';
-    if (parseFloat(row.momo_amount) > 0) return 'Mobile Money';
-    return 'Cash';
-  };
-  const [form, setForm] = useState({
-    date:        isEdit ? (editing.date || todayStr()) : todayStr(),
-    linked_ref:  isEdit ? (editing.linked_purchase_sync_id || editing.linked_transfer_sync_id || '') : '',
-    paid_to:     isEdit ? (editing.paid_to || '') : '',
-    amount:      isEdit ? String(editing.amount || '') : '',
-    paid_from:   'Cash Drawer',
-    method:      deriveMethod(editing),
-    description: isEdit ? (editing.description || '') : '',
-  });
-  const [saving, setSaving] = useState(false);
-  const [error, setError]   = useState('');
-
-  useEffect(() => {
-    // v1.10.186 — both list endpoints return { purchases: [...] } /
-    // { transfers: [...] }, not bare arrays. And /transfers/outgoing
-    // requires a slug, so we use the HQ-wide /pending-all endpoint.
-    // Edit mode doesn't need the pickers (link is immutable).
-    if (isEdit) return;
-    getHqPurchases({ status: 'OPEN' })
-      .then(r => setOpenPOs(Array.isArray(r.data?.purchases) ? r.data.purchases : []))
-      .catch(() => setOpenPOs([]));
-    getPendingTransfersAll()
-      .then(r => setOpenTransfers(Array.isArray(r.data?.transfers) ? r.data.transfers : []))
-      .catch(() => setOpenTransfers([]));
-  }, [isEdit]);
-
-  // Reset the picker when switching type. Skip on edit — link is locked.
-  useEffect(() => { if (!isEdit) setForm(f => ({ ...f, linked_ref: '' })); }, [refType, isEdit]);
-
-  const handleSave = async () => {
-    setError('');
-    const amt = parseFloat(form.amount || 0) || 0;
-    if (!form.paid_to.trim()) return setError('Paid To is required.');
-    if (!(amt > 0))            return setError('Amount must be greater than zero.');
-    if (!isEdit && !form.linked_ref) return setError(`Pick a ${refType} to attach the delivery cost to.`);
-    setSaving(true);
-    try {
-      const kCash = form.method === 'Cash'         ? amt : 0;
-      const kBank = form.method === 'Bank'         ? amt : 0;
-      const kMomo = form.method === 'Mobile Money' ? amt : 0;
-      const payload = {
-        paid_to:      form.paid_to.trim(),
-        description:  form.description.trim() || `Delivery cost for ${refType}`,
-        category:     'Other',
-        amount:       amt,
-        k_amount:     amt,
-        cash_amount:  kCash,
-        bank_amount:  kBank,
-        momo_amount:  kMomo,
-        date:         form.date,
-        paid_from:    'Cash Drawer',
-      };
-      if (isEdit) {
-        // PUT keeps the existing link + is_landed_cost flag — server
-        // doesn't accept re-anchoring an LCV (would break the WAC
-        // absorption contract).
-        await updatePaymentVoucher(editing.id, payload);
-      } else {
-        await createPaymentVoucher({
-          ...payload,
-          is_landed_cost:          true,
-          linked_purchase_sync_id: refType === 'PO'       ? form.linked_ref : null,
-          linked_transfer_sync_id: refType === 'Transfer' ? form.linked_ref : null,
-        });
-      }
-      onSaved && onSaved();
-    } catch (err) {
-      setError(err.response?.data?.error || 'Failed to save.');
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const refOptions = refType === 'PO' ? openPOs : openTransfers;
-  const refLabel   = (r) => refType === 'PO'
-    ? `${r.purchase_number} · ${r.supplier_name || 'no supplier'} · ${r.date}`
-    : `${r.transfer_number || r.sync_id?.slice(0,8)} · ${r.from_name || r.from_slug} → ${r.to_name || r.to_slug} · ${r.created_at?.slice(0,10) || ''}`;
-
-  return (
-    <Portal>
-      <div className="modal-overlay">
-        <div className="modal" onClick={e => e.stopPropagation()}>
-          <div className="modal-header">
-            <h3>{isEdit ? 'Edit Delivery Cost' : 'New Delivery Cost'}</h3>
-            <button className="modal-close" onClick={onClose}>×</button>
-          </div>
-          <div className="modal-body">
-            {error && <div style={{ color: '#dc2626', marginBottom: 12, fontSize: 13 }}>{error}</div>}
-
-            <div style={{ padding: 10, background: '#fef3c7', border: '1px solid #fde68a', borderRadius: 8, marginBottom: 14, fontSize: 12, color: '#78350f' }}>
-              Amount will be absorbed into the destination branch's inventory WAC.
-              Cash leaves the Cash Book on save. Not booked as an expense.
-            </div>
-
-            <div className="form-row">
-              <div className="form-group">
-                <label>Date</label>
-                <input type="date" value={form.date} onChange={e => setForm({ ...form, date: e.target.value })} />
-              </div>
-              {!isEdit && (
-                <div className="form-group">
-                  <label>Attach to</label>
-                  <select value={refType} onChange={e => setRefType(e.target.value)}>
-                    <option value="PO">Purchase (PO)</option>
-                    <option value="Transfer">Inter-branch Transfer</option>
-                  </select>
-                </div>
-              )}
-            </div>
-
-            {isEdit ? (
-              // v1.10.187 — link is immutable on Edit. Show what it's
-              // anchored to as a read-only chip so the user knows.
-              <div className="form-group">
-                <label>Attached to</label>
-                <div style={{ padding: '8px 12px', background: '#f3f4f6', borderRadius: 6, fontSize: 13, color: '#374151' }}>
-                  <span style={{ padding: '2px 8px', fontSize: 11, fontWeight: 700, borderRadius: 20,
-                    background: refType === 'PO' ? '#dbeafe' : '#fef3c7',
-                    color: refType === 'PO' ? '#1d4ed8' : '#92400e', marginRight: 8 }}>
-                    {refType === 'PO' ? 'PO' : 'Transfer'}
-                  </span>
-                  <span style={{ fontFamily: 'monospace', fontSize: 12, color: '#6b7280' }}>
-                    {(form.linked_ref || '').slice(0, 12)}…
-                  </span>
-                </div>
-              </div>
-            ) : (
-              <div className="form-group">
-                <label>{refType === 'PO' ? 'Purchase' : 'Transfer'} <span style={{ color: '#dc2626' }}>*</span></label>
-                <select value={form.linked_ref} onChange={e => setForm({ ...form, linked_ref: e.target.value })}>
-                  <option value="">— pick a {refType} —</option>
-                  {refOptions.map(r => (
-                    <option key={r.sync_id} value={r.sync_id}>{refLabel(r)}</option>
-                  ))}
-                </select>
-                {refOptions.length === 0 && (
-                  <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 4 }}>
-                    No open {refType === 'PO' ? 'purchases' : 'transfers'} available.
-                  </div>
-                )}
-              </div>
-            )}
-
-            <div className="form-group">
-              <label>Paid To <span style={{ color: '#dc2626' }}>*</span></label>
-              <input value={form.paid_to} onChange={e => setForm({ ...form, paid_to: e.target.value })} placeholder="Transporter name" />
-            </div>
-
-            <div className="form-row">
-              <div className="form-group">
-                <label>Amount (K) <span style={{ color: '#dc2626' }}>*</span></label>
-                <input type="number" min="0" step="0.01" value={form.amount}
-                  onChange={e => setForm({ ...form, amount: e.target.value })} placeholder="0.00" />
-              </div>
-              <div className="form-group">
-                <label>Paid Via</label>
-                <select value={form.method} onChange={e => setForm({ ...form, method: e.target.value })}>
-                  <option value="Cash">Cash</option>
-                  <option value="Bank">Bank</option>
-                  <option value="Mobile Money">Mobile Money</option>
-                </select>
-              </div>
-            </div>
-
-            <div className="form-group">
-              <label>Description</label>
-              <input value={form.description} onChange={e => setForm({ ...form, description: e.target.value })} placeholder="Truck #, driver, invoice ref, etc." />
-            </div>
-          </div>
-          <div className="modal-footer">
-            <button className="btn btn-secondary" onClick={onClose} disabled={saving}>Cancel</button>
-            <button className="btn btn-primary" onClick={handleSave} disabled={saving}>
-              {saving ? 'Saving…' : (isEdit ? 'Update Delivery Cost' : 'Save Delivery Cost')}
-            </button>
-          </div>
-        </div>
-      </div>
-    </Portal>
-  );
-}
