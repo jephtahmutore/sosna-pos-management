@@ -1608,11 +1608,76 @@ const CashReport = () => {
       </div>
 
       {/* ── Summary Strip ────────────────────────────────────────── */}
-      {/* v1.8.28 — per-currency cards (USD/FRA/K) instead of one card
-          per metric. Mirrors the top 'All Cashiers' bar — color = currency
-          everywhere in the app. Each card shows Expected / On Hand / Diff
-          with a Short/Surplus/OK badge for its currency. */}
-      {filteredReports.length > 0 && (() => {
+      {/* v1.10.196 — Liquor style gets the flat 3-tile consolidated layout
+          (Total Expected Cash / Total Cash on Hand / Total Difference)
+          matching the reference Liquor + Redsea projects. Currency-labeled
+          USD/FRA/K cards were misleading on K-only branches: the values
+          were Cash/MoMo/Bank K amounts, but the labels said USD/FRA — so
+          e.g. Mansa showed "FRA Surplus 266,175" when there's zero FRA
+          activity (that 266,175 is actually MoMo K). Cash on Hand uses
+          the live 5-column sum from v1.10.195 (usd+fra+k+pending+expenses)
+          instead of the stored r.total which drops MoMo+Bank.
+          Sosna tri-ccy style (Kassumbalesa) keeps the gradient per-
+          currency cards — legitimate when each currency is its own drawer. */}
+      {filteredReports.length > 0 && isLiquorStyle && (() => {
+        const sumCol = (col) => filteredReports.reduce((s, r) => s + (parseFloat(r[col] || 0) || 0), 0);
+        // Expected pulls per-currency snapshots (usd_expected on Liquor = Cash expected,
+        // fra_expected = MoMo expected, k_expected = Bank expected — all in K).
+        const totalExpected = sumCol('usd_expected') + sumCol('fra_expected') + sumCol('k_expected');
+        // Cash On Hand = 5-column Liquor formula: Cash + MoMo + Bank + Credit + Expenses.
+        const totalAfterChange = filteredReports.reduce((s, r) => {
+          const usdR = parseFloat(r.usd_received || r.cash || 0);
+          const fraR = parseFloat(r.fra_received || r.mobile_money || 0);
+          const kR   = parseFloat(r.k_received   || r.bank || 0);
+          const pend = parseFloat(r.pending || 0);
+          const exp  = (parseFloat(r.usd_expenses || r.expenses || 0) || 0)
+                     + (parseFloat(r.fra_expenses || 0) || 0)
+                     + (parseFloat(r.k_expenses   || 0) || 0);
+          return s + usdR + fraR + kR + pend + exp;
+        }, 0);
+        const totalDifference = totalAfterChange - totalExpected;
+        const diffStatus = getStatus(totalDifference);
+        const summaryCards = [
+          { label: 'Total Expected Cash', value: totalExpected,    color: '#2563eb', bg: '#eff6ff', border: '#bfdbfe' },
+          { label: 'Total Cash on Hand',  value: totalAfterChange, color: '#16a34a', bg: '#f0fdf4', border: '#bbf7d0' },
+          { label: 'Total Difference',    value: totalDifference,
+            color: totalDifference < 0 ? '#dc2626' : totalDifference > 0 ? '#16a34a' : '#6b7280',
+            bg:    totalDifference < 0 ? '#fef2f2' : totalDifference > 0 ? '#f0fdf4' : '#f9fafb',
+            border:totalDifference < 0 ? '#fecaca' : totalDifference > 0 ? '#bbf7d0' : '#e5e7eb',
+            badge: diffStatus },
+        ];
+        return (
+          <div className="no-print" style={{ display: 'flex', gap: 16, marginBottom: 20, flexWrap: 'wrap' }}>
+            {summaryCards.map(card => (
+              <div key={card.label} style={{
+                flex: '1 1 240px', padding: '18px 22px', borderRadius: 12,
+                background: card.bg, border: `1.5px solid ${card.border}`,
+                boxShadow: '0 1px 4px rgba(0,0,0,0.06)',
+              }}>
+                <div style={{ fontSize: 11, color: '#6b7280', fontWeight: 600, letterSpacing: 0.5, textTransform: 'uppercase', marginBottom: 6 }}>
+                  {card.label}
+                </div>
+                <div style={{ fontSize: 22, fontWeight: 700, color: card.color, letterSpacing: -0.5 }}>
+                  {curSym}{Math.abs(card.value).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                  {card.badge && (
+                    <span style={{
+                      marginLeft: 10, fontSize: 11, fontWeight: 600,
+                      padding: '2px 10px', borderRadius: 20,
+                      background: card.color + '1a', color: card.color, verticalAlign: 'middle'
+                    }}>{card.badge}</span>
+                  )}
+                </div>
+                {card.label === 'Total Difference' && totalDifference !== 0 && (
+                  <div style={{ fontSize: 11, color: card.color, marginTop: 4 }}>
+                    {totalDifference < 0 ? '▼ Short' : '▲ Surplus'} by {curSym}{Math.abs(totalDifference).toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        );
+      })()}
+      {filteredReports.length > 0 && !isLiquorStyle && (() => {
         const sumCol = (col) => filteredReports.reduce((s, r) => s + (parseFloat(r[col] || 0) || 0), 0);
         const expU = sumCol('usd_expected');
         const expF = sumCol('fra_expected');
