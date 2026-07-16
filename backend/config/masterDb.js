@@ -703,6 +703,11 @@ try {
   addMasterCol('stock_transfers', 'hq_released_by_name', 'TEXT');
   addMasterCol('stock_transfers', 'hq_released_at',      'TEXT');
   addMasterCol('stock_transfers', 'hq_release_no_cost',  'INTEGER NOT NULL DEFAULT 0');
+  // v1.10.209 — snapshot of LCV total (K) at release time. Lets the
+  // destination branch's Receive modal show delivery-cost context
+  // without querying HQ's payment_vouchers cross-tenant. The actual
+  // WAC absorption at /receive still reads live from HQ (v1.10.185).
+  addMasterCol('stock_transfers', 'lcv_total_at_release', 'REAL NOT NULL DEFAULT 0');
 
   // v1.10.187 — one-shot backfill: PO headers whose every line is
   // already CONFIRMED / CANCELLED / BRANCH_REJECTED but still sit in

@@ -923,7 +923,15 @@ function TransferDetailModal({ transfer, mode, onClose, onSubmit }) {
       .catch(() => setAttachedLcvs([]));
   };
   useEffect(() => { refreshLcvs(); }, [transfer?.sync_id, mode]);
-  const lcvTotal = attachedLcvs.reduce((s, l) => s + (parseFloat(l.amount) || 0), 0);
+  // v1.10.209 — LCVs live in HQ's DB; a branch-side receive modal
+  // can't see them via its own payment_vouchers table. Fall back to
+  // the lcv_total_at_release snapshot HQ stamps on the transfer row
+  // at Release time. Preview stays honest even when the LCV rows
+  // aren't visible locally. Actual absorption at /receive still
+  // reads HQ live (v1.10.185).
+  const lcvTotalFromRows = attachedLcvs.reduce((s, l) => s + (parseFloat(l.amount) || 0), 0);
+  const lcvTotalSnapshot = parseFloat(transfer?.lcv_total_at_release || 0) || 0;
+  const lcvTotal = lcvTotalFromRows > 0 ? lcvTotalFromRows : lcvTotalSnapshot;
   const [showAddLcv, setShowAddLcv] = useState(false);
 
   // Destination WAC snapshot per product. In receive mode we blend against
@@ -1068,7 +1076,9 @@ function TransferDetailModal({ transfer, mode, onClose, onSubmit }) {
           <div>
             <h3 style={{ margin: 0 }}>{isReceive ? 'Receive Transfer' : 'Transfer Detail'} · {transfer.transfer_number}</h3>
             <div style={{ fontSize: 12, color: '#64748b', marginTop: 4 }}>
-              From <strong>{transfer.from_name || transfer.from_slug}</strong> → To <strong>{transfer.to_name || transfer.to_slug}</strong>
+              {/* v1.10.209 — slug primary (business_name is the same
+                  on every branch, useless as a route identifier). */}
+              From <strong style={{ fontFamily: 'monospace' }}>{transfer.from_slug || transfer.from_name}</strong> → To <strong style={{ fontFamily: 'monospace' }}>{transfer.to_slug || transfer.to_name}</strong>
               {transfer.created_by_name && <> · Sent by {transfer.created_by_name}</>}
               {transfer.created_at && <> · {new Date(transfer.created_at).toLocaleString()}</>}
             </div>
@@ -1232,7 +1242,21 @@ function TransferDetailModal({ transfer, mode, onClose, onSubmit }) {
                 )}
               </div>
             </div>
-            {attachedLcvs.length === 0 ? (
+            {attachedLcvs.length === 0 && lcvTotalSnapshot > 0 ? (
+              // v1.10.209 — LCVs live on HQ but this modal runs on the
+              // destination branch. Local payment_vouchers query comes
+              // up empty. Show the release-time snapshot so the
+              // operator knows what will land on WAC.
+              <div style={{ fontSize: 12, color: '#78350f', padding: '6px 4px' }}>
+                <div style={{ padding: '4px 8px', background: '#fffbeb', borderRadius: 4, display: 'flex', justifyContent: 'space-between' }}>
+                  <span><em>Delivery cost attached at HQ · row detail visible on HQ Transfers Awaiting page</em></span>
+                  <strong>K{lcvTotalSnapshot.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</strong>
+                </div>
+                <div style={{ fontSize: 11, color: '#9a3412', marginTop: 6, textAlign: 'right' }}>
+                  Delivery total: K{lcvTotalSnapshot.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                </div>
+              </div>
+            ) : attachedLcvs.length === 0 ? (
               <div style={{ fontSize: 12, color: '#a8a29e', padding: '6px 4px' }}>
                 {isReceive
                   ? 'No delivery costs attached yet. Add one to fold it into inventory WAC on Receive.'

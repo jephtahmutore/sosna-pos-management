@@ -116,9 +116,12 @@ export default function HqTransfersAwaiting() {
                   <tr key={r.sync_id}>
                     <td style={{ fontWeight: 600, fontFamily: 'monospace', fontSize: 12 }}>{r.transfer_number || r.sync_id.slice(0, 8)}</td>
                     <td>
-                      <span style={{ fontWeight: 500 }}>{r.from_name || r.from_slug}</span>
+                      {/* v1.10.209 — slug primary; business_name is
+                          identical on all branches (SOSNA GENERAL DEALERS
+                          LTD) so was useless as a route identifier. */}
+                      <span style={{ fontWeight: 500, fontFamily: 'monospace' }}>{r.from_slug || r.from_name}</span>
                       <span style={{ color: '#9ca3af', margin: '0 6px' }}>→</span>
-                      <span style={{ fontWeight: 500 }}>{r.to_name || r.to_slug}</span>
+                      <span style={{ fontWeight: 500, fontFamily: 'monospace' }}>{r.to_slug || r.to_name}</span>
                     </td>
                     <td style={{ fontSize: 12, color: '#6b7280' }}>{r.created_by_name || '—'}</td>
                     <td style={{ textAlign: 'right' }}>{r.total_items || (r.items || []).length}</td>
@@ -180,6 +183,16 @@ function ViewModal({ transfer, lcvData, onClose, onRefresh, onReleased }) {
     return s + q * c;
   }, 0);
 
+  // v1.10.209 — currency-aware money formatter. Reads cost_currency
+  // stamped on the transfer at Send time. Falls back to K for the
+  // legacy K-to-K case where the field was omitted.
+  const ccy = String(transfer?.cost_currency || 'K').toUpperCase();
+  const ccySym = ccy === 'USD' ? '$' : ccy === 'FRA' ? 'F ' : 'K';
+  const fmtMoney = (n) => {
+    const num = parseFloat(n || 0);
+    return `${ccySym}${num.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  };
+
   // Mutually-exclusive rule per user's v1.10.203 confirmation:
   //   ≥1 LCV → Release with Cost enabled · Release (no cost) DISABLED
   //   0 LCVs → Release (no cost) enabled · Release with Cost DISABLED
@@ -215,8 +228,9 @@ function ViewModal({ transfer, lcvData, onClose, onRefresh, onReleased }) {
             <div>
               <h3 style={{ margin: 0 }}>Transfer {transfer.transfer_number}</h3>
               <div style={{ fontSize: 12, color: '#64748b', marginTop: 4 }}>
-                From <strong>{transfer.from_name || transfer.from_slug}</strong> →
-                To <strong>{transfer.to_name || transfer.to_slug}</strong>
+                {/* v1.10.209 — slug primary (see row rationale) */}
+                From <strong style={{ fontFamily: 'monospace' }}>{transfer.from_slug || transfer.from_name}</strong> →
+                To <strong style={{ fontFamily: 'monospace' }}>{transfer.to_slug || transfer.to_name}</strong>
                 {transfer.created_by_name && <> · Sent by {transfer.created_by_name}</>}
                 {transfer.created_at && <> · {new Date(transfer.created_at).toLocaleString()}</>}
               </div>
@@ -253,13 +267,15 @@ function ViewModal({ transfer, lcvData, onClose, onRefresh, onReleased }) {
                     const dispConv = parseFloat(it.display_conv || 1) || 1;
                     // Show qty in display unit so it matches what operator sent.
                     const qtyDisplay = dispConv > 0 ? qty / dispConv : qty;
+                    // v1.10.209 — cost per display unit + currency symbol.
+                    const costPerDisplay = cost * dispConv;
                     return (
                       <tr key={idx} style={{ borderTop: '1px solid #f1f5f9' }}>
                         <td style={td}><strong>{it.product_name}</strong></td>
                         <td style={{ ...td, color: '#475569' }}>{dispUnit || it.unit || '—'}</td>
                         <td style={{ ...td, textAlign: 'right', fontWeight: 600 }}>{fmtN(qtyDisplay)}</td>
-                        <td style={{ ...td, textAlign: 'right', color: '#64748b' }}>{fmtN(cost * dispConv)}</td>
-                        <td style={{ ...td, textAlign: 'right', fontWeight: 700 }}>{fmtN(qty * cost)}</td>
+                        <td style={{ ...td, textAlign: 'right', color: '#64748b' }}>{fmtMoney(costPerDisplay)}</td>
+                        <td style={{ ...td, textAlign: 'right', fontWeight: 700 }}>{fmtMoney(qty * cost)}</td>
                       </tr>
                     );
                   })}
@@ -267,7 +283,7 @@ function ViewModal({ transfer, lcvData, onClose, onRefresh, onReleased }) {
                 <tfoot>
                   <tr style={{ borderTop: '2px solid #e5e7eb', fontWeight: 700, background: '#f9fafb' }}>
                     <td colSpan={4} style={{ ...td, textAlign: 'right' }}>Transfer value</td>
-                    <td style={{ ...td, textAlign: 'right', color: '#0f172a' }}>{fmtN(totalValue)}</td>
+                    <td style={{ ...td, textAlign: 'right', color: '#0f172a' }}>{fmtMoney(totalValue)}</td>
                   </tr>
                 </tfoot>
               </table>

@@ -158,15 +158,41 @@ router.put('/:syncId/release', hqAuth, (req, res) => {
     if (row.status === 'PENDING') return res.json({ ok: true, transfer: parseItems(row), already_released: true });
     if (row.status !== 'PENDING_HQ') return res.status(400).json({ error: `Transfer is ${row.status}, not PENDING_HQ` });
     const releasedByName = req.user?.firstName || req.user?.email || 'HQ';
+    // v1.10.209 — snapshot LCV total onto the transfer row at release
+    // time. LCVs live in HQ's own DB (backend/sosna.db), so the
+    // destination branch's Receive modal can't see them via its own
+    // payment_vouchers table. Copying the total onto the transfer
+    // record lets the receive-side preview show honest delivery-cost
+    // context without a cross-tenant query. The actual absorption at
+    // /receive still reads from HQ directly (v1.10.185) — this is
+    // display-only.
+    let lcvTotalAtRelease = 0;
+    try {
+      const hqDb = require('../config/database').defaultDb;
+      if (hqDb) {
+        const sum = hqDb.prepare(`
+          SELECT COALESCE(SUM(amount), 0) AS t
+            FROM payment_vouchers
+           WHERE linked_transfer_sync_id = ?
+             AND is_landed_cost = 1
+             AND deleted_at IS NULL
+             AND applied_to_transfer_sync_id IS NULL
+        `).get(syncId);
+        lcvTotalAtRelease = parseFloat(sum?.t || 0) || 0;
+      }
+    } catch (lcvErr) {
+      console.warn('[transfers.release] LCV sum failed:', lcvErr.message);
+    }
     masterDb.prepare(`
       UPDATE stock_transfers
          SET status              = 'PENDING',
              hq_released_by      = ?,
              hq_released_by_name = ?,
              hq_released_at      = datetime('now'),
-             hq_release_no_cost  = ?
+             hq_release_no_cost  = ?,
+             lcv_total_at_release = ?
        WHERE sync_id = ?
-    `).run(req.user?.id || null, releasedByName, noCost ? 1 : 0, syncId);
+    `).run(req.user?.id || null, releasedByName, noCost ? 1 : 0, lcvTotalAtRelease, syncId);
     const updated = parseItems(masterDb.prepare('SELECT * FROM stock_transfers WHERE sync_id = ?').get(syncId));
     res.json({ ok: true, transfer: updated });
   } catch (error) {
