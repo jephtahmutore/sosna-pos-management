@@ -28,7 +28,10 @@ import {
   // when the historical acquisition rate exists.
   // v1.10.206 — fx_rates fallback for branch subdomains where the
   // K-pool is empty (branches don't exchange USD↔K locally).
-  getCashPool, getCurrentFxRate,
+  // v1.10.207 — live market rate as a third source between pool and
+  // fx_rates. Handles the case where HQ's pool is drained AND the
+  // branch's admin hasn't entered a daily rate.
+  getCashPool, getCurrentFxRate, getLiveMarketRate,
 } from '../services/api';
 import LcvModal from '../components/LcvModal';
 
@@ -441,35 +444,36 @@ function CreateTransferModal({ sourceSlug, branches, onClose, onCreated, onError
   //   3. Empty → operator types it (existing fallback)
   const [poolBlendedRate, setPoolBlendedRate] = useState(0);
   useEffect(() => {
+    // v1.10.207 — full cascade for FX rate pre-fill:
+    //   1. K-pool blended (accountant-preferred acquisition cost)
+    //   2. Live market rate (today's honest fair value)
+    //   3. Local fx_rates sell_rate_k (admin-entered daily rate on this branch)
+    //   4. Local fx_rates buy_rate_k
+    //   5. Empty → operator enters manually
+    const tryFxRates = () => getCurrentFxRate()
+      .then(fx => {
+        const sellK = parseFloat(fx.data?.sell_rate_k || 0) || 0;
+        const buyK  = parseFloat(fx.data?.buy_rate_k  || 0) || 0;
+        const rate = sellK > 0 ? sellK : (buyK > 0 ? buyK : 0);
+        if (rate > 0) setPoolBlendedRate(rate);
+      })
+      .catch(() => {});
+    const tryLive = () => getLiveMarketRate('K')
+      .then(live => {
+        const rate = parseFloat(live.data?.rate_per_usd || 0) || 0;
+        if (rate > 0) { setPoolBlendedRate(rate); return true; }
+        return false;
+      })
+      .catch(() => false);
     getCashPool()
       .then(r => {
         const blended = parseFloat(r.data?.blended_k_per_usd || 0) || 0;
-        if (blended > 0) {
-          setPoolBlendedRate(blended);
-          return;
-        }
-        // Pool empty (branch-level, no historical exchanges). Try daily.
-        getCurrentFxRate()
-          .then(fx => {
-            const sellK = parseFloat(fx.data?.sell_rate_k || 0) || 0;
-            const buyK  = parseFloat(fx.data?.buy_rate_k  || 0) || 0;
-            // Prefer sell_rate_k (rate at which we acquire USD); fall
-            // back to buy_rate_k; else 0 → operator enters manually.
-            const rate = sellK > 0 ? sellK : (buyK > 0 ? buyK : 0);
-            if (rate > 0) setPoolBlendedRate(rate);
-          })
-          .catch(() => {});
+        if (blended > 0) { setPoolBlendedRate(blended); return; }
+        // Pool empty — try live market first, then fx_rates.
+        tryLive().then(ok => { if (!ok) tryFxRates(); });
       })
       .catch(() => {
-        // Pool endpoint failed too — try fx_rates directly.
-        getCurrentFxRate()
-          .then(fx => {
-            const sellK = parseFloat(fx.data?.sell_rate_k || 0) || 0;
-            const buyK  = parseFloat(fx.data?.buy_rate_k  || 0) || 0;
-            const rate = sellK > 0 ? sellK : (buyK > 0 ? buyK : 0);
-            if (rate > 0) setPoolBlendedRate(rate);
-          })
-          .catch(() => {});
+        tryLive().then(ok => { if (!ok) tryFxRates(); });
       });
   }, []);
 

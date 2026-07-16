@@ -563,6 +563,9 @@ export const deleteCustomerPayment = (id) => api.delete(`/customer-payments/${id
 // FX Rates (Accounting → Currency Rates) — dual-currency branches only
 export const getFxRates = () => api.get('/fx-rates');
 export const getCurrentFxRate = () => api.get('/fx-rates/current');
+// v1.10.207 — live market rate from public FX API (cached 6h server-side).
+// Used as the "today's rate" fallback when admin hasn't entered one.
+export const getLiveMarketRate = (currency) => api.get(`/fx-rates/live-market/${encodeURIComponent(currency)}`);
 export const createFxRate = (data) => api.post('/fx-rates', data);
 export const deleteFxRate = (id) => api.delete(`/fx-rates/${id}`);
 export const getLiveFxRate = () => api.get('/fx-rates/live');

@@ -819,6 +819,8 @@ app.use('/api/discount-requests', require('./routes/discountRequests'));
 app.use('/api/sync', require('./routes/sync'));
 app.use('/api/updates', require('./routes/updates'));
 app.use('/api/fx-rates', require('./routes/fxRates'));
+// v1.10.207 — live market rate fallback for currencies admin hasn't set daily.
+app.use('/api/fx-rates', require('./routes/liveMarketFx'));
 // v1.8.33 — branch Electron needs these two: Inter-Branch Transfers
 // (sidebar + page) and sidebar notification badges. Without them
 // Electron 404s on every sidebar load + the Transfers menu item.

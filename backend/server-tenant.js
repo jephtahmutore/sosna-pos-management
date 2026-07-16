@@ -81,6 +81,8 @@ app.use('/api/discount-requests',require('./routes/discountRequests'));
 app.use('/api/sync',             require('./routes/sync'));
 app.use('/api/updates',          require('./routes/updates'));
 app.use('/api/fx-rates',         require('./routes/fxRates'));
+// v1.10.207 — live market rate fallback (public FX API, in-memory cached).
+app.use('/api/fx-rates',         require('./routes/liveMarketFx'));
 app.use('/api/tenant-admin',     require('./routes/tenantAdmin'));
 app.use('/api/hq',               require('./routes/hq'));
 app.use('/api/hq/purchases',     require('./routes/hqPurchases'));

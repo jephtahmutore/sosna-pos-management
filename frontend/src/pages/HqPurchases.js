@@ -8,7 +8,7 @@ import {
 } from 'react-icons/fi';
 import {
   getHqBranches, getHqPurchases, getHqPurchase, createHqPurchase, getHqSuppliers, createHqSupplier,
-  cancelHqPurchaseItem, cancelHqPurchase, getProducts, getCashPool,
+  cancelHqPurchaseItem, cancelHqPurchase, getProducts, getCashPool, getLiveMarketRate,
 } from '../services/api';
 import printHtml from '../utils/printHtml';
 
@@ -216,9 +216,32 @@ function CreatePurchaseModal({ branches, onClose, onCreated, onError }) {
   // step of the operator computing the rate from the exchange ledger.
   const [poolBlendedRate, setPoolBlendedRate] = useState(0);
   useEffect(() => {
-    getCashPool().then(r => {
-      setPoolBlendedRate(parseFloat(r.data?.blended_k_per_usd || 0) || 0);
-    }).catch(() => {});
+    // v1.10.207 — cascade for FX pre-fill on new PO:
+    //   1. K-pool blended rate (accountant-preferred acquisition cost)
+    //   2. Live market rate (today's honest fair value from public FX API)
+    //   3. If both fail → field stays empty, operator types manually
+    // Prior version stopped at step 1, so once the pool was drained by
+    // K PVs / APs (which zeros pool_exchange_k + pool_usd_basis), PO's
+    // pre-fill went blank even though a real market rate was available.
+    getCashPool()
+      .then(r => {
+        const pool = parseFloat(r.data?.blended_k_per_usd || 0) || 0;
+        if (pool > 0) { setPoolBlendedRate(pool); return; }
+        // Pool empty — fall through to live market.
+        return getLiveMarketRate('K').then(live => {
+          const rate = parseFloat(live.data?.rate_per_usd || 0) || 0;
+          if (rate > 0) setPoolBlendedRate(rate);
+        });
+      })
+      .catch(() => {
+        // getCashPool failed — try live market directly.
+        getLiveMarketRate('K')
+          .then(live => {
+            const rate = parseFloat(live.data?.rate_per_usd || 0) || 0;
+            if (rate > 0) setPoolBlendedRate(rate);
+          })
+          .catch(() => {});
+      });
   }, []);
   const destBranch = branches.find(b => b.slug === destinationSlug);
   const destIsTriCcy = (() => {

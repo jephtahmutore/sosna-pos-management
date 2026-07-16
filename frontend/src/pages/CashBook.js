@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { getCashBook, getCashBookStats, setOpeningBalance, getSettings, getSalesRangeSummary, createCashTransfer, getCashTransfers, deleteCashTransfer, createCashDeposit, getCashDeposits, deleteCashDeposit, isHqHost, getBranchSlug, getCurrentFxRate, getBlendedFxRate, getCashPool } from '../services/api';
+import { getCashBook, getCashBookStats, setOpeningBalance, getSettings, getSalesRangeSummary, createCashTransfer, getCashTransfers, deleteCashTransfer, createCashDeposit, getCashDeposits, deleteCashDeposit, isHqHost, getBranchSlug, getCurrentFxRate, getBlendedFxRate, getCashPool, getLiveMarketRate } from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import CurrencyExchangePanel from '../components/CurrencyExchangePanel';
 import { useCurrency } from '../context/CurrencyContext';
@@ -132,14 +132,30 @@ const CashBook = () => {
     fetchData(todayStr, todayStr);
     getSettings().then(r => setBusinessInfo(r.data?.business || {})).catch(() => {});
     // v1.10.18 — fetch today's latest FX rate for USD-equivalent card.
+    // v1.10.207 — when admin hasn't entered buy_rate_k, fetch today's
+    // live market rate from the public FX API so native K balances
+    // don't fall through to the blended historical rate (which
+    // over-values native K held long-term).
     getCurrentFxRate().then(r => {
       const d = r.data || {};
+      const buyK  = parseFloat(d.buy_rate_k   ?? d.buyRateK    ?? 0) || 0;
+      const sellK = parseFloat(d.sell_rate_k  ?? d.sellRateK   ?? 0) || 0;
       setFx({
         buyFRA:  parseFloat(d.buy_rate     ?? d.buyRate     ?? d.buy_rate_fra   ?? 0) || 0,
         sellFRA: parseFloat(d.sell_rate    ?? d.sellRate    ?? d.sell_rate_fra  ?? 0) || 0,
-        buyK:    parseFloat(d.buy_rate_k   ?? d.buyRateK    ?? 0) || 0,
-        sellK:   parseFloat(d.sell_rate_k  ?? d.sellRateK   ?? 0) || 0,
+        buyK,
+        sellK,
       });
+      // If admin hasn't set today's K rate, fetch live market and use
+      // that as buyK so the USD-Equivalent tile values native K
+      // honestly. Live rate is a per-currency 6h-cached spot from a
+      // public API (see backend/routes/liveMarketFx.js).
+      if (buyK <= 0) {
+        getLiveMarketRate('K').then(live => {
+          const rate = parseFloat(live.data?.rate_per_usd || 0) || 0;
+          if (rate > 0) setFx(prev => ({ ...prev, buyK: rate }));
+        }).catch(() => {});
+      }
     }).catch(() => {});
     // v1.10.177 — pull the pool-blended rate from exchange history so the
     // HQ primary tile can display USD-equivalent at true cost basis.
