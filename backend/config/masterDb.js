@@ -694,6 +694,16 @@ try {
   addMasterCol('hq_purchase_items', 'updated_at', 'TEXT');
   addMasterCol('hq_purchases',       'updated_at', 'TEXT');
 
+  // v1.10.201 — HQ release gate on inter-branch transfers.
+  // New transfers land in PENDING_HQ instead of PENDING. HQ reviews,
+  // optionally attaches LCVs, then releases → status flips to PENDING
+  // and the destination branch can receive. Audit columns capture WHO
+  // released it and WHETHER they explicitly waived the delivery cost.
+  addMasterCol('stock_transfers', 'hq_released_by',      'INTEGER');
+  addMasterCol('stock_transfers', 'hq_released_by_name', 'TEXT');
+  addMasterCol('stock_transfers', 'hq_released_at',      'TEXT');
+  addMasterCol('stock_transfers', 'hq_release_no_cost',  'INTEGER NOT NULL DEFAULT 0');
+
   // v1.10.187 — one-shot backfill: PO headers whose every line is
   // already CONFIRMED / CANCELLED / BRANCH_REJECTED but still sit in
   // OPEN. The hqGrns.js /generate path (pre-v1.10.187) forgot to

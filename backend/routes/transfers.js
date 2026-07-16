@@ -115,12 +115,60 @@ router.get('/source-products', hqAuth, (req, res) => {
 // transfer regardless of from/to slug. v1.10.186.
 router.get('/pending-all', hqAuth, (req, res) => {
   try {
+    // v1.10.201 — include PENDING_HQ so the Cost of Delivery picker can
+    // attach LCVs to transfers waiting on HQ review too (that's exactly
+    // the point of the review step).
     const rows = masterDb.prepare(
       `SELECT * FROM stock_transfers
-        WHERE status = 'PENDING'
+        WHERE status IN ('PENDING', 'PENDING_HQ')
         ORDER BY created_at DESC LIMIT 500`
     ).all().map(parseItems);
     res.json({ transfers: rows });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// v1.10.201 — Transfers waiting for HQ to review + release. Powers the
+// new "Transfers Awaiting HQ" sidebar entry under Store. HQ-only.
+router.get('/awaiting-hq-release', hqAuth, (req, res) => {
+  try {
+    const rows = masterDb.prepare(
+      `SELECT * FROM stock_transfers
+        WHERE status = 'PENDING_HQ'
+        ORDER BY created_at DESC LIMIT 500`
+    ).all().map(parseItems);
+    res.json({ transfers: rows });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// v1.10.201 — HQ releases a PENDING_HQ transfer. Two paths:
+//   no_cost=true → status = PENDING, no LCV expected
+//   no_cost=false (default) → status = PENDING; caller has attached
+//                             LCVs already via + Add Delivery Cost
+// Idempotent-ish: releasing an already-PENDING row is a no-op.
+router.put('/:syncId/release', hqAuth, (req, res) => {
+  try {
+    const syncId = req.params.syncId;
+    const noCost = req.body?.no_cost === true || req.body?.no_cost === 'true' || req.body?.no_cost === 1;
+    const row = masterDb.prepare('SELECT * FROM stock_transfers WHERE sync_id = ?').get(syncId);
+    if (!row) return res.status(404).json({ error: 'Transfer not found' });
+    if (row.status === 'PENDING') return res.json({ ok: true, transfer: parseItems(row), already_released: true });
+    if (row.status !== 'PENDING_HQ') return res.status(400).json({ error: `Transfer is ${row.status}, not PENDING_HQ` });
+    const releasedByName = req.user?.firstName || req.user?.email || 'HQ';
+    masterDb.prepare(`
+      UPDATE stock_transfers
+         SET status              = 'PENDING',
+             hq_released_by      = ?,
+             hq_released_by_name = ?,
+             hq_released_at      = datetime('now'),
+             hq_release_no_cost  = ?
+       WHERE sync_id = ?
+    `).run(req.user?.id || null, releasedByName, noCost ? 1 : 0, syncId);
+    const updated = parseItems(masterDb.prepare('SELECT * FROM stock_transfers WHERE sync_id = ?').get(syncId));
+    res.json({ ok: true, transfer: updated });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -135,7 +183,15 @@ router.get('/outgoing', hqAuth, (req, res) => {
     if (!slug) return res.status(400).json({ error: 'slug is required' });
     let sql = `SELECT * FROM stock_transfers WHERE from_slug = ?`;
     const params = [slug];
-    if (status) { sql += ' AND status = ?'; params.push(status); }
+    // v1.10.201 — accept comma-separated status list ("PENDING,PENDING_HQ")
+    // so the source branch can see both waiting-HQ + released-to-dest.
+    if (status.includes(',')) {
+      const statuses = status.split(',').map(s => s.trim()).filter(Boolean);
+      if (statuses.length) {
+        sql += ` AND status IN (${statuses.map(() => '?').join(',')})`;
+        params.push(...statuses);
+      }
+    } else if (status) { sql += ' AND status = ?'; params.push(status); }
     if (from)   { sql += ' AND DATE(created_at) >= ?'; params.push(from); }
     if (to)     { sql += ' AND DATE(created_at) <= ?'; params.push(to); }
     sql += ' ORDER BY created_at DESC LIMIT 500';
@@ -311,12 +367,18 @@ router.post('/', hqAuth, (req, res) => {
     }
 
     // Master row only — source stock_movements posted at /receive time.
+    // v1.10.201 — new transfers start in PENDING_HQ (HQ delivery review).
+    // HQ either attaches an LCV + releases OR releases with no delivery
+    // cost. On release status flips to PENDING and the destination can
+    // receive. Prevents delivery cost from being missed after the fact,
+    // because right now once destination receives, the WAC blend is
+    // locked and any late LCV can't be absorbed.
     masterDb.prepare(`
       INSERT INTO stock_transfers (transfer_number, sync_id, from_slug, from_name, to_slug, to_name,
                                    items_json, total_items, total_value, notes,
                                    cost_currency, fx_rate_used,
                                    status, created_by, created_by_name)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?, 'PENDING', ?, ?)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?, 'PENDING_HQ', ?, ?)
     `).run(
       transferNumber, transferSyncId,
       fromSlug, branchName(fromSlug),
@@ -729,7 +791,9 @@ router.put('/:id/cancel', hqAuth, (req, res) => {
   try {
     const row = masterDb.prepare('SELECT * FROM stock_transfers WHERE id = ?').get(req.params.id);
     if (!row) return res.status(404).json({ error: 'Transfer not found' });
-    if (row.status !== 'PENDING') return res.status(400).json({ error: `Transfer is ${row.status}, not PENDING` });
+    // v1.10.201 — allow cancel from PENDING or PENDING_HQ (source can
+    // pull back before OR during HQ review, since no stock has moved).
+    if (!['PENDING', 'PENDING_HQ'].includes(row.status)) return res.status(400).json({ error: `Transfer is ${row.status}, cannot cancel` });
 
     masterDb.prepare(`UPDATE stock_transfers SET status='CANCELLED' WHERE id=?`).run(req.params.id);
 

@@ -104,8 +104,11 @@ export default function StockTransfers() {
     if (!slug) return;
     setLoading(true);
     try {
+      // v1.10.201 — outgoing includes PENDING_HQ so source sees "waiting
+      // HQ review" transfers too. Incoming stays PENDING-only — the whole
+      // point of the release gate is that dest doesn't see PENDING_HQ.
       const [o, i] = await Promise.all([
-        getOutgoingTransfers({ slug, status: 'PENDING' }),
+        getOutgoingTransfers({ slug, status: 'PENDING,PENDING_HQ' }),
         getIncomingTransfers({ slug, status: 'PENDING' }),
       ]);
       setOut(o.data?.transfers || []);
@@ -663,6 +666,10 @@ function CreateTransferModal({ sourceSlug, branches, onClose, onCreated, onError
 
 function statusBadge(s) {
   const map = {
+    // v1.10.201 — PENDING_HQ: source sent it, HQ hasn't released it yet.
+    // Destination doesn't see this row at all. Orange badge distinguishes
+    // from the plain PENDING (which means "HQ released, waiting for dest").
+    'PENDING_HQ': ['#ffedd5', '#9a3412', 'Waiting HQ'],
     'PENDING':   ['#fef3c7', '#92400e', 'Pending'],
     'RECEIVED':  ['#dcfce7', '#166534', 'Received'],
     'CANCELLED': ['#fee2e2', '#991b1b', 'Cancelled'],
@@ -1102,7 +1109,11 @@ function TransferDetailModal({ transfer, mode, onClose, onSubmit }) {
                 <div style={{ fontSize: 12, color: '#7c2d12' }}>
                   {isReceive ? 'Absorbed into destination WAC on Receive' : 'Historic — already applied to WAC'}
                 </div>
-                {isReceive && (
+                {/* v1.10.201 — button HQ-only. Branch operators receive
+                    but never book delivery costs (per project memory:
+                    HQ owns all procurement). HQ attaches LCVs from the
+                    Cost of Delivery page or Transfers Awaiting HQ. */}
+                {isReceive && isHqHost() && (
                   <button type="button" onClick={() => setShowAddLcv(true)}
                     style={{ padding: '5px 10px', background: '#c2410c', color: '#fff', border: 'none', borderRadius: 5, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 12, fontWeight: 600 }}>
                     <FiPlus size={12} /> Add Delivery Cost

@@ -307,6 +307,7 @@ const Layout = () => {
       '/hq/products': 'HQ Products',
       '/hq/purchases': 'HQ Purchases',
       '/hq/cost-of-delivery': 'Cost of Delivery',
+      '/hq/transfers-awaiting': 'Transfers Awaiting HQ',
       '/hq/confirm-grn': 'Generate GRN',
       '/hq/grn-archive': 'GRN Archive',
       '/hq/variances':   'Transit Variances',
@@ -518,6 +519,16 @@ const Layout = () => {
                   {hq && (
                     <div className={`nav-item ${isActive('/hq/cost-of-delivery') ? 'active' : ''}`} onClick={() => navigate('/hq/cost-of-delivery')}>
                       <FiTruck className="nav-icon" /> <span>Cost of Delivery</span>
+                    </div>
+                  )}
+                  {/* v1.10.201 — HQ review queue for inter-branch transfers.
+                      New transfers land here first so HQ can decide whether
+                      to attach a delivery cost before the destination
+                      receives. Sits next to Cost of Delivery because it's
+                      the same procurement-side decision. */}
+                  {hq && (
+                    <div className={`nav-item ${isActive('/hq/transfers-awaiting') ? 'active' : ''}`} onClick={() => navigate('/hq/transfers-awaiting')}>
+                      <FiSend className="nav-icon" /> <span>Transfers Awaiting HQ</span>
                     </div>
                   )}
                   {hq && (
