@@ -25,6 +25,8 @@ const { getTenantDb } = require('../config/tenantDb');
 // basis was ever spent). Pool_native_k grows on confirm.
 const hqDb = require('../config/database');
 const { poolInflowNative } = require('../config/cashPoolHelper');
+// v1.10.204 — shared per-drawer balance math (mirrors cashBook.js /stats)
+const { getCurrentByMethod } = require('../config/perMethodBalanceHelper');
 
 function hqAuth(req, res, next) {
   try {
@@ -80,52 +82,32 @@ router.post('/', hqAuth, (req, res) => {
     if (!(amt > 0)) return res.status(400).json({ error: 'amount must be > 0' });
 
     // v1.10.167 — overdraft guard on Liquor branches.
-    // v1.10.198 — guard is now PER-DRAWER (Cash / Bank / Mobile Money)
-    // rather than the pooled Cash & Cash Equivalent. Prior version let
-    // an operator deposit e.g. K25,000 "from Mobile Money" when Mobile
-    // Money physically had K21,565 — the pool covered it because Cash
-    // had K10,565 on top. Reads the branch's per-drawer sub-columns and
-    // subtracts prior confirmed/pending deposits FROM THE SAME METHOD.
+    // v1.10.198 — guard is now PER-DRAWER (Cash / Bank / Mobile Money).
+    // v1.10.204 — guard math now mirrors cashBook.js /stats
+    // currentByMethod exactly (via perMethodBalanceHelper). Prior
+    // simplified sum (opening + CR - PV - AP - deposits) skipped
+    // capital, dividend, loan and drawer-to-drawer transfer flows —
+    // on branches with any of those, guard was quietly wrong. Real
+    // reproducer: Lusaka rejected a legitimate K149,220 deposit
+    // claiming the drawer balance was -K1,337,586 because ~K1.5M of
+    // transferNet + capital inflows weren't counted.
     // Sosna tri-currency branches still skip (per-currency drawers).
     try {
       const branchDb = getTenantDb(from_slug);
-      const bs = branchDb.prepare(`SELECT currency_mode FROM business_settings ORDER BY id ASC LIMIT 1`).get();
+      const bs = branchDb.prepare(`SELECT currency_mode, tenant_id FROM business_settings ORDER BY id ASC LIMIT 1`).get();
       const isLiquorK = (bs?.currency_mode || '').toUpperCase() === 'K';
       if (isLiquorK) {
-        // Per-drawer column pick. from_method arrives from the modal
-        // ('Cash' | 'Bank' | 'Mobile Money'). Default to Cash for
-        // safety if a caller omits it.
-        const methodToCol = {
-          'Cash':         { col: 'cash_amount', ob: 'OB-CASH', label: 'Cash' },
-          'Bank':         { col: 'bank_amount', ob: 'OB-BANK', label: 'Bank' },
-          'Mobile Money': { col: 'momo_amount', ob: 'OB-MOMO', label: 'Mobile Money' },
+        const methodKeyMap = {
+          'Cash':         { key: 'cash', label: 'Cash' },
+          'Bank':         { key: 'bank', label: 'Bank' },
+          'Mobile Money': { key: 'momo', label: 'Mobile Money' },
         };
-        const pick = methodToCol[from_method] || methodToCol['Cash'];
-        // Legacy: opening rows might use plain 'OB' without a per-method
-        // suffix. Only count 'OB' toward Cash to avoid triple-counting.
-        const seedOb = pick.ob === 'OB-CASH' ? [pick.ob, 'OB'] : [pick.ob];
-        const seedPlaceholders = seedOb.map(() => '?').join(',');
-        const seed = branchDb.prepare(`
-          SELECT COALESCE(SUM(receipt_amount), 0) AS s
-            FROM cash_book
-           WHERE type = 'opening' AND deleted_at IS NULL
-             AND reference IN (${seedPlaceholders})
-        `).get(...seedOb)?.s || 0;
-        const crAll = branchDb.prepare(`
-          SELECT COALESCE(SUM(COALESCE(${pick.col}, 0)), 0) AS s
-            FROM cash_receipts WHERE deleted_at IS NULL
-        `).get()?.s || 0;
-        const pvAll = branchDb.prepare(`
-          SELECT COALESCE(SUM(COALESCE(${pick.col}, 0)), 0) AS s
-            FROM payment_vouchers WHERE deleted_at IS NULL
-        `).get()?.s || 0;
-        let apAll = 0;
-        try {
-          apAll = branchDb.prepare(`
-            SELECT COALESCE(SUM(COALESCE(${pick.col}, 0)), 0) AS s
-              FROM ap_payments WHERE deleted_at IS NULL
-          `).get()?.s || 0;
-        } catch (_) { /* ap_payments may not exist / may not have the column */ }
+        const pick = methodKeyMap[from_method] || methodKeyMap['Cash'];
+        const branchTenantId = bs?.tenant_id || null;
+        const currentByMethod = getCurrentByMethod(branchDb, branchTenantId, isLiquorK);
+        // Prior deposits FROM THE SAME METHOD live in master.db, so
+        // they're not folded into the branch's own currentByMethod
+        // (which is a snapshot of that branch's tenant DB only).
         const priorDeposits = masterDb.prepare(`
           SELECT COALESCE(SUM(amount), 0) AS s
             FROM cash_deposits
@@ -134,7 +116,7 @@ router.post('/', hqAuth, (req, res) => {
              AND status IN ('PENDING', 'CONFIRMED')
              AND deleted_at IS NULL
         `).get(from_slug, from_method)?.s || 0;
-        const drawerBalance = seed + crAll - pvAll - apAll - priorDeposits;
+        const drawerBalance = (currentByMethod[pick.key] || 0) - priorDeposits;
         if (amt > drawerBalance + 0.0001) {
           return res.status(400).json({
             error: `Deposit exceeds ${pick.label} balance (K ${drawerBalance.toLocaleString(undefined, { maximumFractionDigits: 2 })}). Reduce the amount or pick a different drawer.`,
@@ -144,7 +126,10 @@ router.post('/', hqAuth, (req, res) => {
           });
         }
       }
-    } catch (_) { /* branch DB unavailable — skip guard, don't block */ }
+    } catch (e) {
+      console.warn('[cashDeposits guard] skipped:', e.message);
+      /* branch DB unavailable — skip guard, don't block */
+    }
 
     // v1.10.48 — from_method: physical drawer on Liquor branches
     // ('Cash' | 'Mobile Money' | 'Bank'). Optional; NULL on Sosna
