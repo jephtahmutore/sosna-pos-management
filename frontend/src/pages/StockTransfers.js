@@ -458,8 +458,19 @@ function CreateTransferModal({ sourceSlug, branches, onClose, onCreated, onError
   };
 
   const cartItems = Object.values(cart);
-  // qty is in display unit; cost_price is per base unit — multiply by conv.
-  const totalValue = cartItems.reduce((s, x) => s + x.qty * (x.unitConv || 1) * (x.product.cost_price || 0), 0);
+  // v1.10.202 — prefer avg_cost_price (real WAC, updated by GRN /
+  // Transfer receive) over legacy cost_price. On products where WAC
+  // is populated, cost_price is a dead field that's often 0, which
+  // was causing transfers to ship at $0 cost and drag destination
+  // WAC to zero on receive. Falls back to cost_price only if avg is
+  // missing (products that never had a GRN yet).
+  const effectiveCost = (p) => {
+    const avg = parseFloat(p?.avg_cost_price || 0) || 0;
+    if (avg > 0) return avg;
+    return parseFloat(p?.cost_price || 0) || 0;
+  };
+  // qty is in display unit; cost is per base unit — multiply by conv.
+  const totalValue = cartItems.reduce((s, x) => s + x.qty * (x.unitConv || 1) * effectiveCost(x.product), 0);
 
   const submit = async () => {
     if (!toSlug)          return onError('Pick a destination branch');
@@ -489,7 +500,7 @@ function CreateTransferModal({ sourceSlug, branches, onClose, onCreated, onError
           // expects (qty, unit) to be self-consistent. Easiest: convert here.
           unit:            x.product.unit,
           quantity:        x.qty * (x.unitConv || 1),
-          cost_price:      x.product.cost_price || 0,
+          cost_price:      effectiveCost(x.product),
           // v1.8.66 — carry the product's default-unit metadata so the
           // View / Receive modal can render qty + cost in the configured
           // default unit (e.g. Box) instead of the raw base unit (Bottle).
@@ -618,7 +629,7 @@ function CreateTransferModal({ sourceSlug, branches, onClose, onCreated, onError
                     {cartItems.map(x => {
                       const unitName = x.unitName || x.product.unit;
                       const conv     = x.unitConv || 1;
-                      const perUnit  = (x.product.cost_price || 0) * conv;
+                      const perUnit  = effectiveCost(x.product) * conv;
                       const lineTotal= x.qty * perUnit;
                       return (
                         <div key={x.product.sync_id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '6px 4px', borderBottom: '1px dashed #e5e7eb' }}>

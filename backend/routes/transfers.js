@@ -85,7 +85,7 @@ router.get('/source-products', hqAuth, (req, res) => {
     const products = db.prepare(`
       SELECT p.id, p.sync_id, p.name, p.unit, p.alt_unit, p.conversion_factor,
              p.units_json, p.default_unit,
-             p.cost_price, p.selling_price,
+             p.cost_price, p.avg_cost_price, p.selling_price,
              COALESCE(bal.balance, 0) AS current_stock,
              p.min_stock
         FROM products p
