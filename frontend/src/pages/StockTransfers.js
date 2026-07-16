@@ -23,6 +23,10 @@ import {
   // v1.10.200 — Transfer Receive WAC preview + inline LCV add. Same
   // endpoints as GRN modal so no new backend surface.
   getPaymentVouchers, getHqProductCosts,
+  // v1.10.205 — auto-fill FX rate from the K-pool blended rate (same
+  // source PO uses, HqPurchases.js:218-222). No manual entry needed
+  // when the historical acquisition rate exists.
+  getCashPool,
 } from '../services/api';
 import LcvModal from '../components/LcvModal';
 
@@ -425,6 +429,18 @@ function CreateTransferModal({ sourceSlug, branches, onClose, onCreated, onError
   // crashing the K-only destination's average cost.
   // Symmetric rule: prompt for FX when isTriCcy(src) XOR isTriCcy(dest).
   const needsFxCapture = destIsTriCcy !== srcIsTriCcy;
+  // v1.10.205 — pull the K-pool blended rate once (same source PO
+  // uses via HqPurchases.js:218-222). This is the honest historical
+  // USD acquisition rate, not today's spot rate. Operator can still
+  // override, but the field is pre-filled so it never blocks with a
+  // required-empty prompt when the pool has a rate.
+  const [poolBlendedRate, setPoolBlendedRate] = useState(0);
+  useEffect(() => {
+    getCashPool()
+      .then(r => setPoolBlendedRate(parseFloat(r.data?.blended_k_per_usd || 0) || 0))
+      .catch(() => {});
+  }, []);
+
   useEffect(() => {
     setCostCurrency('');
     setFxRate('');
@@ -432,9 +448,11 @@ function CreateTransferModal({ sourceSlug, branches, onClose, onCreated, onError
     // USD (source's WAC ccy); source is K-only → cost is in K.
     if (needsFxCapture) {
       setCostCurrency(srcIsTriCcy ? 'USD' : 'K');
+      // Pre-fill rate from K-pool blended rate when available.
+      if (poolBlendedRate > 0) setFxRate(String(poolBlendedRate.toFixed(4)));
     }
     // eslint-disable-next-line
-  }, [toSlug, srcIsTriCcy, destIsTriCcy]);
+  }, [toSlug, srcIsTriCcy, destIsTriCcy, poolBlendedRate]);
 
   useEffect(() => {
     getTransferSourceProducts(sourceSlug)
