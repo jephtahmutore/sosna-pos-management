@@ -26,7 +26,9 @@ import {
   // v1.10.205 — auto-fill FX rate from the K-pool blended rate (same
   // source PO uses, HqPurchases.js:218-222). No manual entry needed
   // when the historical acquisition rate exists.
-  getCashPool,
+  // v1.10.206 — fx_rates fallback for branch subdomains where the
+  // K-pool is empty (branches don't exchange USD↔K locally).
+  getCashPool, getCurrentFxRate,
 } from '../services/api';
 import LcvModal from '../components/LcvModal';
 
@@ -429,16 +431,46 @@ function CreateTransferModal({ sourceSlug, branches, onClose, onCreated, onError
   // crashing the K-only destination's average cost.
   // Symmetric rule: prompt for FX when isTriCcy(src) XOR isTriCcy(dest).
   const needsFxCapture = destIsTriCcy !== srcIsTriCcy;
-  // v1.10.205 — pull the K-pool blended rate once (same source PO
-  // uses via HqPurchases.js:218-222). This is the honest historical
-  // USD acquisition rate, not today's spot rate. Operator can still
-  // override, but the field is pre-filled so it never blocks with a
-  // required-empty prompt when the pool has a rate.
+  // v1.10.205 — pull the K-pool blended rate (same source PO uses via
+  // HqPurchases.js:218-222). Historical acquisition rate.
+  // v1.10.206 — Send Transfer runs on branch subdomains too, where the
+  // K-pool is often 0 (Lusaka never exchanges USD↔K). Fall back to
+  // fx_rates.sell_rate_k (daily rate every branch enters). Precedence:
+  //   1. Pool blended rate (accountant-preferred, when > 0)
+  //   2. Today's fx_rates sell_rate_k (POS-source of truth)
+  //   3. Empty → operator types it (existing fallback)
   const [poolBlendedRate, setPoolBlendedRate] = useState(0);
   useEffect(() => {
     getCashPool()
-      .then(r => setPoolBlendedRate(parseFloat(r.data?.blended_k_per_usd || 0) || 0))
-      .catch(() => {});
+      .then(r => {
+        const blended = parseFloat(r.data?.blended_k_per_usd || 0) || 0;
+        if (blended > 0) {
+          setPoolBlendedRate(blended);
+          return;
+        }
+        // Pool empty (branch-level, no historical exchanges). Try daily.
+        getCurrentFxRate()
+          .then(fx => {
+            const sellK = parseFloat(fx.data?.sell_rate_k || 0) || 0;
+            const buyK  = parseFloat(fx.data?.buy_rate_k  || 0) || 0;
+            // Prefer sell_rate_k (rate at which we acquire USD); fall
+            // back to buy_rate_k; else 0 → operator enters manually.
+            const rate = sellK > 0 ? sellK : (buyK > 0 ? buyK : 0);
+            if (rate > 0) setPoolBlendedRate(rate);
+          })
+          .catch(() => {});
+      })
+      .catch(() => {
+        // Pool endpoint failed too — try fx_rates directly.
+        getCurrentFxRate()
+          .then(fx => {
+            const sellK = parseFloat(fx.data?.sell_rate_k || 0) || 0;
+            const buyK  = parseFloat(fx.data?.buy_rate_k  || 0) || 0;
+            const rate = sellK > 0 ? sellK : (buyK > 0 ? buyK : 0);
+            if (rate > 0) setPoolBlendedRate(rate);
+          })
+          .catch(() => {});
+      });
   }, []);
 
   useEffect(() => {
