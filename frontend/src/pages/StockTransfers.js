@@ -20,7 +20,32 @@ import {
   getTransferSourceProducts, getOutgoingTransfers, getIncomingTransfers,
   createTransfer, receiveTransfer, cancelTransfer,
   getProducts,
+  // v1.10.200 — Transfer Receive WAC preview + inline LCV add. Same
+  // endpoints as GRN modal so no new backend surface.
+  getPaymentVouchers, getHqProductCosts,
 } from '../services/api';
+import LcvModal from '../components/LcvModal';
+
+// v1.10.200 — mirror of backend/config/unitsHelper.js:conversionToBase.
+// Used to compute base-unit quantities for the New WAC preview so JS
+// math matches transfers.js /receive absorption byte-for-byte.
+function convToBase(product, lineUnit) {
+  if (!product) return 1;
+  const u = String(lineUnit || '').trim().toLowerCase();
+  if (!u) return 1;
+  if (product.unit && product.unit.toLowerCase() === u) return 1;
+  if (product.units_json) {
+    try {
+      const arr = JSON.parse(product.units_json);
+      const match = Array.isArray(arr) && arr.find(x => (x.name || '').toLowerCase() === u);
+      if (match && parseFloat(match.conv) > 0) return parseFloat(match.conv);
+    } catch (_) { /* fall through */ }
+  }
+  if (product.alt_unit && product.alt_unit.toLowerCase() === u && parseFloat(product.conversion_factor) > 0) {
+    return parseFloat(product.conversion_factor);
+  }
+  return 1;
+}
 // v1.8.40 — show On Hand in the product's configured default unit
 // (e.g. Box) instead of the raw base unit (Bottle).
 import { formatStockForProduct } from '../utils/unitFormat';
@@ -784,6 +809,117 @@ function TransferDetailModal({ transfer, mode, onClose, onSubmit }) {
     return v > 0.0001 || l.reason === 'Damaged' || l.reason === 'Lost';
   });
 
+  // v1.10.200 — attached LCVs for this transfer + destination product-cost
+  // snapshot for the New WAC preview. Same shape as GRN modal (v1.10.188).
+  // Applies to Receive mode; View mode reads them too so the user can see
+  // what's already been baked into WAC on an already-received transfer.
+  const [attachedLcvs, setAttachedLcvs] = useState([]);
+  const refreshLcvs = () => {
+    if (!transfer?.sync_id) return;
+    getPaymentVouchers({
+      is_landed_cost: 1,
+      linked_transfer_sync_id: transfer.sync_id,
+    })
+      .then(r => {
+        const rows = Array.isArray(r.data) ? r.data : [];
+        // In receive mode we want Pending (not yet applied); in view
+        // mode show every LCV so historical context is complete.
+        setAttachedLcvs(mode === 'receive'
+          ? rows.filter(l => !l.applied_to_transfer_sync_id)
+          : rows);
+      })
+      .catch(() => setAttachedLcvs([]));
+  };
+  useEffect(() => { refreshLcvs(); }, [transfer?.sync_id, mode]);
+  const lcvTotal = attachedLcvs.reduce((s, l) => s + (parseFloat(l.amount) || 0), 0);
+  const [showAddLcv, setShowAddLcv] = useState(false);
+
+  // Destination WAC snapshot per product. In receive mode we blend against
+  // destination branch's current stock + avg_cost_price.
+  const [productCosts, setProductCosts] = useState({});
+  useEffect(() => {
+    const slug = transfer?.to_slug;
+    const ids = items.map(it => it.product_sync_id).filter(Boolean);
+    if (!slug || ids.length === 0) return;
+    getHqProductCosts(slug, ids)
+      .then(r => {
+        const rows = Array.isArray(r.data?.products) ? r.data.products : [];
+        const map = {};
+        for (const p of rows) map[p.sync_id] = p;
+        setProductCosts(map);
+      })
+      .catch(() => setProductCosts({}));
+  }, [transfer?.to_slug, items]);
+
+  // Currency conversion — LCV always K on Sosna. If destination is K-only
+  // (Mansa, Lusaka) the LCV stays K. If destination is tri-ccy WAC (USD),
+  // transfer.fx_rate_used converts K → USD. Same rule as v1.10.181 fix in
+  // transfers.js /receive. Undefined rate = no conversion.
+  const toWacCcy = (raw) => {
+    const c = parseFloat(raw || 0) || 0;
+    if (c <= 0) return 0;
+    const rate = parseFloat(transfer?.fx_rate_used || 0) || 0;
+    const destCcy = String(transfer?.cost_currency || '').toUpperCase();
+    if (!destCcy || destCcy === 'K') return c;
+    return rate > 0 ? c / rate : c;
+  };
+  const wacCcyLabel = (() => {
+    const destCcy = String(transfer?.cost_currency || '').toUpperCase();
+    const rate = parseFloat(transfer?.fx_rate_used || 0) || 0;
+    if (!destCcy || destCcy === 'K') return 'K';
+    if (rate > 0) return '$';
+    return destCcy === 'USD' ? '$' : destCcy === 'FRA' ? 'F ' : (destCcy + ' ');
+  })();
+  const fmtWac = (n) => `${wacCcyLabel}${parseFloat(n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+
+  // Total received base units across all lines (denominator for LCV pro-rata).
+  const totalReceivedBase = lines.reduce((s, l) => {
+    if (!l.product_sync_id) return s;
+    const recvDisp = parseFloat(l.received_qty) || 0;
+    if (recvDisp <= 0) return s;
+    const conv = parseFloat(l.display_conv) || 1;
+    return s + recvDisp * conv;
+  }, 0);
+  const landedPerBase = (totalReceivedBase > 0 && lcvTotal > 0)
+    ? toWacCcy(lcvTotal) / totalReceivedBase
+    : 0;
+
+  const wacPreview = (line) => {
+    if (!line.product_sync_id) return null;
+    const prod = productCosts[line.product_sync_id];
+    if (!prod) return null;
+    const recvDisp = parseFloat(line.received_qty) || 0;
+    if (recvDisp <= 0) return null;
+    const displayUnit = line.display_unit || line.unit || 'base';
+    const conv = parseFloat(line.display_conv) || 1;
+    // transfer's cost_price is stored per BASE unit (per v1.10.54). No
+    // divide-by-conv needed.
+    const goodsCpPerBase = toWacCcy(line.cost_price || 0);
+    const cpPerBase = goodsCpPerBase + landedPerBase;
+    const baseQty = recvDisp * conv;
+    const curStk = parseFloat(prod.current_stock) || 0;
+    const curWac = parseFloat(prod.avg_cost_price) || 0;
+    let newWac;
+    if (curWac <= 0 || curStk <= 0) newWac = cpPerBase;
+    else newWac = (curStk * curWac + baseQty * cpPerBase) / (curStk + baseQty);
+    return {
+      curStk, curWac, cpPerBase, newWac,
+      displayUnit,
+      conv,
+      curWacPerDisplay: curWac * conv,
+      newWacPerDisplay: newWac * conv,
+    };
+  };
+  const displayUnitForFoot = (() => {
+    for (const l of lines) {
+      if (!l.product_sync_id) continue;
+      const c = parseFloat(l.display_conv) || 1;
+      if (c > 1) return { name: l.display_unit || l.unit, conv: c };
+    }
+    return { name: 'base unit', conv: 1 };
+  })();
+  const landedPerDisplayFoot = landedPerBase * displayUnitForFoot.conv;
+
   const submit = async () => {
     setSubmitting(true);
     try {
@@ -840,6 +976,8 @@ function TransferDetailModal({ transfer, mode, onClose, onSubmit }) {
                   <th style={th}>Notes</th>
                   <th style={{ ...th, textAlign: 'right' }}>Cost / unit</th>
                   <th style={{ ...th, textAlign: 'right' }}>Line $</th>
+                  {/* v1.10.200 — New WAC preview at destination branch */}
+                  <th style={{ ...th, textAlign: 'right', color: '#c2410c' }} title="Blended WAC at destination after Receive — includes delivery cost share, shown in the line's unit">New WAC / unit</th>
                 </tr>
               </thead>
               <tbody>
@@ -893,6 +1031,29 @@ function TransferDetailModal({ transfer, mode, onClose, onSubmit }) {
                         <div style={{ fontSize: 10, color: '#cbd5e1' }}>/ {dispUnit}</div>
                       </td>
                       <td style={{ ...td, textAlign: 'right', fontWeight: 700 }}>{fmtMoney(lineDollar)}</td>
+                      {/* v1.10.200 — New WAC preview cell (destination branch) */}
+                      <td style={{ ...td, textAlign: 'right', color: '#c2410c' }}>
+                        {(() => {
+                          const w = wacPreview(l);
+                          if (!w) return <span style={{ color: '#cbd5e1' }}>—</span>;
+                          const bumped = w.curWac > 0 && w.newWac > w.curWac + 0.001;
+                          const dropped = w.curWac > 0 && w.newWac < w.curWac - 0.001;
+                          const delta = Math.abs(w.newWacPerDisplay - w.curWacPerDisplay);
+                          return (
+                            <div>
+                              <div style={{ fontWeight: 700 }}>{fmtWac(w.newWacPerDisplay)} <span style={{ fontSize: 10, color: '#9a3412' }}>/ {w.displayUnit}</span></div>
+                              {w.curWac > 0 && (
+                                <div style={{ fontSize: 10, color: bumped ? '#dc2626' : (dropped ? '#16a34a' : '#94a3b8') }}>
+                                  was {fmtWac(w.curWacPerDisplay)} · {bumped ? '▲' : (dropped ? '▼' : '=')} {fmtWac(delta)}
+                                </div>
+                              )}
+                              {w.curWac <= 0 && (
+                                <div style={{ fontSize: 10, color: '#94a3b8' }}>seed (no prior stock)</div>
+                              )}
+                            </div>
+                          );
+                        })()}
+                      </td>
                     </tr>
                   );
                 })}
@@ -906,7 +1067,15 @@ function TransferDetailModal({ transfer, mode, onClose, onSubmit }) {
                     {totalVar > 0.001 ? `Variance: ${fmtQ(totalVar)}` : ''}
                   </td>
                   <td colSpan={2} style={{ ...td, textAlign: 'right' }}>{fmtMoney(transfer.total_value)}</td>
+                  <td style={td}></td>
                 </tr>
+                {landedPerBase > 0 && (
+                  <tr style={{ background: '#fff7ed' }}>
+                    <td colSpan={6} style={{ ...td, textAlign: 'right', fontWeight: 700, color: '#7c2d12' }}>Delivery cost per {displayUnitForFoot.name} (spread)</td>
+                    <td style={{ ...td, textAlign: 'right', fontWeight: 800, color: '#c2410c' }}>+{fmtWac(landedPerDisplayFoot)}</td>
+                    <td style={td}></td>
+                  </tr>
+                )}
               </tfoot>
             </table>
           )}
@@ -918,6 +1087,62 @@ function TransferDetailModal({ transfer, mode, onClose, onSubmit }) {
                 <strong>Variance detected.</strong> Confirming will book only the received qty into your stock. The shortfall will be recorded in Transit Variance for HQ to investigate. Make sure the reason + notes are accurate before you confirm.
               </div>
             </div>
+          )}
+
+          {/* v1.10.200 — Delivery Costs Attached panel (mirror of GRN modal).
+              Reads LCVs with linked_transfer_sync_id = this transfer. In
+              receive mode shows Pending + "+ Add Delivery Cost" button; in
+              view mode read-only including Applied history. */}
+          <div style={{ marginTop: 14, padding: 12, background: '#fff7ed', border: '1px solid #fed7aa', borderRadius: 8 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8, gap: 12, flexWrap: 'wrap' }}>
+              <div style={{ fontSize: 13, fontWeight: 700, color: '#7c2d12' }}>
+                Delivery Costs Attached ({attachedLcvs.length})
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                <div style={{ fontSize: 12, color: '#7c2d12' }}>
+                  {isReceive ? 'Absorbed into destination WAC on Receive' : 'Historic — already applied to WAC'}
+                </div>
+                {isReceive && (
+                  <button type="button" onClick={() => setShowAddLcv(true)}
+                    style={{ padding: '5px 10px', background: '#c2410c', color: '#fff', border: 'none', borderRadius: 5, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 12, fontWeight: 600 }}>
+                    <FiPlus size={12} /> Add Delivery Cost
+                  </button>
+                )}
+              </div>
+            </div>
+            {attachedLcvs.length === 0 ? (
+              <div style={{ fontSize: 12, color: '#a8a29e', padding: '6px 4px' }}>
+                {isReceive
+                  ? 'No delivery costs attached yet. Add one to fold it into inventory WAC on Receive.'
+                  : 'No delivery costs were attached to this transfer.'}
+              </div>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                {attachedLcvs.map(l => (
+                  <div key={l.id} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, color: '#78350f', padding: '4px 8px', background: '#fffbeb', borderRadius: 4 }}>
+                    <div>
+                      <span style={{ color: '#9a3412', fontWeight: 600 }}>{l.paid_to || '—'}</span>
+                      {l.description && <span style={{ color: '#a8a29e', marginLeft: 8 }}>· {l.description}</span>}
+                      <span style={{ color: '#a8a29e', marginLeft: 8 }}>· {l.date}</span>
+                    </div>
+                    <div style={{ fontWeight: 700 }}>K{parseFloat(l.amount || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
+                  </div>
+                ))}
+                <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 4, fontSize: 13, fontWeight: 700, color: '#c2410c' }}>
+                  Delivery total: K{lcvTotal.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* v1.10.200 — inline LcvModal for + Add Delivery Cost.
+              Transfer pre-locked so the LCV can't be misattached. */}
+          {showAddLcv && (
+            <LcvModal
+              lockedRef={{ type: 'Transfer', syncId: transfer.sync_id }}
+              onClose={() => setShowAddLcv(false)}
+              onSaved={() => { setShowAddLcv(false); refreshLcvs(); }}
+            />
           )}
         </div>
 
