@@ -410,11 +410,31 @@ function CreateTransferModal({ sourceSlug, branches, onClose, onCreated, onError
   const [costCurrency, setCostCurrency] = useState('');
   const [fxRate, setFxRate] = useState('');
   const destBranch = branches.find(b => b.slug === toSlug);
-  const destIsTriCcy = (() => {
-    const cm = String(destBranch?.currency_mode || 'K').toUpperCase();
+  const srcBranch  = branches.find(b => b.slug === sourceSlug);
+  const isTriCcy = (b) => {
+    const cm = String(b?.currency_mode || 'K').toUpperCase();
     return cm === 'USD+FRA' || cm === 'USD+FRA+K';
-  })();
-  useEffect(() => { setCostCurrency(''); setFxRate(''); }, [toSlug]);
+  };
+  const destIsTriCcy = isTriCcy(destBranch);
+  const srcIsTriCcy  = isTriCcy(srcBranch);
+  // v1.10.203 — capture FX whenever the source and destination WAC
+  // currencies differ. Prior: only when dest was tri-ccy (which
+  // covered K→USD but missed USD→K). A Kassumbalesa → Lusaka
+  // transfer would ship at USD cost + fx_rate=0, and destination WAC
+  // would blend the raw USD number as K (~25× under-priced), quietly
+  // crashing the K-only destination's average cost.
+  // Symmetric rule: prompt for FX when isTriCcy(src) XOR isTriCcy(dest).
+  const needsFxCapture = destIsTriCcy !== srcIsTriCcy;
+  useEffect(() => {
+    setCostCurrency('');
+    setFxRate('');
+    // Auto-suggest a default currency: source is tri-ccy → cost is in
+    // USD (source's WAC ccy); source is K-only → cost is in K.
+    if (needsFxCapture) {
+      setCostCurrency(srcIsTriCcy ? 'USD' : 'K');
+    }
+    // eslint-disable-next-line
+  }, [toSlug, srcIsTriCcy, destIsTriCcy]);
 
   useEffect(() => {
     getTransferSourceProducts(sourceSlug)
@@ -475,11 +495,13 @@ function CreateTransferModal({ sourceSlug, branches, onClose, onCreated, onError
   const submit = async () => {
     if (!toSlug)          return onError('Pick a destination branch');
     if (cartItems.length === 0) return onError('Add at least one product');
-    // v1.10.54 — validate FX inputs when destination is tri-currency.
-    if (destIsTriCcy) {
-      if (!costCurrency) return onError('Pick the source cost currency (destination is tri-currency).');
-      if (costCurrency !== 'USD' && !(parseFloat(fxRate) > 0)) {
-        return onError(`Enter the FX rate: 1 USD = ? ${costCurrency}`);
+    // v1.10.203 — validate FX inputs whenever src/dest WAC currencies
+    // differ (symmetric — was only checked on tri-ccy destinations,
+    // missing the USD→K asymmetric case).
+    if (needsFxCapture) {
+      if (!costCurrency) return onError('Pick the source cost currency.');
+      if (!(parseFloat(fxRate) > 0)) {
+        return onError(`Enter the FX rate: 1 USD = ? ${costCurrency === 'USD' ? 'K' : costCurrency}`);
       }
     }
     setSubmitting(true);
@@ -488,10 +510,9 @@ function CreateTransferModal({ sourceSlug, branches, onClose, onCreated, onError
         from_slug: sourceSlug,
         to_slug:   toSlug,
         notes,
-        // v1.10.54 — only send FX fields when destination is tri-currency;
-        // K-only destinations omit them so backend stores NULL.
-        ...(destIsTriCcy && costCurrency
-          ? { cost_currency: costCurrency, fx_rate_used: costCurrency === 'USD' ? 1 : parseFloat(fxRate) }
+        // v1.10.203 — send FX fields whenever asymmetric.
+        ...(needsFxCapture && costCurrency
+          ? { cost_currency: costCurrency, fx_rate_used: parseFloat(fxRate) }
           : {}),
         items: cartItems.map(x => ({
           product_sync_id: x.product.sync_id,
@@ -541,14 +562,14 @@ function CreateTransferModal({ sourceSlug, branches, onClose, onCreated, onError
             </div>
           </div>
 
-          {/* v1.10.54 — WAC redesign push 2: FX rate row.
-              Only rendered when destination is a tri-currency branch. One
-              rate applies to every line on this transfer and is used at
-              /receive time to blend delivery CP into destination WAC. */}
-          {destIsTriCcy && (
+          {/* v1.10.54 / v1.10.203 — FX rate row. Rendered whenever source
+              and destination WAC currencies differ (Kassumbalesa USD ↔
+              Mansa/Lusaka K). Backend uses this rate at /receive to
+              convert goods cost + LCV into the destination's WAC ccy. */}
+          {needsFxCapture && (
             <div style={{ marginBottom: 14, padding: '10px 12px', background: '#fef3c7', border: '1px solid #fcd34d', borderRadius: 8 }}>
               <div style={{ fontSize: 11, fontWeight: 700, color: '#78350f', textTransform: 'uppercase', letterSpacing: 0.4, marginBottom: 8 }}>
-                FX Rate (required — destination is tri-currency)
+                FX Rate (required — source {srcIsTriCcy ? 'tri-currency' : 'K-only'}, destination {destIsTriCcy ? 'tri-currency' : 'K-only'})
               </div>
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
                 <div>
@@ -565,13 +586,12 @@ function CreateTransferModal({ sourceSlug, branches, onClose, onCreated, onError
                   <input type="number" min="0" step="0.0001"
                     value={fxRate}
                     onChange={e => setFxRate(e.target.value)}
-                    disabled={!costCurrency || costCurrency === 'USD'}
-                    placeholder={costCurrency === 'USD' ? 'n/a — USD already' : costCurrency === 'K' ? 'e.g. 25' : costCurrency === 'FRA' ? 'e.g. 2250' : ''}
-                    style={{ ...inp, background: (!costCurrency || costCurrency === 'USD') ? '#f9fafb' : '#fff' }} />
+                    placeholder={costCurrency === 'K' ? 'e.g. 25' : costCurrency === 'FRA' ? 'e.g. 2250' : 'e.g. 25'}
+                    style={inp} />
                 </div>
               </div>
               <div style={{ fontSize: 10.5, color: '#78350f', marginTop: 6, fontStyle: 'italic' }}>
-                One rate locks the whole transfer. Used to convert source cost → USD for the destination's WAC.
+                One rate locks the whole transfer. Backend converts source cost → destination WAC currency on receive.
               </div>
             </div>
           )}
@@ -869,25 +889,51 @@ function TransferDetailModal({ transfer, mode, onClose, onSubmit }) {
       .catch(() => setProductCosts({}));
   }, [transfer?.to_slug, items]);
 
-  // Currency conversion — LCV always K on Sosna. If destination is K-only
-  // (Mansa, Lusaka) the LCV stays K. If destination is tri-ccy WAC (USD),
-  // transfer.fx_rate_used converts K → USD. Same rule as v1.10.181 fix in
-  // transfers.js /receive. Undefined rate = no conversion.
-  const toWacCcy = (raw) => {
+  // v1.10.203 — Currency conversion split into TWO paths (mirrors
+  // backend transfers.js /receive toDestCcy at :535-554).
+  //
+  //   Goods cost:   source WAC ccy → destination WAC ccy
+  //                  - dest K, src USD, rate > 0  → multiply by rate
+  //                  - dest USD, src K,   rate > 0 → divide by rate
+  //                  - same ccy or no rate         → pass through
+  //   LCV amount:   always K on Sosna → destination WAC ccy
+  //                  - dest K   → pass through
+  //                  - dest USD → divide by rate
+  //
+  // Prior v1.10.200 collapsed both into a single toWacCcy that only
+  // handled K→USD (dest tri-ccy). Missed the USD→K case entirely,
+  // causing Kassumbalesa→Lusaka to blend USD raw as K (~25× under-
+  // priced), quietly crashing Lusaka's WAC.
+  const destWacCcy = (() => {
+    const trCcy = String(transfer?.cost_currency || '').toUpperCase();
+    const rate = parseFloat(transfer?.fx_rate_used || 0) || 0;
+    if (rate > 0) {
+      if (trCcy === 'USD') return 'K';    // USD→K conversion means dest is K-only
+      if (trCcy === 'K')   return 'USD';  // K→USD means dest is tri-ccy
+    }
+    return trCcy || 'K';                   // no rate → same ccy on both sides
+  })();
+  const goodsToDest = (raw) => {
+    const c = parseFloat(raw || 0) || 0;
+    if (c <= 0) return 0;
+    const trCcy = String(transfer?.cost_currency || '').toUpperCase();
+    const rate = parseFloat(transfer?.fx_rate_used || 0) || 0;
+    if (destWacCcy === 'K') {
+      if (trCcy === 'USD' && rate > 0) return c * rate;
+      return c;
+    }
+    if (trCcy === 'K' && rate > 0) return c / rate;
+    return c;
+  };
+  const lcvToDest = (raw) => {
     const c = parseFloat(raw || 0) || 0;
     if (c <= 0) return 0;
     const rate = parseFloat(transfer?.fx_rate_used || 0) || 0;
-    const destCcy = String(transfer?.cost_currency || '').toUpperCase();
-    if (!destCcy || destCcy === 'K') return c;
-    return rate > 0 ? c / rate : c;
+    if (destWacCcy === 'K') return c;                       // K → K
+    if (destWacCcy === 'USD' && rate > 0) return c / rate;  // K → USD
+    return c;
   };
-  const wacCcyLabel = (() => {
-    const destCcy = String(transfer?.cost_currency || '').toUpperCase();
-    const rate = parseFloat(transfer?.fx_rate_used || 0) || 0;
-    if (!destCcy || destCcy === 'K') return 'K';
-    if (rate > 0) return '$';
-    return destCcy === 'USD' ? '$' : destCcy === 'FRA' ? 'F ' : (destCcy + ' ');
-  })();
+  const wacCcyLabel = destWacCcy === 'USD' ? '$' : destWacCcy === 'FRA' ? 'F ' : 'K';
   const fmtWac = (n) => `${wacCcyLabel}${parseFloat(n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
   // Total received base units across all lines (denominator for LCV pro-rata).
@@ -899,7 +945,7 @@ function TransferDetailModal({ transfer, mode, onClose, onSubmit }) {
     return s + recvDisp * conv;
   }, 0);
   const landedPerBase = (totalReceivedBase > 0 && lcvTotal > 0)
-    ? toWacCcy(lcvTotal) / totalReceivedBase
+    ? lcvToDest(lcvTotal) / totalReceivedBase
     : 0;
 
   const wacPreview = (line) => {
@@ -911,8 +957,8 @@ function TransferDetailModal({ transfer, mode, onClose, onSubmit }) {
     const displayUnit = line.display_unit || line.unit || 'base';
     const conv = parseFloat(line.display_conv) || 1;
     // transfer's cost_price is stored per BASE unit (per v1.10.54). No
-    // divide-by-conv needed.
-    const goodsCpPerBase = toWacCcy(line.cost_price || 0);
+    // divide-by-conv needed. Convert to destination WAC ccy.
+    const goodsCpPerBase = goodsToDest(line.cost_price || 0);
     const cpPerBase = goodsCpPerBase + landedPerBase;
     const baseQty = recvDisp * conv;
     const curStk = parseFloat(prod.current_stock) || 0;
