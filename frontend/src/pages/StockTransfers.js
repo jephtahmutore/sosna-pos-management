@@ -810,6 +810,17 @@ function TransferDetailModal({ transfer, mode, onClose, onSubmit }) {
     for (const p of products) if (p.sync_id) m[p.sync_id] = p;
     return m;
   }, [products]);
+  // v1.10.211 — Cost / Unit + Line $ columns show values in the
+  // transfer's cost_currency (source's WAC ccy). Module-level fmtMoney
+  // hardcodes $, which mislabeled Lusaka→Kassumbalesa transfers
+  // (K13.29/bottle rendered as $318.97/Box). Local formatter picks
+  // the symbol from transfer.cost_currency; falls back to $ when
+  // undefined (legacy tri-ccy → tri-ccy where no conversion was
+  // captured). NEW WAC column stays untouched — it correctly uses
+  // destination's WAC ccy via wacCcyLabel.
+  const srcCcy = String(transfer?.cost_currency || 'USD').toUpperCase();
+  const srcCcySym = srcCcy === 'USD' ? '$' : srcCcy === 'FRA' ? 'F ' : 'K';
+  const fmtSrcMoney = (n) => `${srcCcySym}${parseFloat(n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
   const getDisplayFor = (it) => {
     const p = productBySync[it.product_sync_id];
     if (p) {
@@ -1163,10 +1174,10 @@ function TransferDetailModal({ transfer, mode, onClose, onSubmit }) {
                         )}
                       </td>
                       <td style={{ ...td, textAlign: 'right', color: '#64748b' }}>
-                        {fmtMoney(l.cost_display || l.cost_price)}
+                        {fmtSrcMoney(l.cost_display || l.cost_price)}
                         <div style={{ fontSize: 10, color: '#cbd5e1' }}>/ {dispUnit}</div>
                       </td>
-                      <td style={{ ...td, textAlign: 'right', fontWeight: 700 }}>{fmtMoney(lineDollar)}</td>
+                      <td style={{ ...td, textAlign: 'right', fontWeight: 700 }}>{fmtSrcMoney(lineDollar)}</td>
                       {/* v1.10.200 — New WAC preview cell (destination branch) */}
                       <td style={{ ...td, textAlign: 'right', color: '#c2410c' }}>
                         {(() => {
@@ -1202,7 +1213,7 @@ function TransferDetailModal({ transfer, mode, onClose, onSubmit }) {
                   <td colSpan={2} style={{ ...td, color: totalVar > 0.001 ? '#b45309' : '#475569' }}>
                     {totalVar > 0.001 ? `Variance: ${fmtQ(totalVar)}` : ''}
                   </td>
-                  <td colSpan={2} style={{ ...td, textAlign: 'right' }}>{fmtMoney(transfer.total_value)}</td>
+                  <td colSpan={2} style={{ ...td, textAlign: 'right' }}>{fmtSrcMoney(transfer.total_value)}</td>
                   <td style={td}></td>
                 </tr>
                 {landedPerBase > 0 && (
