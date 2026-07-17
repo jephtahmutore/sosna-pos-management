@@ -521,16 +521,13 @@ const Layout = () => {
                       <FiTruck className="nav-icon" /> <span>Cost of Delivery</span>
                     </div>
                   )}
-                  {/* v1.10.201 — HQ review queue for inter-branch transfers.
-                      New transfers land here first so HQ can decide whether
-                      to attach a delivery cost before the destination
-                      receives. Sits next to Cost of Delivery because it's
-                      the same procurement-side decision. */}
-                  {hq && (
-                    <div className={`nav-item ${isActive('/hq/transfers-awaiting') ? 'active' : ''}`} onClick={() => navigate('/hq/transfers-awaiting')}>
-                      <FiSend className="nav-icon" /> <span>Transfers Awaiting HQ</span>
-                    </div>
-                  )}
+                  {/* v1.10.201 → v1.10.212 — HQ release gate removed;
+                      transfers now go straight to PENDING and the
+                      destination sees them immediately. HQ still
+                      attaches optional LCVs via the Cost of Delivery
+                      page. Sidebar entry hidden; the page + endpoint
+                      remain reachable by URL as a safety net. Remove
+                      entirely in a follow-up if this stays off. */}
                   {hq && (
                     <div className={`nav-item ${isActive('/hq/confirm-grn') ? 'active' : ''}`} onClick={() => navigate('/hq/confirm-grn')}>
                       <FiCheckCircle className="nav-icon" /> <span>Generate GRN</span>

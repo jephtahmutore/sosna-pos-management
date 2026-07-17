@@ -394,17 +394,19 @@ router.post('/', hqAuth, (req, res) => {
 
     // Master row only — source stock_movements posted at /receive time.
     // v1.10.201 — new transfers start in PENDING_HQ (HQ delivery review).
-    // HQ either attaches an LCV + releases OR releases with no delivery
-    // cost. On release status flips to PENDING and the destination can
-    // receive. Prevents delivery cost from being missed after the fact,
-    // because right now once destination receives, the WAC blend is
-    // locked and any late LCV can't be absorbed.
+    // v1.10.212 — reverted to PENDING. HQ gate removed because delivery
+    // cost against transfers isn't a routine practice for this business.
+    // HQ can still attach LCVs to pending transfers via the Cost of
+    // Delivery page any time before destination receives; absorption on
+    // /receive still reads HQ's LCVs live (v1.10.185). No forced pause,
+    // no dead menu items. Historical PENDING_HQ rows get promoted by
+    // a one-shot migration in masterDb.js boot.
     masterDb.prepare(`
       INSERT INTO stock_transfers (transfer_number, sync_id, from_slug, from_name, to_slug, to_name,
                                    items_json, total_items, total_value, notes,
                                    cost_currency, fx_rate_used,
                                    status, created_by, created_by_name)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?, 'PENDING_HQ', ?, ?)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?, 'PENDING', ?, ?)
     `).run(
       transferNumber, transferSyncId,
       fromSlug, branchName(fromSlug),

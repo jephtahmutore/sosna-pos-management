@@ -709,6 +709,27 @@ try {
   // WAC absorption at /receive still reads live from HQ (v1.10.185).
   addMasterCol('stock_transfers', 'lcv_total_at_release', 'REAL NOT NULL DEFAULT 0');
 
+  // v1.10.212 — HQ release gate removed. Any transfers still stuck in
+  // PENDING_HQ from the v1.10.201–v1.10.211 era get promoted to
+  // PENDING so destinations can receive them. Idempotent — the WHERE
+  // clause self-limits and becomes a no-op once every legacy row is
+  // flipped. Stamps hq_released_at so the audit trail shows the
+  // promotion happened at deploy time rather than by a person.
+  try {
+    const promoted = masterDb.prepare(`
+      UPDATE stock_transfers
+         SET status              = 'PENDING',
+             hq_released_at      = COALESCE(hq_released_at, datetime('now')),
+             hq_released_by_name = COALESCE(hq_released_by_name, 'v1.10.212 auto-release')
+       WHERE status = 'PENDING_HQ'
+    `).run();
+    if (promoted.changes > 0) {
+      console.log(`[transfers gate removal] auto-released ${promoted.changes} legacy PENDING_HQ transfer(s)`);
+    }
+  } catch (e) {
+    console.warn('[transfers gate removal] skipped:', e.message);
+  }
+
   // v1.10.187 — one-shot backfill: PO headers whose every line is
   // already CONFIRMED / CANCELLED / BRANCH_REJECTED but still sit in
   // OPEN. The hqGrns.js /generate path (pre-v1.10.187) forgot to

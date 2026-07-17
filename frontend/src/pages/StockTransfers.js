@@ -113,11 +113,12 @@ export default function StockTransfers() {
     if (!slug) return;
     setLoading(true);
     try {
-      // v1.10.201 — outgoing includes PENDING_HQ so source sees "waiting
-      // HQ review" transfers too. Incoming stays PENDING-only — the whole
-      // point of the release gate is that dest doesn't see PENDING_HQ.
+      // v1.10.212 — HQ gate removed; only PENDING statuses remain in the
+      // in-flight bucket. (v1.10.201 included PENDING_HQ; not needed
+      // anymore. Kept in the backend statusBadge map as a safety net
+      // for any legacy row that somehow slips through.)
       const [o, i] = await Promise.all([
-        getOutgoingTransfers({ slug, status: 'PENDING,PENDING_HQ' }),
+        getOutgoingTransfers({ slug, status: 'PENDING' }),
         getIncomingTransfers({ slug, status: 'PENDING' }),
       ]);
       setOut(o.data?.transfers || []);
