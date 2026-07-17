@@ -501,6 +501,14 @@ function CreateTransferModal({ sourceSlug, branches, onClose, onCreated, onError
     return products.filter(p => matchTokens(search, p.name, p.code, p.barcode));
   }, [products, search]);
 
+  // v1.10.210 — cart values are per source's WAC currency (K for K-only
+  // branches like Mansa/Lusaka, USD for tri-ccy like Kassumbalesa).
+  // Prior module-level fmtMoney hardcoded '$' and displayed a Lusaka
+  // K318.97/Box as "$318.97", misleading the operator into thinking
+  // Lusaka carries stock in USD.
+  const srcCcySym = srcIsTriCcy ? '$' : 'K';
+  const fmtSrcMoney = (n) => `${srcCcySym}${parseFloat(n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+
   // v1.8.47 — input + cart speak the product's configured default unit
   // (e.g. Box) instead of always the base unit (Bottle). cart.qty is the
   // value the user typed *in that unit*. We convert to base only at
@@ -709,10 +717,10 @@ function CreateTransferModal({ sourceSlug, branches, onClose, onCreated, onError
                         <div key={x.product.sync_id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '6px 4px', borderBottom: '1px dashed #e5e7eb' }}>
                           <div>
                             <div style={{ fontWeight: 600, fontSize: 13 }}>{x.product.name}</div>
-                            <div style={{ fontSize: 10, color: '#64748b' }}>{fmtQty(x.qty)} {unitName} × {fmtMoney(perUnit)}</div>
+                            <div style={{ fontSize: 10, color: '#64748b' }}>{fmtQty(x.qty)} {unitName} × {fmtSrcMoney(perUnit)}</div>
                           </div>
                           <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                            <strong style={{ fontSize: 13 }}>{fmtMoney(lineTotal)}</strong>
+                            <strong style={{ fontSize: 13 }}>{fmtSrcMoney(lineTotal)}</strong>
                             <button onClick={() => setQty(x.product, 0)} style={{ background: 'none', border: 'none', color: '#dc2626', cursor: 'pointer', padding: 2 }}>
                               <FiTrash2 size={14} />
                             </button>
@@ -722,7 +730,7 @@ function CreateTransferModal({ sourceSlug, branches, onClose, onCreated, onError
                     })}
                     <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 10, paddingTop: 8, borderTop: '1px solid #cbd5e1' }}>
                       <strong>Total value</strong>
-                      <strong>{fmtMoney(totalValue)}</strong>
+                      <strong>{fmtSrcMoney(totalValue)}</strong>
                     </div>
                   </>
                 )}
