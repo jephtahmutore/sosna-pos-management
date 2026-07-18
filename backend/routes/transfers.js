@@ -60,9 +60,27 @@ function branchName(slug) {
 }
 
 function nextTransferNumber() {
-  const seq = (masterDb.prepare(`SELECT COUNT(*) AS n FROM stock_transfers`).get()?.n || 0) + 1;
-  const yr  = new Date().getFullYear();
-  return `TRF-${yr}-${String(seq).padStart(5, '0')}`;
+  // v1.10.213 — was COUNT(*) + 1. That broke as soon as any row got
+  // deleted: COUNT() lagged MAX(), so the next call tried to reuse an
+  // existing number and hit the UNIQUE constraint on transfer_number.
+  // Real reproducer: after the NAHOMM cleanup on 2026-07-18 deleted
+  // TRF-2026-00013 / 00015 / 00017, the next Send Transfer errored
+  // with "UNIQUE constraint failed: stock_transfers.transfer_number".
+  // Fix: read MAX numeric suffix from the current year's rows and
+  // add 1. Deleted rows just leave gaps in the sequence, they no
+  // longer force collisions.
+  const yr = new Date().getFullYear();
+  const prefix = `TRF-${yr}-`;
+  const row = masterDb.prepare(
+    `SELECT COALESCE(
+       MAX(CAST(SUBSTR(transfer_number, ${prefix.length + 1}) AS INTEGER)),
+       0
+     ) AS m
+     FROM stock_transfers
+     WHERE transfer_number LIKE ?`
+  ).get(prefix + '%');
+  const seq = (row?.m || 0) + 1;
+  return `${prefix}${String(seq).padStart(5, '0')}`;
 }
 
 // GET /api/transfers/source-products?slug=

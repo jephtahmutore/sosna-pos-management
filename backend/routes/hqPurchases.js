@@ -38,9 +38,23 @@ function hqAuth(req, res, next) {
 }
 
 function nextPurchaseNumber() {
-  const seq = (masterDb.prepare(`SELECT COUNT(*) AS n FROM hq_purchases`).get()?.n || 0) + 1;
-  const yr  = new Date().getFullYear();
-  return `HQP-${yr}-${String(seq).padStart(5, '0')}`;
+  // v1.10.213 — was COUNT(*) + 1. Same bug as transfers.js: after any
+  // hq_purchases row is deleted, COUNT lags MAX and the generator
+  // returns a purchase_number that already exists → UNIQUE constraint
+  // failure on next New HQ Purchase save. Read MAX numeric suffix
+  // instead; deleted rows leave harmless gaps.
+  const yr = new Date().getFullYear();
+  const prefix = `HQP-${yr}-`;
+  const row = masterDb.prepare(
+    `SELECT COALESCE(
+       MAX(CAST(SUBSTR(purchase_number, ${prefix.length + 1}) AS INTEGER)),
+       0
+     ) AS m
+     FROM hq_purchases
+     WHERE purchase_number LIKE ?`
+  ).get(prefix + '%');
+  const seq = (row?.m || 0) + 1;
+  return `${prefix}${String(seq).padStart(5, '0')}`;
 }
 
 function destinationName(slug) {
