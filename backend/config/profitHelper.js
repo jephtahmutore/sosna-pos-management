@@ -47,8 +47,19 @@ function recalculateDailyProfit(db, date, tenantId) {
     //   4. p.cost_price       — static hint, last resort
     // NULLIF drops p.avg_cost_price=0 so we fall through when it was never
     // written (fresh product) instead of anchoring COGS at zero.
+    // v1.10.215 — two fixes to same-day order reversals:
+    //   (a) filter was IN ('sale', 'reverse'). The literal 'reverse' is a
+    //       ghost — no code path writes it; the actual reverse movement
+    //       type is 'sale_reverse' (orders.js:1235). So reversals were
+    //       silently ignored, leaving the original sale's cost phantom
+    //       in COGS with no offset. Filter now IN ('sale', 'sale_reverse').
+    //   (b) formula was SUM(ABS(qty) * cost). Once sale_reverse is in the
+    //       filter, ABS would ADD the reversal's cost instead of subtracting
+    //       it. Replaced with SUM(-qty * cost): sale (qty<0) yields +cost,
+    //       sale_reverse (qty>0) yields -cost — same-day sale + reverse
+    //       nets to 0, matching the revenue side.
     const cogsRow = db.prepare(`
-      SELECT COALESCE(SUM(ABS(sm.quantity) *
+      SELECT COALESCE(SUM(-sm.quantity *
         COALESCE(dcs.avg_cost_price, NULLIF(p.avg_cost_price, 0),
           CASE WHEN COALESCE(grn_agg.total_qty,0)+COALESCE(prod_agg.total_qty,0) > 0
             THEN (COALESCE(grn_agg.total_cost,0)+COALESCE(prod_agg.total_cost,0)) /
@@ -69,7 +80,7 @@ function recalculateDailyProfit(db, date, tenantId) {
         GROUP BY gi.product_sync_id
       ) grn_agg ON grn_agg.product_sync_id = sm.product_sync_id
       LEFT JOIN (SELECT product_sync_id, SUM(quantity) AS total_qty, SUM(total_allocated_cost) AS total_cost FROM production_outputs WHERE deleted_at IS NULL AND product_sync_id IS NOT NULL GROUP BY product_sync_id) prod_agg ON prod_agg.product_sync_id = sm.product_sync_id
-      WHERE sm.location = 'sales' AND sm.movement_type IN ('sale', 'reverse')
+      WHERE sm.location = 'sales' AND sm.movement_type IN ('sale', 'sale_reverse')
         AND DATE(sm.created_at) = ? AND sm.deleted_at IS NULL AND sm.product_sync_id IS NOT NULL
         AND p.tenant_id = ?
     `).get(date, date, tenantId);
