@@ -635,7 +635,7 @@ router.get('/variances', hqAuth, (req, res) => {
     if (!source || source === 'HQ_PURCHASE') {
       const where = [
         "(COALESCE(received_qty, dispatched_qty) < dispatched_qty OR reason IN ('Damaged','Lost'))",
-        "status IN ('GRN_SUBMITTED','CONFIRMED')",
+        "pi.status IN ('GRN_SUBMITTED','CONFIRMED')",
       ];
       const params = [];
       if (reason) { where.push('reason = ?'); params.push(reason); }
