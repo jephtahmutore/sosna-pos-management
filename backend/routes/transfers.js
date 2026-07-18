@@ -32,6 +32,10 @@ const { randomUUID } = require('crypto');
 const { listTenants, isRegistered, masterDb } = require('../config/masterDb');
 const { getTenantDb } = require('../config/tenantDb');
 const { conversionToBase } = require('../config/unitsHelper');
+// v1.10.214 — per-device shortcode via syncConfig so Electron installs
+// running local backends don't collide on transfer_number when they
+// eventually sync back to VPS master.db. Same pattern PVs / CRs use.
+const syncConfig = require('../config/syncConfig');
 
 function hqAuth(req, res, next) {
   try {
@@ -60,17 +64,19 @@ function branchName(slug) {
 }
 
 function nextTransferNumber() {
-  // v1.10.213 — was COUNT(*) + 1. That broke as soon as any row got
-  // deleted: COUNT() lagged MAX(), so the next call tried to reuse an
-  // existing number and hit the UNIQUE constraint on transfer_number.
-  // Real reproducer: after the NAHOMM cleanup on 2026-07-18 deleted
-  // TRF-2026-00013 / 00015 / 00017, the next Send Transfer errored
-  // with "UNIQUE constraint failed: stock_transfers.transfer_number".
-  // Fix: read MAX numeric suffix from the current year's rows and
-  // add 1. Deleted rows just leave gaps in the sequence, they no
-  // longer force collisions.
+  // v1.10.213 — MAX(numeric suffix) + 1 (survives delete).
+  // v1.10.214 — added per-device shortcode. Prefix goes from
+  //   TRF-YYYY-           → TRF-YYYY-C0AB98-
+  // MAX lookup is now scoped to this device's own prefix, so counters
+  // between VPS + N Electron installs are independent → no collision
+  // on sync into master.db. deviceId is stable per install; falls back
+  // to 'LOCAL1' pre-migration.
+  const cfg = syncConfig.getConfig();
+  const shortCode = cfg.deviceId
+    ? cfg.deviceId.replace(/-/g, '').substring(0, 6).toUpperCase()
+    : 'LOCAL1';
   const yr = new Date().getFullYear();
-  const prefix = `TRF-${yr}-`;
+  const prefix = `TRF-${yr}-${shortCode}-`;
   const row = masterDb.prepare(
     `SELECT COALESCE(
        MAX(CAST(SUBSTR(transfer_number, ${prefix.length + 1}) AS INTEGER)),
@@ -80,7 +86,7 @@ function nextTransferNumber() {
      WHERE transfer_number LIKE ?`
   ).get(prefix + '%');
   const seq = (row?.m || 0) + 1;
-  return `${prefix}${String(seq).padStart(5, '0')}`;
+  return `${prefix}${String(seq).padStart(4, '0')}`;
 }
 
 // GET /api/transfers/source-products?slug=

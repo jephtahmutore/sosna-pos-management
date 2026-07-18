@@ -25,6 +25,8 @@ const { randomUUID } = require('crypto');
 const { listTenants, isRegistered, masterDb } = require('../config/masterDb');
 const { getTenantDb } = require('../config/tenantDb');
 const { conversionToBase } = require('../config/unitsHelper');
+// v1.10.214 — per-device shortcode via syncConfig (Electron-safe).
+const syncConfig = require('../config/syncConfig');
 
 function hqAuth(req, res, next) {
   try {
@@ -38,13 +40,15 @@ function hqAuth(req, res, next) {
 }
 
 function nextPurchaseNumber() {
-  // v1.10.213 — was COUNT(*) + 1. Same bug as transfers.js: after any
-  // hq_purchases row is deleted, COUNT lags MAX and the generator
-  // returns a purchase_number that already exists → UNIQUE constraint
-  // failure on next New HQ Purchase save. Read MAX numeric suffix
-  // instead; deleted rows leave harmless gaps.
+  // v1.10.213 — MAX(numeric suffix) + 1 (survives delete).
+  // v1.10.214 — added per-device shortcode. Same rationale as
+  // transfers.nextTransferNumber — see comment there.
+  const cfg = syncConfig.getConfig();
+  const shortCode = cfg.deviceId
+    ? cfg.deviceId.replace(/-/g, '').substring(0, 6).toUpperCase()
+    : 'LOCAL1';
   const yr = new Date().getFullYear();
-  const prefix = `HQP-${yr}-`;
+  const prefix = `HQP-${yr}-${shortCode}-`;
   const row = masterDb.prepare(
     `SELECT COALESCE(
        MAX(CAST(SUBSTR(purchase_number, ${prefix.length + 1}) AS INTEGER)),
@@ -54,7 +58,7 @@ function nextPurchaseNumber() {
      WHERE purchase_number LIKE ?`
   ).get(prefix + '%');
   const seq = (row?.m || 0) + 1;
-  return `${prefix}${String(seq).padStart(5, '0')}`;
+  return `${prefix}${String(seq).padStart(4, '0')}`;
 }
 
 function destinationName(slug) {

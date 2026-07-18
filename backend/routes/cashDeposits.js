@@ -27,6 +27,8 @@ const hqDb = require('../config/database');
 const { poolInflowNative } = require('../config/cashPoolHelper');
 // v1.10.204 — shared per-drawer balance math (mirrors cashBook.js /stats)
 const { getCurrentByMethod } = require('../config/perMethodBalanceHelper');
+// v1.10.214 — per-device shortcode via syncConfig (Electron-safe).
+const syncConfig = require('../config/syncConfig');
 
 function hqAuth(req, res, next) {
   try {
@@ -66,9 +68,28 @@ function getHqSlug() {
 }
 
 function nextDepositNumber() {
-  const seq = (masterDb.prepare('SELECT COUNT(*) AS n FROM cash_deposits').get()?.n || 0) + 1;
+  // v1.10.213 latent bug — was COUNT(*) + 1 (same shape as transfers /
+  // hq_purchases; collides on delete).
+  // v1.10.214 — MAX(numeric suffix) + 1 AND per-device shortcode.
+  // Format keeps the YYYYMMDD prefix so the per-day counter meaning
+  // stays intact; shortcode slots in between date and sequence.
+  //   DEP-YYYYMMDD-SHORTCODE-NNNN
+  const cfg = syncConfig.getConfig();
+  const shortCode = cfg.deviceId
+    ? cfg.deviceId.replace(/-/g, '').substring(0, 6).toUpperCase()
+    : 'LOCAL1';
   const yyyymmdd = new Date().toISOString().slice(0, 10).replace(/-/g, '');
-  return `DEP-${yyyymmdd}-${String(seq).padStart(4, '0')}`;
+  const prefix = `DEP-${yyyymmdd}-${shortCode}-`;
+  const row = masterDb.prepare(
+    `SELECT COALESCE(
+       MAX(CAST(SUBSTR(deposit_number, ${prefix.length + 1}) AS INTEGER)),
+       0
+     ) AS m
+     FROM cash_deposits
+     WHERE deposit_number LIKE ?`
+  ).get(prefix + '%');
+  const seq = (row?.m || 0) + 1;
+  return `${prefix}${String(seq).padStart(4, '0')}`;
 }
 
 // ─── POST /cash-deposits — branch records a new deposit being sent ──────────
