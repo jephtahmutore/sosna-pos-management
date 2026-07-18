@@ -18,7 +18,7 @@
 const express = require('express');
 const router  = express.Router();
 const jwt = require('jsonwebtoken');
-const { listTenants } = require('../config/masterDb');
+const { listTenants, masterDb } = require('../config/masterDb');
 const { getTenantDb } = require('../config/tenantDb');
 const { defaultDb }   = require('../config/database');
 const { mirrorAllHqToBranches } = require('../middleware/hqPush');
