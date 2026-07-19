@@ -850,6 +850,14 @@ function TransferDetailModal({ transfer, mode, onClose, onSubmit }) {
       const dispConv = parseFloat(it.display_conv || 1) || 1;
       const sentBase = parseFloat(it.quantity || 0);
       const sentDisp = sentBase / dispConv;
+      // v1.10.218 — items_json now carries received_qty/reason/notes after
+      // /receive (backend stamps them there). For pending transfers or old
+      // rows saved before this fix, received_qty is missing → fall back to
+      // sent so the Receive modal opens at full and old View modals keep
+      // their prior behaviour instead of breaking.
+      const hasRecv = it.received_qty !== undefined && it.received_qty !== null;
+      const recvBase = hasRecv ? parseFloat(it.received_qty || 0) : sentBase;
+      const recvDisp = recvBase / dispConv;
       return {
         product_sync_id: it.product_sync_id,
         product_name:    it.product_name,
@@ -859,9 +867,9 @@ function TransferDetailModal({ transfer, mode, onClose, onSubmit }) {
         cost_price:      parseFloat(it.cost_price || 0),    // per BASE unit
         cost_display:    parseFloat(it.cost_price || 0) * dispConv, // per Box
         sent_qty:        sentDisp,         // shown in display unit
-        received_qty:    String(sentDisp), // shown in display unit
-        reason:          'OK',
-        notes:           '',
+        received_qty:    String(recvDisp), // shown in display unit
+        reason:          it.receive_reason || 'OK',
+        notes:           it.receive_notes || '',
       };
     })
   );

@@ -653,6 +653,10 @@ router.put('/:id/receive', hqAuth, (req, res) => {
       console.warn('[transfers.receive] LCV read failed:', lcvErr.message);
     }
 
+    // v1.10.218 — snapshot per-line received data so the View modal can show
+    // reality instead of defaulting Received=Sent. Populated inside the loop,
+    // written back onto stock_transfers.items_json after the tx.
+    const enrichedItems = [];
     toDb.transaction(() => {
       const movStmt = toDb.prepare(`
         INSERT INTO stock_movements (product_id, product_sync_id, location, movement_type,
@@ -705,12 +709,26 @@ router.put('/:id/receive', hqAuth, (req, res) => {
 
         const sentQty = parseFloat(it.quantity) || 0;
         const recvOverride = recvByPsid.get(it.product_sync_id);
+        // v1.10.218 — surface the silent fallback in server logs. Falling
+        // back to sentQty silently ate real shortages before (e.g. product
+        // resync mismatch → lookup fails → variance never recorded).
+        if (!recvOverride) {
+          console.warn(`[transfers.receive] no receive-line override for product ${it.product_sync_id} on ${row.transfer_number}; falling back to sent (${sentQty} ${it.unit || ''}). Product sync mismatch?`);
+        }
         const recvQty = recvOverride && recvOverride.received_qty !== undefined
           ? Math.max(0, parseFloat(recvOverride.received_qty) || 0)
           : sentQty;  // fallback: receive full
         const reason  = recvOverride?.reason || (recvQty === sentQty ? 'OK' : 'Short');
         const notes   = recvOverride?.notes || null;
         const variance = sentQty - recvQty;
+        // v1.10.218 — stash the real received values so we can persist them
+        // onto items_json after the tx (see below).
+        enrichedItems.push({
+          ...it,
+          received_qty:   recvQty,
+          receive_reason: reason,
+          receive_notes:  notes,
+        });
 
         // Only stock-increment for the RECEIVED quantity (not the sent).
         if (recvQty > 0) {
@@ -805,15 +823,19 @@ router.put('/:id/receive', hqAuth, (req, res) => {
       tx();
     }
 
+    // v1.10.218 — write received_qty/reason/notes back onto items_json so
+    // the View modal shows what was actually received (was defaulting
+    // received=sent because items_json only ever held send-time data).
     masterDb.prepare(`
       UPDATE stock_transfers
          SET status = ?,
              received_by = ?,
              received_by_name = ?,
-             received_at = datetime('now')
+             received_at = datetime('now'),
+             items_json = ?
        WHERE id = ?
     `).run(anyVariance ? 'RECEIVED_WITH_VARIANCE' : 'RECEIVED',
-           receivedBy, receivedByName, req.params.id);
+           receivedBy, receivedByName, JSON.stringify(enrichedItems), req.params.id);
 
     const out = parseItems(masterDb.prepare('SELECT * FROM stock_transfers WHERE id = ?').get(req.params.id));
     res.json(out);
