@@ -18,10 +18,12 @@
 const express = require('express');
 const router  = express.Router();
 const jwt = require('jsonwebtoken');
+const { randomUUID } = require('crypto');
 const { listTenants, masterDb } = require('../config/masterDb');
 const { getTenantDb } = require('../config/tenantDb');
 const { defaultDb }   = require('../config/database');
 const { mirrorAllHqToBranches } = require('../middleware/hqPush');
+const { recalculateDailyProfit } = require('../config/profitHelper');
 
 // HQ admin auth — same JWT model the per-branch app uses. The token comes
 // from whichever branch the user picked at login; we trust it as proof of
@@ -689,26 +691,83 @@ router.get('/variances', hqAuth, (req, res) => {
 });
 
 // PUT /api/hq/variances/transfer/:syncId/resolve
-// Marks a transfer_variance row as resolved with a resolution code.
+// v1.10.219 — Option C: on WRITE_OFF, actually book the loss as a damage
+// on the chosen branch's daily profit (source or destination — HQ picks).
+// RECOVERED remains no-op on P&L (stock re-entry is done manually via
+// Stock Reconciliation at whichever branch got the physical goods back).
+//
+// Request body:
+//   resolution:    'WRITE_OFF' | 'RECOVERED'  (required)
+//   absorbed_by:   'source' | 'destination'   (required when WRITE_OFF)
+//   notes:         optional free text
 router.put('/variances/transfer/:syncId/resolve', hqAuth, (req, res) => {
   try {
-    const { resolution, notes } = req.body || {};
+    const { resolution, notes, absorbed_by } = req.body || {};
     const allowed = new Set(['WRITE_OFF', 'RECOVERED']);
     if (!allowed.has(resolution)) {
       return res.status(400).json({ error: 'resolution must be WRITE_OFF or RECOVERED' });
     }
+    if (resolution === 'WRITE_OFF' && !['source', 'destination'].includes(absorbed_by)) {
+      return res.status(400).json({ error: 'WRITE_OFF requires absorbed_by = "source" or "destination"' });
+    }
     const row = masterDb.prepare('SELECT * FROM transfer_variances WHERE sync_id = ?').get(req.params.syncId);
     if (!row) return res.status(404).json({ error: 'Variance not found' });
     if (row.resolved_at) return res.status(400).json({ error: 'Already resolved' });
+
+    let absorbedSlug = null;
+    if (resolution === 'WRITE_OFF') {
+      absorbedSlug = absorbed_by === 'source' ? row.from_slug : row.to_slug;
+      const branchDb = getTenantDb(absorbedSlug);
+      if (!branchDb) {
+        return res.status(400).json({ error: `Absorbing branch "${absorbedSlug}" not registered` });
+      }
+
+      // Look up the branch's local product_id (FK on stock_movements).
+      const prod = branchDb.prepare(
+        'SELECT id, tenant_id FROM products WHERE sync_id = ? AND deleted_at IS NULL'
+      ).get(row.product_sync_id);
+      if (!prod) {
+        return res.status(400).json({
+          error: `Product ${row.product_name} (sync_id ${row.product_sync_id}) not found at branch ${absorbedSlug}. Cannot book write-off.`,
+        });
+      }
+
+      // Movement is P&L-only. location='books_only' keeps it out of every
+      // inventory sum (they all filter location='sales' or 'store'), so
+      // current_stock stays truthful. profitHelper's damages query is
+      // widened below to pick up movement_type='transit_writeoff' regardless
+      // of location, so this row still hits daily_profit_summary.damages.
+      const today = new Date().toISOString().split('T')[0];
+      const varianceBaseQty = parseFloat(row.variance_qty) || 0;
+      const movementNotes = `Transit variance write-off · ${row.transfer_number} · ${row.reason}${row.notes ? ' · ' + row.notes : ''}${notes ? ' · HQ: ' + notes : ''}`;
+      branchDb.prepare(`
+        INSERT INTO stock_movements (product_id, product_sync_id, location, movement_type,
+                                     quantity, reference_type, reference_sync_id, notes,
+                                     created_by, sync_id, tenant_id, branch_id, device_id,
+                                     synced, created_at, updated_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0,datetime('now'),datetime('now'))
+      `).run(
+        prod.id, row.product_sync_id, 'books_only', 'transit_writeoff',
+        -varianceBaseQty, 'transfer_variance', row.sync_id, movementNotes,
+        req.user.id || null, randomUUID(), prod.tenant_id, null, null
+      );
+
+      // Refresh the branch's daily profit for today so the loss shows up
+      // immediately on the Cash Report / profit summary.
+      recalculateDailyProfit(branchDb, today, prod.tenant_id);
+    }
+
     masterDb.prepare(`
       UPDATE transfer_variances
-         SET resolved_at = datetime('now'),
-             resolution = ?,
-             notes = COALESCE(?, notes)
+         SET resolved_at      = datetime('now'),
+             resolution       = ?,
+             absorbed_by_slug = ?,
+             notes            = COALESCE(?, notes)
        WHERE sync_id = ?
-    `).run(resolution, notes || null, req.params.syncId);
-    res.json({ ok: true });
+    `).run(resolution, absorbedSlug, notes || null, req.params.syncId);
+    res.json({ ok: true, absorbed_by_slug: absorbedSlug });
   } catch (e) {
+    console.error('[hq.variances.resolve] failed:', e.message);
     res.status(500).json({ error: e.message });
   }
 });

@@ -163,6 +163,11 @@ try {
   // deposits (they're currency-anchored, not method-anchored) and for
   // legacy Liquor rows written before this column existed.
   addMasterCol('cash_deposits', 'from_method', 'TEXT');
+  // v1.10.219 — Option C: which branch absorbed a transit-variance write-off.
+  // NULL until HQ resolves as WRITE_OFF (or if resolved as RECOVERED — no
+  // absorbing branch in that case). Stored so the HQ list can show who took
+  // the hit at a glance.
+  addMasterCol('transfer_variances', 'absorbed_by_slug', 'TEXT');
   // v1.10.134 — to_method: which HQ drawer the deposit lands in on Confirm.
   // Cash / Bank / Mobile Money. NULL until HQ confirms. Only meaningful
   // for K deposits — Cash Book's K sub-breakdown uses it to route

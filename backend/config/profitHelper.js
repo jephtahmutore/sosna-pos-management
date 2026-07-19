@@ -144,7 +144,13 @@ function recalculateDailyProfit(db, date, tenantId) {
         GROUP BY gi.product_sync_id
       ) grn_agg ON grn_agg.product_sync_id = sm.product_sync_id
       LEFT JOIN (SELECT product_sync_id, SUM(quantity) AS total_qty, SUM(total_allocated_cost) AS total_cost FROM production_outputs WHERE deleted_at IS NULL AND product_sync_id IS NOT NULL GROUP BY product_sync_id) prod_agg ON prod_agg.product_sync_id = sm.product_sync_id
-      WHERE sm.location = 'sales' AND sm.movement_type = 'sales_return'
+      -- v1.10.219 — include transit_writeoff (Option C: HQ resolves a Transit
+      -- Variance as WRITE_OFF and the loss lands on the chosen branch's
+      -- damages line). Written by hq.js with location='books_only' so it's
+      -- invisible to inventory sums but visible here — drop the location
+      -- filter for the writeoff type so it's picked up regardless.
+      WHERE ((sm.location = 'sales' AND sm.movement_type = 'sales_return')
+             OR sm.movement_type = 'transit_writeoff')
         AND DATE(sm.created_at) = ? AND sm.deleted_at IS NULL AND sm.product_sync_id IS NOT NULL
         AND p.tenant_id = ?
     `).get(date, date, tenantId);

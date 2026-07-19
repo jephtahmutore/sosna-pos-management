@@ -49,9 +49,15 @@ export default function HqVariances() {
 
   const handleResolve = async () => {
     if (!resolving) return;
+    // v1.10.219 — Option C: WRITE_OFF must pick an absorbing branch.
+    if (resolving.resolution === 'WRITE_OFF' && !resolving.absorbed_by) {
+      alert('Pick which branch absorbs the loss (Sender or Receiver) before confirming.');
+      return;
+    }
     try {
       await resolveTransferVariance(resolving.variance.sync_id, {
         resolution: resolving.resolution,
+        absorbed_by: resolving.resolution === 'WRITE_OFF' ? resolving.absorbed_by : null,
         notes: resolving.notes || null,
       });
       setResolving(null);
@@ -224,6 +230,27 @@ export default function HqVariances() {
                 </label>
               </div>
             </div>
+
+            {/* v1.10.219 — Option C: on Write off, HQ picks who absorbs the
+                loss so the backend can post a damage entry against that
+                branch's daily profit. Recovered skips this — no P&L hit. */}
+            {resolving.resolution === 'WRITE_OFF' && (
+              <div style={{ marginBottom: 12 }}>
+                <label style={lbl}>Who absorbs the loss?</label>
+                <div style={{ display: 'flex', gap: 10 }}>
+                  <label style={{ flex: 1, padding: 10, border: `2px solid ${resolving.absorbed_by === 'source' ? '#0369a1' : '#e5e7eb'}`, borderRadius: 6, cursor: 'pointer', background: resolving.absorbed_by === 'source' ? '#eff6ff' : '#fff' }}>
+                    <input type="radio" checked={resolving.absorbed_by === 'source'} onChange={() => setResolving(r => ({ ...r, absorbed_by: 'source' }))} />
+                    &nbsp;<strong>Sender</strong>
+                    <div style={{ fontSize: 11, color: '#64748b', marginTop: 2 }}>{resolving.variance.from_slug} — hit their profit.</div>
+                  </label>
+                  <label style={{ flex: 1, padding: 10, border: `2px solid ${resolving.absorbed_by === 'destination' ? '#0369a1' : '#e5e7eb'}`, borderRadius: 6, cursor: 'pointer', background: resolving.absorbed_by === 'destination' ? '#eff6ff' : '#fff' }}>
+                    <input type="radio" checked={resolving.absorbed_by === 'destination'} onChange={() => setResolving(r => ({ ...r, absorbed_by: 'destination' }))} />
+                    &nbsp;<strong>Receiver</strong>
+                    <div style={{ fontSize: 11, color: '#64748b', marginTop: 2 }}>{resolving.variance.to_slug} — hit their profit.</div>
+                  </label>
+                </div>
+              </div>
+            )}
 
             <div style={{ marginBottom: 12 }}>
               <label style={lbl}>Notes (optional)</label>
