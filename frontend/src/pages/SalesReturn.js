@@ -364,20 +364,21 @@ const SalesReturn = () => {
               <th>{t('date')}</th>
               <th>{t('items')}</th>
               <th style={{ textAlign: 'right' }}>{t('value')} ({curSym})</th>
+              <th>Status</th>
               <th>{t('notes')}</th>
               <th>{t('actions')}</th>
             </tr>
           </thead>
           <tbody>
             {loading ? (
-              <tr><td colSpan={7} style={{ textAlign: 'center', padding: 32, color: '#9ca3af' }}>Loading...</td></tr>
+              <tr><td colSpan={8} style={{ textAlign: 'center', padding: 32, color: '#9ca3af' }}>Loading...</td></tr>
             ) : filteredEntries.length === 0 ? (
-              <tr><td colSpan={7} style={{ textAlign: 'center', padding: 32, color: '#9ca3af' }}>{entries.length === 0 ? 'No damages recorded yet.' : 'No damages for selected date range.'}</td></tr>
+              <tr><td colSpan={8} style={{ textAlign: 'center', padding: 32, color: '#9ca3af' }}>{entries.length === 0 ? 'No damages recorded yet.' : 'No damages for selected date range.'}</td></tr>
             ) : filteredEntries.map(e => {
-              // v1.10.224 — source badge. Branch rows keep full edit/delete;
-              // hq_grn and transit rows are read-only synthetic rows aggregated
-              // from stock_movements so Sales Damages matches Profit Report's
-              // Damaged column exactly.
+              // v1.10.224 — source badge. v1.10.225 — Status column added
+              // (Sosna previously didn't show it) + Edit/Delete gated to
+              // Branch rows that are still PENDING; CONFIRMED rows are
+              // locked in by HQ so must not be edited from the branch.
               const source = e.source || 'branch';
               const badge = source === 'branch'
                 ? { label: 'Branch',  bg: '#fff7ed', color: '#c2410c', border: '#fdba74' }
@@ -385,6 +386,12 @@ const SalesReturn = () => {
                 ? { label: 'HQ GRN',  bg: '#eff6ff', color: '#1d4ed8', border: '#bfdbfe' }
                 : { label: 'Transit', bg: '#f5f3ff', color: '#6d28d9', border: '#ddd6fe' };
               const isBranch = source === 'branch';
+              const st = (e.status || 'PENDING').toUpperCase();
+              const canEdit = isBranch && st !== 'CONFIRMED';
+              const stColor  = st === 'CONFIRMED' ? '#166534' : st === 'REJECTED' ? '#b91c1c' : st === 'AUTO' ? '#1d4ed8' : st === 'WRITE_OFF' ? '#6d28d9' : '#b45309';
+              const stBg     = st === 'CONFIRMED' ? '#dcfce7' : st === 'REJECTED' ? '#fee2e2' : st === 'AUTO' ? '#eff6ff' : st === 'WRITE_OFF' ? '#f5f3ff' : '#fef3c7';
+              const stBorder = st === 'CONFIRMED' ? '#86efac' : st === 'REJECTED' ? '#fecaca' : st === 'AUTO' ? '#bfdbfe' : st === 'WRITE_OFF' ? '#ddd6fe' : '#fde68a';
+              const stLabel  = st === 'CONFIRMED' ? 'Confirmed' : st === 'REJECTED' ? 'Rejected' : st === 'AUTO' ? 'Auto' : st === 'WRITE_OFF' ? 'Write-Off' : 'Pending HQ';
               return (
               <tr key={e.id}>
                 <td>
@@ -396,18 +403,23 @@ const SalesReturn = () => {
                 <td style={{ textAlign: 'right', fontFamily: 'monospace', color: '#dc2626', fontWeight: 600 }}>
                   {curSym}{parseFloat(e.total_value || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                 </td>
+                <td>
+                  <span style={{ padding: '3px 10px', borderRadius: 14, fontSize: 11, fontWeight: 700, background: stBg, color: stColor, border: `1px solid ${stBorder}` }}>
+                    {stLabel}
+                  </span>
+                </td>
                 <td style={{ color: '#9ca3af', fontSize: 13 }}>{e.notes || '—'}</td>
                 <td>
                   <div style={{ display: 'flex', gap: 6 }}>
                     <button onClick={() => openView(e)} style={{ display: 'flex', alignItems: 'center', gap: 5, padding: '6px 12px', background: '#eff6ff', color: '#2563eb', border: '1px solid #bfdbfe', borderRadius: 7, cursor: 'pointer', fontSize: 13, fontWeight: 600 }}>
                       <FiEye size={13} /> View
                     </button>
-                    {isBranch && hasPermission('SalesReturns:Edit') && (
+                    {canEdit && hasPermission('SalesReturns:Edit') && (
                     <button onClick={() => openEdit(e)} style={{ display: 'flex', alignItems: 'center', gap: 5, padding: '6px 12px', background: '#fffbeb', color: '#b45309', border: '1px solid #fde68a', borderRadius: 7, cursor: 'pointer', fontSize: 13, fontWeight: 600 }}>
                       <FiEdit2 size={13} /> Edit
                     </button>
                     )}
-                    {isBranch && hasPermission('SalesReturns:Delete') && (
+                    {canEdit && hasPermission('SalesReturns:Delete') && (
                     <button onClick={() => openDelete(e)} style={{ display: 'flex', alignItems: 'center', gap: 5, padding: '6px 12px', background: '#fff1f2', color: '#dc2626', border: '1px solid #fecaca', borderRadius: 7, cursor: 'pointer', fontSize: 13, fontWeight: 600 }}>
                       <FiTrash2 size={13} /> Delete
                     </button>
@@ -620,7 +632,7 @@ const SalesReturn = () => {
             </div>
             <div style={{ display: 'flex', gap: 10, padding: '14px 22px', borderTop: '1px solid #f1f5f9', justifyContent: 'flex-end' }}>
               <button onClick={closeModal} style={{ padding: '9px 20px', border: '1px solid #e5e7eb', borderRadius: 8, background: '#fff', cursor: 'pointer', fontSize: 14 }}>Close</button>
-              {(selected?.source || 'branch') === 'branch' && hasPermission('SalesReturns:Edit') && (
+              {(selected?.source || 'branch') === 'branch' && (selected?.status || 'PENDING').toUpperCase() !== 'CONFIRMED' && hasPermission('SalesReturns:Edit') && (
               <button onClick={() => { closeModal(); openEdit(selected); }} style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '9px 20px', background: '#fffbeb', color: '#b45309', border: '1px solid #fde68a', borderRadius: 8, cursor: 'pointer', fontSize: 14, fontWeight: 600 }}>
                 <FiEdit2 size={14} /> Edit
               </button>
