@@ -484,7 +484,6 @@ const CashReport = () => {
       const usd  = parseFloat(form.usd_received)   || 0;
       const fra  = parseFloat(form.fra_received)   || 0;
       const kAmt = parseFloat(form.k_received)     || 0;
-      const exp  = parseFloat(form.expenses)       || 0;
       // v1.8.54 — credit is no longer counted manually; force pending to
       // mirror the system's creditExpected so the saved snapshot matches
       // the on-screen card (which always reads Counted = Expected).
@@ -492,7 +491,27 @@ const CashReport = () => {
       // v1.8.10 — convert FRA/K to USD before summing (same as auto-calc).
       const fraAsUsd = fxRate.sell  > 0 ? fra / fxRate.sell  : 0;
       const kAsUsd   = fxRate.sellK > 0 ? kAmt / fxRate.sellK : 0;
-      const total       = usd + fraAsUsd + kAsUsd + pend + exp;
+      // v1.10.227 — previously `const exp = form.expenses` — the aggregate
+      // field which only ever held the USD-portion of expenses. FRA and K
+      // expenses paid out of the drawer were NEVER credited back to the
+      // USD-normalized `total`, producing a phantom short on every
+      // tri-currency day that had non-USD expenses. Concrete case on
+      // Kassumbalesa1 2026-07-03: per-currency balanced (received +
+      // expenses = expected in every currency) but stored difference
+      // showed -$51.79 short because 105k FRA + 150 K in expenses ~= $52
+      // never re-credited.
+      // Fix: sum per-currency expenses converted to USD via the same
+      // fxRate we use for the received buckets. K-only branches
+      // (sell_fra=0, sell_k=0) resolve fra/k terms to 0, so the behaviour
+      // stays identical to before for them (expenses come in via usdEx,
+      // which for K-only holds the K value per the v1.10.32 mapping).
+      const usdEx = parseFloat(expensesByCcy.usd) || 0;
+      const fraEx = parseFloat(expensesByCcy.fra) || 0;
+      const kEx   = parseFloat(expensesByCcy.k)   || 0;
+      const totalExpensesUsd = usdEx
+        + (fxRate.sell  > 0 ? fraEx / fxRate.sell  : 0)
+        + (fxRate.sellK > 0 ? kEx   / fxRate.sellK : 0);
+      const total       = usd + fraAsUsd + kAsUsd + pend + totalExpensesUsd;
       const afterChange = total - ic;
       const expected    = dailyRevenue;
       const difference  = afterChange - expected;
@@ -523,7 +542,12 @@ const CashReport = () => {
           // MoMo→fra_received, Bank→k_received. Sosna branches send 0s
           // (no method concept there).
           ...(isLiquorStyle ? { cash: usd, mobile_money: fra, bank: kAmt } : { cash: 0, mobile_money: 0, bank: 0 }),
-          expenses: exp,
+          // v1.10.227 — `exp` was removed above (it was misleadingly the USD-
+          // only value stored as the aggregate). Keep the aggregate `expenses`
+          // field equal to usdEx (=usd_expenses) for backward compat with any
+          // downstream reader; the true multi-currency total now lives in
+          // `total` (which uses totalExpensesUsd).
+          expenses: usdEx,
           pending: pend,
           total,
           after_change: afterChange,
