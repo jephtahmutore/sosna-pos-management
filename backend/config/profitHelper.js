@@ -183,8 +183,13 @@ function recalculateDailyProfit(db, date, tenantId) {
     // `difference` — it's already correct in USD terms.
     //
     // Mirrors frontend/src/pages/CashReport.js:1795-1804.
+    // v1.10.223 — SUM across all cash_reports rows for the date. Some
+    // dates have multiple reports (one per cashier); prior version used
+    // .get() which returned only the first row, silently dropping every
+    // cashier after the first. Cash Report's own top-tile totals sum
+    // across ALL reports (CashReport.js:1631-1641), so we now match.
     const cashRow = db.prepare(`
-      SELECT COALESCE(
+      SELECT COALESCE(SUM(
         CASE
           WHEN (SELECT currency_mode FROM business_settings LIMIT 1)
                NOT IN ('USD+FRA','USD+FRA+K')
@@ -193,7 +198,8 @@ function recalculateDailyProfit(db, date, tenantId) {
                 + COALESCE(usd_expenses,0) + COALESCE(fra_expenses,0) + COALESCE(k_expenses,0))
                - COALESCE(expected, 0)
           ELSE difference
-        END, 0) AS cash_difference
+        END
+      ), 0) AS cash_difference
       FROM cash_reports WHERE date = ? AND deleted_at IS NULL AND tenant_id = ?
     `).get(date, tenantId);
 
