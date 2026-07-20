@@ -169,9 +169,31 @@ function recalculateDailyProfit(db, date, tenantId) {
     // Diff: mirrors exactly what the frontend computes per row:
     // difference = actual_balance - (opening_balance + input - total_sales - total_returns)
     // totalDiff  = SUM(difference × avg_cost_price)
-    // Cash difference (drawer over / short for the day)
+    // Cash difference (drawer over / short for the day).
+    // v1.10.222 — for K-only branches (Liquor-style: Lusaka1/Mansa1),
+    // compute the difference live from the raw fields, matching the
+    // Cash Report / Report History display formula exactly:
+    //   total = cash + mobile_money + bank + pending + expenses
+    //   diff  = total − expected
+    // The stored `difference` column is legacy USD-bucket math left over
+    // from an older save version; it drops MoMo + Bank entirely on K-only
+    // branches, producing wildly negative diffs even when the drawer
+    // balanced (e.g. Lusaka1 2026-07-17: stored −K60,433, real +K40).
+    // Tri-currency branches (Kassumbalesa1) keep using the stored
+    // `difference` — it's already correct in USD terms.
+    //
+    // Mirrors frontend/src/pages/CashReport.js:1795-1804.
     const cashRow = db.prepare(`
-      SELECT COALESCE(difference, 0) AS cash_difference
+      SELECT COALESCE(
+        CASE
+          WHEN (SELECT currency_mode FROM business_settings LIMIT 1)
+               NOT IN ('USD+FRA','USD+FRA+K')
+            THEN (COALESCE(usd_received,0) + COALESCE(fra_received,0) + COALESCE(k_received,0)
+                + COALESCE(pending,0)
+                + COALESCE(usd_expenses,0) + COALESCE(fra_expenses,0) + COALESCE(k_expenses,0))
+               - COALESCE(expected, 0)
+          ELSE difference
+        END, 0) AS cash_difference
       FROM cash_reports WHERE date = ? AND deleted_at IS NULL AND tenant_id = ?
     `).get(date, tenantId);
 
