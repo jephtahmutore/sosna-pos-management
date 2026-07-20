@@ -101,6 +101,10 @@ const SalesReturn = () => {
   const openView = async (entry) => {
     setSelected(entry);
     setModal('view');
+    // v1.10.224 — synthetic rows (HQ GRN damage, Transit write-off) have
+    // no matching sales_returns row on the backend, so skip the fetch.
+    // The detail panel falls back to what's on `selected` for those.
+    if ((entry.source || 'branch') !== 'branch') { setDetail(null); return; }
     try { const res = await getSalesReturn(entry.id); setDetail(res.data); }
     catch { setDetail(null); }
   };
@@ -355,6 +359,7 @@ const SalesReturn = () => {
         <table className="data-table">
           <thead>
             <tr>
+              <th>Source</th>
               <th>{t('returnNumber')}</th>
               <th>{t('date')}</th>
               <th>{t('items')}</th>
@@ -365,12 +370,27 @@ const SalesReturn = () => {
           </thead>
           <tbody>
             {loading ? (
-              <tr><td colSpan={6} style={{ textAlign: 'center', padding: 32, color: '#9ca3af' }}>Loading...</td></tr>
+              <tr><td colSpan={7} style={{ textAlign: 'center', padding: 32, color: '#9ca3af' }}>Loading...</td></tr>
             ) : filteredEntries.length === 0 ? (
-              <tr><td colSpan={6} style={{ textAlign: 'center', padding: 32, color: '#9ca3af' }}>{entries.length === 0 ? 'No damages recorded yet.' : 'No damages for selected date range.'}</td></tr>
-            ) : filteredEntries.map(e => (
+              <tr><td colSpan={7} style={{ textAlign: 'center', padding: 32, color: '#9ca3af' }}>{entries.length === 0 ? 'No damages recorded yet.' : 'No damages for selected date range.'}</td></tr>
+            ) : filteredEntries.map(e => {
+              // v1.10.224 — source badge. Branch rows keep full edit/delete;
+              // hq_grn and transit rows are read-only synthetic rows aggregated
+              // from stock_movements so Sales Damages matches Profit Report's
+              // Damaged column exactly.
+              const source = e.source || 'branch';
+              const badge = source === 'branch'
+                ? { label: 'Branch',  bg: '#fff7ed', color: '#c2410c', border: '#fdba74' }
+                : source === 'hq_grn'
+                ? { label: 'HQ GRN',  bg: '#eff6ff', color: '#1d4ed8', border: '#bfdbfe' }
+                : { label: 'Transit', bg: '#f5f3ff', color: '#6d28d9', border: '#ddd6fe' };
+              const isBranch = source === 'branch';
+              return (
               <tr key={e.id}>
-                <td style={{ fontWeight: 600, color: '#2563eb' }}>{e.return_number}</td>
+                <td>
+                  <span style={{ display: 'inline-block', padding: '2px 8px', borderRadius: 999, background: badge.bg, color: badge.color, border: `1px solid ${badge.border}`, fontSize: 11, fontWeight: 700 }}>{badge.label}</span>
+                </td>
+                <td style={{ fontWeight: 600, color: '#2563eb', fontFamily: 'monospace', fontSize: 12 }}>{e.return_number}</td>
                 <td>{formatDate(e.date)}</td>
                 <td>{e.item_count} item{e.item_count !== 1 ? 's' : ''}</td>
                 <td style={{ textAlign: 'right', fontFamily: 'monospace', color: '#dc2626', fontWeight: 600 }}>
@@ -382,12 +402,12 @@ const SalesReturn = () => {
                     <button onClick={() => openView(e)} style={{ display: 'flex', alignItems: 'center', gap: 5, padding: '6px 12px', background: '#eff6ff', color: '#2563eb', border: '1px solid #bfdbfe', borderRadius: 7, cursor: 'pointer', fontSize: 13, fontWeight: 600 }}>
                       <FiEye size={13} /> View
                     </button>
-                    {hasPermission('SalesReturns:Edit') && (
+                    {isBranch && hasPermission('SalesReturns:Edit') && (
                     <button onClick={() => openEdit(e)} style={{ display: 'flex', alignItems: 'center', gap: 5, padding: '6px 12px', background: '#fffbeb', color: '#b45309', border: '1px solid #fde68a', borderRadius: 7, cursor: 'pointer', fontSize: 13, fontWeight: 600 }}>
                       <FiEdit2 size={13} /> Edit
                     </button>
                     )}
-                    {hasPermission('SalesReturns:Delete') && (
+                    {isBranch && hasPermission('SalesReturns:Delete') && (
                     <button onClick={() => openDelete(e)} style={{ display: 'flex', alignItems: 'center', gap: 5, padding: '6px 12px', background: '#fff1f2', color: '#dc2626', border: '1px solid #fecaca', borderRadius: 7, cursor: 'pointer', fontSize: 13, fontWeight: 600 }}>
                       <FiTrash2 size={13} /> Delete
                     </button>
@@ -395,7 +415,8 @@ const SalesReturn = () => {
                   </div>
                 </td>
               </tr>
-            ))}
+              );
+            })}
           </tbody>
         </table>
       </div>
@@ -599,7 +620,7 @@ const SalesReturn = () => {
             </div>
             <div style={{ display: 'flex', gap: 10, padding: '14px 22px', borderTop: '1px solid #f1f5f9', justifyContent: 'flex-end' }}>
               <button onClick={closeModal} style={{ padding: '9px 20px', border: '1px solid #e5e7eb', borderRadius: 8, background: '#fff', cursor: 'pointer', fontSize: 14 }}>Close</button>
-              {hasPermission('SalesReturns:Edit') && (
+              {(selected?.source || 'branch') === 'branch' && hasPermission('SalesReturns:Edit') && (
               <button onClick={() => { closeModal(); openEdit(selected); }} style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '9px 20px', background: '#fffbeb', color: '#b45309', border: '1px solid #fde68a', borderRadius: 8, cursor: 'pointer', fontSize: 14, fontWeight: 600 }}>
                 <FiEdit2 size={14} /> Edit
               </button>

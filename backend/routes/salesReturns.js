@@ -53,9 +53,82 @@ router.get('/', auth, readOnlyGuard, (req, res) => {
         const lineCost = (parseFloat(it.cost_price) || 0) * convToBase;
         return sum + (parseFloat(it.quantity) || 0) * lineCost;
       }, 0);
-      return { ...r, total_value: estimated, estimated_total_value: estimated };
+      return { ...r, source: 'branch', total_value: estimated, estimated_total_value: estimated };
     });
-    res.json(enriched);
+
+    // v1.10.224 — include HQ GRN in-flight damages and Transit variance
+    // write-offs as synthetic rows so the Sales Damages page shows a
+    // complete picture. Both sources are read-only (edit/delete gated
+    // on source='branch' in the frontend). Both use stock_movements.cost_at_sale
+    // for their value — same source of truth profitHelper uses, so the
+    // total matches Profit Report's Damaged column exactly.
+    const include = String(req.query.include || 'all').toLowerCase();
+    let synthetic = [];
+    if (include === 'all') {
+      const hqGrn = db.prepare(`
+        SELECT sm.id, sm.sync_id, sm.reference_sync_id, sm.created_at AS date,
+               sm.quantity, sm.cost_at_sale, sm.notes, sm.product_sync_id,
+               p.name AS product_name
+        FROM stock_movements sm
+        JOIN products p ON p.sync_id = sm.product_sync_id
+        WHERE sm.reference_type = 'hq_grn_damage'
+          AND sm.deleted_at IS NULL
+      `).all();
+      for (const r of hqGrn) {
+        const notes = r.notes || '';
+        const grnMatch = notes.match(/GRN-\d{4}-[A-Z0-9]+/i);
+        const qty = Math.abs(parseFloat(r.quantity) || 0);
+        const cost = parseFloat(r.cost_at_sale) || 0;
+        synthetic.push({
+          id: `hqgrn-${r.id}`,
+          sync_id: r.sync_id,
+          source: 'hq_grn',
+          return_number: grnMatch ? grnMatch[0] : `HQ-GRN #${r.id}`,
+          date: String(r.date || '').slice(0, 10),
+          status: 'AUTO',
+          notes,
+          item_count: 1,
+          _first_product: r.product_name,
+          _first_qty:     qty,
+          _first_cost:    cost,
+          total_value:         qty * cost,
+          estimated_total_value: qty * cost,
+        });
+      }
+      const transit = db.prepare(`
+        SELECT sm.id, sm.sync_id, sm.reference_sync_id, sm.created_at AS date,
+               sm.quantity, sm.cost_at_sale, sm.notes, sm.product_sync_id,
+               p.name AS product_name
+        FROM stock_movements sm
+        JOIN products p ON p.sync_id = sm.product_sync_id
+        WHERE sm.movement_type = 'transit_writeoff'
+          AND sm.deleted_at IS NULL
+      `).all();
+      for (const r of transit) {
+        const notes = r.notes || '';
+        const trfMatch = notes.match(/TRF-\d{4}-[A-Z0-9-]+/i);
+        const qty = Math.abs(parseFloat(r.quantity) || 0);
+        const cost = parseFloat(r.cost_at_sale) || 0;
+        synthetic.push({
+          id: `transit-${r.id}`,
+          sync_id: r.sync_id,
+          source: 'transit',
+          return_number: trfMatch ? trfMatch[0] : `TRANSIT #${r.id}`,
+          date: String(r.date || '').slice(0, 10),
+          status: 'WRITE_OFF',
+          notes,
+          item_count: 1,
+          _first_product: r.product_name,
+          _first_qty:     qty,
+          _first_cost:    cost,
+          total_value:         qty * cost,
+          estimated_total_value: qty * cost,
+        });
+      }
+    }
+    const combined = [...enriched, ...synthetic].sort((a, b) =>
+      String(b.date || '').localeCompare(String(a.date || '')));
+    res.json(combined);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
