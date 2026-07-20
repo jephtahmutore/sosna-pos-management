@@ -1713,9 +1713,21 @@ const CashReport = () => {
         const gotU = sumCol('usd_received') + filteredReports.reduce((s, r) => parseFloat(r.usd_received || 0) > 0 ? s : s + (parseFloat(r.cash || 0) || 0), 0);
         const gotF = sumCol('fra_received') + filteredReports.reduce((s, r) => parseFloat(r.fra_received || 0) > 0 ? s : s + (parseFloat(r.mobile_money || 0) || 0), 0);
         const gotK = sumCol('k_received')   + filteredReports.reduce((s, r) => parseFloat(r.k_received   || 0) > 0 ? s : s + (parseFloat(r.bank || 0) || 0), 0);
-        const diffU = gotU - expU;
-        const diffF = gotF - expF;
-        const diffK = gotK - expK;
+        // v1.10.229 — per-currency PERIOD TOTALS Diff was `received − expected`
+        // and ignored the expenses paid out of the drawer during the period.
+        // On tri-currency Kassumbalesa1 with regular FRA + K expenses, the
+        // tiles showed persistent Short (e.g. -$3,292 / -1,444,500 / -2,850)
+        // even when every day was per-currency balanced. Now Diff adds
+        // per-currency expenses back — mirroring the fix on the detail page
+        // (v1.10.227) and the History row DIFF columns (v1.10.228).
+        // Falls back to legacy single `expenses` for the USD bucket on rows
+        // written before per-currency columns existed.
+        const expensesU = filteredReports.reduce((s, r) => s + (parseFloat(r.usd_expenses || r.expenses || 0) || 0), 0);
+        const expensesF = sumCol('fra_expenses');
+        const expensesK = sumCol('k_expenses');
+        const diffU = (gotU + expensesU) - expU;
+        const diffF = (gotF + expensesF) - expF;
+        const diffK = (gotK + expensesK) - expK;
         const fmtU = (n) => `$${Math.abs(parseFloat(n || 0)).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
         const fmtN = (n) => Math.abs(Math.round(parseFloat(n || 0))).toLocaleString('en-US');
         const diffBadge = (d, eps) => Math.abs(d) < eps ? 'OK' : (d < 0 ? 'Short' : 'Surplus');
@@ -1725,12 +1737,13 @@ const CashReport = () => {
             <span style={{ opacity: 0.9 }}>{label}</span><strong>{val}</strong>
           </div>
         );
-        const Card = ({ ccy, bg, expected, received, diff, fmt, eps }) => (
+        const Card = ({ ccy, bg, expected, received, expenses, diff, fmt, eps }) => (
           <div style={{ borderRadius: 14, padding: '14px 18px', background: bg, color: '#fff', boxShadow: '0 4px 16px rgba(0,0,0,0.1)', position: 'relative', overflow: 'hidden' }}>
             <div style={{ position: 'absolute', right: -10, top: -10, width: 60, height: 60, borderRadius: '50%', background: 'rgba(255,255,255,0.1)' }} />
             <div style={{ fontSize: 11, fontWeight: 700, opacity: 0.9, textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 8 }}>{ccy} — PERIOD TOTALS</div>
             <Line label="Expected" val={fmt(expected)} />
             <Line label="On Hand"  val={fmt(received)} />
+            {expenses > 0 && <Line label="+ Expenses" val={fmt(expenses)} />}
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: 13, lineHeight: 1.7, marginTop: 4, paddingTop: 6, borderTop: '1px solid rgba(255,255,255,0.2)' }}>
               <span style={{ opacity: 0.9 }}>Diff</span>
               <span>
@@ -1742,9 +1755,9 @@ const CashReport = () => {
         );
         return (
           <div className="no-print" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: 14, marginBottom: 20 }}>
-            <Card ccy="USD" bg="linear-gradient(135deg,#22c55e,#15803d)" expected={expU} received={gotU} diff={diffU} fmt={fmtU} eps={0.01} />
-            <Card ccy="FRA" bg="linear-gradient(135deg,#8b5cf6,#6d28d9)" expected={expF} received={gotF} diff={diffF} fmt={fmtN} eps={1} />
-            <Card ccy="K"   bg="linear-gradient(135deg,#f97316,#c2410c)" expected={expK} received={gotK} diff={diffK} fmt={fmtN} eps={1} />
+            <Card ccy="USD" bg="linear-gradient(135deg,#22c55e,#15803d)" expected={expU} received={gotU} expenses={expensesU} diff={diffU} fmt={fmtU} eps={0.01} />
+            <Card ccy="FRA" bg="linear-gradient(135deg,#8b5cf6,#6d28d9)" expected={expF} received={gotF} expenses={expensesF} diff={diffF} fmt={fmtN} eps={1} />
+            <Card ccy="K"   bg="linear-gradient(135deg,#f97316,#c2410c)" expected={expK} received={gotK} expenses={expensesK} diff={diffK} fmt={fmtN} eps={1} />
           </div>
         );
       })()}
