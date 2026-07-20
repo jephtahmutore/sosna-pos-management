@@ -1798,14 +1798,21 @@ const CashReport = () => {
               const usdE = parseFloat(r.usd_expected || 0);
               const fraE = parseFloat(r.fra_expected || 0);
               const kE   = parseFloat(r.k_expected   || 0);
-              const usdD = usdR - usdE;
-              const fraD = fraR - fraE;
-              const kD   = kR   - kE;
               // v1.8.26 — per-currency expense from new columns; fall back to
               // legacy single `expenses` for the USD bucket on old rows.
               const usdEx = parseFloat(r.usd_expenses || r.expenses || 0) || 0;
               const fraEx = parseFloat(r.fra_expenses || 0) || 0;
               const kEx   = parseFloat(r.k_expenses   || 0) || 0;
+              // v1.10.228 — per-currency DIFF matches the detail page:
+              //   "Total cash in = counted + expenses paid" vs expected.
+              // Was `received - expected` which ignored expenses paid out
+              // of the drawer, showing a phantom short equal to expenses.
+              // Concrete case: Kassumbalesa1 Jul 3 — USD received 10,350 +
+              // expenses 3,000 = 13,350 = expected → real diff 0, but old
+              // formula showed -$3,000. Now matches detail (Balanced).
+              const usdD = (usdR + usdEx) - usdE;
+              const fraD = (fraR + fraEx) - fraE;
+              const kD   = (kR   + kEx)   - kE;
               const diffColor = (d, eps) => Math.abs(d) < eps ? '#16a34a' : d > 0 ? '#d97706' : '#dc2626';
               const sign = (d) => d > 0 ? '+' : '';
               const dash = <span style={{ color: '#cbd5e1' }}>—</span>;
