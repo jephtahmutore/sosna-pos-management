@@ -779,6 +779,40 @@ function initTenantDb(db) {
 
   addCol('stock_movements',    'reference_sync_id', 'TEXT');
   addCol('stock_movements',    'product_sync_id',   'TEXT');
+  // v1.10.221 — event-level cost lock. Stamp the WAC live at the moment of
+  // the movement (sale, sale_reverse, sales_return, transit_writeoff) so
+  // profitHelper's COGS/damages queries can read the exact cost that was
+  // true at the moment of the event, not whatever the current WAC happens
+  // to be at recalc time. NULL for rows written before this column existed
+  // (backfill script handles them). Ported from Redsea v1.13.49.
+  addCol('stock_movements',    'cost_at_sale',      'REAL');
+  // v1.10.221 — auto-stamp cost_at_sale on INSERT via SQL trigger so every
+  // route that writes a cost-bearing movement (sale/sale_reverse/sales_return
+  // /transit_writeoff) automatically freezes the live WAC without changing
+  // any of the ~10 INSERT sites in orders.js / salesReturns.js / hqDamages.js
+  // / hqGrns.js / hq.js. IF NEW.cost_at_sale IS NOT NULL the caller can still
+  // override (backfill or explicit stamp). Fallback matches profitHelper:
+  // p.avg_cost_price → p.cost_price → 0.
+  try {
+    db.exec(`
+      CREATE TRIGGER IF NOT EXISTS trg_stamp_cost_at_sale
+      AFTER INSERT ON stock_movements
+      FOR EACH ROW
+      WHEN NEW.cost_at_sale IS NULL
+        AND NEW.product_sync_id IS NOT NULL
+        AND NEW.movement_type IN ('sale', 'sale_reverse', 'sales_return', 'transit_writeoff')
+      BEGIN
+        UPDATE stock_movements
+           SET cost_at_sale = (
+             SELECT COALESCE(NULLIF(p.avg_cost_price, 0), NULLIF(p.cost_price, 0), 0)
+             FROM products p
+             WHERE p.sync_id = NEW.product_sync_id
+             LIMIT 1
+           )
+         WHERE id = NEW.id;
+      END;
+    `);
+  } catch (_) { /* trigger may already exist */ }
   addCol('grn_items',          'product_sync_id',   'TEXT');
   addCol('grn_items',          'grn_sync_id',       'TEXT');
   addCol('siv_items',          'product_sync_id',   'TEXT');

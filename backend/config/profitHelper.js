@@ -134,9 +134,14 @@ function recalculateDailyProfit(db, date, tenantId) {
     //       it. Replaced with SUM(-qty * cost): sale (qty<0) yields +cost,
     //       sale_reverse (qty>0) yields -cost — same-day sale + reverse
     //       nets to 0, matching the revenue side.
+    // v1.10.221 — cost fallback now starts with sm.cost_at_sale (the WAC
+    // frozen at the MOMENT of the sale by trigger trg_stamp_cost_at_sale).
+    // Fully immune to later WAC changes — even mid-day GRN blends. Fallbacks
+    // (in order): frozen sale cost → dcs snapshot → live avg_cost_price →
+    // dated GRN aggregate → live p.cost_price. Ported from Redsea v1.13.49.
     const cogsRow = db.prepare(`
       SELECT COALESCE(SUM(-sm.quantity *
-        COALESCE(dcs.avg_cost_price, NULLIF(p.avg_cost_price, 0),
+        COALESCE(sm.cost_at_sale, dcs.avg_cost_price, NULLIF(p.avg_cost_price, 0),
           CASE WHEN COALESCE(grn_agg.total_qty,0)+COALESCE(prod_agg.total_qty,0) > 0
             THEN (COALESCE(grn_agg.total_cost,0)+COALESCE(prod_agg.total_cost,0)) /
                  (COALESCE(grn_agg.total_qty,0)+COALESCE(prod_agg.total_qty,0))
@@ -199,9 +204,14 @@ function recalculateDailyProfit(db, date, tenantId) {
     // sits between the historical snapshot and the grn_items aggregate so
     // the WAC blend that hqGrns.js /generate wrote actually reaches the
     // damage cost calculation.
+    // v1.10.221 — damages: prefer sm.cost_at_sale (frozen on the movement
+    // by trigger trg_stamp_cost_at_sale) before falling through to dcs and
+    // the live/dated aggregates. Ensures a Sales Damages / transit_writeoff
+    // recorded today can't retroactively re-cost when the product's live
+    // WAC changes tomorrow.
     const damageRow = db.prepare(`
       SELECT COALESCE(SUM(ABS(sm.quantity) *
-        COALESCE(dcs.avg_cost_price, NULLIF(p.avg_cost_price, 0),
+        COALESCE(sm.cost_at_sale, dcs.avg_cost_price, NULLIF(p.avg_cost_price, 0),
           CASE WHEN COALESCE(grn_agg.total_qty,0)+COALESCE(prod_agg.total_qty,0) > 0
             THEN (COALESCE(grn_agg.total_cost,0)+COALESCE(prod_agg.total_cost,0)) /
                  (COALESCE(grn_agg.total_qty,0)+COALESCE(prod_agg.total_qty,0))
