@@ -19,8 +19,84 @@
 const { randomUUID } = require('crypto');
 const { baseQtyExpr } = require('./unitsHelper');
 
+/**
+ * writeDailyCostSnapshot — v1.10.220
+ * First-write-wins snapshot of avg_cost_price + selling_price per product
+ * per date. Uses INSERT OR IGNORE so once a date/product row exists, later
+ * calls (which see today's freshly-blended WAC) can never overwrite the
+ * cost that was live at the moment of first activity that day.
+ *
+ * The GRN/production aggregates are DATE-BOUNDED (created_at <= date) so
+ * backfills for historical dates don't get contaminated by future GRNs.
+ * The three-step fallback: p.avg_cost_price (live WAC when it's set),
+ * else the dated aggregate, else p.cost_price.
+ *
+ * Called at the top of recalculateDailyProfit so every business event
+ * (sale, GRN, PV, damage, transit_writeoff, reconciliation, …) auto-locks
+ * that day's cost before COGS/damages queries read from dcs.
+ *
+ * Ported from Redsea v1.13.48.
+ */
+function writeDailyCostSnapshot(db, date, tenantId) {
+  try {
+    const rows = db.prepare(`
+      SELECT p.id, p.sync_id, p.avg_cost_price, p.cost_price, p.selling_price,
+        COALESCE(grn_agg.total_qty, 0)  + COALESCE(prod_agg.total_qty, 0)  AS combined_qty,
+        COALESCE(grn_agg.total_cost, 0) + COALESCE(prod_agg.total_cost, 0) AS combined_cost
+      FROM products p
+      LEFT JOIN (
+        SELECT product_sync_id,
+               SUM(quantity) AS total_qty, SUM(total_price) AS total_cost
+        FROM grn_items
+        WHERE deleted_at IS NULL AND product_sync_id IS NOT NULL
+          AND date(created_at) <= ?
+        GROUP BY product_sync_id
+      ) grn_agg ON grn_agg.product_sync_id = p.sync_id
+      LEFT JOIN (
+        SELECT product_sync_id,
+               SUM(quantity) AS total_qty, SUM(total_allocated_cost) AS total_cost
+        FROM production_outputs
+        WHERE deleted_at IS NULL AND product_sync_id IS NOT NULL
+          AND date(created_at) <= ?
+        GROUP BY product_sync_id
+      ) prod_agg ON prod_agg.product_sync_id = p.sync_id
+      WHERE p.deleted_at IS NULL AND p.tenant_id = ?
+    `).all(date, date, tenantId);
+
+    const insert = db.prepare(`
+      INSERT OR IGNORE INTO daily_cost_snapshot
+        (product_id, product_sync_id, date, avg_cost_price, selling_price,
+         sync_id, tenant_id, branch_id, device_id, synced, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, datetime('now'), datetime('now'))
+    `);
+
+    db.transaction(() => {
+      for (const p of rows) {
+        const live = parseFloat(p.avg_cost_price) || 0;
+        const dated = (p.combined_qty > 0)
+          ? parseFloat(p.combined_cost) / parseFloat(p.combined_qty)
+          : 0;
+        const cost = live > 0 ? live : (dated > 0 ? dated : (parseFloat(p.cost_price) || 0));
+        insert.run(
+          p.id, p.sync_id, date, cost, parseFloat(p.selling_price) || 0,
+          randomUUID(), tenantId, null, null
+        );
+      }
+    })();
+  } catch (e) {
+    console.error('[dcs.write] failed:', e.message);
+  }
+}
+
 function recalculateDailyProfit(db, date, tenantId) {
   try {
+    // v1.10.220 — lock cost for this date BEFORE reading COGS/damages. Any
+    // event that would trigger a recalc (sale, GRN, PV, damage, recon, …)
+    // now auto-snapshots the date. INSERT OR IGNORE means the very first
+    // event of the date wins; later events for the same date leave the
+    // frozen cost alone. Result: historical dates become tamper-proof
+    // to later cost changes without needing a per-sale cost_at_sale column.
+    writeDailyCostSnapshot(db, date, tenantId);
 
     // Revenue: total sales billed today (accrual — includes credit sales whether paid or not).
     // Cash actually collected is tracked separately in the Cash Report.
@@ -273,4 +349,4 @@ function reapplyReconciliation(db, date, productSyncIds, tenantId, branchId, dev
   }
 }
 
-module.exports = { recalculateDailyProfit, reapplyReconciliation };
+module.exports = { recalculateDailyProfit, reapplyReconciliation, writeDailyCostSnapshot };
