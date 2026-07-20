@@ -747,9 +747,15 @@ router.put('/variances/transfer/:syncId/resolve', hqAuth, (req, res) => {
                                      synced, created_at, updated_at)
         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0,datetime('now'),datetime('now'))
       `).run(
+        // v1.10.226 — created_by must reference a user on THIS branch's users
+        // table. HQ users only exist in HQ auth, so req.user.id would blow
+        // the FK constraint (FOREIGN KEY failed alert on the Resolve modal).
+        // Safest: NULL. Audit trail is preserved in transfer_variances
+        // (received_by + received_by_name + resolved_at + absorbed_by_slug).
+        // Same fix as Redsea v1.13.56.
         prod.id, row.product_sync_id, 'books_only', 'transit_writeoff',
         -varianceBaseQty, 'transfer_variance', row.sync_id, movementNotes,
-        req.user.id || null, randomUUID(), prod.tenant_id, null, null
+        null, randomUUID(), prod.tenant_id, null, null
       );
 
       // Refresh the branch's daily profit for today so the loss shows up
