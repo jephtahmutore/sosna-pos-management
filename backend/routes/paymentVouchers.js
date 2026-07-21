@@ -6,8 +6,8 @@ const { randomUUID } = require('crypto');
 const { recalculateDailyProfit } = require('../config/profitHelper');
 // v1.10.180 — Phase 2b: PV with k_amount > 0 drains K from the pool.
 const { poolInflowNative, poolDrainK } = require('../config/cashPoolHelper');
-// v1.10.239 — HQ overdraft guard.
-const { checkHqOverdraft } = require('../config/perMethodBalanceHelper');
+// v1.10.239 / v1.10.240 — HQ overdraft guards.
+const { checkHqOverdraft, checkHqKSubDrawerOverdraft } = require('../config/perMethodBalanceHelper');
 let _masterDb = null;
 try { _masterDb = require('../config/masterDb').masterDb; } catch { /* offline */ }
 
@@ -238,6 +238,10 @@ router.post('/', auth, (req, res) => {
     // per-currency reconciliation model and is left alone in this phase).
     // Landed Cost Vouchers still drain cash even though they're absorbed
     // into inventory WAC — guard them too so an LCV can't overdraft either.
+    // v1.10.240 — after the per-currency check, also check per-K-sub-drawer.
+    // A K PV split as { K·Cash: 0, K·Bank: 100k } can't push K·Bank below
+    // zero even when total K balance is healthy (Bank might already be
+    // negative from prior rows).
     if (HQ_HOSTS_PV.has(hostPV)) {
       const breach = checkHqOverdraft(
         db, tenantId,
@@ -252,6 +256,23 @@ router.post('/', auth, (req, res) => {
           available: breach.available,
           attempted: breach.requested,
         });
+      }
+      // v1.10.240 — K sub-drawer check. Only meaningful when kAmt > 0 and
+      // the caller sent a sub-drawer split (isHqTriCcy guarantees both).
+      if (isHqTriCcy && kAmt > 0.0001) {
+        const subBreach = checkHqKSubDrawerOverdraft(
+          db, tenantId,
+          { cash: cashAmt, bank: bankAmt, momo: momoAmt },
+          { masterDb: _masterDb, slug: 'sosnazm' },
+        );
+        if (subBreach) {
+          return res.status(400).json({
+            error: `Voucher exceeds ${subBreach.drawer} balance (available K${subBreach.available.toLocaleString(undefined, { maximumFractionDigits: 2 })}, attempting K${subBreach.requested.toLocaleString(undefined, { maximumFractionDigits: 2 })}). Move some or all of the K amount to a sub-drawer with more balance.`,
+            drawer:    subBreach.drawer,
+            available: subBreach.available,
+            attempted: subBreach.requested,
+          });
+        }
       }
     }
     const sumSplits = usdAmt + fraAmt + kAmt;

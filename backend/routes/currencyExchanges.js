@@ -17,8 +17,8 @@ const syncConfig = require('../config/syncConfig');
 const { randomUUID } = require('crypto');
 // v1.10.180 — Phase 2b: pool counters update atomically with the ledger row.
 const { poolInflowExchange, poolDrainK } = require('../config/cashPoolHelper');
-// v1.10.239 — HQ overdraft guard (book-scope currency exchanges only).
-const { checkHqOverdraft } = require('../config/perMethodBalanceHelper');
+// v1.10.239 / v1.10.240 — HQ overdraft guards (book-scope only).
+const { checkHqOverdraft, checkHqKSubDrawerOverdraft } = require('../config/perMethodBalanceHelper');
 let _masterDb = null;
 try { _masterDb = require('../config/masterDb').masterDb; } catch { /* offline */ }
 const HQ_HOSTS_CX = new Set(['sosnazm.com', 'www.sosnazm.com']);
@@ -225,6 +225,29 @@ router.post('/', auth, (req, res) => {
             available: breach.available,
             attempted: breach.requested,
           });
+        }
+        // v1.10.240 — K sub-drawer check. Only fires when K is being
+        // exchanged OUT and the caller picked a sub-drawer (K·Cash /
+        // K·Bank / K·MoMo). fromMethodClean captures that pick.
+        if (from_currency === 'K' && fromMethodClean) {
+          const subReq = { cash: 0, bank: 0, momo: 0 };
+          const subKey = fromMethodClean === 'Cash' ? 'cash'
+                       : fromMethodClean === 'Bank' ? 'bank'
+                       : 'momo';
+          subReq[subKey] = fromAmt;
+          const subBreach = checkHqKSubDrawerOverdraft(
+            db, req.user.tenantId,
+            subReq,
+            { masterDb: _masterDb, slug: 'sosnazm' },
+          );
+          if (subBreach) {
+            return res.status(400).json({
+              error: `Exchange exceeds ${subBreach.drawer} balance (available K${subBreach.available.toLocaleString(undefined, { maximumFractionDigits: 2 })}, attempting K${subBreach.requested.toLocaleString(undefined, { maximumFractionDigits: 2 })}). Pick a different K sub-drawer or reduce the amount.`,
+              drawer:    subBreach.drawer,
+              available: subBreach.available,
+              attempted: subBreach.requested,
+            });
+          }
         }
       }
     }
