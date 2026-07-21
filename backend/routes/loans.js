@@ -16,6 +16,11 @@ const { auth, readOnlyGuard } = require('../middleware/auth');
 const syncConfig = require('../config/syncConfig');
 const { recalculateDailyProfit } = require('../config/profitHelper');
 const { randomUUID } = require('crypto');
+// v1.10.241 — HQ overdraft guards. Principal/Interest are outflows.
+const { checkHqOverdraft, checkHqKSubDrawerOverdraft } = require('../config/perMethodBalanceHelper');
+let _masterDb = null;
+try { _masterDb = require('../config/masterDb').masterDb; } catch { /* offline */ }
+const HQ_HOSTS_LOAN = new Set(['sosnazm.com', 'www.sosnazm.com']);
 
 const VALID_TX_TYPES = ['Disbursement', 'Principal', 'Interest'];
 const VALID_STATUS   = ['Active', 'Paid Off', 'Defaulted'];
@@ -171,6 +176,40 @@ router.post('/:id/transactions', auth, (req, res) => {
     const loan = db.prepare('SELECT sync_id, status FROM loans WHERE id = ? AND tenant_id = ? AND deleted_at IS NULL').get(req.params.id, req.user.tenantId);
     if (!loan) return res.status(404).json({ error: 'Loan not found.' });
     if (loan.status === 'Paid Off') return res.status(400).json({ error: 'Loan is already paid off.' });
+
+    // v1.10.241 — HQ overdraft guard on Principal + Interest (both drain
+    // cash). Disbursement is inflow, skipped. cash/bank/momo are all K
+    // sub-drawers on HQ.
+    const hostLOAN = String(req.hostname || req.headers?.host || '').toLowerCase();
+    if ((type === 'Principal' || type === 'Interest') && HQ_HOSTS_LOAN.has(hostLOAN)) {
+      const tenantIdForGuard = syncConfig.getTenantId(req);
+      const breach = checkHqOverdraft(
+        db, tenantIdForGuard,
+        { usd: 0, fra: 0, k: total },
+        { masterDb: _masterDb, slug: 'sosnazm' },
+      );
+      if (breach) {
+        return res.status(400).json({
+          error: `${type} payment exceeds HQ K balance (available K${breach.available.toLocaleString(undefined, { maximumFractionDigits: 2 })}, attempting K${breach.requested.toLocaleString(undefined, { maximumFractionDigits: 2 })}). Reduce the amount.`,
+          currency:  breach.ccy,
+          available: breach.available,
+          attempted: breach.requested,
+        });
+      }
+      const subBreach = checkHqKSubDrawerOverdraft(
+        db, tenantIdForGuard,
+        { cash, bank, momo },
+        { masterDb: _masterDb, slug: 'sosnazm' },
+      );
+      if (subBreach) {
+        return res.status(400).json({
+          error: `${type} payment exceeds ${subBreach.drawer} balance (available K${subBreach.available.toLocaleString(undefined, { maximumFractionDigits: 2 })}, attempting K${subBreach.requested.toLocaleString(undefined, { maximumFractionDigits: 2 })}). Move some or all of the amount to a sub-drawer with more balance.`,
+          drawer:    subBreach.drawer,
+          available: subBreach.available,
+          attempted: subBreach.requested,
+        });
+      }
+    }
 
     const tenantId = syncConfig.getTenantId(req);
     const { branchId, deviceId } = syncConfig.getConfig();

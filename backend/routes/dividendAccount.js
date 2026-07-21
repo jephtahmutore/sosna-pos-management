@@ -9,6 +9,11 @@ const db = require('../config/database');
 const { auth, readOnlyGuard } = require('../middleware/auth');
 const syncConfig = require('../config/syncConfig');
 const { randomUUID } = require('crypto');
+// v1.10.241 — HQ overdraft guards. Dividends are always outflows.
+const { checkHqOverdraft, checkHqKSubDrawerOverdraft } = require('../config/perMethodBalanceHelper');
+let _masterDb = null;
+try { _masterDb = require('../config/masterDb').masterDb; } catch { /* offline */ }
+const HQ_HOSTS_DIV = new Set(['sosnazm.com', 'www.sosnazm.com']);
 
 // Resolve a shareholder_id (from frontend) into its sync_id for cross-device safety.
 function lookupShareholderSyncId(req, shareholder_id) {
@@ -78,6 +83,38 @@ router.post('/', auth, (req, res) => {
     const momo = parseFloat(momo_amount) || 0;
     const total = cash + bank + momo;
     if (!(total > 0)) return res.status(400).json({ error: 'Total amount must be greater than zero.' });
+
+    // v1.10.241 — HQ overdraft guard. cash/bank/momo are all K sub-drawers.
+    const hostDIV = String(req.hostname || req.headers?.host || '').toLowerCase();
+    if (HQ_HOSTS_DIV.has(hostDIV)) {
+      const tenantIdForGuard = syncConfig.getTenantId(req);
+      const breach = checkHqOverdraft(
+        db, tenantIdForGuard,
+        { usd: 0, fra: 0, k: total },
+        { masterDb: _masterDb, slug: 'sosnazm' },
+      );
+      if (breach) {
+        return res.status(400).json({
+          error: `Dividend exceeds HQ K balance (available K${breach.available.toLocaleString(undefined, { maximumFractionDigits: 2 })}, attempting K${breach.requested.toLocaleString(undefined, { maximumFractionDigits: 2 })}). Reduce the amount.`,
+          currency:  breach.ccy,
+          available: breach.available,
+          attempted: breach.requested,
+        });
+      }
+      const subBreach = checkHqKSubDrawerOverdraft(
+        db, tenantIdForGuard,
+        { cash, bank, momo },
+        { masterDb: _masterDb, slug: 'sosnazm' },
+      );
+      if (subBreach) {
+        return res.status(400).json({
+          error: `Dividend exceeds ${subBreach.drawer} balance (available K${subBreach.available.toLocaleString(undefined, { maximumFractionDigits: 2 })}, attempting K${subBreach.requested.toLocaleString(undefined, { maximumFractionDigits: 2 })}). Move some or all of the amount to a sub-drawer with more balance.`,
+          drawer:    subBreach.drawer,
+          available: subBreach.available,
+          attempted: subBreach.requested,
+        });
+      }
+    }
 
     const tenantId = syncConfig.getTenantId(req);
     const { branchId, deviceId } = syncConfig.getConfig();

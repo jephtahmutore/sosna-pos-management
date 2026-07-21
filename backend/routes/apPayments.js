@@ -5,6 +5,11 @@ const syncConfig = require('../config/syncConfig');
 const { randomUUID } = require('crypto');
 // v1.10.180 — Phase 2b: AP paid in K drains K from the pool.
 const { poolInflowNative, poolDrainK } = require('../config/cashPoolHelper');
+// v1.10.241 — HQ overdraft guards (per-currency + K sub-drawer).
+const { checkHqOverdraft, checkHqKSubDrawerOverdraft } = require('../config/perMethodBalanceHelper');
+let _masterDb = null;
+try { _masterDb = require('../config/masterDb').masterDb; } catch { /* offline */ }
+const HQ_HOSTS_AP = new Set(['sosnazm.com', 'www.sosnazm.com']);
 
 // GET /api/ap-payments
 router.get('/', auth, readOnlyGuard, (req, res) => {
@@ -53,6 +58,41 @@ router.post('/', auth, (req, res) => {
     const splitSum = cash + bank + momo;
     const total    = ccySum > 0 ? ccySum : (splitSum > 0 ? splitSum : (parseFloat(amount || 0) || 0));
     if (!(total > 0)) return res.status(400).json({ error: 'Amount is required.' });
+
+    // v1.10.241 — HQ overdraft guards. Same pattern as PV.
+    const hostAP = String(req.hostname || req.headers?.host || '').toLowerCase();
+    if (HQ_HOSTS_AP.has(hostAP)) {
+      const tenantIdForGuard = syncConfig.getTenantId(req);
+      const breach = checkHqOverdraft(
+        db, tenantIdForGuard,
+        { usd, fra, k: kAmt },
+        { masterDb: _masterDb, slug: 'sosnazm' },
+      );
+      if (breach) {
+        const symbol = breach.ccy === 'K' ? 'K' : breach.ccy === 'FRA' ? 'FRA ' : '$';
+        return res.status(400).json({
+          error: `AP payment exceeds HQ ${breach.ccy} balance (available ${symbol}${breach.available.toLocaleString(undefined, { maximumFractionDigits: 2 })}, attempting ${symbol}${breach.requested.toLocaleString(undefined, { maximumFractionDigits: 2 })}). Reduce the amount or pick a different currency.`,
+          currency:  breach.ccy,
+          available: breach.available,
+          attempted: breach.requested,
+        });
+      }
+      if (isHqTriCcy && kAmt > 0.0001) {
+        const subBreach = checkHqKSubDrawerOverdraft(
+          db, tenantIdForGuard,
+          { cash, bank, momo },
+          { masterDb: _masterDb, slug: 'sosnazm' },
+        );
+        if (subBreach) {
+          return res.status(400).json({
+            error: `AP payment exceeds ${subBreach.drawer} balance (available K${subBreach.available.toLocaleString(undefined, { maximumFractionDigits: 2 })}, attempting K${subBreach.requested.toLocaleString(undefined, { maximumFractionDigits: 2 })}). Move some or all of the K amount to a sub-drawer with more balance.`,
+            drawer:    subBreach.drawer,
+            available: subBreach.available,
+            attempted: subBreach.requested,
+          });
+        }
+      }
+    }
 
     // Derive a paid_from label for display when none provided.
     // v1.10.78 — prefer triple-currency label on HQ; fall back to method label.

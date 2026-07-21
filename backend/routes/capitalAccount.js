@@ -12,6 +12,11 @@ const db = require('../config/database');
 const { auth, readOnlyGuard } = require('../middleware/auth');
 const syncConfig = require('../config/syncConfig');
 const { randomUUID } = require('crypto');
+// v1.10.241 — HQ overdraft guards on Drawing (outflow). Injections skip.
+const { checkHqOverdraft, checkHqKSubDrawerOverdraft } = require('../config/perMethodBalanceHelper');
+let _masterDb = null;
+try { _masterDb = require('../config/masterDb').masterDb; } catch { /* offline */ }
+const HQ_HOSTS_CAP = new Set(['sosnazm.com', 'www.sosnazm.com']);
 
 const VALID_TYPES = ['Injection', 'Drawing'];
 
@@ -88,6 +93,40 @@ router.post('/', auth, (req, res) => {
     const momo = parseFloat(momo_amount) || 0;
     const total = cash + bank + momo;
     if (!(total > 0)) return res.status(400).json({ error: 'Total amount must be greater than zero.' });
+
+    // v1.10.241 — HQ overdraft guard on Drawing (owner withdrawing capital
+    // out of the business). Injection is inflow, skipped. cash/bank/momo
+    // are ALL K sub-drawers on HQ (capital_account has no USD/FRA columns).
+    const hostCAP = String(req.hostname || req.headers?.host || '').toLowerCase();
+    if (type === 'Drawing' && HQ_HOSTS_CAP.has(hostCAP)) {
+      const tenantIdForGuard = syncConfig.getTenantId(req);
+      const breach = checkHqOverdraft(
+        db, tenantIdForGuard,
+        { usd: 0, fra: 0, k: total },
+        { masterDb: _masterDb, slug: 'sosnazm' },
+      );
+      if (breach) {
+        return res.status(400).json({
+          error: `Drawing exceeds HQ K balance (available K${breach.available.toLocaleString(undefined, { maximumFractionDigits: 2 })}, attempting K${breach.requested.toLocaleString(undefined, { maximumFractionDigits: 2 })}). Reduce the amount.`,
+          currency:  breach.ccy,
+          available: breach.available,
+          attempted: breach.requested,
+        });
+      }
+      const subBreach = checkHqKSubDrawerOverdraft(
+        db, tenantIdForGuard,
+        { cash, bank, momo },
+        { masterDb: _masterDb, slug: 'sosnazm' },
+      );
+      if (subBreach) {
+        return res.status(400).json({
+          error: `Drawing exceeds ${subBreach.drawer} balance (available K${subBreach.available.toLocaleString(undefined, { maximumFractionDigits: 2 })}, attempting K${subBreach.requested.toLocaleString(undefined, { maximumFractionDigits: 2 })}). Move some or all of the amount to a sub-drawer with more balance.`,
+          drawer:    subBreach.drawer,
+          available: subBreach.available,
+          attempted: subBreach.requested,
+        });
+      }
+    }
 
     const tenantId = syncConfig.getTenantId(req);
     const { branchId, deviceId } = syncConfig.getConfig();
