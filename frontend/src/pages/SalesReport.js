@@ -1604,8 +1604,8 @@ const SalesReport = () => {
                         <span style={{ textAlign: 'center', flex: 1, textDecoration: item.reversed ? 'line-through' : 'none', fontWeight: partial ? 700 : 400 }}>
                           {netQty}{item.unit ? ` ${item.unit}` : ''}
                         </span>
-                        <span style={{ textAlign: 'right', flex: 1, textDecoration: item.reversed ? 'line-through' : 'none' }}>${(parseFloat(unitPx)||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</span>
-                        <span style={{ textAlign: 'right', flex: 1, textDecoration: item.reversed ? 'line-through' : 'none', fontWeight: partial ? 700 : 400 }}>${(parseFloat(netTotal)||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</span>
+                        <span style={{ textAlign: 'right', flex: 1, textDecoration: item.reversed ? 'line-through' : 'none' }}>{curSym}{(parseFloat(unitPx)||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</span>
+                        <span style={{ textAlign: 'right', flex: 1, textDecoration: item.reversed ? 'line-through' : 'none', fontWeight: partial ? 700 : 400 }}>{curSym}{(parseFloat(netTotal)||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</span>
                         {/* Per-item void button — hidden on print, and gated on PARTIAL_REVERSE_ENABLED. */}
                         <span className="sr-no-print" style={{ width: 28, display: 'flex', justifyContent: 'flex-end' }}>
                           {PARTIAL_REVERSE_ENABLED && !item.reversed && viewOrder.status !== 'Reversed' && (
@@ -1626,16 +1626,12 @@ const SalesReport = () => {
                           )}
                         </span>
                       </div>
-                      {/* Per-line adjustment sub-row — shown when this line had a
+                      {/* Per-line adjustment sub-row — shown when this line has a
                           discount OR surcharge applied. Same format as the thermal
-                          print.
-                          v1.10.106 — on Kassumbalesa (!isLiquorStyle), also print
-                          the sub-row when discount < 0 (that's a per-unit price
-                          markup via Change Price). Otherwise the receipt hides
-                          the markup and the summary "Total surcharge" number has
-                          no per-line detail to back it. Liquor branches keep
-                          the old markdown-only behavior. */}
-                      {((!isLiquorStyle && Math.abs(lineDisc) > 0.001) || lineDisc > 0) && (
+                          print. v1.10.231 — Liquor branches now also render the
+                          markup line (blue "surcharge") so the totals summary
+                          always has per-line detail behind it. */}
+                      {Math.abs(lineDisc) > 0.001 && (
                         <div key={`${idx}-disc`} style={{
                           display: 'flex', fontSize: 11,
                           color: lineDisc > 0 ? '#6b7280' : '#2563eb',
@@ -1643,12 +1639,12 @@ const SalesReport = () => {
                           opacity: item.reversed ? 0.5 : 1,
                         }}>
                           <span style={{ flex: 2, paddingLeft: 16 }}>
-                            {lineDisc > 0 ? 'discount' : 'surcharge'} {netQty}{item.unit ? ` ${item.unit}` : ''} × {lineDisc > 0 ? '-' : '+'}${Math.abs(parseFloat(lineDisc)||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}
+                            {lineDisc > 0 ? 'discount' : 'surcharge'} {netQty}{item.unit ? ` ${item.unit}` : ''} × {lineDisc > 0 ? '-' : '+'}{curSym}{Math.abs(parseFloat(lineDisc)||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}
                           </span>
                           <span style={{ flex: 1 }} />
                           <span style={{ flex: 1 }} />
                           <span style={{ flex: 1, textAlign: 'right' }}>
-                            {lineDiscTotal > 0 ? '-' : '+'}${Math.abs(parseFloat(lineDiscTotal)||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}
+                            {lineDiscTotal > 0 ? '-' : '+'}{curSym}{Math.abs(parseFloat(lineDiscTotal)||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}
                           </span>
                           <span className="sr-no-print" style={{ width: 28 }} />
                         </div>
@@ -1692,7 +1688,7 @@ const SalesReport = () => {
                       <div style={{ fontSize: 12 }}>
                         <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
                           <span style={{ color: '#6b7280' }}>Subtotal</span>
-                          <span>${(parseFloat(originalSubtotal)||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</span>
+                          <span>{curSym}{(parseFloat(originalSubtotal)||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</span>
                         </div>
                         {/* v1.8.57 — discount can be negative (= markup). Show
                             "Total discount" in red for + values, "Total surcharge"
@@ -1703,13 +1699,13 @@ const SalesReport = () => {
                               {originalDiscount > 0 ? 'Total discount' : 'Total surcharge'}
                             </span>
                             <span style={{ color: originalDiscount > 0 ? '#dc2626' : '#2563eb' }}>
-                              {originalDiscount > 0 ? '-' : '+'}${Math.abs(originalDiscount).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}
+                              {originalDiscount > 0 ? '-' : '+'}{curSym}{Math.abs(originalDiscount).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}
                             </span>
                           </div>
                         )}
                         <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8, paddingTop: 6, borderTop: '1px solid #e5e7eb', fontWeight: 700, fontSize: 14 }}>
                           <span>TOTAL</span>
-                          <span>${(parseFloat(originalTotal)||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</span>
+                          <span>{curSym}{(parseFloat(originalTotal)||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</span>
                         </div>
                         {/* Split breakdown: show each method line that has a value */}
                         {(() => {
@@ -1721,7 +1717,7 @@ const SalesReport = () => {
                             return (
                               <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
                                 <span style={{ color: '#6b7280' }}>Amount Received</span>
-                                <span>${(parseFloat(amountReceived)||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</span>
+                                <span>{curSym}{(parseFloat(amountReceived)||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</span>
                               </div>
                             );
                           }
@@ -1730,31 +1726,31 @@ const SalesReport = () => {
                               {cashIn > 0 && (
                                 <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 2 }}>
                                   <span style={{ color: '#6b7280' }}>Cash</span>
-                                  <span>${(parseFloat(cashIn)||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</span>
+                                  <span>{curSym}{(parseFloat(cashIn)||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</span>
                                 </div>
                               )}
                               {momoIn > 0 && (
                                 <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 2 }}>
                                   <span style={{ color: '#6b7280' }}>Mobile Money</span>
-                                  <span>${(parseFloat(momoIn)||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</span>
+                                  <span>{curSym}{(parseFloat(momoIn)||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</span>
                                 </div>
                               )}
                               {bankIn > 0 && (
                                 <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 2 }}>
                                   <span style={{ color: '#6b7280' }}>Bank</span>
-                                  <span>${(parseFloat(bankIn)||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</span>
+                                  <span>{curSym}{(parseFloat(bankIn)||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</span>
                                 </div>
                               )}
                               <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4, fontWeight: 700, borderTop: '1px dotted #e5e7eb', paddingTop: 3 }}>
                                 <span>Total Received</span>
-                                <span>${(parseFloat(amountReceived)||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</span>
+                                <span>{curSym}{(parseFloat(amountReceived)||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</span>
                               </div>
                             </>
                           );
                         })()}
                         <div style={{ display: 'flex', justifyContent: 'space-between', fontWeight: 600, color: '#16a34a' }}>
                           <span>Change at Till</span>
-                          <span>${(parseFloat(originalChange)||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</span>
+                          <span>{curSym}{(parseFloat(originalChange)||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</span>
                         </div>
 
                         {/* v1.8.51 — Credit / Partial-Credit sales: print the unpaid balance
@@ -1767,7 +1763,7 @@ const SalesReport = () => {
                           return (
                             <div style={{ display: 'flex', justifyContent: 'space-between', fontWeight: 800, color: '#b45309', borderTop: '1px solid #fde68a', marginTop: 6, paddingTop: 6, background: '#fef3c7', padding: '6px 10px', borderRadius: 4 }}>
                               <span>BALANCE ON CREDIT</span>
-                              <span>${owed.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</span>
+                              <span>{curSym}{owed.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</span>
                             </div>
                           );
                         })()}
@@ -1784,16 +1780,16 @@ const SalesReport = () => {
                                 <span style={{ color: '#374151' }}>
                                   {r.item.product_name} −{(parseFloat(Number(r.qty))||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})} {r.item.unit || ''}
                                 </span>
-                                <span style={{ color: '#b45309' }}>−${(parseFloat(r.amount)||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</span>
+                                <span style={{ color: '#b45309' }}>−{curSym}{(parseFloat(r.amount)||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</span>
                               </div>
                             ))}
                             <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 6, paddingTop: 6, borderTop: '1px solid #fde68a', fontWeight: 700, color: '#b45309' }}>
                               <span>Refund Owed</span>
-                              <span>${(parseFloat(totalRefund)||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</span>
+                              <span>{curSym}{(parseFloat(totalRefund)||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</span>
                             </div>
                             <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 8, paddingTop: 8, borderTop: '2px solid #111827', fontWeight: 800, fontSize: 14 }}>
                               <span>NET TOTAL</span>
-                              <span>${(parseFloat(netTotal)||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</span>
+                              <span>{curSym}{(parseFloat(netTotal)||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</span>
                             </div>
                           </>
                         )}
@@ -1975,7 +1971,7 @@ const SalesReport = () => {
                         <td colSpan={3} style={{ padding: '10px 12px', textAlign: 'right', color: '#374151' }}>Total</td>
                         <td style={{ padding: '10px 12px', textAlign: 'right' }}>{(parseFloat(breakdown.items.reduce((s, r) => s + parseFloat(r.quantity), 0))||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</td>
                         <td></td>
-                        <td style={{ padding: '10px 12px', textAlign: 'right', color: '#16a34a' }}>${(parseFloat(breakdown.items.reduce((s, r) => s + parseFloat(r.total_price), 0))||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</td>
+                        <td style={{ padding: '10px 12px', textAlign: 'right', color: '#16a34a' }}>{curSym}{(parseFloat(breakdown.items.reduce((s, r) => s + parseFloat(r.total_price), 0))||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</td>
                       </tr>
                     </tfoot>
                   </table>
