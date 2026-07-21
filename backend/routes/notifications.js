@@ -37,8 +37,17 @@ router.get('/badges', hqAuth, (req, res) => {
 
     // HQ-scope counts (returned regardless of slug so HQ sidebar badges
     // are always live whether or not a branch is currently picked).
+    // v1.10.242 — was counting status='GRN_SUBMITTED', a status name from a
+    // previous flow that no longer exists in the current pipeline. The
+    // Generate GRN page (HqConfirmGrn) actually reads /awaiting-generation
+    // which lists purchases with status='RECEIPT_REPORTED'. Match that so
+    // the sidebar badge fires the moment a branch confirms an incoming
+    // stock. Counting DISTINCT purchases matches the page's row shape
+    // (one card per purchase, not per line item).
     const hqPendingGrn = safeCount(() => masterDb.prepare(
-      `SELECT COUNT(*) AS n FROM hq_purchase_items WHERE status = 'GRN_SUBMITTED'`
+      `SELECT COUNT(DISTINCT purchase_sync_id) AS n
+         FROM hq_purchase_items
+        WHERE status = 'RECEIPT_REPORTED'`
     ).get()?.n);
     // Damages live per-branch — sum PENDING rows across every registered
     // tenant. Cheap (1 COUNT per branch, 3 branches today).
