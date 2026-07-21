@@ -911,7 +911,7 @@ router.get('/consolidated-profit', hqAuth, (req, res) => {
         const currency = isUsdBase ? 'USD' : 'K';
 
         const dailyRows = db.prepare(`
-          SELECT date, revenue, cogs, damages, gross_profit, net_profit
+          SELECT date, revenue, cogs, damages, gross_profit, pv_total, net_profit
             FROM daily_profit_summary
            WHERE date BETWEEN ? AND ?
         ORDER BY date
@@ -919,23 +919,24 @@ router.get('/consolidated-profit', hqAuth, (req, res) => {
         const byDate = new Map(dailyRows.map(r => [r.date, r]));
 
         const daily = [];
-        let sumRev = 0, sumCogs = 0, sumDam = 0, sumNetL = 0, sumNetU = 0;
+        let sumRev = 0, sumCogs = 0, sumGross = 0, sumPv = 0, sumNetL = 0, sumNetU = 0;
         for (const d of dates) {
           const r = byDate.get(d);
-          const revenue  = parseFloat(r?.revenue  || 0);
-          const cogs     = parseFloat(r?.cogs     || 0);
-          const damages  = parseFloat(r?.damages  || 0);
-          const netLocal = parseFloat(r?.net_profit || 0);
+          const revenue  = parseFloat(r?.revenue      || 0);
+          const cogs     = parseFloat(r?.cogs         || 0);
+          const gross    = parseFloat(r?.gross_profit || 0);
+          const pv       = parseFloat(r?.pv_total     || 0);
+          const netLocal = parseFloat(r?.net_profit   || 0);
           const fx = isUsdBase ? null : effectiveRate[d];
           const netUsd = isUsdBase ? netLocal : (fx ? netLocal / fx : 0);
-          daily.push({ date: d, revenue, cogs, damages, net_local: netLocal, net_usd: netUsd, fx_rate: fx });
-          sumRev += revenue; sumCogs += cogs; sumDam += damages;
+          daily.push({ date: d, revenue, cogs, gross, pv, net_local: netLocal, net_usd: netUsd, fx_rate: fx });
+          sumRev += revenue; sumCogs += cogs; sumGross += gross; sumPv += pv;
           sumNetL += netLocal; sumNetU += netUsd;
         }
 
         branches.push({
           slug: t.slug, name, currency,
-          totals: { revenue: sumRev, cogs: sumCogs, damages: sumDam, net_local: sumNetL, net_usd: sumNetU },
+          totals: { revenue: sumRev, cogs: sumCogs, gross: sumGross, pv: sumPv, net_local: sumNetL, net_usd: sumNetU },
           daily,
         });
       } catch (e) {

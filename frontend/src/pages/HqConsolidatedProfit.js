@@ -120,7 +120,8 @@ export default function HqConsolidatedProfit() {
                   <th style={th}>Branch</th>
                   <th style={{ ...th, textAlign: 'right' }}>Revenue</th>
                   <th style={{ ...th, textAlign: 'right' }}>COGS</th>
-                  <th style={{ ...th, textAlign: 'right' }}>Damages</th>
+                  <th style={{ ...th, textAlign: 'right' }}>Gross Profit</th>
+                  <th style={{ ...th, textAlign: 'right' }}>Expenses (PV)</th>
                   <th style={{ ...th, textAlign: 'right' }}>Net (local)</th>
                   <th style={{ ...th, textAlign: 'right' }}>Net (USD)</th>
                 </tr>
@@ -145,19 +146,21 @@ export default function HqConsolidatedProfit() {
                         </td>
                         <td style={numTd}>{localFmt(b.totals.revenue, b.currency)}</td>
                         <td style={numTd}>{localFmt(b.totals.cogs, b.currency)}</td>
-                        <td style={numTd}>{localFmt(b.totals.damages, b.currency)}</td>
+                        <td style={{ ...numTd, color: parseFloat(b.totals.gross) >= 0 ? '#047857' : '#b91c1c' }}>{localFmt(b.totals.gross, b.currency)}</td>
+                        <td style={{ ...numTd, color: '#b45309' }}>{localFmt(b.totals.pv, b.currency)}</td>
                         <td style={{ ...numTd, fontWeight: 700 }}>{localFmt(b.totals.net_local, b.currency)}</td>
                         <td style={{ ...numTd, fontWeight: 700, color: b.totals.net_usd >= 0 ? '#047857' : '#b91c1c' }}>{fmtSign(b.totals.net_usd)}{fmtUsd(Math.abs(b.totals.net_usd))}</td>
                       </tr>
                       {isOpen && b.daily
-                        .filter(d => (d.revenue || d.cogs || d.damages || d.net_local))
+                        .filter(d => (d.revenue || d.cogs || d.gross || d.pv || d.net_local))
                         .map(d => (
                         <tr key={`${b.slug}-${d.date}`} style={{ background: '#fafafa', borderBottom: '1px solid #f3f4f6' }}>
                           <td />
                           <td style={{ ...td, paddingLeft: 32, color: '#6b7280', fontFamily: 'monospace', fontSize: 12 }}>{d.date}</td>
                           <td style={{ ...numTd, color: '#6b7280' }}>{localFmt(d.revenue, b.currency)}</td>
                           <td style={{ ...numTd, color: '#6b7280' }}>{localFmt(d.cogs, b.currency)}</td>
-                          <td style={{ ...numTd, color: '#6b7280' }}>{localFmt(d.damages, b.currency)}</td>
+                          <td style={{ ...numTd, color: parseFloat(d.gross) >= 0 ? '#047857' : '#b91c1c' }}>{localFmt(d.gross, b.currency)}</td>
+                          <td style={{ ...numTd, color: '#b45309' }}>{localFmt(d.pv, b.currency)}</td>
                           <td style={{ ...numTd, color: '#374151' }}>{localFmt(d.net_local, b.currency)}</td>
                           <td style={{ ...numTd, color: '#374151' }}>
                             {fmtSign(d.net_usd)}{fmtUsd(Math.abs(d.net_usd))}
@@ -176,7 +179,7 @@ export default function HqConsolidatedProfit() {
                 <tr style={{ background: '#f9fafb', borderTop: '2px solid #e5e7eb' }}>
                   <td />
                   <td style={{ ...td, fontWeight: 700, color: '#0f172a' }}>Branch Net Total</td>
-                  <td colSpan={4} />
+                  <td colSpan={5} />
                   <td style={{ ...numTd, fontWeight: 800, color: '#047857' }}>{fmtSign(branchNetUsdTotal)}{fmtUsd(Math.abs(branchNetUsdTotal))}</td>
                 </tr>
                 {/* HQ overhead row — mixed currency, expand to see split */}
@@ -185,7 +188,7 @@ export default function HqConsolidatedProfit() {
                   <td style={{ ...td, color: '#b91c1c', fontWeight: 700 }}>
                     HQ Overhead <span style={{ fontWeight: 400, fontSize: 11, color: '#6b7280' }}>(PVs − LCVs)</span>
                   </td>
-                  <td colSpan={3} />
+                  <td colSpan={4} />
                   <td style={{ ...numTd, color: '#b91c1c', fontSize: 11.5, lineHeight: 1.7 }}>
                     {parseFloat(data.hq_overhead?.total_usd_amount || 0) > 0 && (<div>−{fmtUsd(data.hq_overhead.total_usd_amount)} <span style={{ fontSize: 9, color: '#9ca3af' }}>USD</span></div>)}
                     {parseFloat(data.hq_overhead?.total_fra_amount || 0) > 0 && (<div>−{parseFloat(data.hq_overhead.total_fra_amount).toLocaleString(undefined,{maximumFractionDigits:0})} <span style={{ fontSize: 9, color: '#9ca3af' }}>FRA</span></div>)}
@@ -199,7 +202,7 @@ export default function HqConsolidatedProfit() {
                 <tr style={{ background: '#ecfdf5', borderTop: '2px solid #059669' }}>
                   <td />
                   <td style={{ ...td, fontWeight: 800, fontSize: 15, color: '#065f46' }}>Group Net Profit</td>
-                  <td colSpan={4} />
+                  <td colSpan={5} />
                   <td style={{ ...numTd, fontWeight: 800, fontSize: 16, color: groupNet >= 0 ? '#065f46' : '#b91c1c' }}>
                     {fmtSign(groupNet)}{fmtUsd(Math.abs(groupNet))}
                   </td>
