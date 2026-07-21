@@ -6,6 +6,10 @@ const { randomUUID } = require('crypto');
 const { recalculateDailyProfit } = require('../config/profitHelper');
 // v1.10.180 — Phase 2b: PV with k_amount > 0 drains K from the pool.
 const { poolInflowNative, poolDrainK } = require('../config/cashPoolHelper');
+// v1.10.239 — HQ overdraft guard.
+const { checkHqOverdraft } = require('../config/perMethodBalanceHelper');
+let _masterDb = null;
+try { _masterDb = require('../config/masterDb').masterDb; } catch { /* offline */ }
 
 // Derive per-method splits from the voucher's paid_from string. Substring match
 // (paid_from is free text like "Main cashier", "Bank — FNB", "MTN MoMo") so
@@ -227,6 +231,27 @@ router.post('/', auth, (req, res) => {
         if (Math.abs(kAmt - subSum) > 0.01) {
           return res.status(400).json({ error: `K sub-drawer split (${subSum}) must equal K total (${kAmt}).` });
         }
+      }
+    }
+    // v1.10.239 — HQ overdraft guard on payment vouchers.
+    // Only fires on HQ host (Kassumbalesa's tri-currency drawer has its own
+    // per-currency reconciliation model and is left alone in this phase).
+    // Landed Cost Vouchers still drain cash even though they're absorbed
+    // into inventory WAC — guard them too so an LCV can't overdraft either.
+    if (HQ_HOSTS_PV.has(hostPV)) {
+      const breach = checkHqOverdraft(
+        db, tenantId,
+        { usd: usdAmt, fra: fraAmt, k: kAmt },
+        { masterDb: _masterDb, slug: 'sosnazm' },
+      );
+      if (breach) {
+        const symbol = breach.ccy === 'K' ? 'K' : breach.ccy === 'FRA' ? 'FRA ' : '$';
+        return res.status(400).json({
+          error: `Voucher exceeds HQ ${breach.ccy} balance (available ${symbol}${breach.available.toLocaleString(undefined, { maximumFractionDigits: 2 })}, attempting ${symbol}${breach.requested.toLocaleString(undefined, { maximumFractionDigits: 2 })}). Reduce the amount or pick a different currency.`,
+          currency:  breach.ccy,
+          available: breach.available,
+          attempted: breach.requested,
+        });
       }
     }
     const sumSplits = usdAmt + fraAmt + kAmt;

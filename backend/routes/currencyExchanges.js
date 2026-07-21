@@ -17,6 +17,11 @@ const syncConfig = require('../config/syncConfig');
 const { randomUUID } = require('crypto');
 // v1.10.180 — Phase 2b: pool counters update atomically with the ledger row.
 const { poolInflowExchange, poolDrainK } = require('../config/cashPoolHelper');
+// v1.10.239 — HQ overdraft guard (book-scope currency exchanges only).
+const { checkHqOverdraft } = require('../config/perMethodBalanceHelper');
+let _masterDb = null;
+try { _masterDb = require('../config/masterDb').masterDb; } catch { /* offline */ }
+const HQ_HOSTS_CX = new Set(['sosnazm.com', 'www.sosnazm.com']);
 
 const VALID_CURRENCIES = new Set(['USD', 'FRA', 'K']);
 
@@ -195,6 +200,34 @@ router.post('/', auth, (req, res) => {
     const rate = toAmt / fromAmt;
     const cfg = syncConfig.getConfig() || {};
     const sId = randomUUID();
+    // v1.10.239 — HQ overdraft guard on book-scope exchanges.
+    // A book-scope exchange drains the from_currency drawer, so reject if
+    // the current HQ balance in that currency is less than from_amount.
+    // Drawer scope (per-cashier till) is unaffected — it has its own daily
+    // Cash Report reconciliation and shouldn't false-reject legitimate mid-
+    // day exchanges made from a positive till that hasn't been booked yet.
+    if (scope === 'book') {
+      const host = String(req.hostname || req.headers?.host || '').toLowerCase();
+      if (HQ_HOSTS_CX.has(host)) {
+        const requested = { usd: 0, fra: 0, k: 0 };
+        const key = from_currency === 'USD' ? 'usd' : from_currency === 'FRA' ? 'fra' : 'k';
+        requested[key] = fromAmt;
+        const breach = checkHqOverdraft(
+          db, req.user.tenantId,
+          requested,
+          { masterDb: _masterDb, slug: 'sosnazm' },
+        );
+        if (breach) {
+          const symbol = breach.ccy === 'K' ? 'K' : breach.ccy === 'FRA' ? 'FRA ' : '$';
+          return res.status(400).json({
+            error: `Exchange exceeds HQ ${breach.ccy} balance (available ${symbol}${breach.available.toLocaleString(undefined, { maximumFractionDigits: 2 })}, attempting ${symbol}${breach.requested.toLocaleString(undefined, { maximumFractionDigits: 2 })}). Reduce the amount or exchange from a different currency.`,
+            currency:  breach.ccy,
+            available: breach.available,
+            attempted: breach.requested,
+          });
+        }
+      }
+    }
     // v1.10.135 — only accept from_method/to_method for the corresponding K
     // side. Any value passed for a non-K side is discarded so a stray client
     // never poisons the sub-drawer attribution.
