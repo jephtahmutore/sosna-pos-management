@@ -943,43 +943,107 @@ router.get('/consolidated-profit', hqAuth, (req, res) => {
       }
     }
 
-    // HQ Overhead — payment_vouchers on defaultDb, excluding LCVs. Amounts
-    // treated as K (Sosna HQ is Zambia-based); if HQ ever operates in USD
-    // this becomes a business_settings.currency_mode read.
-    const hqCurrency = 'K';
-    let hqDailyRows = [];
-    try {
-      hqDailyRows = defaultDb.prepare(`
-        SELECT date, COALESCE(SUM(amount), 0) AS pv_total
-          FROM payment_vouchers
-         WHERE deleted_at IS NULL
-           AND (is_landed_cost IS NULL OR is_landed_cost = 0)
-           AND date BETWEEN ? AND ?
-      GROUP BY date
-      `).all(from, to);
-    } catch (e) {
-      // Older HQ mirror DB with no deleted_at column — fall back.
+    // HQ Overhead — payment_vouchers on defaultDb, excluding LCVs. PVs are
+    // stored per-currency (usd_amount / fra_amount / k_amount) since HQ is
+    // effectively tri-currency (deposits arrive from every branch). We sum
+    // each column, then convert to USD:
+    //   - usd_amount stays as-is
+    //   - k_amount   ÷ effectiveRate (K/USD, day-specific)
+    //   - fra_amount ÷ effectiveFraRate (FRA/USD, day-specific — from
+    //                                     Kassumbalesa fx_rates.sell_rate)
+    // Legacy fallback: if a PV has all three currency columns at 0 but the
+    // legacy `amount` column populated, treat it as K.
+    // Fetch a FRA per-day rate map from Kassumbalesa's fx_rates.
+    const fraByDate = {};
+    let priorFra = null;
+    if (kassSlug) {
       try {
-        hqDailyRows = defaultDb.prepare(`
-          SELECT date, COALESCE(SUM(amount), 0) AS pv_total
-            FROM payment_vouchers
-           WHERE (is_landed_cost IS NULL OR is_landed_cost = 0)
-             AND date BETWEEN ? AND ?
-        GROUP BY date
+        const kdb = getTenantDb(kassSlug);
+        const rows = kdb.prepare(`
+          SELECT effective_date AS d,
+                 sell_rate      AS rate
+            FROM fx_rates
+           WHERE effective_date BETWEEN ? AND ?
+             AND sell_rate > 0
+        ORDER BY effective_date, id
         `).all(from, to);
+        for (const r of rows) fraByDate[r.d] = parseFloat(r.rate) || null;
+        const prior = tryGet(kdb, `
+          SELECT sell_rate AS rate
+            FROM fx_rates
+           WHERE effective_date < ?
+             AND sell_rate > 0
+        ORDER BY effective_date DESC, id DESC
+           LIMIT 1
+        `, from);
+        if (prior?.rate) priorFra = parseFloat(prior.rate) || null;
+      } catch (e) {
+        console.error(`[hq.consolidated-profit] FRA fx from ${kassSlug}:`, e.message);
+      }
+    }
+    const effectiveFraRate = {};
+    {
+      let last = priorFra;
+      for (const d of dates) {
+        if (fraByDate[d] != null) last = fraByDate[d];
+        effectiveFraRate[d] = last;
+      }
+    }
+
+    let hqDailyRows = [];
+    const hqSelect = (extraWhere) => `
+      SELECT date,
+             COALESCE(SUM(usd_amount), 0) AS usd_total,
+             COALESCE(SUM(fra_amount), 0) AS fra_total,
+             COALESCE(SUM(k_amount),   0) AS k_total,
+             COALESCE(SUM(amount),     0) AS legacy_total,
+             COALESCE(SUM(COALESCE(usd_amount,0) + COALESCE(fra_amount,0) + COALESCE(k_amount,0)), 0) AS split_total
+        FROM payment_vouchers
+       WHERE ${extraWhere}
+         AND (is_landed_cost IS NULL OR is_landed_cost = 0)
+         AND date BETWEEN ? AND ?
+    GROUP BY date
+    `;
+    try {
+      hqDailyRows = defaultDb.prepare(hqSelect('deleted_at IS NULL')).all(from, to);
+    } catch (e) {
+      try {
+        hqDailyRows = defaultDb.prepare(hqSelect('1=1')).all(from, to);
       } catch (e2) {
         console.error('[hq.consolidated-profit] HQ PVs read failed:', e2.message);
       }
     }
-    const hqByDate = new Map(hqDailyRows.map(r => [r.date, parseFloat(r.pv_total || 0)]));
+    const hqByDate = new Map(hqDailyRows.map(r => [r.date, r]));
     const hqDaily = [];
-    let hqSumLocal = 0, hqSumUsd = 0;
+    let hqSumUsdAmt = 0, hqSumFraAmt = 0, hqSumKAmt = 0, hqSumUsd = 0;
     for (const d of dates) {
-      const local = hqByDate.get(d) || 0;
-      const fx = effectiveRate[d];
-      const usd = hqCurrency === 'K' ? (fx ? local / fx : 0) : local;
-      hqDaily.push({ date: d, local, usd, fx_rate: fx });
-      hqSumLocal += local; hqSumUsd += usd;
+      const r = hqByDate.get(d);
+      const usdAmt   = parseFloat(r?.usd_total   || 0);
+      const fraAmt   = parseFloat(r?.fra_total   || 0);
+      let   kAmt     = parseFloat(r?.k_total     || 0);
+      const splitAmt = parseFloat(r?.split_total || 0);
+      const legacy   = parseFloat(r?.legacy_total || 0);
+      // Legacy fallback: if per-currency splits are all 0 but `amount` is
+      // populated, treat it as K.
+      if (splitAmt < 0.001 && legacy > 0) kAmt = legacy;
+      const fxK   = effectiveRate[d];
+      const fxFra = effectiveFraRate[d];
+      const usdFromK   = fxK   ? kAmt   / fxK   : 0;
+      const usdFromFra = fxFra ? fraAmt / fxFra : 0;
+      const usdDay = usdAmt + usdFromK + usdFromFra;
+      hqDaily.push({
+        date: d,
+        usd_amount: usdAmt,
+        fra_amount: fraAmt,
+        k_amount:   kAmt,
+        usd:        usdDay,
+        fx_k_rate:  fxK,
+        fx_fra_rate: fxFra,
+      });
+      hqSumUsdAmt += usdAmt;
+      hqSumFraAmt += fraAmt;
+      hqSumKAmt   += kAmt;
+      hqSumUsd    += usdDay;
     }
 
     const branchNetUsd = branches.reduce((s, b) => s + b.totals.net_usd, 0);
@@ -992,10 +1056,11 @@ router.get('/consolidated-profit', hqAuth, (req, res) => {
       warnings,
       branches,
       hq_overhead: {
-        currency: hqCurrency,
-        total_local: hqSumLocal,
-        total_usd: hqSumUsd,
-        daily: hqDaily,
+        total_usd_amount: hqSumUsdAmt,
+        total_fra_amount: hqSumFraAmt,
+        total_k_amount:   hqSumKAmt,
+        total_usd:        hqSumUsd,
+        daily:            hqDaily,
       },
       group_net_usd: groupNetUsd,
     });

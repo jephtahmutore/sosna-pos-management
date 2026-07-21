@@ -179,14 +179,19 @@ export default function HqConsolidatedProfit() {
                   <td colSpan={4} />
                   <td style={{ ...numTd, fontWeight: 800, color: '#047857' }}>{fmtSign(branchNetUsdTotal)}{fmtUsd(Math.abs(branchNetUsdTotal))}</td>
                 </tr>
-                {/* HQ overhead row */}
+                {/* HQ overhead row — mixed currency, expand to see split */}
                 <tr style={{ borderTop: '1px solid #e5e7eb' }}>
                   <td />
                   <td style={{ ...td, color: '#b91c1c', fontWeight: 700 }}>
                     HQ Overhead <span style={{ fontWeight: 400, fontSize: 11, color: '#6b7280' }}>(PVs − LCVs)</span>
                   </td>
                   <td colSpan={3} />
-                  <td style={{ ...numTd, color: '#b91c1c' }}>−{fmtK(data.hq_overhead?.total_local)}</td>
+                  <td style={{ ...numTd, color: '#b91c1c', fontSize: 11.5, lineHeight: 1.7 }}>
+                    {parseFloat(data.hq_overhead?.total_usd_amount || 0) > 0 && (<div>−{fmtUsd(data.hq_overhead.total_usd_amount)} <span style={{ fontSize: 9, color: '#9ca3af' }}>USD</span></div>)}
+                    {parseFloat(data.hq_overhead?.total_fra_amount || 0) > 0 && (<div>−{parseFloat(data.hq_overhead.total_fra_amount).toLocaleString(undefined,{maximumFractionDigits:0})} <span style={{ fontSize: 9, color: '#9ca3af' }}>FRA</span></div>)}
+                    {parseFloat(data.hq_overhead?.total_k_amount || 0) > 0 && (<div>−{fmtK(data.hq_overhead.total_k_amount)}</div>)}
+                    {(!parseFloat(data.hq_overhead?.total_usd_amount || 0) && !parseFloat(data.hq_overhead?.total_fra_amount || 0) && !parseFloat(data.hq_overhead?.total_k_amount || 0)) && <div style={{ color: '#9ca3af' }}>—</div>}
+                  </td>
                   <td style={{ ...numTd, color: '#b91c1c', fontWeight: 700 }}>−{fmtUsd(data.hq_overhead?.total_usd)}</td>
                 </tr>
               </tbody>
