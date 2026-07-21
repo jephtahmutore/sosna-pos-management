@@ -96,8 +96,16 @@ const AccountPayables = () => {
     setEditSaving(true);
     setEditError('');
     try {
+      // v1.10.230 — send k_amount alongside amount so the Cash Book (which
+      // reads AP payments from k_amount, not amount) reflects the edit.
+      // Inline edit only changes the total number; we treat the whole
+      // payment as K here — matches the current inline-edit surface which
+      // doesn't expose the tri-currency mix. If a full mix edit is needed,
+      // it should use the ApPaymentFormModal (POST) flow, not this inline row.
+      const newAmt = parseFloat(editingPayment.amount);
       await updateApPayment(editingPayment.id, {
-        amount: parseFloat(editingPayment.amount),
+        amount: newAmt,
+        k_amount: newAmt,
         date: editingPayment.date,
         description: editingPayment.description,
         paid_from: editingPayment.paid_from,

@@ -108,17 +108,57 @@ router.post('/', auth, (req, res) => {
 });
 
 // PUT /api/ap-payments/:id — supports split amounts on edit too.
+// v1.10.230 — Cash Book bug fix.
+//   Prior versions only wrote cash/bank/momo/amount on edit — k_amount,
+//   usd_amount and fra_amount were silently dropped. Cash Book reads
+//   payments from k_amount/usd_amount/fra_amount, so edits appeared
+//   in Account Payables but never in Cash Book. Now:
+//     • Accepts the triple-currency fields (matches POST shape).
+//     • Applies a K-pool delta so a K-payment edit refunds or drains
+//       the pool by the difference — same accounting invariant as
+//       POST (drain new) and DELETE (refund old).
 router.put('/:id', auth, (req, res) => {
   try {
-    const { cash_amount, bank_amount, momo_amount, amount, date, description, paid_from, invoice_attachment } = req.body;
+    const { cash_amount, bank_amount, momo_amount,
+            usd_amount, fra_amount, k_amount,
+            amount, date, description, paid_from, invoice_attachment } = req.body;
     const cash = parseFloat(cash_amount || 0) || 0;
     const bank = parseFloat(bank_amount || 0) || 0;
     const momo = parseFloat(momo_amount || 0) || 0;
+    const usd  = parseFloat(usd_amount  || 0) || 0;
+    const fra  = parseFloat(fra_amount  || 0) || 0;
+    // Same HQ-vs-Liquor shape detection used in POST: presence of usd_amount
+    // OR fra_amount in the body (even zero) means the caller is HQ tri-ccy.
+    // On HQ: k_amount = cash + bank + momo (K sub-methods). On Liquor:
+    // legacy path where cash/bank/momo ARE the K sub-methods of a K-only branch.
+    const isHqTriCcy = (usd_amount !== undefined || fra_amount !== undefined);
+    const kAmt = isHqTriCcy
+      ? (cash + bank + momo)
+      : (parseFloat(k_amount || 0) || 0);
+    const ccySum   = usd + fra + kAmt;
     const splitSum = cash + bank + momo;
-    const total    = splitSum > 0 ? splitSum : (parseFloat(amount || 0) || 0);
+    const total    = ccySum > 0 ? ccySum : (splitSum > 0 ? splitSum : (parseFloat(amount || 0) || 0));
     if (!(total > 0)) return res.status(400).json({ error: 'Amount is required.' });
 
+    // Fetch the OLD k_amount before we clobber it — we need it for the
+    // pool delta. Also verify the row exists / isn't deleted.
+    const existing = db.prepare('SELECT k_amount FROM ap_payments WHERE id = ? AND deleted_at IS NULL').get(req.params.id);
+    if (!existing) return res.status(404).json({ error: 'AP payment not found.' });
+    const oldK = parseFloat(existing.k_amount) || 0;
+
     const derivedPaidFrom = paid_from || (() => {
+      if (isHqTriCcy) {
+        const used = [
+          usd  > 0 && 'USD',
+          fra  > 0 && 'FRA',
+          cash > 0 && 'K · Cash',
+          bank > 0 && 'K · Bank',
+          momo > 0 && 'K · MoMo',
+        ].filter(Boolean);
+        if (used.length === 0) return 'Main cashier';
+        if (used.length === 1) return used[0];
+        return 'Mixed';
+      }
       const used = [cash > 0 && 'Cash', bank > 0 && 'Bank', momo > 0 && 'Mobile Money'].filter(Boolean);
       if (used.length === 1) return used[0];
       if (used.length > 1)   return 'Mixed';
@@ -128,12 +168,29 @@ router.put('/:id', auth, (req, res) => {
     // invoice_attachment: pass null to clear, omit to keep existing.
     const keepAttachment = invoice_attachment === undefined;
     const sql = keepAttachment
-      ? `UPDATE ap_payments SET amount=?, cash_amount=?, bank_amount=?, momo_amount=?, date=?, description=?, paid_from=?, synced=0, updated_at=datetime('now') WHERE id=? AND deleted_at IS NULL`
-      : `UPDATE ap_payments SET amount=?, cash_amount=?, bank_amount=?, momo_amount=?, date=?, description=?, paid_from=?, invoice_attachment=?, synced=0, updated_at=datetime('now') WHERE id=? AND deleted_at IS NULL`;
+      ? `UPDATE ap_payments SET amount=?, cash_amount=?, bank_amount=?, momo_amount=?,
+                                usd_amount=?, fra_amount=?, k_amount=?,
+                                date=?, description=?, paid_from=?, synced=0, updated_at=datetime('now')
+          WHERE id=? AND deleted_at IS NULL`
+      : `UPDATE ap_payments SET amount=?, cash_amount=?, bank_amount=?, momo_amount=?,
+                                usd_amount=?, fra_amount=?, k_amount=?,
+                                date=?, description=?, paid_from=?, invoice_attachment=?, synced=0, updated_at=datetime('now')
+          WHERE id=? AND deleted_at IS NULL`;
     const args = keepAttachment
-      ? [total, cash, bank, momo, date, description || null, derivedPaidFrom, req.params.id]
-      : [total, cash, bank, momo, date, description || null, derivedPaidFrom, invoice_attachment || null, req.params.id];
-    db.prepare(sql).run(...args);
+      ? [total, cash, bank, momo, usd, fra, kAmt, date, description || null, derivedPaidFrom, req.params.id]
+      : [total, cash, bank, momo, usd, fra, kAmt, date, description || null, derivedPaidFrom, invoice_attachment || null, req.params.id];
+
+    db.transaction(() => {
+      db.prepare(sql).run(...args);
+      // K-pool delta: new K − old K.
+      //   positive delta (new > old) → drain more K from the pool
+      //   negative delta (new < old) → refund the reduction back to the pool
+      //   zero delta                → no pool touch
+      const delta = kAmt - oldK;
+      if (delta > 0)      poolDrainK(db, delta);
+      else if (delta < 0) poolInflowNative(db, -delta);
+    })();
+
     res.json(db.prepare('SELECT * FROM ap_payments WHERE id=?').get(req.params.id));
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
