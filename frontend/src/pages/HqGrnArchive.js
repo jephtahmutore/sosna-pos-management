@@ -11,7 +11,15 @@ import { FiRefreshCw, FiEye, FiInbox, FiX, FiPaperclip, FiUser, FiClock, FiFileT
 import { getHqGrnArchive, getHqGrn, getHqGrnDetail, getHqBranches, getHqSuppliers, voidHqGrn, editHqGrn } from '../services/api';
 import AdminPasswordPrompt from '../components/AdminPasswordPrompt';
 
-const fmtMoney = (n) => `$${parseFloat(n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+// v1.10.238 — every GRN carries its cost_currency (USD | K); prior fmtMoney
+// hardcoded '$' so Zambia branch GRNs displayed as dollars and the rollup
+// stats summed mixed currencies as one number. Formatter now picks the
+// symbol per row and stats render one line per active currency bucket.
+const fmtNum      = (n) => parseFloat(n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const fmtMoneyCcy = (n, ccy) => `${ccy === 'K' ? 'K' : '$'}${fmtNum(n)}`;
+// Legacy call sites (order detail modal, edit modal etc.) keep the previous
+// signature and default to '$' for now; they'll get their own currency pass.
+const fmtMoney    = (n) => fmtMoneyCcy(n, 'USD');
 const todayISO = () => new Date().toISOString().slice(0, 10);
 const monthAgoISO = () => {
   const d = new Date();
@@ -21,7 +29,7 @@ const monthAgoISO = () => {
 
 export default function HqGrnArchive() {
   const [rows, setRows]       = useState([]);
-  const [totals, setTotals]   = useState({ count: 0, subtotal: 0, cn: 0, payable: 0 });
+  const [totals, setTotals]   = useState({ count: 0, by_ccy: {} });
   const [branches, setBranches] = useState([]);
   const [suppliers, setSuppliers] = useState([]);
   const [branch, setBranch]   = useState('all');
@@ -37,7 +45,7 @@ export default function HqGrnArchive() {
     try {
       const res = await getHqGrnArchive({ branch, supplier, from, to });
       setRows(res.data?.grns || []);
-      setTotals(res.data?.totals || { count: 0, subtotal: 0, cn: 0, payable: 0 });
+      setTotals(res.data?.totals || { count: 0, by_ccy: {} });
     } catch (err) {
       setError(err?.response?.data?.error || 'Failed to load.');
     }
@@ -111,13 +119,29 @@ export default function HqGrnArchive() {
         </div>
       </div>
 
-      {/* Roll-up cards */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12, marginBottom: 14 }}>
-        <Card label="GRNs"          value={totals.count.toLocaleString()} color="#0ea5e9" />
-        <Card label="Items Subtotal" value={fmtMoney(totals.subtotal)}     color="#0f172a" />
-        <Card label="Credit Notes"   value={`−${fmtMoney(totals.cn)}`}     color="#dc2626" />
-        <Card label="Final Payable"  value={fmtMoney(totals.payable)}      color="#16a34a" big />
-      </div>
+      {/* Roll-up cards — one card per active currency bucket. Mixed-currency
+          ranges (Kassumbalesa USD + Lusaka/Mansa K) never sum as one number. */}
+      {(() => {
+        const activeCcy = ['USD', 'K'].filter(c => totals.by_ccy?.[c]?.count > 0);
+        // Fall back to a single zero row so the layout stays predictable when
+        // nothing matches the filters.
+        const rows = activeCcy.length > 0 ? activeCcy : ['USD'];
+        return (
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12, marginBottom: 14 }}>
+            <Card label="GRNs" value={totals.count.toLocaleString()} color="#0ea5e9" />
+            {rows.map(c => {
+              const b = totals.by_ccy?.[c] || { subtotal: 0, cn: 0, payable: 0 };
+              return (
+                <React.Fragment key={c}>
+                  <Card label={`Items Subtotal (${c})`} value={fmtMoneyCcy(b.subtotal, c)}         color="#0f172a" />
+                  <Card label={`Credit Notes (${c})`}   value={`−${fmtMoneyCcy(b.cn, c)}`}         color="#dc2626" />
+                  <Card label={`Final Payable (${c})`}  value={fmtMoneyCcy(b.payable, c)}          color="#16a34a" big />
+                </React.Fragment>
+              );
+            })}
+          </div>
+        );
+      })()}
 
       {error && (
         <div style={{ padding: 14, background: '#fef2f2', color: '#991b1b', border: '1px solid #fecaca', borderRadius: 8, marginBottom: 12 }}>{error}</div>
@@ -148,7 +172,9 @@ export default function HqGrnArchive() {
                 </tr>
               </thead>
               <tbody>
-                {rows.map(g => (
+                {rows.map(g => {
+                  const ccy = g.cost_currency || 'K';
+                  return (
                   <tr key={g.grn_sync_id} style={{ borderTop: '1px solid #f1f5f9' }}>
                     <td style={td}>{g.date}</td>
                     <td style={{ ...td, fontFamily: 'monospace', fontSize: 12, fontWeight: 700 }}>{g.grn_number}</td>
@@ -157,9 +183,9 @@ export default function HqGrnArchive() {
                     <td style={td}>{g.supplier_name || '—'}</td>
                     <td style={td}>{g.invoice_number || '—'}</td>
                     <td style={{ ...td, textAlign: 'right' }}>{g.items_count}</td>
-                    <td style={{ ...td, textAlign: 'right' }}>{fmtMoney(g.items_subtotal)}</td>
-                    <td style={{ ...td, textAlign: 'right', color: g.cn_total > 0 ? '#dc2626' : '#94a3b8' }}>{g.cn_total > 0 ? `−${fmtMoney(g.cn_total)}` : '—'}</td>
-                    <td style={{ ...td, textAlign: 'right', fontWeight: 700, color: '#16a34a' }}>{fmtMoney(g.final_payable)}</td>
+                    <td style={{ ...td, textAlign: 'right' }}>{fmtMoneyCcy(g.items_subtotal, ccy)}</td>
+                    <td style={{ ...td, textAlign: 'right', color: g.cn_total > 0 ? '#dc2626' : '#94a3b8' }}>{g.cn_total > 0 ? `−${fmtMoneyCcy(g.cn_total, ccy)}` : '—'}</td>
+                    <td style={{ ...td, textAlign: 'right', fontWeight: 700, color: '#16a34a' }}>{fmtMoneyCcy(g.final_payable, ccy)}</td>
                     <td style={{ ...td, fontSize: 11, color: '#64748b' }}>
                       {g.confirmed_at ? new Date(g.confirmed_at).toLocaleString() : '—'}
                       {g.confirmed_by_name ? <div style={{ color: '#94a3b8' }}>{g.confirmed_by_name}</div> : null}
@@ -171,7 +197,8 @@ export default function HqGrnArchive() {
                       </button>
                     </td>
                   </tr>
-                ))}
+                );
+                })}
               </tbody>
             </table>
           </div>

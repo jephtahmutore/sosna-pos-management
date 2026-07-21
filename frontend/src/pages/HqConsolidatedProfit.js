@@ -72,7 +72,7 @@ export default function HqConsolidatedProfit() {
         <button
           onClick={load}
           disabled={loading}
-          style={{ padding: '9px 16px', background: '#059669', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer', fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: 6 }}
+          style={{ padding: '9px 16px', background: '#0ea5e9', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer', fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: 6 }}
         >
           <FiRefreshCw /> {loading ? 'Loading…' : 'Run'}
         </button>
@@ -95,8 +95,8 @@ export default function HqConsolidatedProfit() {
 
       {data && (
         <>
-          {/* Headline tile */}
-          <div style={{ background: 'linear-gradient(135deg,#065f46,#047857)', color: '#fff', borderRadius: 12, padding: '22px 24px', marginBottom: 16, display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 12 }}>
+          {/* Headline tile — sky-blue to match HQ chrome */}
+          <div style={{ background: 'linear-gradient(135deg,#075985,#0369a1)', color: '#fff', borderRadius: 12, padding: '22px 24px', marginBottom: 16, display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 12 }}>
             <div>
               <div style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: 1, opacity: 0.8, fontWeight: 700 }}>Group Net Profit</div>
               <div style={{ fontSize: 30, fontWeight: 800, marginTop: 2 }}>{fmtSign(groupNet)}{fmtUsd(Math.abs(groupNet))}</div>
@@ -137,7 +137,7 @@ export default function HqConsolidatedProfit() {
                         style={{ borderBottom: '1px solid #f3f4f6', cursor: 'pointer' }}
                         onClick={() => toggle(b.slug)}
                       >
-                        <td style={{ ...td, textAlign: 'center', color: '#059669' }}>
+                        <td style={{ ...td, textAlign: 'center', color: '#0ea5e9' }}>
                           {isOpen ? <FiChevronDown /> : <FiChevronRight />}
                         </td>
                         <td style={{ ...td, fontWeight: 700 }}>

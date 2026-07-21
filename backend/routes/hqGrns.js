@@ -26,6 +26,7 @@ const jwt = require('jsonwebtoken');
 const { randomUUID } = require('crypto');
 const { listTenants, isRegistered, masterDb } = require('../config/masterDb');
 const { getTenantDb } = require('../config/tenantDb');
+const { defaultDb }   = require('../config/database');
 const { conversionToBase } = require('../config/unitsHelper');
 
 function hqAuth(req, res, next) {
@@ -1008,6 +1009,7 @@ router.get('/archive', hqAuth, (req, res) => {
         items_subtotal, cn_total, final_payable,
         invoice_number, NULL AS invoice_attachment,
         confirmed_by, confirmed_by_name, confirmed_at, notes,
+        NULL AS cost_currency,
         'legacy' AS source
       FROM hq_confirmed_grn_totals
       WHERE ${legacyWhere.join(' AND ')}
@@ -1018,11 +1020,21 @@ router.get('/archive', hqAuth, (req, res) => {
     const newWhere = ['deleted_at IS NULL'];
     const newParams = [];
     if (branch && branch !== 'all')     { newWhere.push('branch_slug = ?');  newParams.push(branch); }
-    // hq_grns has no supplier_sync_id column — filter by supplier_id if the
-    // caller sent an integer, else fall back to a name-match against
-    // hq_confirmed_grn_totals's supplier_name for the same sync_id.
+    // v1.10.238 — supplier filter fix. Prior code only looked up
+    // supplier_sync_id in hq_confirmed_grn_totals (a legacy table).
+    // Suppliers that only appear in new-flow hq_grns had no row there,
+    // so the lookup returned nothing and the query was gated on 1=0 → 0 rows.
+    // Fix: resolve the name via the authoritative HQ suppliers table
+    // (defaultDb.suppliers, which is what the dropdown reads from).
+    // Fall through to the legacy table if not found.
     if (supplier && supplier !== 'all') {
-      const supName = masterDb.prepare(`SELECT supplier_name FROM hq_confirmed_grn_totals WHERE supplier_sync_id = ? LIMIT 1`).get(supplier)?.supplier_name;
+      let supName = null;
+      try {
+        supName = defaultDb.prepare(`SELECT name FROM suppliers WHERE sync_id = ? LIMIT 1`).get(supplier)?.name;
+      } catch { /* ignore */ }
+      if (!supName) {
+        supName = masterDb.prepare(`SELECT supplier_name FROM hq_confirmed_grn_totals WHERE supplier_sync_id = ? LIMIT 1`).get(supplier)?.supplier_name;
+      }
       if (supName) { newWhere.push('supplier_name = ?'); newParams.push(supName); }
       else         { newWhere.push('1 = 0'); }
     }
@@ -1040,6 +1052,7 @@ router.get('/archive', hqAuth, (req, res) => {
         g.generated_by_hq_name AS confirmed_by_name,
         g.generated_at AS confirmed_at,
         g.notes,
+        UPPER(COALESCE(NULLIF(g.cost_currency, ''), 'K')) AS cost_currency,
         'hq' AS source
       FROM hq_grns g
       WHERE ${newWhere.join(' AND ')}
@@ -1051,17 +1064,41 @@ router.get('/archive', hqAuth, (req, res) => {
     const bySyncId = new Map();
     for (const r of legacyRows) bySyncId.set(r.grn_sync_id, r);
     for (const r of newRows)    bySyncId.set(r.grn_sync_id, r);
+    // Per-branch currency lookup so legacy rows (which have no cost_currency
+    // column) still tag correctly. Cached to avoid opening every tenant DB
+    // repeatedly.
+    const branchCcy = {};
+    const branchCurrencyFor = (slug) => {
+      if (slug in branchCcy) return branchCcy[slug];
+      try {
+        const bDb = getTenantDb(slug);
+        const s = bDb.prepare(`SELECT currency_mode FROM business_settings ORDER BY id ASC LIMIT 1`).get();
+        const cm = String(s?.currency_mode || 'K').toUpperCase();
+        branchCcy[slug] = cm.includes('USD') ? 'USD' : 'K';
+      } catch { branchCcy[slug] = 'K'; }
+      return branchCcy[slug];
+    };
     const grns = Array.from(bySyncId.values())
+      .map(g => ({
+        ...g,
+        cost_currency: g.cost_currency || branchCurrencyFor(g.branch_slug),
+      }))
       .sort((a, b) => String(b.confirmed_at || '').localeCompare(String(a.confirmed_at || '')))
       .slice(0, limit);
 
+    // Per-currency totals so mixed-currency ranges (Kassumbalesa USD +
+    // Lusaka/Mansa K) render as separate USD and K totals instead of one
+    // meaningless sum.
     const totals = grns.reduce((acc, g) => {
-      acc.count    += 1;
-      acc.subtotal += parseFloat(g.items_subtotal) || 0;
-      acc.cn       += parseFloat(g.cn_total)       || 0;
-      acc.payable  += parseFloat(g.final_payable)  || 0;
+      const ccy = g.cost_currency || 'K';
+      acc.count += 1;
+      const bucket = acc.by_ccy[ccy] = acc.by_ccy[ccy] || { count: 0, subtotal: 0, cn: 0, payable: 0 };
+      bucket.count    += 1;
+      bucket.subtotal += parseFloat(g.items_subtotal) || 0;
+      bucket.cn       += parseFloat(g.cn_total)       || 0;
+      bucket.payable  += parseFloat(g.final_payable)  || 0;
       return acc;
-    }, { count: 0, subtotal: 0, cn: 0, payable: 0 });
+    }, { count: 0, by_ccy: {} });
     res.json({ grns, totals });
   } catch (error) {
     console.error('[hq.grns.archive] failed:', error.message);
