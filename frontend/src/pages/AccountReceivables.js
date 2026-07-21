@@ -976,6 +976,20 @@ const AccountReceivables = () => {
                 const sale = parseFloat(o.total_amount || 0);
                 const change = Math.max(0, tendered - sale);
                 const credit = Math.max(0, sale - tendered);
+                // v1.10.232 — derive totals from items so netQty (post-reversal)
+                // and per-line discount/surcharge always reconcile. Header row's
+                // frozen o.subtotal/o.discount can drift from the item state
+                // after a partial reversal.
+                let derivedSubtotal = 0;
+                let derivedDiscountTotal = 0;
+                items.forEach(it => {
+                  const oq = parseFloat(it.quantity || 0);
+                  const rq = parseFloat(it.reversed_quantity || 0);
+                  const nq = it.reversed ? 0 : Math.max(0, oq - rq);
+                  derivedSubtotal      += parseFloat(it.unit_price || 0) * nq;
+                  derivedDiscountTotal += parseFloat(it.discount   || 0) * nq;
+                });
+                const derivedTotal = derivedSubtotal - derivedDiscountTotal;
                 return (
                   <>
                     <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 14, fontSize: 13 }}>
@@ -995,29 +1009,66 @@ const AccountReceivables = () => {
                         </tr>
                       </thead>
                       <tbody>
-                        {items.map((it, i) => (
-                          <tr key={i} style={{ borderBottom: '1px solid #f3f4f6' }}>
-                            <td style={{ padding: '7px 10px' }}>{it.product_name}</td>
-                            <td style={{ padding: '7px 10px', textAlign: 'right', fontFamily: 'monospace' }}>{(parseFloat(parseFloat(it.quantity))||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</td>
-                            <td style={{ padding: '7px 10px', color: '#6b7280' }}>{it.unit || '—'}</td>
-                            <td style={{ padding: '7px 10px', textAlign: 'right', fontFamily: 'monospace' }}>{fmt(it.unit_price)}</td>
-                            <td style={{ padding: '7px 10px', textAlign: 'right', fontFamily: 'monospace', fontWeight: 600 }}>{fmt(it.total_price)}</td>
-                          </tr>
-                        ))}
+                        {items.map((it, i) => {
+                          const origQty = parseFloat(it.quantity || 0);
+                          const rq      = parseFloat(it.reversed_quantity || 0);
+                          const partial = !it.reversed && rq > 0;
+                          const netQty  = it.reversed ? 0 : Math.max(0, origQty - rq);
+                          const unitPx  = parseFloat(it.unit_price || 0);
+                          const netTotal = unitPx * netQty;
+                          const lineDisc = parseFloat(it.discount || 0);
+                          const lineDiscTotal = lineDisc * netQty;
+                          return (
+                            <React.Fragment key={i}>
+                              <tr style={{ borderBottom: Math.abs(lineDisc) > 0.001 ? 'none' : '1px solid #f3f4f6', opacity: it.reversed ? 0.5 : 1 }}>
+                                <td style={{ padding: '7px 10px', textDecoration: it.reversed ? 'line-through' : 'none' }}>
+                                  {it.product_name}
+                                  {!!it.reversed && (
+                                    <span style={{ marginLeft: 6, fontSize: 9, fontWeight: 700, color: '#dc2626', background: '#fee2e2', borderRadius: 4, padding: '1px 5px', verticalAlign: 'middle' }}>VOID</span>
+                                  )}
+                                  {partial && (
+                                    <span style={{ marginLeft: 6, fontSize: 9, fontWeight: 700, color: '#b45309', background: '#fef3c7', borderRadius: 4, padding: '1px 5px', verticalAlign: 'middle' }}>
+                                      was {origQty} {it.unit || ''} — reversed {rq}
+                                    </span>
+                                  )}
+                                </td>
+                                <td style={{ padding: '7px 10px', textAlign: 'right', fontFamily: 'monospace', fontWeight: partial ? 700 : 400 }}>{netQty.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</td>
+                                <td style={{ padding: '7px 10px', color: '#6b7280' }}>{it.unit || '—'}</td>
+                                <td style={{ padding: '7px 10px', textAlign: 'right', fontFamily: 'monospace' }}>{fmt(unitPx)}</td>
+                                <td style={{ padding: '7px 10px', textAlign: 'right', fontFamily: 'monospace', fontWeight: 600 }}>{fmt(netTotal)}</td>
+                              </tr>
+                              {Math.abs(lineDisc) > 0.001 && (
+                                <tr style={{ borderBottom: '1px solid #f3f4f6', color: lineDisc > 0 ? '#6b7280' : '#2563eb', fontSize: 11, opacity: it.reversed ? 0.5 : 1 }}>
+                                  <td colSpan={4} style={{ padding: '2px 10px 6px 22px' }}>
+                                    {lineDisc > 0 ? 'discount' : 'surcharge'} {netQty}{it.unit ? ` ${it.unit}` : ''} × {lineDisc > 0 ? '-' : '+'}{fmt(Math.abs(lineDisc))}
+                                  </td>
+                                  <td style={{ padding: '2px 10px 6px', textAlign: 'right', fontFamily: 'monospace' }}>
+                                    {lineDiscTotal > 0 ? '-' : '+'}{fmt(Math.abs(lineDiscTotal))}
+                                  </td>
+                                </tr>
+                              )}
+                            </React.Fragment>
+                          );
+                        })}
                       </tbody>
                     </table>
-                    {/* Totals + payment breakdown */}
+                    {/* Totals + payment breakdown — derived from items so post-reversal figures reconcile */}
                     <div style={{ background: '#f9fafb', borderRadius: 8, padding: '12px 14px', fontSize: 13 }}>
                       <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6 }}>
-                        <span style={{ color: '#6b7280' }}>Subtotal</span><span>{fmt(o.subtotal)}</span>
+                        <span style={{ color: '#6b7280' }}>Subtotal</span><span>{fmt(derivedSubtotal)}</span>
                       </div>
-                      {parseFloat(o.discount) > 0 && (
+                      {Math.abs(derivedDiscountTotal) > 0.001 && (
                         <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6 }}>
-                          <span style={{ color: '#6b7280' }}>Discount</span><span>−{fmt(o.discount)}</span>
+                          <span style={{ color: derivedDiscountTotal > 0 ? '#dc2626' : '#2563eb' }}>
+                            {derivedDiscountTotal > 0 ? 'Total discount' : 'Total surcharge'}
+                          </span>
+                          <span style={{ color: derivedDiscountTotal > 0 ? '#dc2626' : '#2563eb' }}>
+                            {derivedDiscountTotal > 0 ? '−' : '+'}{fmt(Math.abs(derivedDiscountTotal))}
+                          </span>
                         </div>
                       )}
                       <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8, fontWeight: 700, fontSize: 14 }}>
-                        <span>Total</span><span>{fmt(sale)}</span>
+                        <span>Total</span><span>{fmt(derivedTotal)}</span>
                       </div>
                       <div style={{ borderTop: '1px dashed #d1d5db', paddingTop: 8, marginTop: 4 }}>
                         <div style={{ fontSize: 11, fontWeight: 700, color: '#6b7280', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 6 }}>Payment</div>
