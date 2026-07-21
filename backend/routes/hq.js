@@ -225,11 +225,19 @@ router.get('/sales-report', hqAuth, (req, res) => {
     const tenants = listTenants().filter(t => branch === 'all' || t.slug === branch);
     const rows = [];
 
+    // Per-branch currency map so we can tag every order + bucket with the
+    // right symbol on the client. Branch's business_settings.currency_mode
+    // is the source of truth: USD+FRA / USD+FRA+K → USD-base; anything else
+    // → K-base.
+    const branchCurrency = {};
     for (const t of tenants) {
       try {
         const db = getTenantDb(t.slug);
-        const settings = tryGet(db, `SELECT business_name FROM business_settings ORDER BY id ASC LIMIT 1`) || {};
+        const settings = tryGet(db, `SELECT business_name, currency_mode FROM business_settings ORDER BY id ASC LIMIT 1`) || {};
         const branchName = settings.business_name || t.business_name || t.slug;
+        const isUsdBase = typeof settings.currency_mode === 'string' && settings.currency_mode.includes('USD');
+        const ccy = isUsdBase ? 'USD' : 'K';
+        branchCurrency[t.slug] = ccy;
 
         // Every column from `orders` must be prefixed with `o.` — id, status,
         // and created_at all collide with users columns, and better-sqlite3
@@ -256,6 +264,7 @@ router.get('/sales-report', hqAuth, (req, res) => {
             ...o,
             branch_slug: t.slug,
             branch_name: branchName,
+            branch_currency: ccy,
           });
         }
       } catch (e) {
@@ -273,16 +282,23 @@ router.get('/sales-report', hqAuth, (req, res) => {
     });
     const capped = rows.slice(0, LIMIT);
 
-    // Totals across whatever survived the filters.
+    // Totals across whatever survived the filters. Split money by currency
+    // so mixed-currency ranges (Kassumbalesa USD + Lusaka/Mansa K) render
+    // as separate USD and K totals instead of one meaningless sum.
     const totals = capped.reduce((acc, r) => {
+      const ccy = r.branch_currency || 'K';
+      const amt  = parseFloat(r.total_amount    || 0);
+      const rec  = parseFloat(r.amount_received || 0);
       acc.orders += 1;
-      acc.revenue += parseFloat(r.total_amount || 0);
-      acc.received += parseFloat(r.amount_received || 0);
-      acc.by_branch[r.branch_slug] = acc.by_branch[r.branch_slug] || { name: r.branch_name, orders: 0, revenue: 0 };
+      acc.revenue_by_ccy[ccy]  = (acc.revenue_by_ccy[ccy]  || 0) + amt;
+      acc.received_by_ccy[ccy] = (acc.received_by_ccy[ccy] || 0) + rec;
+      acc.by_branch[r.branch_slug] = acc.by_branch[r.branch_slug] || {
+        name: r.branch_name, currency: ccy, orders: 0, revenue: 0,
+      };
       acc.by_branch[r.branch_slug].orders  += 1;
-      acc.by_branch[r.branch_slug].revenue += parseFloat(r.total_amount || 0);
+      acc.by_branch[r.branch_slug].revenue += amt;
       return acc;
-    }, { orders: 0, revenue: 0, received: 0, by_branch: {} });
+    }, { orders: 0, revenue_by_ccy: {}, received_by_ccy: {}, by_branch: {} });
 
     res.json({
       from, to, branch,

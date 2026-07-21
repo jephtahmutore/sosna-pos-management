@@ -9,9 +9,14 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { FiRefreshCw, FiTrendingUp, FiAlertTriangle } from 'react-icons/fi';
 import { getHqSalesReport, getHqBranches, setHqBranch } from '../services/api';
 
-const fmtMoney = (n) => `$${parseFloat(n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-const fmtInt   = (n) => parseFloat(n || 0).toLocaleString();
-const todayISO = () => new Date().toISOString().slice(0, 10);
+// v1.10.236 — money formatting is currency-aware. Every order carries its
+// branch's currency ('USD' or 'K'); totals are split into per-currency
+// buckets so mixed-currency ranges (Kassumbalesa USD + Lusaka/Mansa K)
+// never sum as one meaningless number.
+const fmtNum       = (n) => parseFloat(n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const fmtMoneyCcy  = (n, ccy) => `${ccy === 'K' ? 'K' : '$'}${fmtNum(n)}`;
+const fmtInt       = (n) => parseFloat(n || 0).toLocaleString();
+const todayISO     = () => new Date().toISOString().slice(0, 10);
 
 export default function HqSalesReport() {
   const [from, setFrom]     = useState(todayISO());
@@ -43,8 +48,18 @@ export default function HqSalesReport() {
   const perBranch = useMemo(() => {
     if (!data?.totals?.by_branch) return [];
     return Object.entries(data.totals.by_branch)
-      .map(([slug, v]) => ({ slug, ...v }))
+      .map(([slug, v]) => ({ slug, ...v, currency: v.currency || 'K' }))
       .sort((a, b) => b.revenue - a.revenue);
+  }, [data]);
+
+  // Rows to render in the currency-split totals block. Only includes
+  // buckets that actually have movement in this range.
+  const totalsByCcy = useMemo(() => {
+    const rev = data?.totals?.revenue_by_ccy  || {};
+    const rec = data?.totals?.received_by_ccy || {};
+    return ['USD', 'K']
+      .map(c => ({ ccy: c, revenue: parseFloat(rev[c] || 0), received: parseFloat(rec[c] || 0) }))
+      .filter(r => r.revenue !== 0 || r.received !== 0);
   }, [data]);
 
   const openInBranch = (slug, orderId) => {
@@ -98,9 +113,15 @@ export default function HqSalesReport() {
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14, marginBottom: 16 }}>
             <div style={{ background: '#fff', border: '1px solid #e5e7eb', borderRadius: 10, padding: 14 }}>
               <h3 style={hd}>Totals ({data.from} → {data.to})</h3>
-              <Stat label="Orders"            value={fmtInt(data.totals.orders)} />
-              <Stat label="Total Sales"       value={fmtMoney(data.totals.revenue)} big />
-              <Stat label="Total Collected"   value={fmtMoney(data.totals.received)} />
+              <Stat label="Orders" value={fmtInt(data.totals.orders)} />
+              {totalsByCcy.length === 0 ? (
+                <Stat label="Total Sales" value="—" />
+              ) : totalsByCcy.map(r => (
+                <React.Fragment key={r.ccy}>
+                  <Stat label={`Total Sales (${r.ccy})`}     value={fmtMoneyCcy(r.revenue, r.ccy)} big />
+                  <Stat label={`Total Collected (${r.ccy})`} value={fmtMoneyCcy(r.received, r.ccy)} />
+                </React.Fragment>
+              ))}
               {data.truncated && (
                 <div style={{ marginTop: 8, fontSize: 11, color: '#92400e', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
                   <FiAlertTriangle /> Showing first {fmtInt(data.returned_rows)} of {fmtInt(data.total_rows)} — narrow the date range to see more
@@ -119,7 +140,7 @@ export default function HqSalesReport() {
                       <tr key={b.slug} style={{ borderTop: '1px solid #f1f5f9' }}>
                         <td style={tdS}>{b.name} <span style={{ color: '#94a3b8', fontSize: 11 }}>({b.slug})</span></td>
                         <td style={{ ...tdS, textAlign: 'right' }}>{fmtInt(b.orders)}</td>
-                        <td style={{ ...tdS, textAlign: 'right', fontWeight: 700 }}>{fmtMoney(b.revenue)}</td>
+                        <td style={{ ...tdS, textAlign: 'right', fontWeight: 700 }}>{fmtMoneyCcy(b.revenue, b.currency)}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -160,8 +181,8 @@ export default function HqSalesReport() {
                             <span style={tag('#e2e8f0', '#0f172a')}>{o.branch_slug}</span>
                           </td>
                           <td style={td}>{o.customer_name || 'Walk-in'}</td>
-                          <td style={{ ...td, textAlign: 'right', fontWeight: 700 }}>{fmtMoney(o.total_amount)}</td>
-                          <td style={{ ...td, textAlign: 'right' }}>{fmtMoney(o.amount_received)}</td>
+                          <td style={{ ...td, textAlign: 'right', fontWeight: 700 }}>{fmtMoneyCcy(o.total_amount, o.branch_currency || o.currency)}</td>
+                          <td style={{ ...td, textAlign: 'right' }}>{fmtMoneyCcy(o.amount_received, o.branch_currency || o.currency)}</td>
                           <td style={td}>{statusBadge(o.status)}</td>
                           <td style={td}>{o.created_by_name || '—'}</td>
                           <td style={td}>
