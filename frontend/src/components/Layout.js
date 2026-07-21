@@ -304,6 +304,7 @@ const Layout = () => {
       '/hq/sales-report': 'HQ Sales Report',
       '/hq/inventory-report': 'HQ Inventory Report',
       '/hq/cash-position': 'HQ Cash Position',
+      '/hq/consolidated-profit': 'HQ Consolidated Profit',
       '/hq/products': 'HQ Products',
       '/hq/purchases': 'HQ Purchases',
       '/hq/cost-of-delivery': 'Cost of Delivery',
@@ -767,6 +768,14 @@ const Layout = () => {
                   {!hq && hasPageAccess('ProfitReport') && (
                     <div className={`nav-item ${isActive('/accounting/profit-report') ? 'active' : ''}`} onClick={() => navigate('/accounting/profit-report')}>
                       <FiTrendingUp className="nav-icon" /> <span>Profit Report</span>
+                    </div>
+                  )}
+                  {/* v1.10.233 — HQ Consolidated Profit. Group Net across all
+                      branches, converted to USD daily, minus HQ overhead (PVs
+                      excluding LCVs). HQ-only, no per-user perm gate. */}
+                  {hq && (
+                    <div className={`nav-item ${isActive('/hq/consolidated-profit') ? 'active' : ''}`} onClick={() => navigate('/hq/consolidated-profit')}>
+                      <FiTrendingUp className="nav-icon" /> <span>HQ Consolidated Profit</span>
                     </div>
                   )}
                 </div>

@@ -26,6 +26,7 @@ import Cashier from './pages/Cashier';
 import Dispatch from './pages/Dispatch';
 import HqOverview from './pages/HqOverview';
 import HqSalesReport from './pages/HqSalesReport';
+import HqConsolidatedProfit from './pages/HqConsolidatedProfit';
 import HqInventoryReport from './pages/HqInventoryReport';
 import HqCashPosition from './pages/HqCashPosition';
 import StockTransfers from './pages/StockTransfers';
@@ -282,6 +283,7 @@ function AppRoutes() {
         <Route path="pos/dispatch" element={<PermRoute perms={['Dispatch','Dispatch:View','Dispatch:Add','Dispatch:Edit','Dispatch:Delete']}><Dispatch /></PermRoute>} />
         <Route path="hq/overview"         element={<HqRoute><HqOverview /></HqRoute>} />
         <Route path="hq/sales-report"     element={<HqRoute><HqSalesReport /></HqRoute>} />
+        <Route path="hq/consolidated-profit" element={<HqRoute><HqConsolidatedProfit /></HqRoute>} />
         <Route path="hq/inventory-report" element={<HqRoute><HqInventoryReport /></HqRoute>} />
         <Route path="hq/cash-position"    element={<HqRoute><HqCashPosition /></HqRoute>} />
         <Route path="hq/purchases"        element={<HqRoute><HqPurchases /></HqRoute>} />

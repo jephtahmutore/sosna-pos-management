@@ -809,4 +809,200 @@ router.post('/mirror-all', hqAuth, (req, res) => {
   }
 });
 
+// ─── v1.10.233 — HQ Consolidated Profit ────────────────────────────────────
+// Group Net = SUM(branch net_profit converted USD daily) − HQ overhead (USD).
+// HQ overhead = HQ payment_vouchers with is_landed_cost=0 (LCVs already
+// live in inventory WAC via hqGrns absorption, so counting them here
+// would double-count).
+//
+// Currency conversion: each Zambia branch's daily net (K) → USD using
+// that day's Kassumbalesa USD/K rate. Rate source is the branch orders'
+// selling_rate_k_used column (per-day AVG of non-zero rows). Missing days
+// forward-fill from the most recent prior rate; if none exists inside
+// or before the range, the Zambia contribution stays at 0 USD and a
+// warning surfaces to the UI.
+router.get('/consolidated-profit', hqAuth, (req, res) => {
+  try {
+    const from = (req.query.from || new Date().toISOString().slice(0, 10)).toString();
+    const to   = (req.query.to   || from).toString();
+
+    const tenants = listTenants();
+
+    // Enumerate every date in the range (inclusive).
+    const dates = [];
+    {
+      const start = new Date(from + 'T00:00:00Z');
+      const end   = new Date(to   + 'T00:00:00Z');
+      for (let d = new Date(start); d <= end; d.setUTCDate(d.getUTCDate() + 1)) {
+        dates.push(d.toISOString().slice(0, 10));
+      }
+    }
+
+    // Locate the multi-currency branch (Kassumbalesa) — that's where the
+    // USD/K rate lives (per-order selling_rate_k_used).
+    let kassSlug = null;
+    for (const t of tenants) {
+      try {
+        const db = getTenantDb(t.slug);
+        const cm = tryGet(db, `SELECT currency_mode FROM business_settings LIMIT 1`);
+        if (cm && typeof cm.currency_mode === 'string' && cm.currency_mode.includes('USD')) {
+          kassSlug = t.slug;
+          break;
+        }
+      } catch { /* skip */ }
+    }
+
+    // Build daily K→USD rate map with forward-fill.
+    const fxByDate = {};
+    let priorRate = null;
+    if (kassSlug) {
+      try {
+        const kdb = getTenantDb(kassSlug);
+        const rows = kdb.prepare(`
+          SELECT substr(created_at, 1, 10) AS d,
+                 AVG(selling_rate_k_used)  AS rate
+            FROM orders
+           WHERE deleted_at IS NULL
+             AND selling_rate_k_used IS NOT NULL
+             AND selling_rate_k_used > 0
+             AND substr(created_at, 1, 10) BETWEEN ? AND ?
+        GROUP BY substr(created_at, 1, 10)
+        `).all(from, to);
+        for (const r of rows) fxByDate[r.d] = parseFloat(r.rate) || null;
+        // Prime forward-fill with most recent rate BEFORE the range.
+        const prior = tryGet(kdb, `
+          SELECT AVG(selling_rate_k_used) AS rate FROM (
+            SELECT selling_rate_k_used
+              FROM orders
+             WHERE deleted_at IS NULL
+               AND selling_rate_k_used > 0
+               AND substr(created_at, 1, 10) < ?
+          ORDER BY created_at DESC LIMIT 30
+          )
+        `, from);
+        if (prior?.rate) priorRate = parseFloat(prior.rate) || null;
+      } catch (e) {
+        console.error(`[hq.consolidated-profit] fx from ${kassSlug}:`, e.message);
+      }
+    }
+    const effectiveRate = {};
+    {
+      let last = priorRate;
+      for (const d of dates) {
+        if (fxByDate[d] != null) last = fxByDate[d];
+        effectiveRate[d] = last;
+      }
+    }
+
+    const warnings = [];
+    const hasAnyRate = Object.values(effectiveRate).some(r => r != null);
+    if (!hasAnyRate) {
+      warnings.push('No K/USD rate found on Kassumbalesa for this range — Zambia branches contribute 0 to USD group total.');
+    }
+
+    // Per branch: daily rows + range totals.
+    const branches = [];
+    for (const t of tenants) {
+      try {
+        const db = getTenantDb(t.slug);
+        const settings = tryGet(db, `SELECT business_name, currency_mode FROM business_settings LIMIT 1`) || {};
+        const name = settings.business_name || t.business_name || t.slug;
+        const isUsdBase = typeof settings.currency_mode === 'string' && settings.currency_mode.includes('USD');
+        const currency = isUsdBase ? 'USD' : 'K';
+
+        const dailyRows = db.prepare(`
+          SELECT date, revenue, cogs, damages, gross_profit, net_profit
+            FROM daily_profit_summary
+           WHERE date BETWEEN ? AND ?
+        ORDER BY date
+        `).all(from, to);
+        const byDate = new Map(dailyRows.map(r => [r.date, r]));
+
+        const daily = [];
+        let sumRev = 0, sumCogs = 0, sumDam = 0, sumNetL = 0, sumNetU = 0;
+        for (const d of dates) {
+          const r = byDate.get(d);
+          const revenue  = parseFloat(r?.revenue  || 0);
+          const cogs     = parseFloat(r?.cogs     || 0);
+          const damages  = parseFloat(r?.damages  || 0);
+          const netLocal = parseFloat(r?.net_profit || 0);
+          const fx = isUsdBase ? null : effectiveRate[d];
+          const netUsd = isUsdBase ? netLocal : (fx ? netLocal / fx : 0);
+          daily.push({ date: d, revenue, cogs, damages, net_local: netLocal, net_usd: netUsd, fx_rate: fx });
+          sumRev += revenue; sumCogs += cogs; sumDam += damages;
+          sumNetL += netLocal; sumNetU += netUsd;
+        }
+
+        branches.push({
+          slug: t.slug, name, currency,
+          totals: { revenue: sumRev, cogs: sumCogs, damages: sumDam, net_local: sumNetL, net_usd: sumNetU },
+          daily,
+        });
+      } catch (e) {
+        console.error(`[hq.consolidated-profit] ${t.slug}:`, e.message);
+      }
+    }
+
+    // HQ Overhead — payment_vouchers on defaultDb, excluding LCVs. Amounts
+    // treated as K (Sosna HQ is Zambia-based); if HQ ever operates in USD
+    // this becomes a business_settings.currency_mode read.
+    const hqCurrency = 'K';
+    let hqDailyRows = [];
+    try {
+      hqDailyRows = defaultDb.prepare(`
+        SELECT date, COALESCE(SUM(amount), 0) AS pv_total
+          FROM payment_vouchers
+         WHERE deleted_at IS NULL
+           AND (is_landed_cost IS NULL OR is_landed_cost = 0)
+           AND date BETWEEN ? AND ?
+      GROUP BY date
+      `).all(from, to);
+    } catch (e) {
+      // Older HQ mirror DB with no deleted_at column — fall back.
+      try {
+        hqDailyRows = defaultDb.prepare(`
+          SELECT date, COALESCE(SUM(amount), 0) AS pv_total
+            FROM payment_vouchers
+           WHERE (is_landed_cost IS NULL OR is_landed_cost = 0)
+             AND date BETWEEN ? AND ?
+        GROUP BY date
+        `).all(from, to);
+      } catch (e2) {
+        console.error('[hq.consolidated-profit] HQ PVs read failed:', e2.message);
+      }
+    }
+    const hqByDate = new Map(hqDailyRows.map(r => [r.date, parseFloat(r.pv_total || 0)]));
+    const hqDaily = [];
+    let hqSumLocal = 0, hqSumUsd = 0;
+    for (const d of dates) {
+      const local = hqByDate.get(d) || 0;
+      const fx = effectiveRate[d];
+      const usd = hqCurrency === 'K' ? (fx ? local / fx : 0) : local;
+      hqDaily.push({ date: d, local, usd, fx_rate: fx });
+      hqSumLocal += local; hqSumUsd += usd;
+    }
+
+    const branchNetUsd = branches.reduce((s, b) => s + b.totals.net_usd, 0);
+    const groupNetUsd  = branchNetUsd - hqSumUsd;
+
+    res.json({
+      from, to,
+      reporting_currency: 'USD',
+      fx_source: kassSlug ? `${kassSlug}.orders.selling_rate_k_used (per-day AVG, forward-filled)` : null,
+      warnings,
+      branches,
+      hq_overhead: {
+        currency: hqCurrency,
+        total_local: hqSumLocal,
+        total_usd: hqSumUsd,
+        daily: hqDaily,
+      },
+      group_net_usd: groupNetUsd,
+    });
+  } catch (error) {
+    console.error('[hq.consolidated-profit] failed:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 module.exports = router;
