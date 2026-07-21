@@ -179,9 +179,17 @@ const Layout = () => {
   const currentLang = LANGUAGES.find(l => l.code === language) || LANGUAGES[0];
   const langRef = useRef(null);
 
+  // v1.10.243 — bell dropdown state. Same pattern as the language picker
+  // above: outside-click closes, ref lets us test the target. Contents are
+  // scoped by context (HQ vs branch) so Lusaka1 never sees "3 GRNs to
+  // generate at HQ" and HQ never sees a branch's cashier queue.
+  const [showBellMenu, setShowBellMenu] = useState(false);
+  const bellRef = useRef(null);
+
   useEffect(() => {
     const handleClickOutside = (e) => {
       if (langRef.current && !langRef.current.contains(e.target)) setShowLangMenu(false);
+      if (bellRef.current && !bellRef.current.contains(e.target)) setShowBellMenu(false);
     };
     document.addEventListener('mousedown', handleClickOutside);
     return () => document.removeEventListener('mousedown', handleClickOutside);
@@ -1005,10 +1013,78 @@ const Layout = () => {
 
             <div className="hide-on-mobile"><SyncStatus /></div>
 
-            <button className="notification-btn hide-on-mobile">
-              <FiBell />
-              <span className="notification-badge">2</span>
-            </button>
+            {/* v1.10.243 — real bell dropdown. Was a static "2" placeholder.
+                Contents scoped by context: HQ shows HQ-only queues (Generate
+                GRN, Confirm Damages); branches show branch queues (Cashier,
+                Dispatch, Incoming Stock/Transfers). Same badges state the
+                sidebar reads, second surface. */}
+            {(() => {
+              const bellRows = hq
+                ? [
+                    { key: 'gen',      n: badges.hq_pending_grn,     label: 'GRNs to generate',      path: '/hq/confirm-grn'    },
+                    { key: 'dmg',      n: badges.hq_pending_damages, label: 'Damages to confirm',    path: '/hq/confirm-damages' },
+                  ]
+                : [
+                    { key: 'cashier',  n: badges.cashier_pending,    label: 'Orders awaiting cashier',  path: '/cashier'          },
+                    { key: 'dispatch', n: badges.dispatch_pending,   label: 'Orders awaiting dispatch', path: '/dispatch'         },
+                    { key: 'incStock', n: badges.incoming_stock,     label: 'Incoming stock',           path: '/stock/incoming'   },
+                    { key: 'incXfer',  n: badges.incoming_transfers, label: 'Incoming transfers',       path: '/stock/transfers'  },
+                  ];
+              const active = bellRows.filter(r => (r.n || 0) > 0);
+              const total  = active.reduce((s, r) => s + r.n, 0);
+              return (
+                <div ref={bellRef} className="hide-on-mobile" style={{ position: 'relative' }}>
+                  <button className="notification-btn" onClick={() => setShowBellMenu(v => !v)}>
+                    <FiBell />
+                    {total > 0 && <span className="notification-badge">{total > 99 ? '99+' : total}</span>}
+                  </button>
+                  {showBellMenu && (
+                    <div style={{
+                      position: 'absolute', top: 'calc(100% + 8px)', right: 0,
+                      background: '#fff', border: '1px solid #e5e7eb', borderRadius: 10,
+                      boxShadow: '0 12px 32px rgba(15,23,42,0.15)', minWidth: 280, zIndex: 200,
+                      overflow: 'hidden',
+                    }}>
+                      <div style={{ padding: '10px 14px', borderBottom: '1px solid #f1f5f9', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                        <span style={{ fontSize: 12, fontWeight: 700, color: '#64748b', letterSpacing: 0.5, textTransform: 'uppercase' }}>
+                          Notifications
+                        </span>
+                        <span style={{ fontSize: 11, color: '#94a3b8' }}>{hq ? 'HQ' : (getHqBranch() || 'Branch')}</span>
+                      </div>
+                      {active.length === 0 ? (
+                        <div style={{ padding: '20px 14px', textAlign: 'center', color: '#94a3b8', fontSize: 13, fontStyle: 'italic' }}>
+                          No pending items — you're all caught up.
+                        </div>
+                      ) : (
+                        active.map(row => (
+                          <div
+                            key={row.key}
+                            onClick={() => { setShowBellMenu(false); navigate(row.path); }}
+                            style={{
+                              display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                              padding: '11px 14px', cursor: 'pointer',
+                              borderTop: '1px solid #f8fafc',
+                              transition: 'background 0.15s',
+                            }}
+                            onMouseEnter={e => e.currentTarget.style.background = '#f8fafc'}
+                            onMouseLeave={e => e.currentTarget.style.background = '#fff'}
+                          >
+                            <span style={{ fontSize: 13, color: '#0f172a' }}>{row.label}</span>
+                            <span style={{
+                              background: '#0ea5e9', color: '#fff',
+                              fontSize: 11, fontWeight: 700,
+                              minWidth: 22, height: 22, borderRadius: 11,
+                              display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                              padding: '0 7px',
+                            }}>{row.n > 99 ? '99+' : row.n}</span>
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
             <div className="date-display hide-on-mobile">
               <div style={{ fontWeight: 700 }}>{dateStr}</div>
               <div style={{ fontWeight: 700 }}>{timeStr}</div>
