@@ -3,7 +3,7 @@
 // fields, same Types dropdown (from pv_types). Caller can lock paid_from
 // to a fixed value (e.g. "Cash Drawer" for cash-report use).
 import React, { useEffect, useState } from 'react';
-import { getPvTypes, createPaymentVoucher, updatePaymentVoucher, isHqHost, getHqPurchases } from '../services/api';
+import { getPvTypes, createPaymentVoucher, updatePaymentVoucher, isHqHost, getHqPurchases, getCashBookStats } from '../services/api';
 import { useCurrency } from '../context/CurrencyContext';
 import Portal from '../utils/Portal';
 import InvoiceAttachment from './InvoiceAttachment';
@@ -73,6 +73,12 @@ const PaymentVoucherFormModal = ({
   const [openPurchases, setOpenPurchases] = useState([]);
   const [error, setError]   = useState('');
   const [saving, setSaving] = useState(false);
+  // v1.10.244 — live HQ drawer balances. Same shape the Cash Book /stats
+  // returns: { usd, fra, k, kCash, kBank, kMomo }. Displayed as inline
+  // "Available: X" hints under each input so the user sees the ceiling
+  // before submitting. Backend guard (v1.10.239/240) is still the safety
+  // net; this is defence-in-depth + UX.
+  const [balances, setBalances] = useState(null);
 
   useEffect(() => {
     if (!open) return;
@@ -82,6 +88,22 @@ const PaymentVoucherFormModal = ({
       getHqPurchases({ status: 'OPEN' })
         .then(r => setOpenPurchases(Array.isArray(r.data) ? r.data : []))
         .catch(() => setOpenPurchases([]));
+      // v1.10.244 — fetch current drawer balances so the modal shows the
+      // ceiling per input. Silent-fail: if the endpoint is unreachable,
+      // hints just don't render (backend guard still enforces on save).
+      getCashBookStats()
+        .then(r => {
+          const d = r?.data || {};
+          setBalances({
+            usd:   parseFloat(d.currentByCcy?.usd   || 0) || 0,
+            fra:   parseFloat(d.currentByCcy?.fra   || 0) || 0,
+            k:     parseFloat(d.currentByCcy?.k     || 0) || 0,
+            kCash: parseFloat(d.kSubMethods?.current?.cash || 0) || 0,
+            kBank: parseFloat(d.kSubMethods?.current?.bank || 0) || 0,
+            kMomo: parseFloat(d.kSubMethods?.current?.momo || 0) || 0,
+          });
+        })
+        .catch(() => setBalances(null));
     }
   }, [open, onHq]);
 
@@ -291,7 +313,26 @@ const PaymentVoucherFormModal = ({
                   if (self === 'k')   return usdVal > 0 || fraVal > 0;
                   return false;
                 };
-                const renderInput = (key, label, color, step, placeholder, disabled) => (
+                // v1.10.244 — resolve the corresponding balance for this
+                // input so we can render an "Available: X" hint underneath.
+                // Maps form key → balance key + display prefix.
+                const balanceFor = (key) => {
+                  if (!balances) return null;
+                  const map = {
+                    usd_amount:  { amt: balances.usd,   prefix: '$', digits: 2 },
+                    fra_amount:  { amt: balances.fra,   prefix: '',  digits: 0 },
+                    cash_amount: { amt: balances.kCash, prefix: 'K', digits: 0 },
+                    bank_amount: { amt: balances.kBank, prefix: 'K', digits: 0 },
+                    momo_amount: { amt: balances.kMomo, prefix: 'K', digits: 0 },
+                  };
+                  return map[key] || null;
+                };
+                const fmtAvail = (b) => `${b.prefix}${(b.amt || 0).toLocaleString(undefined, { minimumFractionDigits: b.digits, maximumFractionDigits: b.digits })}`;
+                const renderInput = (key, label, color, step, placeholder, disabled) => {
+                  const b = balanceFor(key);
+                  const requested = parseFloat(form[key] || 0) || 0;
+                  const overdraft = b && requested > b.amt + 0.0001;
+                  return (
                   <div key={key}>
                     <label style={{ fontSize: 11, color: disabled ? '#cbd5e1' : color, fontWeight: 700, textTransform: 'uppercase', marginBottom: 3, display: 'block' }}>{label}{disabled && ' (locked)'}</label>
                     <input type="number" min="0" step={step}
@@ -302,15 +343,26 @@ const PaymentVoucherFormModal = ({
                       title={disabled ? 'Clear the other currency to switch — one PV = one currency.' : ''}
                       style={{
                         width: '100%', padding: '8px 10px',
-                        border: `2px solid ${disabled ? '#e5e7eb' : (parseFloat(form[key] || 0) > 0 ? color : '#d1d5db')}`,
+                        border: `2px solid ${disabled ? '#e5e7eb' : (overdraft ? '#dc2626' : (parseFloat(form[key] || 0) > 0 ? color : '#d1d5db'))}`,
                         borderRadius: 6, fontSize: 14, fontWeight: 600,
-                        color: disabled ? '#cbd5e1' : (parseFloat(form[key] || 0) > 0 ? color : '#374151'),
+                        color: disabled ? '#cbd5e1' : (overdraft ? '#dc2626' : (parseFloat(form[key] || 0) > 0 ? color : '#374151')),
                         background: disabled ? '#f9fafb' : '#fff',
                         cursor: disabled ? 'not-allowed' : 'text',
                         boxSizing: 'border-box',
                       }} />
+                    {b && !disabled && (
+                      <div style={{
+                        fontSize: 10, marginTop: 3, fontFamily: 'ui-monospace, "SF Mono", Consolas, monospace',
+                        color: overdraft ? '#dc2626' : (b.amt < 0 ? '#dc2626' : '#64748b'),
+                        fontWeight: overdraft ? 700 : 500,
+                      }}>
+                        Available: {b.amt < 0 ? '−' : ''}{fmtAvail({ ...b, amt: Math.abs(b.amt) })}
+                        {overdraft && <span> · exceeds balance</span>}
+                      </div>
+                    )}
                   </div>
-                );
+                  );
+                };
                 return (
                   <>
                     <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 12 }}>
