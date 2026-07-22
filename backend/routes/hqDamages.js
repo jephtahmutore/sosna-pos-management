@@ -20,6 +20,8 @@ const { getTenantDb } = require('../config/tenantDb');
 const { conversionToBase } = require('../config/unitsHelper');
 const { recalculateDailyProfit } = require('../config/profitHelper');
 const { randomUUID } = require('crypto');
+// v1.10.245 — HQ page perm gate.
+const { requirePagePerm } = require('../middleware/auth');
 
 function hqAuth(req, res, next) {
   try {
@@ -37,7 +39,7 @@ function safeAll(fn) { try { return fn() || []; } catch { return []; } }
 // GET /api/hq/damages/awaiting — every PENDING declaration across branches.
 // Returns header + item list + estimated value (qty × cost_price snapshot)
 // so the operator can size up the variance before clicking Confirm.
-router.get('/awaiting', hqAuth, (req, res) => {
+router.get('/awaiting', hqAuth, requirePagePerm('HqConfirmDamages'), (req, res) => {
   try {
     // v1.10.149 — accept ?status=pending|confirmed|rejected|all so HQ can
     // browse a full audit trail of past damage decisions, not just the
@@ -114,7 +116,7 @@ router.get('/awaiting', hqAuth, (req, res) => {
 // Opens the named branch DB, mirrors the per-branch /confirm logic
 // (stock decrement + profit recalc), and stamps the master line as
 // CONFIRMED with the HQ user's audit trail.
-router.put('/:slug/:id/confirm', hqAuth, (req, res) => {
+router.put('/:slug/:id/confirm', hqAuth, requirePagePerm('HqConfirmDamages'), (req, res) => {
   try {
     const slug = String(req.params.slug || '').toLowerCase();
     if (!isRegistered(slug)) return res.status(404).json({ error: 'Branch not found' });
@@ -191,7 +193,7 @@ router.put('/:slug/:id/confirm', hqAuth, (req, res) => {
 // PUT /api/hq/damages/:slug/:id/reject — HQ rejects; status REJECTED,
 // confirm_notes captures the reason so the branch knows why. Stock is
 // never touched. Branch can recreate a fresh declaration if needed.
-router.put('/:slug/:id/reject', hqAuth, (req, res) => {
+router.put('/:slug/:id/reject', hqAuth, requirePagePerm('HqConfirmDamages'), (req, res) => {
   try {
     const slug = String(req.params.slug || '').toLowerCase();
     if (!isRegistered(slug)) return res.status(404).json({ error: 'Branch not found' });

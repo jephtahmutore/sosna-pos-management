@@ -28,6 +28,11 @@ const { listTenants, isRegistered, masterDb } = require('../config/masterDb');
 const { getTenantDb } = require('../config/tenantDb');
 const { defaultDb }   = require('../config/database');
 const { conversionToBase } = require('../config/unitsHelper');
+// v1.10.245 — HQ page perm gates. hqGrns spans two Users pages:
+//   HqConfirmGrn  → Generate GRN queue + generate action + legacy
+//                   confirm/reject/receipt endpoints (the working queue).
+//   HqGrnArchive  → archive list + per-GRN detail + edit + void.
+const { requirePagePerm } = require('../middleware/auth');
 
 function hqAuth(req, res, next) {
   try {
@@ -50,7 +55,7 @@ function hqAuth(req, res, next) {
 // Response: [{ sync_id, current_stock, avg_cost_price, unit, alt_unit,
 //             conversion_factor, units_json }] — enough for the client
 // to run the same base-unit blend that /generate uses server-side.
-router.get('/product-costs/:slug', hqAuth, (req, res) => {
+router.get('/product-costs/:slug', hqAuth, requirePagePerm('HqConfirmGrn'), (req, res) => {
   try {
     const slug = String(req.params.slug || '').toLowerCase();
     const rawIds = String(req.query.sync_ids || '');
@@ -73,7 +78,7 @@ router.get('/product-costs/:slug', hqAuth, (req, res) => {
   }
 });
 
-router.get('/awaiting', hqAuth, (req, res) => {
+router.get('/awaiting', hqAuth, requirePagePerm('HqConfirmGrn'), (req, res) => {
   try {
     const tenants = listTenants();
     const rows = [];
@@ -109,7 +114,7 @@ router.get('/awaiting', hqAuth, (req, res) => {
 // they win over the wildcard /:slug/:syncId below (Express matches in
 // order — a 2-segment specific must precede a 2-segment wildcard, else
 // the wildcard swallows "receipt" as if it were a branch slug).
-router.get('/awaiting-generation', hqAuth, (req, res) => {
+router.get('/awaiting-generation', hqAuth, requirePagePerm('HqConfirmGrn'), (req, res) => {
   try {
     if (!masterDb) return res.json({ purchases: [] });
     const rows = masterDb.prepare(`
@@ -140,7 +145,7 @@ router.get('/awaiting-generation', hqAuth, (req, res) => {
 // v1.10.3 — Full doc for a v1.10.0 HQ-generated GRN. Reads master.db only
 // (no branch DB round-trip). Declared above the /:slug/:syncId wildcard so
 // Express matches "/hq/<uuid>" here instead of treating "hq" as a slug.
-router.get('/hq/:syncId', hqAuth, (req, res) => {
+router.get('/hq/:syncId', hqAuth, requirePagePerm('HqGrnArchive'), (req, res) => {
   try {
     if (!masterDb) return res.status(404).json({ error: 'master.db unavailable' });
     const syncId = req.params.syncId;
@@ -199,7 +204,7 @@ router.get('/hq/:syncId', hqAuth, (req, res) => {
   }
 });
 
-router.get('/receipt/:syncId', hqAuth, (req, res) => {
+router.get('/receipt/:syncId', hqAuth, requirePagePerm('HqConfirmGrn'), (req, res) => {
   try {
     if (!masterDb) return res.status(404).json({ error: 'master.db unavailable' });
     const syncId = req.params.syncId;
@@ -222,7 +227,7 @@ router.get('/receipt/:syncId', hqAuth, (req, res) => {
 // Full GRN doc (header + line items) for the HQ review modal. The branch
 // slug is in the path so we know which tenant DB to open without scanning
 // every branch.
-router.get('/:slug/:syncId', hqAuth, (req, res) => {
+router.get('/:slug/:syncId', hqAuth, requirePagePerm('HqGrnArchive'), (req, res) => {
   try {
     const { slug, syncId } = req.params;
     if (!isRegistered(slug)) return res.status(404).json({ error: `Branch "${slug}" not registered.` });
@@ -286,7 +291,7 @@ router.get('/:slug/:syncId', hqAuth, (req, res) => {
 //       CONFIRMED, stamping the HQ confirmer.
 // Marking grn.hq_status='CONFIRMED' is the third step (in branch DB).
 // All three are wrapped so a failure at any step rolls back cleanly.
-router.post('/:slug/:syncId/confirm', hqAuth, (req, res) => {
+router.post('/:slug/:syncId/confirm', hqAuth, requirePagePerm('HqConfirmGrn'), (req, res) => {
   try {
     const { slug, syncId } = req.params;
     const { notes } = req.body || {};
@@ -524,7 +529,7 @@ router.post('/:slug/:syncId/confirm', hqAuth, (req, res) => {
 // The rejected GRN itself is NOT deleted — it stays as an audit record.
 //
 // Body: { reason } — required, surfaced on the branch GRN list.
-router.post('/:slug/:syncId/reject', hqAuth, (req, res) => {
+router.post('/:slug/:syncId/reject', hqAuth, requirePagePerm('HqConfirmGrn'), (req, res) => {
   try {
     const { slug, syncId } = req.params;
     const reason = ((req.body && req.body.reason) || '').toString().trim();
@@ -593,7 +598,7 @@ router.post('/:slug/:syncId/reject', hqAuth, (req, res) => {
 //
 // Requires admin password (verified client-side via AdminPasswordPrompt),
 // admin id/name passed in body as attestation. Reason mandatory for audit.
-router.post('/:syncId/void', hqAuth, (req, res) => {
+router.post('/:syncId/void', hqAuth, requirePagePerm('HqGrnArchive'), (req, res) => {
   try {
     if (!masterDb) return res.status(400).json({ error: 'master.db unavailable' });
     const syncId = req.params.syncId;
@@ -779,7 +784,7 @@ router.post('/:syncId/void', hqAuth, (req, res) => {
 //
 // Audit: edited_by / edited_by_name / edited_at / edit_reason.
 // Requires admin password (verified client-side via AdminPasswordPrompt).
-router.post('/:syncId/edit', hqAuth, (req, res) => {
+router.post('/:syncId/edit', hqAuth, requirePagePerm('HqGrnArchive'), (req, res) => {
   try {
     if (!masterDb) return res.status(400).json({ error: 'master.db unavailable' });
     const syncId = req.params.syncId;
@@ -986,7 +991,7 @@ router.post('/:syncId/edit', hqAuth, (req, res) => {
 //   ?limit=N          row cap (default 500, max 2000)
 // Returns rows + roll-up totals so the page header can show
 // "X GRNs / $Y payable" without a second query.
-router.get('/archive', hqAuth, (req, res) => {
+router.get('/archive', hqAuth, requirePagePerm('HqGrnArchive'), (req, res) => {
   try {
     if (!masterDb) return res.json({ grns: [], totals: { count: 0, subtotal: 0, cn: 0, payable: 0 } });
     const { branch, supplier, from, to } = req.query || {};
@@ -1125,7 +1130,7 @@ router.get('/archive', hqAuth, (req, res) => {
 //      (location='sales' — Sosna's no-store model)
 //   3. Updates linked hq_purchase_items.status = 'CONFIRMED', stamps audit
 //   4. Persists CNs at hq_supplier_credit_notes if provided
-router.post('/generate', hqAuth, (req, res) => {
+router.post('/generate', hqAuth, requirePagePerm('HqConfirmGrn'), (req, res) => {
   try {
     if (!masterDb) return res.status(500).json({ error: 'master.db unavailable' });
     const {

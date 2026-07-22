@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { getUsers, getUserStats, createUser, updateUser, deleteUser } from '../services/api';
+import { getUsers, getUserStats, createUser, updateUser, deleteUser, isHqHost } from '../services/api';
 import { FiPlus, FiSearch, FiEdit2, FiTrash2, FiUsers, FiUserCheck, FiUserX, FiShield, FiX, FiEye, FiEyeOff, FiUser, FiMail, FiPhone, FiLock } from 'react-icons/fi';
 import Toast from '../components/Toast';
 import Portal from '../utils/Portal';
@@ -13,7 +13,27 @@ const avatarColors = ['#dc2626', '#2563eb', '#16a34a', '#f59e0b', '#9333ea', '#0
 
 const ACTIONS = ['View', 'Add', 'Edit', 'Delete'];
 
-const PAGE_GROUPS = [
+// v1.10.245 — permission catalogue split by context.
+//
+// Branch pages (POS, Cashier, Dispatch, per-branch reports, SIV, Sales
+// Returns, StockAdjustment, StockReconciliation, StockCount, BinCard,
+// ExpiryReport, ProfitReport, AccountReceivables, Customers) only make
+// sense on a branch subdomain — they don't render on the HQ sidebar and
+// hitting their routes on HQ context returns empty. Hidden on HQ.
+//
+// HQ pages (HqOverview, HqSalesReport, HqInventoryReport, HqCashPosition,
+// HqConsolidatedProfit, HqProducts, HqPurchases, HqCostOfDelivery,
+// HqConfirmGrn, HqGrnArchive, HqVariances, HqConfirmDamages, HqSuppliers)
+// only appear on the HQ sidebar. Hidden on branches.
+//
+// Shared pages (Items, Categories, GRN, Inventory, CashReceipt,
+// PaymentVoucher, PvTypes, CashBook, HQDeposits, FxRates, AccountPayables,
+// CapitalAccount, DividendAccount, Shareholders, LoanAccount, Suppliers)
+// render on both. They stay in every context.
+//
+// getPageGroups(hq) returns the correct catalog for the current host.
+
+const PAGE_GROUPS_BRANCH = [
   {
     group: 'Sales',
     pages: [
@@ -72,6 +92,63 @@ const PAGE_GROUPS = [
   },
 ];
 
+const PAGE_GROUPS_HQ = [
+  {
+    group: 'HQ Operations',
+    pages: [
+      { key: 'HqOverview',           label: 'HQ Overview' },
+      { key: 'HqSalesReport',        label: 'HQ Sales Report' },
+      { key: 'HqInventoryReport',    label: 'HQ Inventory' },
+      { key: 'HqCashPosition',       label: 'HQ Cash Position' },
+      { key: 'HqConsolidatedProfit', label: 'HQ Consolidated Profit' },
+    ],
+  },
+  {
+    group: 'HQ Procurement',
+    pages: [
+      { key: 'HqPurchases',       label: 'HQ Purchases' },
+      { key: 'HqCostOfDelivery',  label: 'Cost of Delivery' },
+      { key: 'HqConfirmGrn',      label: 'Generate GRN' },
+      { key: 'HqGrnArchive',      label: 'GRN Archive' },
+      { key: 'GRN',               label: 'GRN (direct)' },
+      { key: 'HqVariances',       label: 'Transit Variances' },
+      { key: 'HqConfirmDamages',  label: 'Confirm Damages' },
+    ],
+  },
+  {
+    group: 'HQ Catalogue',
+    pages: [
+      { key: 'Items',       label: 'Item Details' },
+      { key: 'Categories',  label: 'Categories & Units' },
+    ],
+  },
+  {
+    group: 'Accounting',
+    pages: [
+      { key: 'CashReceipt',        label: 'Cash Receipt (CR)' },
+      { key: 'PaymentVoucher',     label: 'Payment Voucher (PV)' },
+      { key: 'PvTypes',            label: 'PV Types' },
+      { key: 'CashBook',           label: 'Cash Book' },
+      { key: 'HQDeposits',         label: 'HQ Deposits' },
+      { key: 'FxRates',            label: 'Currency Rates' },
+      { key: 'AccountPayables',    label: 'Account Payables' },
+      { key: 'CapitalAccount',     label: 'Capital Account' },
+      { key: 'DividendAccount',    label: 'Dividend Account' },
+      { key: 'Shareholders',       label: 'Shareholders' },
+      { key: 'LoanAccount',        label: 'Loan Account' },
+    ],
+  },
+  {
+    group: 'Suppliers',
+    pages: [
+      { key: 'HqSuppliers', label: 'HQ Suppliers' },
+      { key: 'Suppliers',   label: 'Suppliers (legacy)' },
+    ],
+  },
+];
+
+const PAGE_GROUPS = isHqHost() ? PAGE_GROUPS_HQ : PAGE_GROUPS_BRANCH;
+
 // Expands old flat permissions (e.g. 'GRN', 'Accounting') to new 'Page:Action' format
 const LEGACY_EXPAND = {
   POS:        ['POS'],
@@ -83,6 +160,10 @@ const LEGACY_EXPAND = {
   Accounting: ['CashReceipt', 'PaymentVoucher', 'PvTypes', 'CashBook', 'HQDeposits', 'FxRates', 'AccountPayables', 'AccountReceivables', 'CapitalAccount', 'DividendAccount', 'Shareholders', 'LoanAccount', 'ProfitReport'],
   Suppliers:  ['Suppliers'],
   Customers:  ['Customers'],
+  // v1.10.245 — HQ umbrella key implies every HQ-only page. Grants
+  // admins a one-click way to give an HQ manager full HQ access without
+  // ticking 13 boxes.
+  HQ:         ['HqOverview', 'HqSalesReport', 'HqInventoryReport', 'HqCashPosition', 'HqConsolidatedProfit', 'HqProducts', 'HqPurchases', 'HqCostOfDelivery', 'HqConfirmGrn', 'HqGrnArchive', 'HqVariances', 'HqConfirmDamages', 'HqSuppliers'],
 };
 
 const expandOldPerms = (perms) => {

@@ -32,6 +32,23 @@ const LEGACY_MAP = {
   ProfitReport:        'Accounting',
   Suppliers:           'Suppliers',
   Customers:           'Customers',
+  // v1.10.245 — HQ page keys share a single legacy umbrella 'HQ' so a user
+  // with the flat 'HQ' perm passes any HqXxx:Action check. Grants admins a
+  // one-line way to give an HQ manager full HQ access before the fine-
+  // grained checkboxes get ticked.
+  HqOverview:           'HQ',
+  HqSalesReport:        'HQ',
+  HqInventoryReport:    'HQ',
+  HqCashPosition:       'HQ',
+  HqConsolidatedProfit: 'HQ',
+  HqProducts:           'HQ',
+  HqPurchases:          'HQ',
+  HqCostOfDelivery:     'HQ',
+  HqConfirmGrn:         'HQ',
+  HqGrnArchive:         'HQ',
+  HqVariances:          'HQ',
+  HqConfirmDamages:     'HQ',
+  HqSuppliers:          'HQ',
 };
 
 export const AuthProvider = ({ children }) => {

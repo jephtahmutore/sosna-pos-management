@@ -59,6 +59,11 @@ function requirePagePerm(page) {
       if (perms.some(p => p === page || p === `${page}:Add` || p === `${page}:Edit` || p === `${page}:View` || p === `${page}:Delete`)) {
         return next();
       }
+      // v1.10.245 — 'All' / 'Full Access' umbrella keys unlock every page,
+      // matching the frontend isAllAccess pattern. Also honour the flat
+      // 'HQ' umbrella for HqXxx pages (see AuthContext.js LEGACY_MAP).
+      if (perms.some(p => p === 'All' || p === 'Full Access')) return next();
+      if (page.startsWith('Hq') && perms.includes('HQ')) return next();
       return res.status(403).json({ error: `${page} permission required` });
     } catch (e) {
       return res.status(500).json({ error: e.message });

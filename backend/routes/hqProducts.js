@@ -28,6 +28,10 @@ const jwt = require('jsonwebtoken');
 const { randomUUID } = require('crypto');
 const { masterDb, listTenants } = require('../config/masterDb');
 const { getTenantDb } = require('../config/tenantDb');
+// v1.10.245 — HQ Item Catalog gated by the shared 'Items' perm (same key
+// branches use for their Item Details page, so a manager granted 'Items'
+// on the branch keeps their catalog view on the HQ mirror).
+const { requirePagePerm } = require('../middleware/auth');
 
 function hqAuth(req, res, next) {
   try {
@@ -218,7 +222,7 @@ function pushToBranches(hqRow) {
 // Deleted rows are excluded by default so the HQ list + branch picker
 // don't show ghost products. Pass ?status=Deleted explicitly to surface
 // them (e.g. for an admin "trash" view later).
-router.get('/', hqAuth, (req, res) => {
+router.get('/', hqAuth, requirePagePerm('Items'), (req, res) => {
   try {
     const status = String(req.query.status || '').trim();
     const q      = String(req.query.q || '').trim().toLowerCase();
@@ -239,7 +243,7 @@ router.get('/', hqAuth, (req, res) => {
 
 // GET /api/hq/products/:id — header + per-branch override snapshot so HQ
 // can see which branches deviated from the default cost/selling.
-router.get('/:id', hqAuth, (req, res) => {
+router.get('/:id', hqAuth, requirePagePerm('Items'), (req, res) => {
   try {
     const row = masterDb.prepare(`SELECT * FROM hq_products WHERE id = ?`).get(req.params.id);
     if (!row) return res.status(404).json({ error: 'Product not found' });
@@ -265,7 +269,7 @@ router.get('/:id', hqAuth, (req, res) => {
 // v1.5.0: prices/min_stock/notes removed (branch-owned). Adds default_unit,
 // container, UB barcode. product_type field is gone — branch products
 // always default to 'finished'.
-router.post('/', hqAuth, (req, res) => {
+router.post('/', hqAuth, requirePagePerm('Items'), (req, res) => {
   try {
     const { code, name, category_name, main_category_name, unit,
             units_json, status, image_url,
@@ -316,7 +320,7 @@ router.post('/', hqAuth, (req, res) => {
 // v1.5.0: every HQ edit always overwrites the HQ-owned fields on every
 // branch (per user spec). Branch-owned columns (cost, price, min stock,
 // status) are never touched.
-router.put('/:id', hqAuth, (req, res) => {
+router.put('/:id', hqAuth, requirePagePerm('Items'), (req, res) => {
   try {
     const row = masterDb.prepare(`SELECT * FROM hq_products WHERE id = ?`).get(req.params.id);
     if (!row) return res.status(404).json({ error: 'Product not found' });
@@ -374,7 +378,7 @@ router.put('/:id', hqAuth, (req, res) => {
 // branch row (deleted_at = now). Historical rows that pre-dated all
 // of this are unaffected — they reference the snapshot, not the live
 // row.
-router.delete('/:id', hqAuth, (req, res) => {
+router.delete('/:id', hqAuth, requirePagePerm('Items'), (req, res) => {
   try {
     const row = masterDb.prepare(`SELECT * FROM hq_products WHERE id = ?`).get(req.params.id);
     if (!row) return res.status(404).json({ error: 'Product not found' });
@@ -434,7 +438,7 @@ router.delete('/:id', hqAuth, (req, res) => {
 // POST /api/hq/products/:id/push — manual re-push (handy for newly-added
 // branches that joined after the product was created, or to recover
 // after a transient branch DB failure).
-router.post('/:id/push', hqAuth, (req, res) => {
+router.post('/:id/push', hqAuth, requirePagePerm('Items'), (req, res) => {
   try {
     const row = masterDb.prepare(`SELECT * FROM hq_products WHERE id = ?`).get(req.params.id);
     if (!row) return res.status(404).json({ error: 'Product not found' });

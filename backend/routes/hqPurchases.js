@@ -23,6 +23,9 @@ const router  = express.Router();
 const jwt = require('jsonwebtoken');
 const { randomUUID } = require('crypto');
 const { listTenants, isRegistered, masterDb } = require('../config/masterDb');
+// v1.10.245 — HQ page perm gate. Applied at router level (see below) so
+// every endpoint in this file demands HqPurchases perm.
+const { requirePagePerm } = require('../middleware/auth');
 const { getTenantDb } = require('../config/tenantDb');
 const { conversionToBase } = require('../config/unitsHelper');
 // v1.10.214 — per-device shortcode via syncConfig (Electron-safe).
@@ -96,7 +99,7 @@ function destinationCurrencyMode(slug) {
 // product_sync_id is optional — when blank we auto-generate one so the
 // destination branch creates a matching product on receive. Pre-existing
 // branch products can be linked by passing their sync_id.
-router.post('/', hqAuth, (req, res) => {
+router.post('/', hqAuth, requirePagePerm('HqPurchases'), (req, res) => {
   try {
     const { supplier_id, supplier_name, invoice_number, date, notes, items,
             cost_currency, fx_rate_used } = req.body || {};
@@ -232,7 +235,7 @@ function getOne(syncIdOrId) {
 }
 
 // GET /api/hq/purchases — list (HQ side, all branches).
-router.get('/', hqAuth, (req, res) => {
+router.get('/', hqAuth, requirePagePerm('HqPurchases'), (req, res) => {
   try {
     const status = String(req.query.status || '').toUpperCase();
     let sql = `SELECT * FROM hq_purchases`;
@@ -276,7 +279,7 @@ router.get('/', hqAuth, (req, res) => {
 // GRN_SUBMITTED = waiting for HQ confirmation, branch can see it but
 // can't re-submit). Sort by submitted/created time so the freshest
 // arrivals float to the top.
-router.get('/incoming', hqAuth, (req, res) => {
+router.get('/incoming', hqAuth, requirePagePerm('HqPurchases'), (req, res) => {
   try {
     const slug = String(req.query.slug || '').toLowerCase();
     if (!slug) return res.status(400).json({ error: 'slug is required' });
@@ -302,7 +305,7 @@ router.get('/incoming', hqAuth, (req, res) => {
 // HQ hasn't confirmed yet. Drives the "Confirm GRN" page + the HQ
 // notification badge. Includes the destination slug so HQ knows
 // which branch counted what.
-router.get('/awaiting-confirmation', hqAuth, (req, res) => {
+router.get('/awaiting-confirmation', hqAuth, requirePagePerm('HqPurchases'), (req, res) => {
   try {
     const rows = masterDb.prepare(`
       SELECT i.*,
@@ -321,7 +324,7 @@ router.get('/awaiting-confirmation', hqAuth, (req, res) => {
 });
 
 // GET /api/hq/purchases/:id — detail (HQ side, with items).
-router.get('/:id', hqAuth, (req, res) => {
+router.get('/:id', hqAuth, requirePagePerm('HqPurchases'), (req, res) => {
   try {
     const out = getOne(parseInt(req.params.id, 10));
     if (!out) return res.status(404).json({ error: 'Purchase not found' });
@@ -358,7 +361,7 @@ function maybeCompleteHeader(purchaseId) {
 // yet** — that happens when HQ confirms the GRN, because HQ is the only
 // place authorised to lock in supplier AP. If branch needs to re-submit
 // (HQ rejected), the same endpoint accepts it again from AWAITING_GRN.
-router.put('/items/:itemId/submit-grn', hqAuth, (req, res) => {
+router.put('/items/:itemId/submit-grn', hqAuth, requirePagePerm('HqPurchases'), (req, res) => {
   try {
     // v1.8.65 — reason field aligned with transfer_variances vocabulary.
     // Accepts 'OK' | 'Short' | 'Damaged' | 'Lost'. Defaults to derived
@@ -408,7 +411,7 @@ router.put('/items/:itemId/submit-grn', hqAuth, (req, res) => {
 // supplier AP is committed and can be paid via /hq/suppliers/:id/payments.
 // Body: { confirm_notes? }  (HQ doesn't override the qty — if HQ disagrees
 // with the branch count it rejects instead.)
-router.put('/items/:itemId/confirm', hqAuth, (req, res) => {
+router.put('/items/:itemId/confirm', hqAuth, requirePagePerm('HqPurchases'), (req, res) => {
   try {
     const { confirm_notes } = req.body || {};
     const item = masterDb.prepare(`SELECT * FROM hq_purchase_items WHERE id = ?`).get(req.params.itemId);
@@ -561,7 +564,7 @@ router.put('/items/:itemId/confirm', hqAuth, (req, res) => {
 // HQ action — pushes a GRN_SUBMITTED line back to the branch for a recount.
 // confirm_notes captures the reason ("recount needed", "supplier delivery
 // note says 8 not 10", etc); branch sees it on their Pending GRN screen.
-router.put('/items/:itemId/reject', hqAuth, (req, res) => {
+router.put('/items/:itemId/reject', hqAuth, requirePagePerm('HqPurchases'), (req, res) => {
   try {
     const { confirm_notes } = req.body || {};
     const item = masterDb.prepare(`SELECT * FROM hq_purchase_items WHERE id = ?`).get(req.params.itemId);
@@ -597,7 +600,7 @@ router.put('/items/:itemId/reject', hqAuth, (req, res) => {
 // different branch or cancel it outright.
 //
 // Body: { reason }  — required, surfaced on HQ's incoming view.
-router.put('/items/:itemId/branch-reject', hqAuth, (req, res) => {
+router.put('/items/:itemId/branch-reject', hqAuth, requirePagePerm('HqPurchases'), (req, res) => {
   try {
     const reason = ((req.body && req.body.reason) || '').toString().trim();
     if (!reason) return res.status(400).json({ error: 'A rejection reason is required.' });
@@ -647,7 +650,7 @@ router.put('/items/:itemId/branch-reject', hqAuth, (req, res) => {
 // no branch stock has moved). Confirmed lines can't be cancelled here
 // because they already changed branch stock; you'd need a damages /
 // adjustment flow for that.
-router.put('/items/:itemId/cancel', hqAuth, (req, res) => {
+router.put('/items/:itemId/cancel', hqAuth, requirePagePerm('HqPurchases'), (req, res) => {
   try {
     const item = masterDb.prepare(`SELECT * FROM hq_purchase_items WHERE id = ?`).get(req.params.itemId);
     if (!item) return res.status(404).json({ error: 'Line not found' });
@@ -688,7 +691,7 @@ router.put('/items/:itemId/cancel', hqAuth, (req, res) => {
 // a branch; cancellation would need a counter-movement which v1.3 doesn't
 // support — use the damages workflow for that). AWAITING_GRN +
 // GRN_SUBMITTED lines flip to CANCELLED in one go.
-router.put('/:id/cancel', hqAuth, (req, res) => {
+router.put('/:id/cancel', hqAuth, requirePagePerm('HqPurchases'), (req, res) => {
   try {
     const p = masterDb.prepare(`SELECT * FROM hq_purchases WHERE id = ?`).get(req.params.id);
     if (!p) return res.status(404).json({ error: 'Purchase not found' });

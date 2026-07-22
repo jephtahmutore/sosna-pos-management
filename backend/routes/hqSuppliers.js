@@ -19,6 +19,8 @@ const router  = express.Router();
 const jwt = require('jsonwebtoken');
 const { randomUUID } = require('crypto');
 const { masterDb } = require('../config/masterDb');
+// v1.10.245 — HQ page perm gate.
+const { requirePagePerm } = require('../middleware/auth');
 const db = require('../config/database');
 
 // v1.10.76 — On this deploy HQ runs as the single-tenant "bare host"
@@ -152,7 +154,7 @@ function requireHqDb(res) {
 }
 
 // GET /api/hq/suppliers — list with AP balance per row.
-router.get('/', hqAuth, (req, res) => {
+router.get('/', hqAuth, requirePagePerm('HqSuppliers'), (req, res) => {
   try {
     const hqDb = requireHqDb(res); if (!hqDb) return;
     const suppliers = hqDb.prepare(`
@@ -167,7 +169,7 @@ router.get('/', hqAuth, (req, res) => {
 });
 
 // GET /api/hq/suppliers/:id — detail with purchases + payments + credits history.
-router.get('/:id', hqAuth, (req, res) => {
+router.get('/:id', hqAuth, requirePagePerm('HqSuppliers'), (req, res) => {
   try {
     const hqDb = requireHqDb(res); if (!hqDb) return;
     const s = hqDb.prepare(`SELECT * FROM suppliers WHERE id = ?`).get(req.params.id);
@@ -223,7 +225,7 @@ router.get('/:id', hqAuth, (req, res) => {
 });
 
 // POST /api/hq/suppliers — create.
-router.post('/', hqAuth, (req, res) => {
+router.post('/', hqAuth, requirePagePerm('HqSuppliers'), (req, res) => {
   try {
     const hqDb = requireHqDb(res); if (!hqDb) return;
     const { name, phone, email, address, contact_person, notes } = req.body || {};
@@ -247,7 +249,7 @@ router.post('/', hqAuth, (req, res) => {
 });
 
 // PUT /api/hq/suppliers/:id — edit.
-router.put('/:id', hqAuth, (req, res) => {
+router.put('/:id', hqAuth, requirePagePerm('HqSuppliers'), (req, res) => {
   try {
     const hqDb = requireHqDb(res); if (!hqDb) return;
     const s = hqDb.prepare(`SELECT * FROM suppliers WHERE id = ?`).get(req.params.id);
@@ -275,7 +277,7 @@ router.put('/:id', hqAuth, (req, res) => {
 });
 
 // DELETE /api/hq/suppliers/:id — soft delete (kept for AP history).
-router.delete('/:id', hqAuth, (req, res) => {
+router.delete('/:id', hqAuth, requirePagePerm('HqSuppliers'), (req, res) => {
   try {
     const hqDb = requireHqDb(res); if (!hqDb) return;
     const s = hqDb.prepare(`SELECT * FROM suppliers WHERE id = ?`).get(req.params.id);
@@ -293,7 +295,7 @@ router.delete('/:id', hqAuth, (req, res) => {
 });
 
 // POST /api/hq/suppliers/:id/payments — record a payment to this supplier.
-router.post('/:id/payments', hqAuth, (req, res) => {
+router.post('/:id/payments', hqAuth, requirePagePerm('HqSuppliers'), (req, res) => {
   try {
     const hqDb = requireHqDb(res); if (!hqDb) return;
     const s = hqDb.prepare(`SELECT id, name, sync_id FROM suppliers WHERE id = ?`).get(req.params.id);
@@ -334,7 +336,7 @@ router.post('/:id/payments', hqAuth, (req, res) => {
 // v1.10.72 — payments live in HQ tenant DB now. Soft-delete via
 // deleted_at so Cash Book's WHERE deleted_at IS NULL drops the row
 // while keeping the audit trail.
-router.delete('/payments/:id', hqAuth, (req, res) => {
+router.delete('/payments/:id', hqAuth, requirePagePerm('HqSuppliers'), (req, res) => {
   try {
     const hqDb = getHqDb();
     if (!hqDb) return res.status(500).json({ error: 'HQ tenant DB not accessible.' });

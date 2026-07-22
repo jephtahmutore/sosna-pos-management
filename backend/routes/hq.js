@@ -20,6 +20,11 @@ const router  = express.Router();
 const jwt = require('jsonwebtoken');
 const { randomUUID } = require('crypto');
 const { listTenants, masterDb } = require('../config/masterDb');
+// v1.10.245 — HQ page permission gates. Same middleware branches use,
+// checked against permissions on the HQ user row (defaultDb.users) after
+// hqAuth verifies the JWT. Non-admin HQ users need explicit HqXxx perms
+// from Users → Permissions; admin bypasses (isAllAccess pattern).
+const { requirePagePerm } = require('../middleware/auth');
 const { getTenantDb } = require('../config/tenantDb');
 const { defaultDb }   = require('../config/database');
 const { mirrorAllHqToBranches } = require('../middleware/hqPush');
@@ -82,7 +87,7 @@ router.get('/branches', (req, res) => {
 // and runs a handful of cheap aggregations. Designed to be the "front
 // page" of HQ so the operator gets a one-screen view of every branch's
 // day at a glance. Today = midnight to now in the server's local TZ.
-router.get('/overview', hqAuth, (req, res) => {
+router.get('/overview', hqAuth, requirePagePerm('HqOverview'), (req, res) => {
   try {
     const todayPrefix = new Date().toISOString().slice(0, 10);
     const tenants = listTenants();
@@ -212,7 +217,7 @@ router.get('/overview', hqAuth, (req, res) => {
 // Sorted newest first; capped at 1000 rows so a busy multi-month query
 // can't blow up the response. Each row carries its branch slug + name so
 // the table can render origin without a second lookup.
-router.get('/sales-report', hqAuth, (req, res) => {
+router.get('/sales-report', hqAuth, requirePagePerm('HqSalesReport'), (req, res) => {
   try {
     const from   = (req.query.from   || new Date().toISOString().slice(0, 10)).toString();
     const to     = (req.query.to     || from).toString();
@@ -320,7 +325,7 @@ router.get('/sales-report', hqAuth, (req, res) => {
 //   low_only  — '1' = only rows where current_stock <= min_stock
 //   q         — substring match on product name (case-insensitive)
 // Returns: per-branch summary (count, value, low-count) + flat rows.
-router.get('/inventory-report', hqAuth, (req, res) => {
+router.get('/inventory-report', hqAuth, requirePagePerm('HqInventoryReport'), (req, res) => {
   try {
     const branch  = (req.query.branch || 'all').toString().toLowerCase();
     const lowOnly = req.query.low_only === '1' || req.query.low_only === 'true';
@@ -442,7 +447,7 @@ router.get('/inventory-report', hqAuth, (req, res) => {
 //
 // All sums use COALESCE so old rows without the split columns drop to 0
 // instead of NULLing the whole reduce.
-router.get('/cash-position', hqAuth, (req, res) => {
+router.get('/cash-position', hqAuth, requirePagePerm('HqCashPosition'), (req, res) => {
   try {
     const todayPrefix = new Date().toISOString().slice(0, 10);
     const monthPrefix = todayPrefix.slice(0, 7);
@@ -619,7 +624,7 @@ router.get('/cash-position', hqAuth, (req, res) => {
 // Each row carries: source ('TRANSFER' | 'HQ_PURCHASE'), branch slugs,
 // product, sent/received/variance qty, reason, notes, status (OPEN | RESOLVED).
 // Filters: ?source=, ?reason=, ?status=, ?slug= (matches either from/to).
-router.get('/variances', hqAuth, (req, res) => {
+router.get('/variances', hqAuth, requirePagePerm('HqVariances'), (req, res) => {
   try {
     const { source, reason, status, slug } = req.query || {};
     // Transfer variances
@@ -716,7 +721,7 @@ router.get('/variances', hqAuth, (req, res) => {
 //   resolution:    'WRITE_OFF' | 'RECOVERED'  (required)
 //   absorbed_by:   'source' | 'destination'   (required when WRITE_OFF)
 //   notes:         optional free text
-router.put('/variances/transfer/:syncId/resolve', hqAuth, (req, res) => {
+router.put('/variances/transfer/:syncId/resolve', hqAuth, requirePagePerm('HqVariances'), (req, res) => {
   try {
     const { resolution, notes, absorbed_by } = req.body || {};
     const allowed = new Set(['WRITE_OFF', 'RECOVERED']);
@@ -837,7 +842,7 @@ router.post('/mirror-all', hqAuth, (req, res) => {
 // forward-fill from the most recent prior rate; if none exists inside
 // or before the range, the Zambia contribution stays at 0 USD and a
 // warning surfaces to the UI.
-router.get('/consolidated-profit', hqAuth, (req, res) => {
+router.get('/consolidated-profit', hqAuth, requirePagePerm('HqConsolidatedProfit'), (req, res) => {
   try {
     const from = (req.query.from || new Date().toISOString().slice(0, 10)).toString();
     const to   = (req.query.to   || from).toString();
