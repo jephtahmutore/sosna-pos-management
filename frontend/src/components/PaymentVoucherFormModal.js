@@ -91,7 +91,13 @@ const PaymentVoucherFormModal = ({
       // v1.10.244 — fetch current drawer balances so the modal shows the
       // ceiling per input. Silent-fail: if the endpoint is unreachable,
       // hints just don't render (backend guard still enforces on save).
-      getCashBookStats()
+      // v1.10.246 — pass slug='hq' so /stats includes HQ's incoming
+      // deposits from branches in receiptsByCcy. Without the slug the
+      // endpoint has no way to know it should read HQ_INBOX_SLUGS and
+      // returns openingByCcy − payments only, driving currentByCcy
+      // ~$230k negative — the exact bug that made the modal's hints
+      // disagree with the backend guard.
+      getCashBookStats({ slug: 'hq' })
         .then(r => {
           const d = r?.data || {};
           setBalances({
