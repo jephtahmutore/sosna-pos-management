@@ -158,6 +158,10 @@ const SYNC_TABLES = [
   // one device never reach the others (cash report Expected drifts);
   // FX rate changes never propagate (cashier rings up at stale rate).
   'currency_exchanges', 'fx_rates',
+  // v1.10.247 — empty crate/bottle returns to supplier. Tables + full sync
+  // columns exist since v1.1.2 but were missing from both lists. Adding
+  // both sides so the round-trip closes.
+  'empty_returns', 'empty_return_items',
 ];
 
 // ─── POST /api/sync/register ─────────────────────────────────────────────────

@@ -769,6 +769,22 @@ db.exec(`
   }
 })();
 
+// ─── Schema drift fix: run the shared tenant-DB migrations too ────────────
+// v1.10.247 — the inline runSyncMigration() above adds sync columns but
+// stops at v1.1.x's table set. Every new column added on VPS via
+// config/migrations.js since the Electron fork was silently missing here,
+// so sync would drop those fields row-by-row on pull. initTenantDb() is
+// documented as safe to re-run (IF NOT EXISTS + column checks). One call
+// closes the schema-drift landmine permanently — future migrations added
+// to config/migrations.js pick up on Electron automatically.
+try {
+  const { initTenantDb } = require('./config/migrations');
+  initTenantDb(db);
+  console.log('[schema] initTenantDb migrations applied');
+} catch (e) {
+  console.error('[schema] initTenantDb failed:', e.message);
+}
+
 // ─── Sync: initialise device_id ──────────────────────────────────────────────
 syncConfig.init(db);
 

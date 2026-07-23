@@ -751,17 +751,11 @@ const SystemSettings = () => {
           </div>
         </div>
 
-        {/* ── Factory Reset (Danger Zone) ──────────────────────────────── */}
-        <div className="form-section" style={{ marginTop: 24, borderTop: '2px solid #fee2e2', paddingTop: 20 }}>
-          <h3 className="form-section-title" style={{ color: '#dc2626' }}><FiAlertTriangle /> Danger Zone</h3>
-          <p style={{ fontSize: 13, color: '#6b7280', marginBottom: 12 }}>
-            Factory reset wipes all local data — products, orders, GRN, SIV, customers, suppliers, and disconnects from cloud. This cannot be undone.
-          </p>
-          <button type="button" onClick={() => setResetStep(1)}
-            style={{ padding: '9px 20px', background: '#fff', border: '2px solid #dc2626', borderRadius: 8, color: '#dc2626', fontWeight: 700, cursor: 'pointer', fontSize: 14 }}>
-            <FiAlertTriangle style={{ marginRight: 6 }} /> Factory Reset
-          </button>
-        </div>
+        {/* v1.10.247 — Factory Reset menu entry hidden per user request.
+            Backend route (routes/sync.js) and modals kept in place so
+            existing URL/keyboard access still works if ever needed, but
+            the user-visible button is gone. Delete the whole block in a
+            follow-up if this stays hidden. */}
       </div>
 
       {/* ── Confirm reset modals ────────────────────────────────────────── */}

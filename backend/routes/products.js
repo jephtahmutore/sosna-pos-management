@@ -418,6 +418,22 @@ router.put('/:id', auth, (req, res) => {
         ).run(req.params.id, product?.sync_id, 'sales', 'adjustment', parseFloat(current_stock), 'opening_balance', 'Opening balance',
               randomUUID(), tenantId, branchId, deviceId);
       }
+      // v1.10.247 — the main UPDATE above set current_stock to the raw
+      // request value (i.e. just the new opening balance). Non-opening
+      // movements (sales/GRNs/adjustments) still live in the ledger, so
+      // cache and SUM(stock_movements) would disagree by exactly the
+      // sum of those other movements. Recompute for THIS product only
+      // so the cache stays consistent without waiting for the boot heal.
+      // Ports Redsea v1.13.21 Category-B fix #4 to Sosna.
+      if (product?.sync_id) {
+        db.prepare(`
+          UPDATE products SET current_stock = COALESCE((
+            SELECT SUM(sm.quantity) FROM stock_movements sm
+             WHERE sm.product_sync_id = ? AND sm.deleted_at IS NULL
+          ), 0), updated_at = datetime('now'), synced = 0
+           WHERE id = ?
+        `).run(product.sync_id, req.params.id);
+      }
     })();
     const row = db.prepare('SELECT * FROM products WHERE id = ?').get(req.params.id);
     // v1.6.1: when HQ edits a product, the HQ-owned columns are

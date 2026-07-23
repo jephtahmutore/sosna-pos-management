@@ -225,6 +225,15 @@ router.post('/', auth, (req, res) => {
              VALUES (?,?,?,?,?,?,?,?,?,?,?,?,0,?,datetime('now'),?)`
           ).run(item.product_id, productSyncId, 'sales', 'grn', baseQty, grnId, 'grn', req.user.id,
                 randomUUID(), tenantId, branchId, deviceId, movementCreatedAt, grnSyncId);
+          // v1.10.247 — pair the movement with a cache bump so
+          // products.current_stock doesn't drift from SUM(stock_movements)
+          // between boot-time rebuilds. Ports Redsea v1.13.21 Category-B
+          // fix #1 to Sosna.
+          if (productSyncId) {
+            db.prepare(
+              `UPDATE products SET current_stock = COALESCE(current_stock, 0) + ?, updated_at = datetime('now'), synced = 0 WHERE sync_id = ?`
+            ).run(baseQty, productSyncId);
+          }
 
           // Container stock movement — net (received − returned). Skipped when no net change.
           const containerDelta = recv - ret;
@@ -237,6 +246,10 @@ router.post('/', auth, (req, res) => {
             ).run(containerProd?.id || null, containerSyncId, 'sales', 'grn', containerDelta, grnId, 'grn',
                   `Container settlement via ${grnNum}`, req.user.id,
                   randomUUID(), tenantId, branchId, deviceId, movementCreatedAt, grnSyncId);
+            // v1.10.247 — pair container movement with cache bump too.
+            db.prepare(
+              `UPDATE products SET current_stock = COALESCE(current_stock, 0) + ?, updated_at = datetime('now'), synced = 0 WHERE sync_id = ?`
+            ).run(containerDelta, containerSyncId);
           }
         }
       }
@@ -480,6 +493,23 @@ router.put('/:id', auth, (req, res) => {
       const grnRecord = db.prepare('SELECT sync_id FROM grn WHERE id=?').get(id);
       const grnSyncId = grnRecord?.sync_id;
 
+      // v1.10.247 — before soft-deleting the old movements, roll their net
+      // qty off products.current_stock so the cache stays in sync. Otherwise
+      // the edit would leave the cache holding the OLD movement totals PLUS
+      // the fresh ones about to be inserted (double count). Ports Redsea
+      // v1.13.21 Category-B fix #2 to Sosna.
+      const soonRemoved = db.prepare(
+        `SELECT product_sync_id, SUM(quantity) AS net
+           FROM stock_movements
+          WHERE reference_sync_id = ? AND reference_type = 'grn' AND deleted_at IS NULL
+          GROUP BY product_sync_id`
+      ).all(grnSyncId);
+      const stockDeltaStmt = db.prepare(
+        `UPDATE products SET current_stock = COALESCE(current_stock, 0) + ?, updated_at = datetime('now'), synced = 0 WHERE sync_id = ?`
+      );
+      for (const r of soonRemoved) {
+        if (r.product_sync_id) stockDeltaStmt.run(-r.net, r.product_sync_id);
+      }
       db.prepare("UPDATE stock_movements SET deleted_at=datetime('now'), updated_at=datetime('now'), synced=0 WHERE reference_sync_id=? AND reference_type='grn' AND deleted_at IS NULL").run(grnSyncId);
       db.prepare("UPDATE grn_items SET deleted_at=datetime('now'), updated_at=datetime('now'), synced=0 WHERE grn_sync_id=? AND deleted_at IS NULL").run(grnSyncId);
 
@@ -508,6 +538,8 @@ router.put('/:id', auth, (req, res) => {
         db.prepare(`INSERT INTO stock_movements (product_id, product_sync_id, location, movement_type, quantity, reference_id, reference_type, created_by, sync_id, tenant_id, branch_id, device_id, synced, created_at, updated_at, reference_sync_id) VALUES (?,?,'store','grn',?,?,?,?,?,?,?,?,0,?,datetime('now'),?)`).run(
           item.product_id, productSyncId, baseQty, id, 'grn', req.user.id, randomUUID(), tenantId, branchId, deviceId, movementCreatedAt, grnSyncId
         );
+        // v1.10.247 — pair with cache bump (fresh movement on the re-inserted row).
+        if (productSyncId) stockDeltaStmt.run(baseQty, productSyncId);
 
         const containerDelta = recv - ret;
         if (containerSyncId && Math.abs(containerDelta) > 0.001) {
@@ -518,6 +550,7 @@ router.put('/:id', auth, (req, res) => {
             containerProd?.id || null, containerSyncId, containerDelta, id, 'Container settlement (GRN edit)', req.user.id,
             randomUUID(), tenantId, branchId, deviceId, movementCreatedAt, grnSyncId
           );
+          stockDeltaStmt.run(containerDelta, containerSyncId);
         }
       }
 
@@ -658,6 +691,23 @@ router.delete('/:id', auth, (req, res) => {
 
       // Soft-delete the auto-SIV first (if any) — it'll cascade its own stock movements too.
       deleteAutoSivForGrn(db, grn.sync_id);
+      // v1.10.247 — roll the GRN's net stock movement off products.current_stock
+      // BEFORE soft-deleting the rows, so the cache stays in sync. Without
+      // this, the cache would still hold the "+baseQty" from the original
+      // GRN even after the movement is soft-deleted → drift. Ports Redsea
+      // v1.13.21 Category-B fix #3 to Sosna.
+      const soonRemoved = db.prepare(
+        `SELECT product_sync_id, SUM(quantity) AS net
+           FROM stock_movements
+          WHERE reference_sync_id = ? AND reference_type = 'grn' AND deleted_at IS NULL
+          GROUP BY product_sync_id`
+      ).all(grn.sync_id);
+      const stockDeltaStmt = db.prepare(
+        `UPDATE products SET current_stock = COALESCE(current_stock, 0) + ?, updated_at = datetime('now'), synced = 0 WHERE sync_id = ?`
+      );
+      for (const r of soonRemoved) {
+        if (r.product_sync_id) stockDeltaStmt.run(-r.net, r.product_sync_id);
+      }
       db.prepare("UPDATE stock_movements SET deleted_at=datetime('now'), updated_at=datetime('now'), synced=0 WHERE reference_sync_id=? AND reference_type='grn' AND deleted_at IS NULL").run(grn.sync_id);
       db.prepare("UPDATE grn_items SET deleted_at=datetime('now'), updated_at=datetime('now'), synced=0 WHERE grn_sync_id=? AND deleted_at IS NULL").run(grn.sync_id);
       db.prepare("UPDATE grn SET deleted_at=datetime('now'), updated_at=datetime('now'), synced=0 WHERE id=?").run(id);

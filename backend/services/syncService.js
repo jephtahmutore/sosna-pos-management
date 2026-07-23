@@ -46,6 +46,11 @@ const SYNC_TABLES = [
   // FX swaps that feed Cash Report Expected; fx_rates = the rate table
   // every receipt + cashier pay modal reads from. Both MUST sync.
   'currency_exchanges', 'fx_rates',
+  // v1.10.247 — empty crate/bottle returns to supplier. Tables existed with
+  // full sync columns since v1.1.2 and the route already flips synced=0 on
+  // writes, but they were missing from both SYNC_TABLES lists — so returns
+  // entered on Electron never pushed to VPS (and vice versa).
+  'empty_returns', 'empty_return_items',
 ];
 
 const DEFAULT_VPS_URL = (process.env.VPS_URL || 'https://sosnazm.com').replace(/\/$/, '');
