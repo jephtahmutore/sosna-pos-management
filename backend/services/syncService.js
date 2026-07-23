@@ -53,6 +53,24 @@ const SYNC_TABLES = [
   'empty_returns', 'empty_return_items',
 ];
 
+// v1.10.248 — master.db sync bridge. These 9 tables live in master.db on
+// the VPS, not in per-tenant DBs. On Electron they've been invisible until
+// now because master.db was null. The new endpoints (routes/sync.js
+// /master/pull + /master/push) plus these client-side helpers ferry rows
+// between the local master.db mirror and VPS master.db every cycle.
+// KEEP IN SYNC with routes/sync.js MASTER_SYNC_TABLES.
+const MASTER_SYNC_TABLES = [
+  'cash_deposits',
+  'stock_transfers',
+  'transfer_variances',
+  'hq_purchases',
+  'hq_purchase_items',
+  'hq_grns',
+  'hq_grn_items',
+  'hq_supplier_credit_notes',
+  'hq_supplier_credit_note_items',
+];
+
 const DEFAULT_VPS_URL = (process.env.VPS_URL || 'https://sosnazm.com').replace(/\/$/, '');
 function getVpsUrl() {
   const stored = _syncConfig ? _syncConfig.get('vps_url') : null;
@@ -297,6 +315,156 @@ async function pull(opts = {}) {
   return { ok: true, tables: pulled, total: totalRows };
 }
 
+// ─── v1.10.248 — master.db sync bridge ────────────────────────────────────────
+// Loaded lazily to avoid circular imports (masterDb.js indirectly requires
+// this file's exports on the VPS side).
+function _getMasterDb() {
+  try { return require('../config/masterDb').masterDb || null; }
+  catch { return null; }
+}
+
+// Discover our own branch's slug (from master.db.branches) via the VPS
+// helper endpoint, cache in sync_config, and never re-fetch. syncConfig
+// stores tenantId + branchId natively but not slug — this closes that gap
+// so every master push/pull can send `?slug=<slug>` without a per-cycle
+// lookup.
+async function ensureBranchSlug() {
+  let slug = _syncConfig.get('branch_slug');
+  if (slug) return slug;
+  const { branchId } = _syncConfig.getConfig();
+  if (!branchId) return null;
+  try {
+    const r = await request(
+      `${getSyncTargetUrl()}/api/sync/master/slug?branchId=${encodeURIComponent(branchId)}`
+    );
+    if (r.status === 200 && r.body && r.body.slug) {
+      _syncConfig.set('branch_slug', r.body.slug);
+      slog('ensureBranchSlug: cached slug=' + r.body.slug);
+      return r.body.slug;
+    }
+    slog('ensureBranchSlug: lookup failed status=' + r.status);
+  } catch (e) {
+    slog('ensureBranchSlug: error ' + e.message);
+  }
+  return null;
+}
+
+async function pushMaster() {
+  const masterDb = _getMasterDb();
+  if (!masterDb) return;                          // no local mirror yet
+  const slug = await ensureBranchSlug();
+  if (!slug) return;                              // can't scope without slug
+
+  const records = {};
+  for (const table of MASTER_SYNC_TABLES) {
+    try {
+      const cols = masterDb.prepare(`PRAGMA table_info(${table})`).all().map(c => c.name);
+      if (!cols.includes('sync_id') || !cols.includes('synced')) continue;
+      const rows = masterDb.prepare(`SELECT * FROM ${table} WHERE synced = 0`).all();
+      if (rows.length > 0) records[table] = rows;
+    } catch { /* table missing on this branch mirror */ }
+  }
+  if (Object.keys(records).length === 0) { slog('master push: nothing to push'); return; }
+
+  slog('master push: sending ' + JSON.stringify(Object.entries(records).map(([t,r]) => `${t}:${r.length}`)));
+  const result = await request(
+    `${getSyncTargetUrl()}/api/sync/master/push`,
+    'POST',
+    { slug, records }
+  );
+  slog('master push: response ' + result.status);
+
+  if (result.status === 200) {
+    // Mark pushed rows synced=1. This UPDATE trips the touch trigger's
+    // WHEN guard (NEW.synced != OLD.synced) so it's skipped and the row
+    // stays synced=1 rather than flipping back to 0.
+    masterDb.transaction(() => {
+      for (const [table, rows] of Object.entries(records)) {
+        for (const row of rows) {
+          if (!row.sync_id) continue;
+          try {
+            masterDb.prepare(`UPDATE ${table} SET synced = 1 WHERE sync_id = ?`).run(row.sync_id);
+          } catch { /* ignore */ }
+        }
+      }
+    })();
+  }
+}
+
+async function pullMaster() {
+  const masterDb = _getMasterDb();
+  if (!masterDb) return;
+  const slug = await ensureBranchSlug();
+  if (!slug) return;
+
+  const since = _syncConfig.get('last_master_pull_time') || '';
+  const url = `${getSyncTargetUrl()}/api/sync/master/pull?slug=${encodeURIComponent(slug)}&since=${encodeURIComponent(since)}`;
+  const result = await request(url);
+  slog('master pull: since=' + (since || '(initial)') + ' status=' + result.status);
+  if (result.status !== 200 || !result.body || !result.body.records) return;
+
+  masterDb.pragma('foreign_keys = OFF');
+  try {
+    for (const [table, rows] of Object.entries(result.body.records)) {
+      if (!MASTER_SYNC_TABLES.includes(table)) continue;
+      let cols;
+      try { cols = masterDb.prepare(`PRAGMA table_info(${table})`).all().map(c => c.name); }
+      catch { continue; }
+      if (!cols.includes('sync_id')) continue;
+
+      masterDb.transaction(() => {
+        for (const row of rows) {
+          if (!row.sync_id) continue;
+          try {
+            const existing = masterDb.prepare(
+              `SELECT id FROM ${table} WHERE sync_id = ?`
+            ).get(row.sync_id);
+
+            if (!existing) {
+              // Include updated_at + synced=1 in the payload so the touch
+              // trigger's WHEN NEW.updated_at IS NULL guard skips this insert.
+              const insertCols = cols.filter(c => c !== 'id' && row[c] !== undefined);
+              // Force synced column into the row (VPS always sends synced=1 or absent).
+              if (insertCols.includes('synced')) {
+                row.synced = 1;
+              } else {
+                insertCols.push('synced'); row.synced = 1;
+              }
+              const placeholders = insertCols.map(() => '?').join(', ');
+              masterDb.prepare(
+                `INSERT OR IGNORE INTO ${table} (${insertCols.join(', ')}) VALUES (${placeholders})`
+              ).run(...insertCols.map(c => row[c]));
+            } else {
+              // VPS wins — overwrite unconditionally. UPDATE changes updated_at
+              // + synced so the touch trigger's WHEN clause fails and the row
+              // stays in server-authoritative state (synced=1, VPS timestamp).
+              const updateCols = cols.filter(c => c !== 'id' && c !== 'sync_id' && row[c] !== undefined);
+              if (updateCols.length === 0) continue;
+              const hasSynced = updateCols.includes('synced');
+              const setClause = hasSynced
+                ? updateCols.map(c => `${c} = ?`).join(', ')
+                : [...updateCols.map(c => `${c} = ?`), 'synced = 1'].join(', ');
+              masterDb.prepare(`UPDATE ${table} SET ${setClause} WHERE sync_id = ?`).run(
+                ...updateCols.map(c => c === 'synced' ? 1 : row[c]),
+                row.sync_id
+              );
+            }
+          } catch (rowErr) {
+            slog(`master pull: row error [${table}] ${rowErr.message}`);
+          }
+        }
+      })();
+      await new Promise(resolve => setImmediate(resolve));
+    }
+  } finally {
+    masterDb.pragma('foreign_keys = ON');
+  }
+
+  if (result.body.serverTime) {
+    _syncConfig.set('last_master_pull_time', result.body.serverTime);
+  }
+}
+
 // ─── One full sync cycle ──────────────────────────────────────────────────────
 async function runCycle() {
   try {
@@ -317,6 +485,11 @@ async function runCycle() {
     _status = { ..._status, state: 'syncing', error: null };
     await push();
     await pull();
+    // v1.10.248 — piggyback master.db sync on the same 30s cycle. Both
+    // helpers early-return if there's no local master.db mirror (VPS side)
+    // or no slug yet, so this is a no-op on unaffected setups.
+    try { await pushMaster(); } catch (e) { slog('pushMaster error: ' + e.message); }
+    try { await pullMaster(); } catch (e) { slog('pullMaster error: ' + e.message); }
 
     const now = new Date().toISOString();
     _status = { state: 'synced', lastSynced: now, error: null };

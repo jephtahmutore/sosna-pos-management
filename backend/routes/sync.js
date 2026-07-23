@@ -920,4 +920,280 @@ router.put('/lan-config', (req, res) => {
   }
 });
 
+// ═══ v1.10.248 — master.db sync bridge ═══════════════════════════════════════
+//
+// Per-tenant sync (above) covers the branch's tenant.db. But 9 tables live in
+// master.db instead (cross-branch cash deposits, transfers, HQ purchases,
+// HQ GRNs, HQ CNs), and an Electron branch has no local master.db — those
+// tables were invisible until now. These endpoints ferry rows between a
+// branch's mirror-of-master.db and the VPS's real master.db.
+//
+// Design:
+//   * Slug is authoritative — branch identifies itself as `?slug=lusaka1` etc.
+//   * Filter per table is fixed (see MASTER_TABLE_FILTERS) so each branch
+//     only sees rows in its scope: its own deposits, transfers touching it,
+//     purchases dropped to it, GRNs generated against it, CNs it created.
+//   * Row-level triggers on master.db (see masterDb.js MASTER_SYNC_TABLES
+//     block) auto-stamp synced=0 + updated_at=now on every write, so no route
+//     file has to remember the toggle.
+//   * Push accepts INSERT OR UPDATE by sync_id AND validates the scope
+//     column matches the caller's slug — prevents one branch from writing
+//     into another branch's scope even if a client bug tries.
+//   * Pull returns rows WHERE updated_at > :since (initial pull with no
+//     `since` returns everything, same shape as per-tenant /pull).
+//   * VPS wins conflict rule: incoming pushes overwrite VPS unconditionally
+//     when scope matches — Electron branches don't do timestamp-based
+//     resolution because master.db is the source of truth on VPS.
+
+const MASTER_SYNC_TABLES = [
+  'cash_deposits',
+  'stock_transfers',
+  'transfer_variances',
+  'hq_purchases',
+  'hq_purchase_items',
+  'hq_grns',
+  'hq_grn_items',
+  'hq_supplier_credit_notes',
+  'hq_supplier_credit_note_items',
+];
+
+// Per-table scope filter. `where` clause + params-from-slug factory.
+// `scopeCheck(row, slug)` guards push — returns true iff the row's scope
+// column matches the caller's slug (or is a child of a scoped parent).
+// Parent-child tables (grn_items, cn_items, purchase items header→items)
+// scope via their parent's sync_id; we validate by looking up the parent
+// on the server, so a branch can't push a grn_item claiming a foreign
+// grn_sync_id.
+const MASTER_TABLE_FILTERS = {
+  cash_deposits: {
+    where:      'from_slug = ?',
+    params:     (s) => [s],
+    scopeCheck: (row, slug) => row.from_slug === slug,
+  },
+  stock_transfers: {
+    where:      '(from_slug = ? OR to_slug = ?)',
+    params:     (s) => [s, s],
+    scopeCheck: (row, slug) => row.from_slug === slug || row.to_slug === slug,
+  },
+  transfer_variances: {
+    where:      '(from_slug = ? OR to_slug = ? OR absorbed_by_slug = ?)',
+    params:     (s) => [s, s, s],
+    scopeCheck: (row, slug) => row.from_slug === slug || row.to_slug === slug || row.absorbed_by_slug === slug,
+  },
+  hq_purchases: {
+    where:      'sync_id IN (SELECT purchase_sync_id FROM hq_purchase_items WHERE destination_slug = ?)',
+    params:     (s) => [s],
+    // Branches don't create hq_purchases (HQ-owned). Reject any push to this
+    // table by requiring an existing row in scope — if the branch is only
+    // ever updating (which it does via /receive path via hqPurchaseItems),
+    // it's the items that get pushed, not the header.
+    scopeCheck: (row, slug) => {
+      if (!masterDb) return false;
+      const has = masterDb.prepare(
+        `SELECT 1 FROM hq_purchase_items WHERE purchase_sync_id = ? AND destination_slug = ? LIMIT 1`
+      ).get(row.sync_id, slug);
+      return !!has;
+    },
+  },
+  hq_purchase_items: {
+    where:      'destination_slug = ?',
+    params:     (s) => [s],
+    scopeCheck: (row, slug) => row.destination_slug === slug,
+  },
+  hq_grns: {
+    where:      'branch_slug = ?',
+    params:     (s) => [s],
+    scopeCheck: (row, slug) => row.branch_slug === slug,
+  },
+  hq_grn_items: {
+    where:      'grn_sync_id IN (SELECT sync_id FROM hq_grns WHERE branch_slug = ?)',
+    params:     (s) => [s],
+    scopeCheck: (row, slug) => {
+      if (!masterDb) return false;
+      const parent = masterDb.prepare(
+        `SELECT branch_slug FROM hq_grns WHERE sync_id = ?`
+      ).get(row.grn_sync_id);
+      return parent && parent.branch_slug === slug;
+    },
+  },
+  hq_supplier_credit_notes: {
+    where:      'branch_slug = ?',
+    params:     (s) => [s],
+    scopeCheck: (row, slug) => row.branch_slug === slug,
+  },
+  hq_supplier_credit_note_items: {
+    where:      'credit_note_sync_id IN (SELECT sync_id FROM hq_supplier_credit_notes WHERE branch_slug = ?)',
+    params:     (s) => [s],
+    scopeCheck: (row, slug) => {
+      if (!masterDb) return false;
+      const parent = masterDb.prepare(
+        `SELECT branch_slug FROM hq_supplier_credit_notes WHERE sync_id = ?`
+      ).get(row.credit_note_sync_id);
+      return parent && parent.branch_slug === slug;
+    },
+  },
+};
+
+// GET /api/sync/master/slug?branchId=<uuid>
+// Electron doesn't know its own slug (per-tenant sync stores tenantId +
+// branchId only). This one-time lookup lets the client cache slug in
+// sync_config, then every master push/pull sends it in the URL.
+router.get('/master/slug', (req, res) => {
+  try {
+    if (!masterDb) return res.status(503).json({ error: 'master.db unavailable on this server' });
+    const { branchId } = req.query;
+    if (!branchId) return res.status(400).json({ error: 'branchId is required' });
+    const row = masterDb.prepare(
+      `SELECT slug FROM branches WHERE branch_id = ? LIMIT 1`
+    ).get(branchId);
+    if (!row || !row.slug) return res.status(404).json({ error: 'No slug registered for this branchId' });
+    res.json({ slug: row.slug });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// GET /api/sync/master/pull?slug=<slug>&since=<iso>
+// Returns master.db rows in this slug's scope updated since `since`.
+// Missing `since` = initial pull (full scope dump). NULL updated_at rows
+// always come through on initial pull; on incremental they're filtered
+// out (the sync trigger touches them on next write).
+router.get('/master/pull', lanGate, async (req, res) => {
+  try {
+    if (!masterDb) return res.status(503).json({ error: 'master.db unavailable on this server' });
+    const { slug, since } = req.query;
+    if (!slug) return res.status(400).json({ error: 'slug is required' });
+
+    const sinceTs = since || '1970-01-01T00:00:00.000Z';
+    const isInitialPull = sinceTs === '1970-01-01T00:00:00.000Z';
+    const sinceSQLite = sinceTs.replace('T', ' ').replace('Z', '').substring(0, 19);
+
+    const records = {};
+    for (const table of MASTER_SYNC_TABLES) {
+      const filter = MASTER_TABLE_FILTERS[table];
+      if (!filter) continue;
+      try {
+        const cols = masterDb.prepare(`PRAGMA table_info(${table})`).all().map(c => c.name);
+        if (!cols.includes('sync_id')) continue;
+
+        const scopeParams = filter.params(slug);
+        let sql;
+        let params;
+        if (isInitialPull) {
+          sql = `SELECT * FROM ${table} WHERE ${filter.where}`;
+          params = scopeParams;
+        } else {
+          // Include NULL updated_at rows only on initial pull; otherwise the
+          // trigger will flip them on next write and they'll flow through.
+          sql = `SELECT * FROM ${table} WHERE ${filter.where} AND updated_at IS NOT NULL AND updated_at >= ?`;
+          params = [...scopeParams, sinceSQLite];
+        }
+        const rows = masterDb.prepare(sql).all(...params);
+        if (rows.length > 0) records[table] = rows;
+      } catch (e) {
+        slog(`master/pull: [${table}] ${e.message}`);
+      }
+      await new Promise(resolve => setImmediate(resolve));
+    }
+    res.json({ records, serverTime: new Date().toISOString() });
+  } catch (error) {
+    console.error('[/api/sync/master/pull] CRASH:', error && error.stack ? error.stack : error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// POST /api/sync/master/push { slug, deviceId, records: { table: [rows] } }
+// Applies each row to VPS master.db by sync_id. Scope-guarded per table —
+// a row whose scope column doesn't match the caller's slug is rejected
+// silently (logged, not returned as an error, so one bad row doesn't
+// block the whole batch).
+router.post('/master/push', lanGate, async (req, res) => {
+  try {
+    if (!masterDb) return res.status(503).json({ error: 'master.db unavailable on this server' });
+    const { slug, records } = req.body || {};
+    if (!slug) return res.status(400).json({ error: 'slug is required' });
+
+    const rejected = [];
+    const BATCH_SIZE = 200;
+
+    const processBatch = (table, cols, batch) => {
+      const filter = MASTER_TABLE_FILTERS[table];
+      if (!filter) return;
+      const hasSyncId = cols.includes('sync_id');
+      if (!hasSyncId) return;
+
+      masterDb.transaction(() => {
+        for (const row of batch) {
+          if (!row.sync_id) continue;
+          if (!filter.scopeCheck(row, slug)) {
+            rejected.push({ table, sync_id: row.sync_id, reason: 'scope-mismatch' });
+            slog(`master/push: REJECT [${table}] sync_id=${row.sync_id} — scope-mismatch for slug=${slug}`);
+            continue;
+          }
+
+          const existing = masterDb.prepare(
+            `SELECT id FROM ${table} WHERE sync_id = ?`
+          ).get(row.sync_id);
+
+          if (!existing) {
+            const insertCols = cols.filter(c => c !== 'id' && row[c] !== undefined);
+            const placeholders = insertCols.map(() => '?').join(', ');
+            const values = insertCols.map(c => row[c]);
+            try {
+              masterDb.prepare(
+                `INSERT OR IGNORE INTO ${table} (${insertCols.join(', ')}) VALUES (${placeholders})`
+              ).run(...values);
+              // Mark synced=1 so trigger's post-insert stamp (if it fired
+              // because updated_at was NULL in incoming row) still leaves
+              // the row in the correct state.
+              masterDb.prepare(`UPDATE ${table} SET synced = 1 WHERE sync_id = ?`).run(row.sync_id);
+            } catch (e) {
+              rejected.push({ table, sync_id: row.sync_id, reason: e.message });
+              slog(`master/push: INSERT ERR [${table}] sync_id=${row.sync_id}: ${e.message}`);
+            }
+          } else {
+            const updateCols = cols.filter(c => c !== 'id' && c !== 'sync_id' && row[c] !== undefined);
+            if (updateCols.length === 0) continue;
+            // Set synced=1 in the same UPDATE so the touch trigger's
+            // WHEN guard (NEW.synced IS OLD.synced) short-circuits and
+            // the row lands in server-authoritative state.
+            const setClause = [...updateCols.map(c => `${c} = ?`), 'synced = 1'].join(', ');
+            const values = [...updateCols.map(c => row[c]), row.sync_id];
+            try {
+              masterDb.prepare(`UPDATE ${table} SET ${setClause} WHERE sync_id = ?`).run(...values);
+            } catch (e) {
+              rejected.push({ table, sync_id: row.sync_id, reason: e.message });
+              slog(`master/push: UPDATE ERR [${table}] sync_id=${row.sync_id}: ${e.message}`);
+            }
+          }
+        }
+      })();
+    };
+
+    masterDb.pragma('foreign_keys = OFF');
+    try {
+      for (const [table, rows] of Object.entries(records || {})) {
+        if (!MASTER_SYNC_TABLES.includes(table)) continue;
+        let cols;
+        try {
+          cols = masterDb.prepare(`PRAGMA table_info(${table})`).all().map(c => c.name);
+        } catch { continue; }
+
+        for (let i = 0; i < rows.length; i += BATCH_SIZE) {
+          processBatch(table, cols, rows.slice(i, i + BATCH_SIZE));
+          await new Promise(resolve => setImmediate(resolve));
+        }
+      }
+    } finally {
+      masterDb.pragma('foreign_keys = ON');
+    }
+
+    res.json({ success: true, rejected });
+  } catch (error) {
+    try { masterDb && masterDb.pragma('foreign_keys = ON'); } catch (_) {}
+    console.error('[/api/sync/master/push] CRASH:', error && error.stack ? error.stack : error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 module.exports = router;

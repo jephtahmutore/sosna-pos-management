@@ -7,8 +7,16 @@ const path = require('path');
 const Database = require('better-sqlite3');
 const fs = require('fs');
 
+// v1.10.248 — Electron gets its own local master.db mirror (userData dir,
+// same folder as the tenant DB). Previously masterDb was `null` on Electron
+// because the default path landed in the read-only extraResources tree —
+// which meant no HQ deposits, transfers, purchases, or GRNs were reachable
+// from the desktop app. With the master.db sync bridge (routes/sync.js
+// /master/pull) it now populates on the first sync tick.
 const masterDbPath = process.env.MASTER_DB_PATH
-  || path.join(__dirname, '..', '..', 'master.db');
+  || (process.env.ELECTRON_USER_DATA
+        ? path.join(process.env.ELECTRON_USER_DATA, 'master.db')
+        : path.join(__dirname, '..', '..', 'master.db'));
 
 let masterDb = null;
 try {
@@ -762,6 +770,83 @@ try {
     }
   } catch (e) {
     console.warn('[hq_purchases backfill] skipped:', e.message);
+  }
+
+  // v1.10.248 — master.db sync bridge. Every table that has to reach an
+  // Electron branch needs the same two columns the per-tenant syncService
+  // relies on: `synced` (0 when the row has local edits that VPS hasn't
+  // seen yet, 1 after ack) and `updated_at` (last-write timestamp used as
+  // the pull cursor). Adding retroactively so existing rows join the new
+  // sync stream without a data migration; NULL updated_at defaults to
+  // '1970-01-01' at read time so nothing stays stuck on a NULL cursor.
+  //
+  // Kept as one block so a future table addition just gets one more line.
+  // Any route that writes to these tables must stamp synced=0 +
+  // updated_at=datetime('now') on the same UPDATE/INSERT (v1.10.248
+  // route edits handle the existing ones).
+  const MASTER_SYNC_TABLES = [
+    'cash_deposits',
+    'stock_transfers',
+    'transfer_variances',
+    'hq_purchases',
+    'hq_purchase_items',
+    'hq_grns',
+    'hq_grn_items',
+    'hq_supplier_credit_notes',
+    'hq_supplier_credit_note_items',
+  ];
+  for (const t of MASTER_SYNC_TABLES) {
+    addMasterCol(t, 'synced',     'INTEGER NOT NULL DEFAULT 0');
+    addMasterCol(t, 'updated_at', 'TEXT');
+  }
+  // Backfill: legacy rows created before v1.10.248 have synced=NULL/0
+  // (the DEFAULT 0 caught NULLs on ALTER, but be explicit) and NULL
+  // updated_at. Pull cursor treats NULL as epoch so they replicate on
+  // first pass. Push loop uses synced=0 anyway — legacy rows push once
+  // and then stay quiet.
+  for (const t of MASTER_SYNC_TABLES) {
+    try {
+      masterDb.prepare(`UPDATE ${t} SET synced = 0 WHERE synced IS NULL`).run();
+    } catch (_) { /* fresh table */ }
+  }
+
+  // Triggers auto-stamp synced=0 + updated_at=now on any local write to
+  // these tables so no route file has to remember. Two guards keep the
+  // sync loop's own writes from tripping the trigger (which would flip
+  // synced back to 0 the moment we ack a pulled row):
+  //   INSERT trigger fires only when the caller left updated_at NULL —
+  //     the pull loop's INSERT OR REPLACE stamps updated_at + synced=1
+  //     explicitly, so it's a no-op there.
+  //   UPDATE trigger fires only when neither updated_at nor synced
+  //     changed in the caller's UPDATE. The push-ack (SET synced=1)
+  //     and pull-upsert (SET updated_at=?, synced=1) both change one
+  //     of those columns, so they bypass.
+  // SQLite's default `recursive_triggers = OFF` (better-sqlite3
+  // inherits) means the trigger's own UPDATE can't re-fire itself, so
+  // there's no infinite-loop risk even without the guards — the guards
+  // exist purely to skip on sync-loop writes.
+  for (const t of MASTER_SYNC_TABLES) {
+    try {
+      masterDb.exec(`
+        CREATE TRIGGER IF NOT EXISTS trg_${t}_touch_ins
+        AFTER INSERT ON ${t}
+        FOR EACH ROW
+        WHEN NEW.updated_at IS NULL
+        BEGIN
+          UPDATE ${t} SET updated_at = datetime('now'), synced = 0 WHERE id = NEW.id;
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS trg_${t}_touch_upd
+        AFTER UPDATE ON ${t}
+        FOR EACH ROW
+        WHEN NEW.updated_at IS OLD.updated_at AND NEW.synced IS OLD.synced
+        BEGIN
+          UPDATE ${t} SET updated_at = datetime('now'), synced = 0 WHERE id = NEW.id;
+        END;
+      `);
+    } catch (e) {
+      console.warn(`[master sync trigger] ${t}:`, e.message);
+    }
   }
 
   console.log('[master] Master DB ready:', masterDbPath);
