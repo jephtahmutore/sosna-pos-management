@@ -65,6 +65,8 @@ const MASTER_SYNC_TABLES = [
   'transfer_variances',
   'hq_purchases',
   'hq_purchase_items',
+  // v1.10.249 — off-PO items branch received. KEEP IN SYNC with routes/sync.js.
+  'hq_purchase_receipt_extras',
   'hq_grns',
   'hq_grn_items',
   'hq_supplier_credit_notes',

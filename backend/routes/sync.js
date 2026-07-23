@@ -951,6 +951,11 @@ const MASTER_SYNC_TABLES = [
   'transfer_variances',
   'hq_purchases',
   'hq_purchase_items',
+  // v1.10.249 — off-PO items branch received when supplier delivered extras.
+  // Branch writes on receipt confirm → HQ reads when generating GRN. Missed
+  // from v1.10.248 first pass; without this, Electron-branch extras never
+  // reach VPS and disappear from the GRN.
+  'hq_purchase_receipt_extras',
   'hq_grns',
   'hq_grn_items',
   'hq_supplier_credit_notes',
@@ -999,6 +1004,17 @@ const MASTER_TABLE_FILTERS = {
     where:      'destination_slug = ?',
     params:     (s) => [s],
     scopeCheck: (row, slug) => row.destination_slug === slug,
+  },
+  hq_purchase_receipt_extras: {
+    where:      'purchase_sync_id IN (SELECT DISTINCT purchase_sync_id FROM hq_purchase_items WHERE destination_slug = ?)',
+    params:     (s) => [s],
+    scopeCheck: (row, slug) => {
+      if (!masterDb) return false;
+      const parent = masterDb.prepare(
+        `SELECT 1 FROM hq_purchase_items WHERE purchase_sync_id = ? AND destination_slug = ? LIMIT 1`
+      ).get(row.purchase_sync_id, slug);
+      return !!parent;
+    },
   },
   hq_grns: {
     where:      'branch_slug = ?',
