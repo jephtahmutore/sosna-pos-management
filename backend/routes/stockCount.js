@@ -22,9 +22,14 @@ router.get('/sessions', auth, readOnlyGuard, (req, res) => {
 });
 
 // POST /api/stock-count/sessions — create new session
+// v1.10.252 — added sync_id / branch_id / device_id / synced to the INSERT.
+// Before, sessions were per-device silos: rows had no sync_id so the push
+// loop couldn't ship them anywhere, and other devices in the same tenant
+// never saw sessions created on this device.
 router.post('/sessions', auth, (req, res) => {
   try {
     const tenantId = syncConfig.getTenantId(req);
+    const { branchId, deviceId } = syncConfig.getConfig();
     const active = db.prepare(
       `SELECT id FROM stock_count_sessions WHERE tenant_id = ? AND status = 'Active'`
     ).get(tenantId);
@@ -32,9 +37,13 @@ router.post('/sessions', auth, (req, res) => {
 
     const { name } = req.body;
     const info = db.prepare(
-      `INSERT INTO stock_count_sessions (name, status, created_by, tenant_id, created_at, updated_at)
-       VALUES (?, 'Active', ?, ?, datetime('now'), datetime('now'))`
-    ).run(name || `Stock Count ${new Date().toISOString().split('T')[0]}`, req.user.id, tenantId);
+      `INSERT INTO stock_count_sessions
+         (name, status, created_by, sync_id, tenant_id, branch_id, device_id, synced, created_at, updated_at)
+       VALUES (?, 'Active', ?, ?, ?, ?, ?, 0, datetime('now'), datetime('now'))`
+    ).run(
+      name || `Stock Count ${new Date().toISOString().split('T')[0]}`,
+      req.user.id, randomUUID(), tenantId, branchId, deviceId
+    );
     const row = db.prepare('SELECT * FROM stock_count_sessions WHERE id = ?').get(info.lastInsertRowid);
     res.status(201).json(row);
   } catch (error) {
@@ -88,19 +97,29 @@ router.get('/sessions/:id/items', auth, readOnlyGuard, (req, res) => {
 });
 
 // POST /api/stock-count/sessions/:id/items — add item to session (accumulates)
+// v1.10.252 — added sync_id / tenant_id / branch_id / device_id / synced /
+// updated_at to the INSERT. Same silo bug as the parent session; counted
+// rows never left the counting device.
 router.post('/sessions/:id/items', auth, (req, res) => {
   try {
     const { product_id, quantity } = req.body;
     if (!product_id || !quantity) return res.status(400).json({ error: 'product_id and quantity required' });
+
+    const tenantId = syncConfig.getTenantId(req);
+    const { branchId, deviceId } = syncConfig.getConfig();
 
     const session = db.prepare('SELECT * FROM stock_count_sessions WHERE id = ?').get(req.params.id);
     if (!session) return res.status(404).json({ error: 'Session not found' });
     if (session.status !== 'Active') return res.status(400).json({ error: 'Session is not active' });
 
     db.prepare(
-      `INSERT INTO stock_count_items (session_id, product_id, quantity, created_at)
-       VALUES (?, ?, ?, datetime('now'))`
-    ).run(req.params.id, product_id, parseFloat(quantity));
+      `INSERT INTO stock_count_items
+         (session_id, product_id, quantity, sync_id, tenant_id, branch_id, device_id, synced, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 0, datetime('now'), datetime('now'))`
+    ).run(
+      req.params.id, product_id, parseFloat(quantity),
+      randomUUID(), tenantId, branchId, deviceId
+    );
 
     // Return updated totals for this product
     const total = db.prepare(
@@ -172,7 +191,10 @@ router.post('/sessions/:id/apply', auth, (req, res) => {
         }
       }
 
-      db.prepare(`UPDATE stock_count_sessions SET status = 'Applied', updated_at = datetime('now') WHERE id = ?`)
+      // v1.10.252 — added synced=0 so the Active→Applied flip propagates.
+      // Missing before, so other devices kept seeing the session as Active
+      // even after this device applied it.
+      db.prepare(`UPDATE stock_count_sessions SET status = 'Applied', updated_at = datetime('now'), synced = 0 WHERE id = ?`)
         .run(req.params.id);
     })();
 
