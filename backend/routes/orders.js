@@ -363,7 +363,7 @@ router.get('/cashier-inbox', auth, requirePagePerm('Cashier'), readOnlyGuard, (r
        FROM orders o
        LEFT JOIN users u     ON u.sync_id = o.sales_user_sync_id
                               OR (o.sales_user_sync_id IS NULL AND u.id = o.sales_user_id)
-       LEFT JOIN customers c ON c.id = o.customer_id AND c.deleted_at IS NULL
+       LEFT JOIN customers c ON c.sync_id = o.customer_sync_id AND c.deleted_at IS NULL
        LEFT JOIN (
          SELECT customer_sync_id,
                 SUM(total_amount)
@@ -751,7 +751,7 @@ router.get('/product-summary', auth, readOnlyGuard, (req, res) => {
       FROM order_items oi
       INNER JOIN orders o ON o.sync_id = oi.order_sync_id
       LEFT JOIN products p ON p.sync_id = oi.product_sync_id
-      LEFT JOIN categories c ON c.id = p.category_id
+      LEFT JOIN categories c ON c.sync_id = p.category_sync_id
       WHERE o.deleted_at IS NULL
         AND (o.status IS NULL OR o.status != 'Reversed')
         AND oi.deleted_at IS NULL
@@ -764,8 +764,12 @@ router.get('/product-summary', auth, readOnlyGuard, (req, res) => {
     // because SQLite stores datetimes as ISO 8601.
     if (from) { sql += ' AND o.created_at >= ?'; params.push(from); }
     if (to)   { sql += ' AND o.created_at <= ?'; params.push(to); }
-    if (userId && userId !== 'all') { sql += ' AND o.created_by = ?'; params.push(userId); }
-    sql += ' GROUP BY oi.product_name, p.category_id, c.name, c.main_category_id, p.unit, p.alt_unit, p.conversion_factor, p.units_json, p.default_unit ORDER BY total_revenue DESC';
+    // v1.10.258 — filter by sync_id so per-user reports include cross-device sales.
+    if (userId && userId !== 'all') {
+      sql += ' AND o.created_by_sync_id = (SELECT sync_id FROM users WHERE id = ?)';
+      params.push(userId);
+    }
+    sql += ' GROUP BY oi.product_name, p.category_sync_id, c.name, c.main_category_sync_id, p.unit, p.alt_unit, p.conversion_factor, p.units_json, p.default_unit ORDER BY total_revenue DESC';
     const rows = db.prepare(sql).all(...params);
     res.json(rows);
   } catch (error) {

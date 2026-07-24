@@ -160,7 +160,7 @@ router.get('/', auth, readOnlyGuard, (req, res) => {
              'pos' AS source
       FROM orders o
       JOIN customers c ON c.sync_id = o.customer_sync_id
-      LEFT JOIN users u ON u.id = o.created_by
+      LEFT JOIN users u ON u.sync_id = o.created_by_sync_id
       WHERE o.deleted_at IS NULL
         AND (o.status IS NULL OR o.status != 'Reversed')
         AND o.customer_sync_id IS NOT NULL

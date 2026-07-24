@@ -90,21 +90,23 @@ router.post('/', auth, (req, res) => {
 router.get('/items-summary', auth, readOnlyGuard, (req, res) => {
   try {
     const { from, to } = req.query;
+    // v1.10.258 — JOIN categories on sync_id (integer p.category_id doesn't
+    // map cross-device). Group by portable sync_id keys too.
     let sql = `
       SELECT p.id AS product_id, p.name AS product_name, p.unit,
-        p.category_id, c.name AS category_name, c.main_category_id,
+        p.category_sync_id, c.name AS category_name, c.main_category_sync_id,
         SUM(si.quantity) AS total_quantity,
         SUM(si.total_price) AS total_value
       FROM siv_items si
       JOIN siv s ON s.sync_id = si.siv_sync_id
       JOIN products p ON p.sync_id = si.product_sync_id
-      LEFT JOIN categories c ON c.id = p.category_id
+      LEFT JOIN categories c ON c.sync_id = p.category_sync_id
       WHERE s.deleted_at IS NULL AND s.tenant_id = ?
     `;
     const params = [req.user.tenantId];
     if (from) { sql += ' AND s.date >= ?'; params.push(from); }
     if (to)   { sql += ' AND s.date <= ?'; params.push(to); }
-    sql += ' GROUP BY p.sync_id, p.name, p.unit, p.category_id, c.name, c.main_category_id ORDER BY p.name ASC';
+    sql += ' GROUP BY p.sync_id, p.name, p.unit, p.category_sync_id, c.name, c.main_category_sync_id ORDER BY p.name ASC';
     const rows = db.prepare(sql).all(...params);
     res.json(rows);
   } catch (error) {
@@ -136,11 +138,14 @@ router.get('/item-breakdown', auth, readOnlyGuard, (req, res) => {
 // GET /recent-products — return last used products in SIV for quick-add chips
 router.get('/recent-products', auth, readOnlyGuard, (req, res) => {
   try {
+    // v1.10.258 — JOIN parent SIV by sync_id (integer si.siv_id doesn't
+    // map cross-device — recent-products list dropped rows written on
+    // other devices or duplicated the wrong SIV).
     const rows = db.prepare(`
       SELECT p.id AS product_id, p.name AS product_name, p.unit
       FROM siv_items si
       JOIN products p ON p.sync_id = si.product_sync_id
-      JOIN siv s ON s.id = si.siv_id
+      JOIN siv s ON s.sync_id = si.siv_sync_id
       WHERE s.deleted_at IS NULL AND si.deleted_at IS NULL AND s.tenant_id = ?
       GROUP BY p.id
       ORDER BY MAX(s.created_at) DESC

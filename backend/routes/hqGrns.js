@@ -85,6 +85,8 @@ router.get('/awaiting', hqAuth, requirePagePerm('HqConfirmGrn'), (req, res) => {
     for (const t of tenants) {
       try {
         const db = getTenantDb(t.slug);
+        // v1.10.258 — supplier JOIN by sync_id. users JOIN still integer
+        // (grn.created_by_sync_id column pending in v1.10.259 schema sweep).
         const grns = db.prepare(`
           SELECT g.id, g.grn_number, g.sync_id, g.date, g.total_items, g.total_amount,
                  g.notes, g.linked_purchase_sync_id, g.linked_purchase_number,
@@ -93,7 +95,7 @@ router.get('/awaiting', hqAuth, requirePagePerm('HqConfirmGrn'), (req, res) => {
                  s.name AS supplier_name
             FROM grn g
             LEFT JOIN users u     ON u.id = g.created_by
-            LEFT JOIN suppliers s ON s.id = g.supplier_id
+            LEFT JOIN suppliers s ON s.sync_id = g.supplier_sync_id
            WHERE g.deleted_at IS NULL
              AND g.hq_status = 'PENDING_HQ_CONFIRM'
            ORDER BY g.created_at DESC
@@ -232,20 +234,24 @@ router.get('/:slug/:syncId', hqAuth, requirePagePerm('HqGrnArchive'), (req, res)
     const { slug, syncId } = req.params;
     if (!isRegistered(slug)) return res.status(404).json({ error: `Branch "${slug}" not registered.` });
     const db = getTenantDb(slug);
+    // v1.10.258 — supplier + product JOINs by sync_id (integer IDs don't
+    // map when the GRN was written on a branch's Electron mirror). users
+    // JOIN still uses integer id — grn.created_by_sync_id doesn't exist
+    // yet; fix pending in v1.10.259 with the schema addition sweep.
     const grn = db.prepare(`
       SELECT g.*,
              TRIM(COALESCE(u.first_name,'') || ' ' || COALESCE(u.last_name,'')) AS created_by_name,
              s.name AS supplier_name
         FROM grn g
         LEFT JOIN users u     ON u.id = g.created_by
-        LEFT JOIN suppliers s ON s.id = g.supplier_id
+        LEFT JOIN suppliers s ON s.sync_id = g.supplier_sync_id
        WHERE g.sync_id = ? AND g.deleted_at IS NULL
     `).get(syncId);
     if (!grn) return res.status(404).json({ error: 'GRN not found.' });
     const items = db.prepare(`
       SELECT gi.*, p.name AS product_name, p.code AS product_code, p.unit AS product_base_unit
         FROM grn_items gi
-        LEFT JOIN products p ON p.id = gi.product_id
+        LEFT JOIN products p ON p.sync_id = gi.product_sync_id
        WHERE gi.grn_sync_id = ? AND gi.deleted_at IS NULL
        ORDER BY gi.id ASC
     `).all(syncId);

@@ -13,16 +13,25 @@ const { recalculateDailyProfit } = require('../config/profitHelper');
 router.get('/', auth, readOnlyGuard, (req, res) => {
   try {
     const { cashier_id } = req.query;
+    // v1.10.258 — JOIN on *_sync_id, not integer id (see v1.10.257 for the
+    // cross-device bug rationale). Filter by sync_id resolved from the
+    // caller's local id at query time so a per-cashier view also matches
+    // rows written by other devices.
     let query = `SELECT cr.*, u.first_name || ' ' || u.last_name AS created_by_name,
        CASE WHEN cr.cashier_id = 0 THEN 'All' ELSE cu.first_name || ' ' || cu.last_name END AS cashier_name
        FROM cash_reports cr
-       LEFT JOIN users u ON cr.created_by = u.id
-       LEFT JOIN users cu ON cr.cashier_id = cu.id
+       LEFT JOIN users u  ON cr.created_by_sync_id = u.sync_id
+       LEFT JOIN users cu ON cr.cashier_sync_id    = cu.sync_id
        WHERE cr.deleted_at IS NULL AND cr.tenant_id = ?`;
     const params = [req.user.tenantId];
     if (cashier_id !== undefined && cashier_id !== 'all') {
-      query += ' AND cr.cashier_id = ?';
-      params.push(parseInt(cashier_id));
+      const cid = parseInt(cashier_id);
+      if (cid === 0) {
+        query += ' AND cr.cashier_id = 0';
+      } else {
+        query += ` AND cr.cashier_sync_id = (SELECT sync_id FROM users WHERE id = ?)`;
+        params.push(cid);
+      }
     }
     query += ' ORDER BY cr.date DESC';
     const rows = db.prepare(query).all(...params);
@@ -116,8 +125,17 @@ router.get('/daily', auth, readOnlyGuard, (req, res) => {
       : 'DATE(created_at) = ?';
     const orderDateParams = useRange ? [fromUtc, toUtc] : [date];
 
-    const userFilter = cashierId > 0 ? ' AND created_by = ?' : '';
-    const baseParams = cashierId > 0 ? [...orderDateParams, tenantId, cashierId] : [...orderDateParams, tenantId];
+    // v1.10.258 — filter by portable sync_id, not integer id. The caller
+    // passes a LOCAL users.id (from /cash-reports/users which now returns
+    // local ids again); resolve it to a sync_id here so the filter matches
+    // rows created on other devices too. See v1.10.257 for the cross-device
+    // ID mismatch rationale.
+    const cashierSyncRow = cashierId > 0
+      ? db.prepare('SELECT sync_id FROM users WHERE id = ?').get(cashierId)
+      : null;
+    const cashierSyncId = cashierSyncRow?.sync_id || null;
+    const userFilter = cashierSyncId ? ' AND created_by_sync_id = ?' : '';
+    const baseParams = cashierSyncId ? [...orderDateParams, tenantId, cashierSyncId] : [...orderDateParams, tenantId];
 
     // v1.8.1 — Sosna is cash-only across 3 currencies (USD / FRA / K).
     // Each bucket is NET of change given out in that same currency.
@@ -370,9 +388,11 @@ router.get('/overpaid', auth, readOnlyGuard, (req, res) => {
       ? 'o.created_at >= ? AND o.created_at <= ?'
       : 'DATE(o.created_at) = ?';
     const dateParams = useRange ? [fromUtc, toUtc] : [date];
-    const userFilter = cashierId > 0 ? ' AND o.created_by = ?' : '';
-    const params = cashierId > 0
-      ? [...dateParams, req.user.tenantId, cashierId]
+    // v1.10.258 — same sync_id filter as above (see comment at the top of
+    // this handler).
+    const userFilter = cashierSyncId ? ' AND o.created_by_sync_id = ?' : '';
+    const params = cashierSyncId
+      ? [...dateParams, req.user.tenantId, cashierSyncId]
       : [...dateParams, req.user.tenantId];
 
     // Over-payments kept in drawer
@@ -384,7 +404,7 @@ router.get('/overpaid', auth, readOnlyGuard, (req, res) => {
               o.created_at,
               u.first_name || ' ' || u.last_name AS cashier_name
          FROM orders o
-         LEFT JOIN users u ON o.created_by = u.id
+         LEFT JOIN users u ON o.created_by_sync_id = u.sync_id
         WHERE ${dateClause} AND o.deleted_at IS NULL AND o.tenant_id = ?
           AND (o.status IS NULL OR o.status != 'Reversed')
           AND COALESCE(o.overpaid_kept_amt, 0) > 0
@@ -400,7 +420,7 @@ router.get('/overpaid', auth, readOnlyGuard, (req, res) => {
               o.created_at,
               u.first_name || ' ' || u.last_name AS cashier_name
          FROM orders o
-         LEFT JOIN users u ON o.created_by = u.id
+         LEFT JOIN users u ON o.created_by_sync_id = u.sync_id
         WHERE ${dateClause} AND o.deleted_at IS NULL AND o.tenant_id = ?
           AND (o.status IS NULL OR o.status != 'Reversed')
           AND o.total_amount > o.amount_received
@@ -437,7 +457,7 @@ router.get('/overpaid', auth, readOnlyGuard, (req, res) => {
               o.created_at,
               u.first_name || ' ' || u.last_name AS cashier_name
          FROM orders o
-         LEFT JOIN users u ON o.created_by = u.id
+         LEFT JOIN users u ON o.created_by_sync_id = u.sync_id
         WHERE ${dateClause} AND o.deleted_at IS NULL AND o.tenant_id = ?
           AND (o.status IS NULL OR o.status != 'Reversed')
           ${userFilter}`
@@ -635,9 +655,15 @@ router.delete('/:id', auth, (req, res) => {
     // to auto-create it, so manual CRs typed on the same day with a
     // different `received_from` (e.g. "Rent income") are untouched.
     try {
-      const cashier = row.cashier_id
-        ? db.prepare('SELECT first_name, last_name FROM users WHERE id = ?').get(row.cashier_id)
-        : null;
+      // v1.10.258 — resolve cashier by sync_id (portable) not integer id.
+      // On the writing device row.cashier_id was valid; on any other device
+      // that same integer resolves to the wrong person and the auto-CR
+      // cascade would soft-delete the wrong row (or nothing).
+      const cashier = row.cashier_sync_id
+        ? db.prepare('SELECT first_name, last_name FROM users WHERE sync_id = ?').get(row.cashier_sync_id)
+        : (row.cashier_id
+            ? db.prepare('SELECT first_name, last_name FROM users WHERE id = ?').get(row.cashier_id)
+            : null);
       const receivedFrom = cashier ? `Sales / ${cashier.first_name}` : 'Sales';
       const crInfo = db.prepare(`
         UPDATE cash_receipts
