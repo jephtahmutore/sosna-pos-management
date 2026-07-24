@@ -6,6 +6,7 @@
 //   money(12.5)  // → "$12.50"  (uses primary symbol + 2 decimals)
 import React, { createContext, useContext, useEffect, useState, useCallback } from 'react';
 import { getSettings } from '../services/api';
+import { useAuth } from './AuthContext';
 
 const DEFAULTS = [{ code: 'USD', symbol: '$', is_primary: true }];
 const K_DEFAULTS = [{ code: 'ZMW', symbol: 'K', is_primary: true }];
@@ -63,6 +64,14 @@ function parseCurrencies(raw) {
 }
 
 export const CurrencyProvider = ({ children }) => {
+  // v1.10.256 — subscribe to token so we re-fetch settings the moment the
+  // user logs in. Before, refresh() ran once at mount; on a fresh Electron
+  // launch there's no token yet, refresh short-circuited on the
+  // `!localStorage.getItem('token')` guard, and currencies stayed at the
+  // USD/$ DEFAULTS forever — the K-only branch showed $ everywhere. Web
+  // never hit this because the browser had a token from an earlier session.
+  const { token } = useAuth();
+
   // v1.10.183 — read the cached settings once at mount. When cache says
   // isLiquorStyle we seed with 'K' and skip the loading blocker so the
   // page renders instantly. Kassumbalesa (tri-currency) has no cache OR
@@ -117,7 +126,7 @@ export const CurrencyProvider = ({ children }) => {
       await refresh();
       setLoading(false);
     })();
-  }, [refresh]);
+  }, [refresh, token]);
 
   const primary = currencies.find(c => c.is_primary) || currencies[0] || DEFAULTS[0];
   const symbol = primary.symbol;
