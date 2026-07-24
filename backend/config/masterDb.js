@@ -811,6 +811,27 @@ try {
     } catch (_) { /* fresh table */ }
   }
 
+  // ═══ CONTRACT for the tables in MASTER_SYNC_TABLES above ═════════════════
+  // Route code MUST NOT set `updated_at` or `synced` explicitly on any
+  // INSERT / UPDATE against these tables. The touch triggers below stamp
+  // both automatically on every local write.
+  //
+  // Why: the triggers' WHEN clause skips writes that already touched
+  // `updated_at` or `synced` — that's how the sync loop's own writes
+  // (which set synced=1 explicitly on ack, and updated_at from the server
+  // clock on pull-upsert) bypass the trigger. If a route ALSO sets
+  // updated_at explicitly, the trigger's WHEN fails and `synced` stays
+  // at 1, so the row is missed by the next push. Symptom: HQ or branch
+  // makes a change that never reaches other devices.
+  //
+  // Real incident: v1.10.248 shipped with 3 hq_purchases routes that
+  // set updated_at manually (`hqGrns.js` :506 + :1263, `hqPurchases.js`
+  // :354) — status transitions on those POs never flagged for sync.
+  // Fixed in v1.10.250 by dropping the explicit updated_at. If you see
+  // yourself typing `updated_at = datetime('now')` in a route touching
+  // one of these 10 tables, don't — the trigger has you covered.
+  // ══════════════════════════════════════════════════════════════════════════
+  //
   // Triggers auto-stamp synced=0 + updated_at=now on any local write to
   // these tables so no route file has to remember. Two guards keep the
   // sync loop's own writes from tripping the trigger (which would flip

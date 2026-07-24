@@ -351,7 +351,11 @@ function maybeCompleteHeader(purchaseId) {
     // Header is COMPLETED if at least one line ended up CONFIRMED, else
     // CANCELLED (all lines were cancelled / branch-rejected).
     const next = (cnt.confirmed || 0) > 0 ? 'COMPLETED' : 'CANCELLED';
-    masterDb.prepare(`UPDATE hq_purchases SET status = ?, updated_at = datetime('now') WHERE id = ?`).run(next, purchaseId);
+    // v1.10.250 — no explicit updated_at; the master.db touch trigger stamps
+    // updated_at + synced=0 automatically. Setting it here would short-circuit
+    // the trigger's WHEN clause and leave synced at 1 → Electron branches
+    // never learn the header flipped to COMPLETED.
+    masterDb.prepare(`UPDATE hq_purchases SET status = ? WHERE id = ?`).run(next, purchaseId);
   }
 }
 

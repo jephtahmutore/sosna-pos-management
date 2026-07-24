@@ -503,7 +503,11 @@ router.post('/:slug/:syncId/confirm', hqAuth, requirePagePerm('HqConfirmGrn'), (
               FROM hq_purchase_items WHERE purchase_id = ?
           `).get(headerRow.purchase_id);
           if ((cnt.open || 0) === 0) {
-            masterDb.prepare(`UPDATE hq_purchases SET status = ?, updated_at = datetime('now') WHERE id = ?`)
+            // v1.10.250 — no explicit updated_at; the master.db touch trigger
+            // stamps updated_at + synced=0 automatically. Setting updated_at
+            // here would short-circuit the trigger's WHEN clause and leave
+            // synced at 1, breaking sync to Electron branches.
+            masterDb.prepare(`UPDATE hq_purchases SET status = ? WHERE id = ?`)
               .run((cnt.confirmed || 0) > 0 ? 'COMPLETED' : 'CANCELLED', headerRow.purchase_id);
           }
         }
@@ -1260,7 +1264,8 @@ router.post('/generate', hqAuth, requirePagePerm('HqConfirmGrn'), (req, res) => 
             FROM hq_purchase_items WHERE purchase_id = ?
         `).get(hdrRow.id);
         if ((cnt.open || 0) === 0) {
-          masterDb.prepare(`UPDATE hq_purchases SET status = ?, updated_at = datetime('now') WHERE id = ?`)
+          // v1.10.250 — no explicit updated_at; trigger handles it (see :506 comment).
+          masterDb.prepare(`UPDATE hq_purchases SET status = ? WHERE id = ?`)
             .run((cnt.confirmed || 0) > 0 ? 'COMPLETED' : 'CANCELLED', hdrRow.id);
         }
       }
