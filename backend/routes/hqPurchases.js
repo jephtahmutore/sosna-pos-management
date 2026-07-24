@@ -487,6 +487,14 @@ router.put('/items/:itemId/confirm', hqAuth, requirePagePerm('HqPurchases'), (re
         `).get(item.product_name);
       }
       if (!prod) {
+        // v1.10.255 — read destination tenant/branch/device from toDb's own
+        // sync_config so the auto-created product row has real identity
+        // columns (was NULL,NULL,NULL → invisible to VPS pull filter →
+        // other devices at the destination branch never saw the product).
+        const cfg = Object.fromEntries(
+          toDb.prepare("SELECT key, value FROM sync_config WHERE key IN ('tenant_id','branch_id','device_id')").all()
+              .map(r => [r.key, r.value])
+        );
         const baseUnit = item.unit || 'pcs';
         const cost     = parseFloat(item.cost_price || 0) || 0;
         const info = toDb.prepare(`
@@ -496,7 +504,7 @@ router.put('/items/:itemId/confirm', hqAuth, requirePagePerm('HqPurchases'), (re
                                 created_at, updated_at)
           VALUES (?,?,?,?,0,0,'Active',?,?,?,?,0,datetime('now'),datetime('now'))
         `).run(item.product_name, baseUnit, cost, cost,
-                item.product_sync_id, null, null, null);
+                item.product_sync_id, cfg.tenant_id || null, cfg.branch_id || null, cfg.device_id || null);
         prod = toDb.prepare(
           'SELECT id, sync_id, unit, alt_unit, conversion_factor, units_json FROM products WHERE id = ?'
         ).get(info.lastInsertRowid);

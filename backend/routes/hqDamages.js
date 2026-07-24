@@ -174,11 +174,15 @@ router.put('/:slug/:id/confirm', hqAuth, requirePagePerm('HqConfirmDamages'), (r
           ).run(baseQty, it.product_sync_id);
         }
       }
+      // v1.10.255 — added updated_at. HQ writes into the branch's tenant DB
+      // and the branch's sync loop pushes it back to VPS's tenant DB; without
+      // the bump, VPS timestamp REJECT (routes/sync.js:464) drops the row and
+      // the damage stays PENDING on other devices forever.
       db.prepare(`
         UPDATE sales_returns
            SET status = 'CONFIRMED',
                confirmed_by = ?, confirmed_by_name = ?, confirmed_at = datetime('now'),
-               confirm_notes = ?, synced = 0
+               confirm_notes = ?, synced = 0, updated_at = datetime('now')
          WHERE id = ?
       `).run(req.user.id || null, confirmedByName, req.body?.confirm_notes || null, req.params.id);
     })();
@@ -205,11 +209,12 @@ router.put('/:slug/:id/reject', hqAuth, requirePagePerm('HqConfirmDamages'), (re
 
     const confirmedBy = req.user.id || null;
     const confirmedByName = req.user.firstName || req.user.email || 'HQ';
+    // v1.10.255 — added updated_at (same reason as :177).
     db.prepare(`
       UPDATE sales_returns
          SET status = 'REJECTED',
              confirmed_by = ?, confirmed_by_name = ?, confirmed_at = datetime('now'),
-             confirm_notes = ?, synced = 0
+             confirm_notes = ?, synced = 0, updated_at = datetime('now')
        WHERE id = ?
     `).run(confirmedBy, confirmedByName, req.body?.confirm_notes || 'Rejected at HQ', req.params.id);
     res.json(db.prepare('SELECT * FROM sales_returns WHERE id = ?').get(req.params.id));

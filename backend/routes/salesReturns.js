@@ -263,11 +263,16 @@ function confirmDamage(db, params, req, res, body) {
         );
         if (it.product_sync_id) stockDecStmt.run(baseQty, it.product_sync_id);
       }
+      // v1.10.255 — added updated_at=datetime('now'). VPS push endpoint
+      // REJECTs any incoming row where updated_at <= existing (timestamp
+      // check at routes/sync.js:464, v1.8.91). Without the bump, this
+      // status flip would fail the check and stay device-local forever,
+      // same trap the v1.9.4 orders fix already patched.
       db.prepare(`
         UPDATE sales_returns
            SET status = 'CONFIRMED',
                confirmed_by = ?, confirmed_by_name = ?, confirmed_at = datetime('now'),
-               confirm_notes = ?, synced = 0
+               confirm_notes = ?, synced = 0, updated_at = datetime('now')
          WHERE id = ?
       `).run(confirmedBy, confirmedByName, body?.confirm_notes || null, params.id);
     })();
@@ -288,11 +293,12 @@ router.put('/:id/reject', auth, (req, res) => {
     if (ret.status !== 'PENDING') return res.status(400).json({ error: `Damage is ${ret.status}, not PENDING` });
     const confirmedBy = req.user.id || null;
     const confirmedByName = req.user.firstName || req.user.email || 'HQ';
+    // v1.10.255 — added updated_at (same reason as :266, VPS timestamp REJECT).
     db.prepare(`
       UPDATE sales_returns
          SET status = 'REJECTED',
              confirmed_by = ?, confirmed_by_name = ?, confirmed_at = datetime('now'),
-             confirm_notes = ?, synced = 0
+             confirm_notes = ?, synced = 0, updated_at = datetime('now')
        WHERE id = ?
     `).run(confirmedBy, confirmedByName, req.body?.confirm_notes || 'Rejected at HQ', req.params.id);
     res.json(db.prepare('SELECT * FROM sales_returns WHERE id = ?').get(req.params.id));

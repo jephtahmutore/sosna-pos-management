@@ -29,7 +29,11 @@ router.post('/login', async (req, res) => {
     const validPassword = await bcrypt.compare(password, user.password);
     if (!validPassword) return res.status(401).json({ error: 'Invalid credentials' });
 
-    db.prepare("UPDATE users SET last_login = datetime('now'), synced=0 WHERE id = ?").run(user.id);
+    // v1.10.255 — added updated_at. Without it, VPS push endpoint's
+    // timestamp REJECT (routes/sync.js:464) drops this row and the user
+    // row bounces forever on every login — wasted bytes + last_login
+    // never propagates to other devices.
+    db.prepare("UPDATE users SET last_login = datetime('now'), synced=0, updated_at = datetime('now') WHERE id = ?").run(user.id);
 
     const token = jwt.sign(
       { id: user.id, email: user.email, role: user.role, name: `${user.first_name} ${user.last_name}`, tenantId },
@@ -117,11 +121,16 @@ router.post('/register-first', async (req, res) => {
     if (!firstName || !lastName || !email || !password)
       return res.status(400).json({ error: 'First name, last name, email and password are required.' });
     const hashedPassword = await bcrypt.hash(password, 10);
-    const { deviceId, tenantId } = syncConfig.getConfig();
+    const { deviceId, tenantId, branchId } = syncConfig.getConfig();
     const permissionsJson = JSON.stringify(Array.isArray(permissions) ? permissions : []);
+    // v1.10.255 — added tenant_id, branch_id, created_at, updated_at to the
+    // INSERT. Without tenant_id the row is invisible to the VPS pull filter
+    // (WHERE tenant_id = ?) so the admin account silently fails to sync to
+    // other devices. Without created_at/updated_at the sync-loop's
+    // timestamp checks (routes/sync.js:562-566) can't order the row either.
     const info = db.prepare(
-      'INSERT INTO users (first_name, last_name, email, password, phone, role, permissions, sync_id, device_id, synced) VALUES (?,?,?,?,?,?,?,?,?,0)'
-    ).run(firstName, lastName, email, hashedPassword, phone || '', 'Administrator', permissionsJson, randomUUID(), deviceId);
+      'INSERT INTO users (first_name, last_name, email, password, phone, role, permissions, sync_id, tenant_id, branch_id, device_id, synced, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,0,datetime(\'now\'),datetime(\'now\'))'
+    ).run(firstName, lastName, email, hashedPassword, phone || '', 'Administrator', permissionsJson, randomUUID(), tenantId || null, branchId || null, deviceId);
     const newUser = db.prepare('SELECT * FROM users WHERE id = ?').get(info.lastInsertRowid);
     const token = jwt.sign(
       { id: newUser.id, email: newUser.email, role: newUser.role, name: `${newUser.first_name} ${newUser.last_name}`, tenantId: tenantId || 'local-only', webAccess: false },
@@ -142,10 +151,12 @@ router.post('/register', async (req, res) => {
   try {
     const { firstName, lastName, email, password, phone, role } = req.body;
     const hashedPassword = await bcrypt.hash(password, 10);
-    const { deviceId } = syncConfig.getConfig();
+    const { deviceId, tenantId, branchId } = syncConfig.getConfig();
+    // v1.10.255 — same fix as /register-first: include tenant_id, branch_id,
+    // created_at, updated_at so the new user syncs cross-device.
     const info = db.prepare(
-      'INSERT INTO users (first_name, last_name, email, password, phone, role, sync_id, device_id, synced) VALUES (?,?,?,?,?,?,?,?,0)'
-    ).run(firstName, lastName, email, hashedPassword, phone, role || 'Cashier', randomUUID(), deviceId);
+      'INSERT INTO users (first_name, last_name, email, password, phone, role, sync_id, tenant_id, branch_id, device_id, synced, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,0,datetime(\'now\'),datetime(\'now\'))'
+    ).run(firstName, lastName, email, hashedPassword, phone, role || 'Cashier', randomUUID(), tenantId || null, branchId || null, deviceId);
     const newUser = db.prepare('SELECT * FROM users WHERE id = ?').get(info.lastInsertRowid);
     res.status(201).json({ message: 'User created successfully', user: newUser });
   } catch (error) {
