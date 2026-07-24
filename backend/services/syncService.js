@@ -393,17 +393,20 @@ async function pushMaster() {
   }
 }
 
-async function pullMaster() {
+// v1.10.253 — added opts.force. When true: since='' (full replay from epoch),
+// same shape as pull({force:true}). Used by Force Resync to yank the branch
+// back to VPS truth when the master mirror is out of whack.
+async function pullMaster(opts = {}) {
   const masterDb = _getMasterDb();
-  if (!masterDb) return;
+  if (!masterDb) return { ok: false, reason: 'no-local-master' };
   const slug = await ensureBranchSlug();
-  if (!slug) return;
+  if (!slug) return { ok: false, reason: 'no-slug' };
 
-  const since = _syncConfig.get('last_master_pull_time') || '';
+  const since = opts.force ? '' : (_syncConfig.get('last_master_pull_time') || '');
   const url = `${getSyncTargetUrl()}/api/sync/master/pull?slug=${encodeURIComponent(slug)}&since=${encodeURIComponent(since)}`;
   const result = await request(url);
-  slog('master pull: since=' + (since || '(initial)') + ' status=' + result.status);
-  if (result.status !== 200 || !result.body || !result.body.records) return;
+  slog('master pull: since=' + (since || '(initial)') + ' status=' + result.status + (opts.force ? ' [FORCE]' : ''));
+  if (result.status !== 200 || !result.body || !result.body.records) return { ok: false, reason: 'bad-response' };
 
   masterDb.pragma('foreign_keys = OFF');
   try {
@@ -465,6 +468,8 @@ async function pullMaster() {
   if (result.body.serverTime) {
     _syncConfig.set('last_master_pull_time', result.body.serverTime);
   }
+  const totalRows = Object.values(result.body.records).reduce((s, r) => s + r.length, 0);
+  return { ok: true, tables: Object.keys(result.body.records), total: totalRows };
 }
 
 // ─── One full sync cycle ──────────────────────────────────────────────────────
@@ -569,4 +574,4 @@ function runNow() {
   return true;
 }
 
-module.exports = { start, stop, reload, getStatus, pull, runNow };
+module.exports = { start, stop, reload, getStatus, pull, pullMaster, runNow };

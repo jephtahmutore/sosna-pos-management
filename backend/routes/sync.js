@@ -694,8 +694,11 @@ router.post('/configure', (req, res) => {
 // differ." Use this when a client is stuck on stale data.
 router.post('/force-resync', async (req, res) => {
   try {
-    // Step 1: Clear last_pull_time so the next pull replays from epoch (full history)
-    db.prepare("DELETE FROM sync_config WHERE key = 'last_pull_time'").run();
+    // Step 1: Clear pull cursors so both streams replay from epoch (full history).
+    // v1.10.253 — also clears the master pull cursor so master.db mirror gets
+    // a fresh full pull too. Missing before, so master rows stayed stale even
+    // after Force Resync — one of the audit findings behind this bump.
+    db.prepare("DELETE FROM sync_config WHERE key IN ('last_pull_time', 'last_master_pull_time')").run();
 
     // Step 2: Pull from VPS immediately with PROTECT bypassed.
     // Loaded lazily — syncService starts on app boot and the require() chain
@@ -708,11 +711,22 @@ router.post('/force-resync', async (req, res) => {
       return res.status(500).json({ error: 'pull failed: ' + pullErr.message });
     }
 
+    // Step 3: same for master.db mirror. Wrapped so a master pull failure
+    // (e.g. slug not registered, VPS master unavailable) doesn't undo the
+    // tenant re-sync that already succeeded.
+    let pullMasterResult;
+    try {
+      pullMasterResult = await syncService.pullMaster({ force: true });
+    } catch (pmErr) {
+      pullMasterResult = { ok: false, error: pmErr.message };
+    }
+
     res.json({
       success: true,
       mode: 'pull-first',
       pull: pullResult || { ok: false, reason: 'no-result' },
-      message: 'Local DB overwritten with VPS state. Stuck rows are now unstuck.',
+      pullMaster: pullMasterResult || { ok: false, reason: 'no-result' },
+      message: 'Local tenant + master DBs overwritten with VPS state. Stuck rows are now unstuck.',
     });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -740,7 +754,26 @@ router.post('/clear-pending', (req, res) => {
         total += info.changes;
       }
     }
-    db.prepare("DELETE FROM sync_config WHERE key = 'last_pull_time'").run();
+    // v1.10.253 — also clear pending in the master.db mirror. Missing before,
+    // so master pending rows stayed stuck forever after clear-pending. On VPS
+    // masterDb is the live authoritative store — clearing there is a no-op
+    // for practical purposes but harmless (rows just flip synced 0→1 in place).
+    if (masterDb) {
+      for (const table of MASTER_SYNC_TABLES) {
+        try {
+          const cols = masterDb.prepare(`PRAGMA table_info(${table})`).all().map(c => c.name);
+          if (cols.includes('synced')) {
+            // SET synced=1 explicitly — the touch trigger's WHEN guard sees
+            // NEW.synced != OLD.synced and skips, so this clear doesn't
+            // re-flag the row via trigger.
+            const info = masterDb.prepare(`UPDATE ${table} SET synced = 1 WHERE synced = 0`).run();
+            if (info.changes > 0) result[`master.${table}`] = info.changes;
+            total += info.changes;
+          }
+        } catch { /* table missing on this mirror */ }
+      }
+    }
+    db.prepare("DELETE FROM sync_config WHERE key IN ('last_pull_time', 'last_master_pull_time')").run();
     res.json({ success: true, recordsCleared: total, byTable: result });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -771,7 +804,53 @@ router.post('/wipe-tenant', (req, res) => {
       try { db.prepare(`DELETE FROM ${table} WHERE tenant_id = ?`).run(tenantId); } catch (_) {}
     }
 
-    res.json({ success: true });
+    // v1.10.253 — also wipe master.db rows scoped to any of this tenant's
+    // slugs. Master tables use slug-based scoping (from_slug, branch_slug,
+    // destination_slug), not tenant_id — so we resolve tenantId → slugs via
+    // master.branches first, then delete per scope column. Missing before,
+    // so master rows survived a wipe-tenant and resurrected on next pull.
+    //
+    // FK-safe delete order: child rows first (items / extras), then headers.
+    // Wrapped in pragma foreign_keys=OFF to be extra safe against schema
+    // FK definitions we may have missed.
+    const masterWipeReport = { deleted: {}, skipped: [] };
+    if (masterDb) {
+      try {
+        const slugs = masterDb.prepare(`SELECT slug FROM branches WHERE tenant_id = ?`)
+          .all(tenantId).map(r => r.slug).filter(Boolean);
+        if (slugs.length > 0) {
+          const inList = slugs.map(() => '?').join(',');
+          masterDb.pragma('foreign_keys = OFF');
+          const wipe = (sql, params, label) => {
+            try {
+              const info = masterDb.prepare(sql).run(...params);
+              if (info.changes > 0) masterWipeReport.deleted[label] = info.changes;
+            } catch (e) {
+              masterWipeReport.skipped.push({ label, err: e.message });
+            }
+          };
+          // Children first
+          wipe(`DELETE FROM hq_purchase_receipt_extras WHERE purchase_sync_id IN (SELECT sync_id FROM hq_purchases WHERE sync_id IN (SELECT purchase_sync_id FROM hq_purchase_items WHERE destination_slug IN (${inList})))`, slugs, 'hq_purchase_receipt_extras');
+          wipe(`DELETE FROM hq_grn_items WHERE grn_sync_id IN (SELECT sync_id FROM hq_grns WHERE branch_slug IN (${inList}))`, slugs, 'hq_grn_items');
+          wipe(`DELETE FROM hq_supplier_credit_note_items WHERE credit_note_sync_id IN (SELECT sync_id FROM hq_supplier_credit_notes WHERE branch_slug IN (${inList}))`, slugs, 'hq_supplier_credit_note_items');
+          wipe(`DELETE FROM hq_purchase_items WHERE destination_slug IN (${inList})`, slugs, 'hq_purchase_items');
+          // Headers
+          wipe(`DELETE FROM hq_purchases WHERE sync_id NOT IN (SELECT DISTINCT purchase_sync_id FROM hq_purchase_items)`, [], 'hq_purchases (orphaned)');
+          wipe(`DELETE FROM hq_grns WHERE branch_slug IN (${inList})`, slugs, 'hq_grns');
+          wipe(`DELETE FROM hq_supplier_credit_notes WHERE branch_slug IN (${inList})`, slugs, 'hq_supplier_credit_notes');
+          wipe(`DELETE FROM cash_deposits WHERE from_slug IN (${inList})`, slugs, 'cash_deposits');
+          wipe(`DELETE FROM transfer_variances WHERE from_slug IN (${inList}) OR to_slug IN (${inList}) OR absorbed_by_slug IN (${inList})`, [...slugs, ...slugs, ...slugs], 'transfer_variances');
+          wipe(`DELETE FROM stock_transfers WHERE from_slug IN (${inList}) OR to_slug IN (${inList})`, [...slugs, ...slugs], 'stock_transfers');
+          masterDb.pragma('foreign_keys = ON');
+        }
+      } catch (masterErr) {
+        try { masterDb.pragma('foreign_keys = ON'); } catch (_) {}
+        console.warn('[wipe-tenant] master.db cleanup error:', masterErr.message);
+        masterWipeReport.skipped.push({ label: 'catch-all', err: masterErr.message });
+      }
+    }
+
+    res.json({ success: true, masterWipe: masterWipeReport });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -1148,7 +1227,7 @@ router.post('/master/push', lanGate, async (req, res) => {
           }
 
           const existing = masterDb.prepare(
-            `SELECT id FROM ${table} WHERE sync_id = ?`
+            `SELECT id, updated_at FROM ${table} WHERE sync_id = ?`
           ).get(row.sync_id);
 
           if (!existing) {
@@ -1168,6 +1247,24 @@ router.post('/master/push', lanGate, async (req, res) => {
               slog(`master/push: INSERT ERR [${table}] sync_id=${row.sync_id}: ${e.message}`);
             }
           } else {
+            // v1.10.253 — TIMESTAMP CHECK (mirrors per-tenant push at :464,
+            // v1.8.91). Reject incoming rows whose updated_at <= server's,
+            // so an offline / clock-behind device can't silently clobber a
+            // more-recent VPS edit. Equal ts also rejected — same-data
+            // pushes are safe to drop and it closes the sibling clobber
+            // hole. When `existing.updated_at` is NULL (legacy pre-v1.10.248
+            // row that was never touched by trigger yet), no check runs and
+            // incoming wins — which is what we want.
+            if (existing.updated_at && row.updated_at) {
+              const parse = (s) => new Date(typeof s === 'string' && !s.includes('T') ? s.replace(' ', 'T') + 'Z' : s).getTime();
+              const incomingMs = parse(row.updated_at);
+              const existingMs = parse(existing.updated_at);
+              if (isFinite(incomingMs) && isFinite(existingMs) && incomingMs <= existingMs) {
+                rejected.push({ table, sync_id: row.sync_id, reason: 'stale-timestamp' });
+                slog(`master/push: REJECT [${table}] sync_id=${row.sync_id} — incoming ${row.updated_at} <= server ${existing.updated_at}`);
+                continue;
+              }
+            }
             const updateCols = cols.filter(c => c !== 'id' && c !== 'sync_id' && row[c] !== undefined);
             if (updateCols.length === 0) continue;
             // Set synced=1 in the same UPDATE so the touch trigger's
