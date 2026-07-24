@@ -123,9 +123,13 @@ function pushToBranches(hqRow) {
       // Backfill any orphan v1.3.3 row first (tenant_id NULL from the
       // bug) so it becomes visible to the branch's GET /api/products
       // immediately on the next push — no DB surgery needed.
+      // v1.10.254 — added synced=0, updated_at=now so the tenant_id fix
+      // actually propagates to other devices. Before, the row was
+      // silently fixed only on the device that hit this route; other
+      // devices kept seeing the product as orphan forever.
       if (branchTenantId) {
         try {
-          db.prepare(`UPDATE products SET tenant_id = ?, branch_id = COALESCE(branch_id, ?) WHERE sync_id = ? AND (tenant_id IS NULL OR tenant_id = '')`)
+          db.prepare(`UPDATE products SET tenant_id = ?, branch_id = COALESCE(branch_id, ?), synced = 0, updated_at = datetime('now') WHERE sync_id = ? AND (tenant_id IS NULL OR tenant_id = '')`)
             .run(branchTenantId, branchBranchId, hqRow.sync_id);
         } catch (_) {}
       }

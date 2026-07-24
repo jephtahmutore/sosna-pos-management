@@ -162,6 +162,9 @@ const SYNC_TABLES = [
   // columns exist since v1.1.2 but were missing from both lists. Adding
   // both sides so the round-trip closes.
   'empty_returns', 'empty_return_items',
+  // v1.10.254 — v1.8.87 audit log for admin post-payment corrections.
+  // Table + INSERT already set sync fields; only the list entry was missing.
+  'order_payment_edits',
 ];
 
 // ─── POST /api/sync/register ─────────────────────────────────────────────────

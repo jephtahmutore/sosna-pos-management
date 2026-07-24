@@ -51,6 +51,11 @@ const SYNC_TABLES = [
   // writes, but they were missing from both SYNC_TABLES lists — so returns
   // entered on Electron never pushed to VPS (and vice versa).
   'empty_returns', 'empty_return_items',
+  // v1.10.254 — v1.8.87 audit trail for admin post-payment corrections
+  // (typos, wrong currency, wrong rate). Route sets synced=0, but the
+  // table was never added to either sync list → the audit log stayed
+  // device-local. Other devices had no way to see who edited what.
+  'order_payment_edits',
 ];
 
 // v1.10.248 — master.db sync bridge. These 9 tables live in master.db on
@@ -179,18 +184,27 @@ async function push() {
   );
   slog('push: response ' + result.status + ' ' + JSON.stringify(result.body).substring(0, 200));
 
-  if (result.status === 200) {
-    _db.transaction(() => {
-      for (const [table, rows] of Object.entries(records)) {
-        for (const row of rows) {
-          if (!row.sync_id) continue;
-          try {
-            _db.prepare(`UPDATE ${table} SET synced = 1 WHERE sync_id = ?`).run(row.sync_id);
-          } catch { /* ignore */ }
-        }
-      }
-    })();
+  // v1.10.254 — throw on non-200 so runCycle's catch surfaces the failure
+  // instead of the outer loop stamping state='synced' as if all went well.
+  // Real incident: expired license → VPS returns 401 → this function used
+  // to return silently → badge stayed green for days while nothing shipped.
+  if (result.status !== 200) {
+    const bodySnip = typeof result.body === 'string'
+      ? result.body.substring(0, 200)
+      : JSON.stringify(result.body).substring(0, 200);
+    throw new Error(`push: HTTP ${result.status} — ${bodySnip}`);
   }
+
+  _db.transaction(() => {
+    for (const [table, rows] of Object.entries(records)) {
+      for (const row of rows) {
+        if (!row.sync_id) continue;
+        try {
+          _db.prepare(`UPDATE ${table} SET synced = 1 WHERE sync_id = ?`).run(row.sync_id);
+        } catch { /* ignore */ }
+      }
+    }
+  })();
 }
 
 // ─── Pull VPS records → local DB (merge by sync_id) ──────────────────────────
@@ -211,9 +225,18 @@ async function pull(opts = {}) {
   );
 
   slog('pull: since=' + lastPullTime + ' status=' + result.status);
-  if (result.status !== 200 || !result.body || !result.body.records) {
-    slog('pull: failed or empty response');
-    return;
+  // v1.10.254 — throw on non-200 (401 expired-license, 403 wrong tenant,
+  // etc.) so runCycle's catch surfaces the failure instead of the badge
+  // staying green. Missing body/records now also throws — silent return
+  // meant "success with nothing new," which masked a real server error.
+  if (result.status !== 200) {
+    const bodySnip = typeof result.body === 'string'
+      ? result.body.substring(0, 200)
+      : JSON.stringify(result.body).substring(0, 200);
+    throw new Error(`pull: HTTP ${result.status} — ${bodySnip}`);
+  }
+  if (!result.body || !result.body.records) {
+    throw new Error('pull: empty response body');
   }
   const pulled = Object.entries(result.body.records).map(([t,r]) => `${t}:${r.length}`);
   slog('pull: received ' + (pulled.length ? JSON.stringify(pulled) : 'nothing'));
@@ -376,21 +399,27 @@ async function pushMaster() {
   );
   slog('master push: response ' + result.status);
 
-  if (result.status === 200) {
-    // Mark pushed rows synced=1. This UPDATE trips the touch trigger's
-    // WHEN guard (NEW.synced != OLD.synced) so it's skipped and the row
-    // stays synced=1 rather than flipping back to 0.
-    masterDb.transaction(() => {
-      for (const [table, rows] of Object.entries(records)) {
-        for (const row of rows) {
-          if (!row.sync_id) continue;
-          try {
-            masterDb.prepare(`UPDATE ${table} SET synced = 1 WHERE sync_id = ?`).run(row.sync_id);
-          } catch { /* ignore */ }
-        }
-      }
-    })();
+  // v1.10.254 — throw on non-200 so the badge reflects reality.
+  if (result.status !== 200) {
+    const bodySnip = typeof result.body === 'string'
+      ? result.body.substring(0, 200)
+      : JSON.stringify(result.body).substring(0, 200);
+    throw new Error(`master push: HTTP ${result.status} — ${bodySnip}`);
   }
+
+  // Mark pushed rows synced=1. This UPDATE trips the touch trigger's
+  // WHEN guard (NEW.synced != OLD.synced) so it's skipped and the row
+  // stays synced=1 rather than flipping back to 0.
+  masterDb.transaction(() => {
+    for (const [table, rows] of Object.entries(records)) {
+      for (const row of rows) {
+        if (!row.sync_id) continue;
+        try {
+          masterDb.prepare(`UPDATE ${table} SET synced = 1 WHERE sync_id = ?`).run(row.sync_id);
+        } catch { /* ignore */ }
+      }
+    }
+  })();
 }
 
 // v1.10.253 — added opts.force. When true: since='' (full replay from epoch),
@@ -406,7 +435,19 @@ async function pullMaster(opts = {}) {
   const url = `${getSyncTargetUrl()}/api/sync/master/pull?slug=${encodeURIComponent(slug)}&since=${encodeURIComponent(since)}`;
   const result = await request(url);
   slog('master pull: since=' + (since || '(initial)') + ' status=' + result.status + (opts.force ? ' [FORCE]' : ''));
-  if (result.status !== 200 || !result.body || !result.body.records) return { ok: false, reason: 'bad-response' };
+  // v1.10.254 — throw on non-200 so the badge reflects reality (was silent
+  // return before; 401 expired-license kept the cycle green while nothing
+  // moved). Empty body also throws — silent return meant "success with
+  // nothing new," which masked real server errors.
+  if (result.status !== 200) {
+    const bodySnip = typeof result.body === 'string'
+      ? result.body.substring(0, 200)
+      : JSON.stringify(result.body).substring(0, 200);
+    throw new Error(`master pull: HTTP ${result.status} — ${bodySnip}`);
+  }
+  if (!result.body || !result.body.records) {
+    throw new Error('master pull: empty response body');
+  }
 
   masterDb.pragma('foreign_keys = OFF');
   try {
@@ -495,8 +536,12 @@ async function runCycle() {
     // v1.10.248 — piggyback master.db sync on the same 30s cycle. Both
     // helpers early-return if there's no local master.db mirror (VPS side)
     // or no slug yet, so this is a no-op on unaffected setups.
-    try { await pushMaster(); } catch (e) { slog('pushMaster error: ' + e.message); }
-    try { await pullMaster(); } catch (e) { slog('pullMaster error: ' + e.message); }
+    // v1.10.254 — dropped the per-master try/catch wrappers. Master failures
+    // now propagate to runCycle's outer catch so state='error' actually
+    // reflects that master sync is broken (the previous swallow-and-continue
+    // hid 401s on master push/pull the same way it did on tenant).
+    await pushMaster();
+    await pullMaster();
 
     const now = new Date().toISOString();
     _status = { state: 'synced', lastSynced: now, error: null };
