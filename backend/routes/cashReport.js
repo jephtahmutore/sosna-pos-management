@@ -35,13 +35,22 @@ router.get('/', auth, readOnlyGuard, (req, res) => {
 // Get distinct cashiers that have submitted cash reports (for filter dropdown)
 router.get('/users', auth, readOnlyGuard, (req, res) => {
   try {
+    // v1.10.257 — JOIN on cashier_sync_id → users.sync_id. Before, the
+    // JOIN used raw integer cashier_id which is only meaningful on the
+    // device that wrote the row — on any other device the same integer
+    // resolves to a different user (or none). Return LOCAL u.id so the
+    // frontend's downstream /daily?cashier_id= filter still works
+    // against this device's own users table.
     const rows = db.prepare(
-      `SELECT DISTINCT cr.cashier_id,
-        CASE WHEN cr.cashier_id = 0 THEN 'All' ELSE u.first_name || ' ' || u.last_name END AS full_name
+      `SELECT DISTINCT COALESCE(u.id, 0) AS cashier_id,
+        CASE WHEN cr.cashier_id = 0 THEN 'All'
+             WHEN u.id IS NOT NULL THEN u.first_name || ' ' || u.last_name
+             ELSE '(unknown user)'
+        END AS full_name
        FROM cash_reports cr
-       LEFT JOIN users u ON cr.cashier_id = u.id
+       LEFT JOIN users u ON cr.cashier_sync_id = u.sync_id
        WHERE cr.deleted_at IS NULL AND cr.tenant_id = ?
-       ORDER BY cr.cashier_id`
+       ORDER BY cashier_id`
     ).all(req.user.tenantId);
     res.json(rows);
   } catch (error) {
@@ -59,9 +68,15 @@ router.get('/sales-cashiers', auth, readOnlyGuard, (req, res) => {
     // Jul 2?" with date=2026-07-02 saw an empty list). The frontend already
     // has the UTC bounds for the /daily call; just plumb them through.
     const { date, from, to, from_utc, to_utc } = req.query;
-    let query = `SELECT DISTINCT o.created_by AS id, u.first_name, u.last_name
+    // v1.10.257 — JOIN on sync_id, not integer id. `orders.created_by` is a
+    // raw integer copied verbatim during sync, but each device auto-assigns
+    // its own users.id — so on Electron `created_by=3` may resolve to a
+    // completely different user than on VPS (real incident: Lusaka1's
+    // doris/id=7 showed as ibrahim/id=3 on the Electron mirror). The
+    // `created_by_sync_id` column is stable across all databases.
+    let query = `SELECT DISTINCT u.id, u.first_name, u.last_name
        FROM orders o
-       JOIN users u ON o.created_by = u.id
+       JOIN users u ON o.created_by_sync_id = u.sync_id
        WHERE o.deleted_at IS NULL AND o.tenant_id = ?
          AND (o.status IS NULL OR o.status != 'Reversed')`;
     const params = [req.user.tenantId];
@@ -516,6 +531,19 @@ router.post('/', auth, (req, res) => {
     const tenantId = syncConfig.getTenantId(req);
     const { branchId, deviceId } = syncConfig.getConfig();
 
+    // v1.10.257 — resolve the cashier's + creator's stable sync_id from the
+    // local users table. These portable IDs let /cash-reports/users JOIN
+    // correctly on any device (the integer cashier_id/created_by are only
+    // meaningful on the device that wrote the row — sync copies them
+    // verbatim but the target device's local users.id doesn't match).
+    // cashierId=0 = "All", which has no user → sync_id stays NULL.
+    const cashierSyncId = cashierId > 0
+      ? (db.prepare('SELECT sync_id FROM users WHERE id = ?').get(cashierId)?.sync_id || null)
+      : null;
+    const createdBySyncId = req.user?.id
+      ? (db.prepare('SELECT sync_id FROM users WHERE id = ?').get(req.user.id)?.sync_id || null)
+      : null;
+
     // v1.10.16 — include soft-deleted rows in the existence check. The
     // UNIQUE index on (date, cashier_id) doesn't know about deleted_at, so
     // if v1.10.9's admin delete has marked an earlier row deleted_at=<ts>,
@@ -527,6 +555,8 @@ router.post('/', auth, (req, res) => {
     let row;
 
     if (existing) {
+      // v1.10.257 — also stamp cashier_sync_id (created_by_sync_id
+      // preserved on the original INSERT).
       db.prepare(
         `UPDATE cash_reports SET
           initial_change=?, usd_received=?, fra_received=?, k_received=?,
@@ -535,7 +565,7 @@ router.post('/', auth, (req, res) => {
           mobile_money=?, cash=?, bank=?,
           expenses=?, pending=?, total=?,
           after_change=?, expected=?, difference=?, status=?, comment=?,
-          cashier_id=?, deleted_at=NULL, updated_at=datetime('now'), synced=0
+          cashier_id=?, cashier_sync_id=?, deleted_at=NULL, updated_at=datetime('now'), synced=0
          WHERE id = ?`
       ).run(initial_change, usdAmt, fraAmt, kAmt,
              usdExp, fraExp, kExp,
@@ -543,9 +573,10 @@ router.post('/', auth, (req, res) => {
              momoAmt, cashAmt, bankAmt,
              expenses, pending, total,
              after_change, expected, difference, status, comment,
-             cashierId, existing.id);
+             cashierId, cashierSyncId, existing.id);
       row = db.prepare('SELECT * FROM cash_reports WHERE id = ?').get(existing.id);
     } else {
+      // v1.10.257 — added cashier_sync_id + created_by_sync_id.
       const info = db.prepare(
         `INSERT INTO cash_reports (date, initial_change,
           usd_received, fra_received, k_received,
@@ -553,9 +584,10 @@ router.post('/', auth, (req, res) => {
           usd_expenses, fra_expenses, k_expenses,
           mobile_money, cash, bank,
           expenses, pending, total,
-          after_change, expected, difference, status, comment, cashier_id, created_by,
+          after_change, expected, difference, status, comment,
+          cashier_id, cashier_sync_id, created_by, created_by_sync_id,
           sync_id, tenant_id, branch_id, device_id, synced, created_at, updated_at)
-         VALUES (?,?, ?,?,?, ?,?,?, ?,?,?, ?,?,?, ?,?,?,?,?,?,?,?,?,?, ?,?,?,?, 0,datetime('now'),datetime('now'))`
+         VALUES (?,?, ?,?,?, ?,?,?, ?,?,?, ?,?,?, ?,?,?,?,?,?,?,?, ?,?,?,?, ?,?,?,?, 0,datetime('now'),datetime('now'))`
       ).run(date, initial_change,
              usdAmt, fraAmt, kAmt,
              usdExp, fraExp, kExp,
@@ -563,7 +595,7 @@ router.post('/', auth, (req, res) => {
              momoAmt, cashAmt, bankAmt,
              expenses, pending, total,
              after_change, expected, difference, status, comment,
-             cashierId, req.user.id,
+             cashierId, cashierSyncId, req.user.id, createdBySyncId,
              randomUUID(), tenantId, branchId, deviceId);
       row = db.prepare('SELECT * FROM cash_reports WHERE id = ?').get(info.lastInsertRowid);
     }

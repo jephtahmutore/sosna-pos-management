@@ -779,6 +779,36 @@ function initTenantDb(db) {
 
   addCol('stock_movements',    'reference_sync_id', 'TEXT');
   addCol('stock_movements',    'product_sync_id',   'TEXT');
+
+  // v1.10.257 — cross-device ID mismatch fix for cash_reports cashier
+  // filter. `cash_reports.cashier_id` stores the writing device's local
+  // users.id, which sync copies verbatim → on other devices the same
+  // integer resolves to a completely different user (or none). Add a
+  // sync_id column so /cash-reports/users can JOIN portably.
+  addCol('cash_reports', 'cashier_sync_id', 'TEXT');
+  addCol('cash_reports', 'created_by_sync_id', 'TEXT');
+  // Backfill: for rows where cashier_sync_id is NULL, look up the
+  // user by the local cashier_id and copy their sync_id. This only
+  // gives the CORRECT answer on the device that originally wrote
+  // the row (where the integer id was valid). Wrong-mapped rows
+  // pulled from other devices stay NULL and the LEFT JOIN drops
+  // them from the dropdown — safer than showing a wrong name.
+  try {
+    db.exec(`
+      UPDATE cash_reports
+         SET cashier_sync_id = (SELECT sync_id FROM users WHERE users.id = cash_reports.cashier_id)
+       WHERE cashier_sync_id IS NULL
+         AND cashier_id IS NOT NULL
+         AND EXISTS (SELECT 1 FROM users WHERE users.id = cash_reports.cashier_id);
+      UPDATE cash_reports
+         SET created_by_sync_id = (SELECT sync_id FROM users WHERE users.id = cash_reports.created_by)
+       WHERE created_by_sync_id IS NULL
+         AND created_by IS NOT NULL
+         AND EXISTS (SELECT 1 FROM users WHERE users.id = cash_reports.created_by);
+    `);
+  } catch (e) {
+    console.warn('[migrations] cash_reports sync_id backfill:', e.message);
+  }
   // v1.10.221 — event-level cost lock. Stamp the WAC live at the moment of
   // the movement (sale, sale_reverse, sales_return, transit_writeoff) so
   // profitHelper's COGS/damages queries can read the exact cost that was
