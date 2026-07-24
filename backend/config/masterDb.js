@@ -750,9 +750,15 @@ try {
   // showing up in the Cost-of-Delivery attach picker. Idempotent —
   // becomes a no-op once every candidate has been flipped.
   try {
+    // v1.10.251 — dropped explicit updated_at. On first-ever v1.10.248 boot
+    // the touch trigger isn't installed yet (trigger block runs later in
+    // this same schema init), so the row won't get stamped that time — but
+    // pull cursor uses updated_at which the CREATE TABLE default supplies,
+    // and any later re-run happens after triggers exist and gets full auto
+    // treatment. Matches the master-tables CONTRACT below.
     const promoted = masterDb.prepare(`
       UPDATE hq_purchases
-         SET status = 'COMPLETED', updated_at = datetime('now')
+         SET status = 'COMPLETED'
        WHERE status = 'OPEN'
          AND NOT EXISTS (
            SELECT 1 FROM hq_purchase_items

@@ -683,16 +683,16 @@ router.post('/:syncId/void', hqAuth, requirePagePerm('HqGrnArchive'), (req, res)
     //    so the audit trail (voided_by/voided_at/void_reason) lands atomic
     //    with the soft-deletes and the PO line flip.
     masterDb.transaction(() => {
+      // v1.10.251 — no explicit updated_at; the master.db touch trigger
+      // stamps updated_at + synced=0. See masterDb.js CONTRACT block.
       masterDb.prepare(`
         UPDATE hq_grn_items
-           SET deleted_at = datetime('now'),
-               updated_at = datetime('now')
+           SET deleted_at = datetime('now')
          WHERE grn_sync_id = ? AND deleted_at IS NULL
       `).run(syncId);
       masterDb.prepare(`
         UPDATE hq_grns
            SET deleted_at    = datetime('now'),
-               updated_at    = datetime('now'),
                voided_by     = ?,
                voided_by_name= ?,
                voided_at     = datetime('now'),
@@ -725,10 +725,11 @@ router.post('/:syncId/void', hqAuth, requirePagePerm('HqGrnArchive'), (req, res)
       }
 
       // Also soft-delete any credit notes that were attached to this GRN.
+      // v1.10.251 — trigger stamps updated_at + synced=0 automatically.
       try {
         masterDb.prepare(`
           UPDATE hq_supplier_credit_notes
-             SET deleted_at = datetime('now'), updated_at = datetime('now')
+             SET deleted_at = datetime('now')
            WHERE grn_sync_id = ? AND deleted_at IS NULL
         `).run(syncId);
       } catch { /* table may not exist on old DBs */ }
@@ -858,6 +859,8 @@ router.post('/:syncId/edit', hqAuth, requirePagePerm('HqGrnArchive'), (req, res)
          WHERE sync_id = ?
       `);
       for (const r of merged) updItem.run(r.unit_price, r.total_price, r.sync_id);
+      // v1.10.251 — dropped explicit updated_at (trigger handles it).
+      // edited_at is a separate audit column that must stay.
       masterDb.prepare(`
         UPDATE hq_grns
            SET items_subtotal = ?,
@@ -867,8 +870,7 @@ router.post('/:syncId/edit', hqAuth, requirePagePerm('HqGrnArchive'), (req, res)
                edited_by      = ?,
                edited_by_name = ?,
                edited_at      = datetime('now'),
-               edit_reason    = COALESCE(edit_reason, '') || CASE WHEN COALESCE(edit_reason, '') = '' THEN '' ELSE ' | ' END || ?,
-               updated_at     = datetime('now')
+               edit_reason    = COALESCE(edit_reason, '') || CASE WHEN COALESCE(edit_reason, '') = '' THEN '' ELSE ' | ' END || ?
          WHERE sync_id = ?
       `).run(
         newItemsSubtotal, newFinalPayable, finalCcy, finalRate,
@@ -948,11 +950,11 @@ router.post('/:syncId/edit', hqAuth, requirePagePerm('HqGrnArchive'), (req, res)
     if (grn.po_sync_id) {
       try {
         masterDb.transaction(() => {
+          // v1.10.251 — no explicit updated_at (trigger handles it).
           const updPoItem = masterDb.prepare(`
             UPDATE hq_purchase_items
                SET cost_price = ?,
-                   line_total = ? * dispatched_qty,
-                   updated_at = datetime('now')
+                   line_total = ? * dispatched_qty
              WHERE purchase_sync_id = ? AND product_sync_id = ?
           `);
           for (const r of merged) {
@@ -962,8 +964,7 @@ router.post('/:syncId/edit', hqAuth, requirePagePerm('HqGrnArchive'), (req, res)
           const info = masterDb.prepare(`
             UPDATE hq_purchases
                SET cost_currency = COALESCE(?, cost_currency),
-                   fx_rate_used  = COALESCE(?, fx_rate_used),
-                   updated_at    = datetime('now')
+                   fx_rate_used  = COALESCE(?, fx_rate_used)
              WHERE sync_id = ?
           `).run(finalCcy, finalRate, grn.po_sync_id);
           poHeaderUpdated = info.changes || 0;

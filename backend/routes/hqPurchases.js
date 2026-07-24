@@ -630,10 +630,10 @@ router.put('/items/:itemId/branch-reject', hqAuth, requirePagePerm('HqPurchases'
 
       // Rejected lines don't count toward supplier AP — drop their value
       // from the header total so HQ AP stays accurate.
+      // v1.10.251 — no explicit updated_at (trigger handles it).
       masterDb.prepare(`
         UPDATE hq_purchases
-           SET total_amount = MAX(0, total_amount - ?),
-               updated_at   = datetime('now')
+           SET total_amount = MAX(0, total_amount - ?)
          WHERE id = ?
       `).run(item.line_total || 0, item.purchase_id);
     })();
@@ -671,10 +671,10 @@ router.put('/items/:itemId/cancel', hqAuth, requirePagePerm('HqPurchases'), (req
       `).run(req.params.itemId);
 
       // Header total drops by this line's value so AP stays accurate.
+      // v1.10.251 — no explicit updated_at (trigger handles it).
       masterDb.prepare(`
         UPDATE hq_purchases
-           SET total_amount = MAX(0, total_amount - ?),
-               updated_at   = datetime('now')
+           SET total_amount = MAX(0, total_amount - ?)
          WHERE id = ?
       `).run(item.line_total || 0, item.purchase_id);
 
@@ -715,9 +715,10 @@ router.put('/:id/cancel', hqAuth, requirePagePerm('HqPurchases'), (req, res) => 
                variance_notes = COALESCE(NULLIF(variance_notes,''), 'Cancelled at HQ')
          WHERE purchase_id = ? AND status IN ('AWAITING_GRN', 'GRN_SUBMITTED')
       `).run(req.params.id);
+      // v1.10.251 — no explicit updated_at (trigger handles it).
       masterDb.prepare(`
         UPDATE hq_purchases
-           SET status = 'CANCELLED', total_amount = 0, updated_at = datetime('now')
+           SET status = 'CANCELLED', total_amount = 0
          WHERE id = ?
       `).run(req.params.id);
     })();
