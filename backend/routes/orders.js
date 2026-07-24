@@ -718,7 +718,12 @@ router.get('/product-breakdown', auth, readOnlyGuard, (req, res) => {
     // because SQLite stores datetimes as ISO 8601.
     if (from) { sql += ' AND o.created_at >= ?'; params.push(from); }
     if (to)   { sql += ' AND o.created_at <= ?'; params.push(to); }
-    if (userId && userId !== 'all') { sql += ' AND o.created_by = ?'; params.push(userId); }
+    // v1.10.260 — filter by sync_id so per-cashier item breakdown includes
+    // sales rung up on other devices too.
+    if (userId && userId !== 'all') {
+      sql += ' AND o.created_by_sync_id = (SELECT sync_id FROM users WHERE id = ?)';
+      params.push(userId);
+    }
     sql += ' ORDER BY o.created_at ASC';
     const rows = db.prepare(sql).all(...params);
     res.json(rows);

@@ -313,8 +313,12 @@ router.get('/daily', auth, readOnlyGuard, (req, res) => {
     // (no filter), not "PVs tagged to cashier 0 only". Without this, the top
     // KPI bar's Total cash in undercounts by the PV total (e.g. shows 500K
     // instead of 550K when 50K in expenses exist).
-    const expensesCashierClause = cashierId > 0 ? ' AND cashier_id = ?' : '';
-    const expensesParams = cashierId > 0 ? [tenantId, date, cashierId] : [tenantId, date];
+    // v1.10.260 — filter payment_vouchers by cashier_sync_id (portable
+    // across devices). Before, local cashierId=7 filtered against writes
+    // made on VPS where doris was cashierId=3 → wrong PV totals per cashier
+    // on the Cash Report KPI bar.
+    const expensesCashierClause = cashierSyncId ? ' AND cashier_sync_id = ?' : '';
+    const expensesParams = cashierSyncId ? [tenantId, date, cashierSyncId] : [tenantId, date];
     const expenses = db.prepare(
       `SELECT COALESCE(SUM(amount), 0) AS total FROM payment_vouchers
        WHERE deleted_at IS NULL AND tenant_id = ? AND date = ? AND paid_from = 'Cash Drawer'${expensesCashierClause}`
@@ -569,9 +573,19 @@ router.post('/', auth, (req, res) => {
     // if v1.10.9's admin delete has marked an earlier row deleted_at=<ts>,
     // an INSERT for the same (date, cashier_id) still fails. Reuse the row:
     // clear its deleted_at and rewrite the values.
-    const existing = db.prepare(
-      'SELECT id, deleted_at FROM cash_reports WHERE date = ? AND cashier_id = ?'
-    ).get(date, cashierId);
+    // v1.10.260 — lookup by cashier_sync_id (portable). If the row was
+    // pulled from another device it has a different local cashier_id but
+    // the same cashier_sync_id — we want to reuse THAT row. Falls back to
+    // (date, cashier_id) for legacy rows without a sync_id populated yet.
+    const existing = cashierSyncId
+      ? db.prepare(
+          `SELECT id, deleted_at FROM cash_reports
+            WHERE date = ?
+              AND ((cashier_sync_id = ?) OR (cashier_sync_id IS NULL AND cashier_id = ?))`
+        ).get(date, cashierSyncId, cashierId)
+      : db.prepare(
+          'SELECT id, deleted_at FROM cash_reports WHERE date = ? AND cashier_id = ?'
+        ).get(date, cashierId);
     let row;
 
     if (existing) {

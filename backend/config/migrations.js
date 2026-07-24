@@ -829,11 +829,17 @@ function initTenantDb(db) {
     'customer_payments', 'capital_account', 'dividend_account',
     'shareholders', 'loans', 'cash_transfers', 'currency_exchanges',
     'sales_returns',
+    // v1.10.260 — payment_vouchers has integer cashier_id filtered in
+    // cashReport.js:316; the created_by column is also used elsewhere.
+    // Add both siblings so the filter works cross-device.
+    'payment_vouchers',
   ];
   for (const t of CREATED_BY_SYNC_TABLES) {
     addCol(t, 'created_by_sync_id', 'TEXT');
   }
   addCol('currency_exchanges', 'cashier_sync_id', 'TEXT');
+  // v1.10.260 — payment_vouchers also carries a cashier_id filter.
+  addCol('payment_vouchers',   'cashier_sync_id', 'TEXT');
 
   // Backfill created_by_sync_id on legacy rows (writer-device rows).
   for (const t of CREATED_BY_SYNC_TABLES) {
@@ -858,6 +864,17 @@ function initTenantDb(db) {
     `);
   } catch (e) {
     console.warn('[migrations] currency_exchanges cashier_sync_id backfill:', e.message);
+  }
+  // v1.10.260 — payment_vouchers cashier_sync_id backfill.
+  try {
+    db.exec(`
+      UPDATE payment_vouchers
+         SET cashier_sync_id = (SELECT sync_id FROM users WHERE users.id = payment_vouchers.cashier_id)
+       WHERE cashier_sync_id IS NULL AND cashier_id IS NOT NULL
+         AND EXISTS (SELECT 1 FROM users WHERE users.id = payment_vouchers.cashier_id);
+    `);
+  } catch (e) {
+    console.warn('[migrations] payment_vouchers cashier_sync_id backfill:', e.message);
   }
 
   // Auto-populate on future INSERTs via trigger. Fires only when the
@@ -894,6 +911,22 @@ function initTenantDb(db) {
     `);
   } catch (e) {
     console.warn('[migrations] currency_exchanges cashier_sync_id trigger:', e.message);
+  }
+  // v1.10.260 — payment_vouchers cashier_sync_id auto-stamp trigger.
+  try {
+    db.exec(`
+      CREATE TRIGGER IF NOT EXISTS trg_payment_vouchers_stamp_cashier_sync_id
+      AFTER INSERT ON payment_vouchers
+      FOR EACH ROW
+      WHEN NEW.cashier_id IS NOT NULL AND NEW.cashier_sync_id IS NULL
+      BEGIN
+        UPDATE payment_vouchers
+           SET cashier_sync_id = (SELECT sync_id FROM users WHERE id = NEW.cashier_id)
+         WHERE id = NEW.id;
+      END;
+    `);
+  } catch (e) {
+    console.warn('[migrations] payment_vouchers cashier_sync_id trigger:', e.message);
   }
   // v1.10.221 — event-level cost lock. Stamp the WAC live at the moment of
   // the movement (sale, sale_reverse, sales_return, transit_writeoff) so
