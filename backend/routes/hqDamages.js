@@ -64,7 +64,7 @@ router.get('/awaiting', hqAuth, requirePagePerm('HqConfirmDamages'), (req, res) 
           SELECT id, return_number, date, notes, total_items, created_by, sync_id, created_at,
                  status, confirmed_by_name, confirmed_at, confirm_notes,
                  (SELECT TRIM(COALESCE(u.first_name,'') || ' ' || COALESCE(u.last_name,''))
-                    FROM users u WHERE u.id = sales_returns.created_by) AS created_by_name
+                    FROM users u WHERE u.sync_id = sales_returns.created_by_sync_id) AS created_by_name
             FROM sales_returns
            WHERE deleted_at IS NULL AND ${statusClause}
            ORDER BY date DESC, id DESC

@@ -11,7 +11,7 @@ router.get('/sessions', auth, readOnlyGuard, (req, res) => {
       `SELECT s.*, u.first_name || ' ' || u.last_name AS created_by_name,
         (SELECT COUNT(*) FROM stock_count_items WHERE session_id = s.id) AS item_count
        FROM stock_count_sessions s
-       LEFT JOIN users u ON s.created_by = u.id
+       LEFT JOIN users u ON s.created_by_sync_id = u.sync_id
        WHERE s.tenant_id = ?
        ORDER BY s.created_at DESC`
     ).all(req.user.tenantId);

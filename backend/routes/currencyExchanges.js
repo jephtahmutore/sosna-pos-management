@@ -52,15 +52,24 @@ router.get('/', auth, readOnlyGuard, (req, res) => {
       if (req.query.to)   { where += ' AND ce.date <= ?'; params.push(String(req.query.to).slice(0, 10)); }
     }
     if (scope === 'drawer' && req.query.cashier_id !== undefined) {
-      where += ' AND ce.cashier_id = ?';
-      params.push(parseInt(req.query.cashier_id) || 0);
+      // v1.10.259 — translate local cashier_id → sync_id at query time so
+      // rows written on other devices with different local ids still match.
+      const cid = parseInt(req.query.cashier_id) || 0;
+      if (cid === 0) {
+        where += ' AND (ce.cashier_id = 0 OR ce.cashier_id IS NULL)';
+      } else {
+        where += ' AND ce.cashier_sync_id = (SELECT sync_id FROM users WHERE id = ?)';
+        params.push(cid);
+      }
     }
+    // v1.10.259 — JOIN users on sync_id (created_by_sync_id + cashier_sync_id
+    // added in migrations for cross-device correctness).
     const rows = db.prepare(`
       SELECT ce.*, u.first_name || ' ' || u.last_name AS created_by_name,
              cu.first_name || ' ' || cu.last_name AS cashier_name
       FROM currency_exchanges ce
-      LEFT JOIN users u  ON ce.created_by = u.id
-      LEFT JOIN users cu ON ce.cashier_id = cu.id
+      LEFT JOIN users u  ON ce.created_by_sync_id = u.sync_id
+      LEFT JOIN users cu ON ce.cashier_sync_id    = cu.sync_id
       WHERE ${where}
       ORDER BY ce.date DESC, ce.time DESC, ce.id DESC
     `).all(...params);
@@ -87,8 +96,14 @@ router.get('/net', auth, readOnlyGuard, (req, res) => {
     if (req.query.from) { where += ' AND date >= ?'; params.push(String(req.query.from).slice(0, 10)); }
     if (req.query.to)   { where += ' AND date <= ?'; params.push(String(req.query.to).slice(0, 10)); }
     if (scope === 'drawer' && req.query.cashier_id !== undefined) {
-      where += ' AND cashier_id = ?';
-      params.push(parseInt(req.query.cashier_id) || 0);
+      // v1.10.259 — sync_id filter (see /list handler comment).
+      const cid = parseInt(req.query.cashier_id) || 0;
+      if (cid === 0) {
+        where += ' AND (cashier_id = 0 OR cashier_id IS NULL)';
+      } else {
+        where += ' AND cashier_sync_id = (SELECT sync_id FROM users WHERE id = ?)';
+        params.push(cid);
+      }
     }
     const rows = db.prepare(`
       SELECT from_currency, to_currency, from_amount, to_amount

@@ -809,6 +809,92 @@ function initTenantDb(db) {
   } catch (e) {
     console.warn('[migrations] cash_reports sync_id backfill:', e.message);
   }
+
+  // v1.10.259 — same fix for the other 15 tables where an integer
+  // created_by (and, on currency_exchanges, a cashier_id) was being
+  // JOIN'd against users.id. Sweep pattern:
+  //   1. addCol '${table}_created_by_sync_id' (TEXT, nullable)
+  //   2. Backfill from local users where the integer id still resolves
+  //      (correct on the writing device; NULL elsewhere — safer than
+  //      wrong)
+  //   3. Install an AFTER INSERT trigger so future writes auto-populate
+  //      the sync_id from users at insert time — no route code changes
+  //      needed for the ~30 INSERT sites across these 15 files.
+  //   4. Sync-loop bypass: the pull-upsert sets created_by_sync_id
+  //      explicitly from the incoming row → NEW.created_by_sync_id
+  //      IS NOT NULL → trigger's WHEN guard skips it.
+  const CREATED_BY_SYNC_TABLES = [
+    'grn', 'siv', 'stock_adjustments', 'stock_reconciliations',
+    'stock_count_sessions', 'empty_returns', 'supplier_credit_notes',
+    'customer_payments', 'capital_account', 'dividend_account',
+    'shareholders', 'loans', 'cash_transfers', 'currency_exchanges',
+    'sales_returns',
+  ];
+  for (const t of CREATED_BY_SYNC_TABLES) {
+    addCol(t, 'created_by_sync_id', 'TEXT');
+  }
+  addCol('currency_exchanges', 'cashier_sync_id', 'TEXT');
+
+  // Backfill created_by_sync_id on legacy rows (writer-device rows).
+  for (const t of CREATED_BY_SYNC_TABLES) {
+    try {
+      db.exec(`
+        UPDATE ${t}
+           SET created_by_sync_id = (SELECT sync_id FROM users WHERE users.id = ${t}.created_by)
+         WHERE created_by_sync_id IS NULL
+           AND created_by IS NOT NULL
+           AND EXISTS (SELECT 1 FROM users WHERE users.id = ${t}.created_by);
+      `);
+    } catch (e) {
+      console.warn(`[migrations] ${t} created_by_sync_id backfill:`, e.message);
+    }
+  }
+  try {
+    db.exec(`
+      UPDATE currency_exchanges
+         SET cashier_sync_id = (SELECT sync_id FROM users WHERE users.id = currency_exchanges.cashier_id)
+       WHERE cashier_sync_id IS NULL AND cashier_id IS NOT NULL
+         AND EXISTS (SELECT 1 FROM users WHERE users.id = currency_exchanges.cashier_id);
+    `);
+  } catch (e) {
+    console.warn('[migrations] currency_exchanges cashier_sync_id backfill:', e.message);
+  }
+
+  // Auto-populate on future INSERTs via trigger. Fires only when the
+  // caller set created_by but left created_by_sync_id NULL — pull-upsert
+  // sends both fields so the trigger skips (WHEN guard).
+  for (const t of CREATED_BY_SYNC_TABLES) {
+    try {
+      db.exec(`
+        CREATE TRIGGER IF NOT EXISTS trg_${t}_stamp_created_by_sync_id
+        AFTER INSERT ON ${t}
+        FOR EACH ROW
+        WHEN NEW.created_by IS NOT NULL AND NEW.created_by_sync_id IS NULL
+        BEGIN
+          UPDATE ${t}
+             SET created_by_sync_id = (SELECT sync_id FROM users WHERE id = NEW.created_by)
+           WHERE id = NEW.id;
+        END;
+      `);
+    } catch (e) {
+      console.warn(`[migrations] ${t} created_by_sync_id trigger:`, e.message);
+    }
+  }
+  try {
+    db.exec(`
+      CREATE TRIGGER IF NOT EXISTS trg_currency_exchanges_stamp_cashier_sync_id
+      AFTER INSERT ON currency_exchanges
+      FOR EACH ROW
+      WHEN NEW.cashier_id IS NOT NULL AND NEW.cashier_sync_id IS NULL
+      BEGIN
+        UPDATE currency_exchanges
+           SET cashier_sync_id = (SELECT sync_id FROM users WHERE id = NEW.cashier_id)
+         WHERE id = NEW.id;
+      END;
+    `);
+  } catch (e) {
+    console.warn('[migrations] currency_exchanges cashier_sync_id trigger:', e.message);
+  }
   // v1.10.221 — event-level cost lock. Stamp the WAC live at the moment of
   // the movement (sale, sale_reverse, sales_return, transit_writeoff) so
   // profitHelper's COGS/damages queries can read the exact cost that was

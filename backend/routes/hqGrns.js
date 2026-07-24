@@ -85,8 +85,8 @@ router.get('/awaiting', hqAuth, requirePagePerm('HqConfirmGrn'), (req, res) => {
     for (const t of tenants) {
       try {
         const db = getTenantDb(t.slug);
-        // v1.10.258 — supplier JOIN by sync_id. users JOIN still integer
-        // (grn.created_by_sync_id column pending in v1.10.259 schema sweep).
+        // v1.10.259 — users JOIN also on sync_id now that grn.created_by_sync_id
+        // exists (added in the schema sweep).
         const grns = db.prepare(`
           SELECT g.id, g.grn_number, g.sync_id, g.date, g.total_items, g.total_amount,
                  g.notes, g.linked_purchase_sync_id, g.linked_purchase_number,
@@ -94,7 +94,7 @@ router.get('/awaiting', hqAuth, requirePagePerm('HqConfirmGrn'), (req, res) => {
                  TRIM(COALESCE(u.first_name,'') || ' ' || COALESCE(u.last_name,'')) AS created_by_name,
                  s.name AS supplier_name
             FROM grn g
-            LEFT JOIN users u     ON u.id = g.created_by
+            LEFT JOIN users u     ON u.sync_id = g.created_by_sync_id
             LEFT JOIN suppliers s ON s.sync_id = g.supplier_sync_id
            WHERE g.deleted_at IS NULL
              AND g.hq_status = 'PENDING_HQ_CONFIRM'
@@ -234,16 +234,14 @@ router.get('/:slug/:syncId', hqAuth, requirePagePerm('HqGrnArchive'), (req, res)
     const { slug, syncId } = req.params;
     if (!isRegistered(slug)) return res.status(404).json({ error: `Branch "${slug}" not registered.` });
     const db = getTenantDb(slug);
-    // v1.10.258 — supplier + product JOINs by sync_id (integer IDs don't
-    // map when the GRN was written on a branch's Electron mirror). users
-    // JOIN still uses integer id — grn.created_by_sync_id doesn't exist
-    // yet; fix pending in v1.10.259 with the schema addition sweep.
+    // v1.10.259 — all three JOINs on sync_id now (grn.created_by_sync_id
+    // was added in the schema sweep).
     const grn = db.prepare(`
       SELECT g.*,
              TRIM(COALESCE(u.first_name,'') || ' ' || COALESCE(u.last_name,'')) AS created_by_name,
              s.name AS supplier_name
         FROM grn g
-        LEFT JOIN users u     ON u.id = g.created_by
+        LEFT JOIN users u     ON u.sync_id = g.created_by_sync_id
         LEFT JOIN suppliers s ON s.sync_id = g.supplier_sync_id
        WHERE g.sync_id = ? AND g.deleted_at IS NULL
     `).get(syncId);

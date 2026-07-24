@@ -32,7 +32,7 @@ router.get('/', auth, readOnlyGuard, (req, res) => {
              (u.first_name || ' ' || u.last_name) AS created_by_name
       FROM dividend_account d
       LEFT JOIN shareholders sh ON sh.sync_id = d.shareholder_sync_id
-      LEFT JOIN users u ON u.id = d.created_by
+      LEFT JOIN users u ON u.sync_id = d.created_by_sync_id
       WHERE d.deleted_at IS NULL AND d.tenant_id = ?
     `;
     const params = [req.user.tenantId];
@@ -65,7 +65,7 @@ router.get('/:id', auth, readOnlyGuard, (req, res) => {
     const row = db.prepare(`
       SELECT d.*, (u.first_name || ' ' || u.last_name) AS created_by_name
       FROM dividend_account d
-      LEFT JOIN users u ON u.id = d.created_by
+      LEFT JOIN users u ON u.sync_id = d.created_by_sync_id
       WHERE d.id = ? AND d.tenant_id = ?
     `).get(req.params.id, req.user.tenantId);
     if (!row) return res.status(404).json({ error: 'Dividend entry not found.' });

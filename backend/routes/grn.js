@@ -609,7 +609,13 @@ router.get('/:id', auth, readOnlyGuard, (req, res) => {
     const q = FIFO_SQL('WHERE gwa.id = ?', [req.params.id], req.user.tenantId);
     const grn = db.prepare(q.text).get(...q.values);
     if (grn) {
-      const creator = db.prepare(`SELECT first_name || ' ' || last_name AS name FROM users WHERE id = ?`).get(grn.created_by);
+      // v1.10.259 — look up creator by sync_id (portable across devices).
+      // grn.created_by_sync_id column added + backfilled in migrations.js.
+      const creator = grn.created_by_sync_id
+        ? db.prepare(`SELECT first_name || ' ' || last_name AS name FROM users WHERE sync_id = ?`).get(grn.created_by_sync_id)
+        : (grn.created_by
+            ? db.prepare(`SELECT first_name || ' ' || last_name AS name FROM users WHERE id = ?`).get(grn.created_by)
+            : null);
       grn.created_by_name = creator?.name || '—';
     }
     const items = db.prepare(

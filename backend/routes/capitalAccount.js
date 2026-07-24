@@ -29,7 +29,7 @@ router.get('/', auth, readOnlyGuard, (req, res) => {
              (u.first_name || ' ' || u.last_name) AS created_by_name
       FROM capital_account ca
       LEFT JOIN shareholders sh ON sh.sync_id = ca.shareholder_sync_id
-      LEFT JOIN users u ON u.id = ca.created_by
+      LEFT JOIN users u ON u.sync_id = ca.created_by_sync_id
       WHERE ca.deleted_at IS NULL AND ca.tenant_id = ?
     `;
     const params = [req.user.tenantId];
@@ -66,7 +66,7 @@ router.get('/:id', auth, readOnlyGuard, (req, res) => {
     const row = db.prepare(`
       SELECT ca.*, (u.first_name || ' ' || u.last_name) AS created_by_name
       FROM capital_account ca
-      LEFT JOIN users u ON u.id = ca.created_by
+      LEFT JOIN users u ON u.sync_id = ca.created_by_sync_id
       WHERE ca.id = ? AND ca.tenant_id = ?
     `).get(req.params.id, req.user.tenantId);
     if (!row) return res.status(404).json({ error: 'Capital entry not found.' });

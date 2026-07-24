@@ -50,7 +50,7 @@ router.get('/', auth, readOnlyGuard, (req, res) => {
         COALESCE(interest_agg.s, 0)  AS total_interest_paid,
         COALESCE(disbursed_agg.s, 0) - COALESCE(principal_agg.s, 0) AS outstanding
       FROM loans l
-      LEFT JOIN users u ON u.id = l.created_by
+      LEFT JOIN users u ON u.sync_id = l.created_by_sync_id
       LEFT JOIN (SELECT loan_sync_id, SUM(amount) AS s FROM loan_transactions WHERE deleted_at IS NULL AND type='Disbursement' GROUP BY loan_sync_id) disbursed_agg ON disbursed_agg.loan_sync_id = l.sync_id
       LEFT JOIN (SELECT loan_sync_id, SUM(amount) AS s FROM loan_transactions WHERE deleted_at IS NULL AND type='Principal'    GROUP BY loan_sync_id) principal_agg ON principal_agg.loan_sync_id = l.sync_id
       LEFT JOIN (SELECT loan_sync_id, SUM(amount) AS s FROM loan_transactions WHERE deleted_at IS NULL AND type='Interest'     GROUP BY loan_sync_id) interest_agg  ON interest_agg.loan_sync_id  = l.sync_id
@@ -88,7 +88,7 @@ router.get('/:id', auth, readOnlyGuard, (req, res) => {
     const loan = db.prepare(`
       SELECT l.*, (u.first_name || ' ' || u.last_name) AS created_by_name
       FROM loans l
-      LEFT JOIN users u ON u.id = l.created_by
+      LEFT JOIN users u ON u.sync_id = l.created_by_sync_id
       WHERE l.id = ? AND l.tenant_id = ?
     `).get(req.params.id, req.user.tenantId);
     if (!loan) return res.status(404).json({ error: 'Loan not found.' });

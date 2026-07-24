@@ -116,7 +116,7 @@ router.get('/', auth, readOnlyGuard, (req, res) => {
              -- Net signed variance: positive = surplus (stock found), negative = shrinkage (loss)
              SUM(sri.variance_base * sri.cost_at_count) AS variance_value
       FROM stock_reconciliations sr
-      LEFT JOIN users u ON u.id = sr.created_by
+      LEFT JOIN users u ON u.sync_id = sr.created_by_sync_id
       LEFT JOIN stock_reconciliation_items sri
         ON sri.reconciliation_id = sr.id AND sri.deleted_at IS NULL
       WHERE sr.deleted_at IS NULL AND sr.tenant_id = ?
@@ -135,7 +135,7 @@ router.get('/:id', auth, readOnlyGuard, (req, res) => {
     const head = db.prepare(`
       SELECT sr.*, u.first_name || ' ' || u.last_name AS created_by_name
       FROM stock_reconciliations sr
-      LEFT JOIN users u ON u.id = sr.created_by
+      LEFT JOIN users u ON u.sync_id = sr.created_by_sync_id
       WHERE sr.id = ? AND sr.tenant_id = ? AND sr.deleted_at IS NULL
     `).get(req.params.id, req.user.tenantId);
     if (!head) return res.status(404).json({ error: 'Reconciliation not found' });

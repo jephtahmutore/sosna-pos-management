@@ -12,7 +12,7 @@ router.get('/', auth, readOnlyGuard, (req, res) => {
              u.first_name || ' ' || u.last_name AS created_by_name
       FROM stock_adjustments sa
       LEFT JOIN products p ON sa.product_sync_id = p.sync_id
-      LEFT JOIN users u ON sa.created_by = u.id
+      LEFT JOIN users u ON sa.created_by_sync_id = u.sync_id
       WHERE sa.deleted_at IS NULL AND sa.tenant_id = ?
       ORDER BY sa.created_at DESC
     `).all(req.user.tenantId);

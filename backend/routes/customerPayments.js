@@ -123,7 +123,7 @@ router.get('/', auth, readOnlyGuard, (req, res) => {
              'manual' AS source
       FROM customer_payments cp
       LEFT JOIN customers c ON c.sync_id = cp.customer_sync_id
-      LEFT JOIN users u     ON u.id = cp.created_by
+      LEFT JOIN users u     ON u.sync_id = cp.created_by_sync_id
       WHERE cp.deleted_at IS NULL AND cp.tenant_id = ?`;
     const params = [req.user.tenantId];
     // Filter by sync_id derived from requested local id — drift-safe.

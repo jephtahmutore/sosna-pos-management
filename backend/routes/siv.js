@@ -171,7 +171,8 @@ router.get('/notes', auth, readOnlyGuard, (req, res) => {
 
 router.get('/:id', auth, readOnlyGuard, (req, res) => {
   try {
-    const siv = db.prepare(`SELECT s.*, u.first_name || ' ' || u.last_name AS created_by_name FROM siv s LEFT JOIN users u ON s.created_by = u.id WHERE s.id = ? AND s.deleted_at IS NULL AND s.tenant_id = ?`).get(req.params.id, req.user.tenantId);
+    // v1.10.259 — JOIN on sync_id (created_by_sync_id added in migrations).
+    const siv = db.prepare(`SELECT s.*, u.first_name || ' ' || u.last_name AS created_by_name FROM siv s LEFT JOIN users u ON s.created_by_sync_id = u.sync_id WHERE s.id = ? AND s.deleted_at IS NULL AND s.tenant_id = ?`).get(req.params.id, req.user.tenantId);
     // Aliasing p.unit → product_unit is critical: si.* already exposes si.unit
     // (the unit the SIV line was issued in, e.g. "Box"). Selecting p.unit unaliased
     // creates a duplicate-name collision; the second column wins and the frontend

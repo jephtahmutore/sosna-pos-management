@@ -1214,7 +1214,7 @@ router.get('/transfers', auth, readOnlyGuard, (req, res) => {
     const rows = db.prepare(`
       SELECT t.*, (u.first_name || ' ' || u.last_name) AS created_by_name
       FROM cash_transfers t
-      LEFT JOIN users u ON u.id = t.created_by
+      LEFT JOIN users u ON u.sync_id = t.created_by_sync_id
       WHERE t.deleted_at IS NULL AND t.tenant_id = ?
       ORDER BY t.date DESC, t.id DESC
     `).all(req.user.tenantId);

@@ -53,7 +53,7 @@ router.get('/', auth, readOnlyGuard, (req, res) => {
              (u.first_name || ' ' || u.last_name) AS created_by_name
       FROM supplier_credit_notes cn
       LEFT JOIN suppliers s ON s.sync_id = cn.supplier_sync_id
-      LEFT JOIN users u ON u.id = cn.created_by
+      LEFT JOIN users u ON u.sync_id = cn.created_by_sync_id
       WHERE cn.deleted_at IS NULL AND cn.tenant_id = ?
     `;
     const params = [req.user.tenantId];
@@ -96,7 +96,7 @@ router.get('/:id', auth, readOnlyGuard, (req, res) => {
              (u.first_name || ' ' || u.last_name) AS created_by_name
       FROM supplier_credit_notes cn
       LEFT JOIN suppliers s ON s.sync_id = cn.supplier_sync_id
-      LEFT JOIN users u ON u.id = cn.created_by
+      LEFT JOIN users u ON u.sync_id = cn.created_by_sync_id
       WHERE cn.id = ? AND cn.tenant_id = ?
     `).get(req.params.id, req.user.tenantId);
     if (!row) return res.status(404).json({ error: 'Credit note not found.' });

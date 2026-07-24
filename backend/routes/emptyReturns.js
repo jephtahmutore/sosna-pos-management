@@ -32,7 +32,7 @@ router.get('/', auth, readOnlyGuard, (req, res) => {
              (u.first_name || ' ' || u.last_name) AS created_by_name
       FROM empty_returns er
       LEFT JOIN suppliers s ON s.sync_id = er.supplier_sync_id
-      LEFT JOIN users u ON u.id = er.created_by
+      LEFT JOIN users u ON u.sync_id = er.created_by_sync_id
       WHERE er.deleted_at IS NULL AND er.tenant_id = ?
       ORDER BY er.date DESC, er.id DESC
     `).all(req.user.tenantId);
@@ -65,7 +65,7 @@ router.get('/:id', auth, readOnlyGuard, (req, res) => {
              (u.first_name || ' ' || u.last_name) AS created_by_name
       FROM empty_returns er
       LEFT JOIN suppliers s ON s.sync_id = er.supplier_sync_id
-      LEFT JOIN users u ON u.id = er.created_by
+      LEFT JOIN users u ON u.sync_id = er.created_by_sync_id
       WHERE er.id = ? AND er.tenant_id = ?
     `).get(req.params.id, req.user.tenantId);
     if (!row) return res.status(404).json({ error: 'Empty return not found.' });

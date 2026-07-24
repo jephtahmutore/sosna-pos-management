@@ -15,7 +15,7 @@ router.get('/', auth, readOnlyGuard, (req, res) => {
     const rows = db.prepare(`
       SELECT s.*, (u.first_name || ' ' || u.last_name) AS created_by_name
       FROM shareholders s
-      LEFT JOIN users u ON u.id = s.created_by
+      LEFT JOIN users u ON u.sync_id = s.created_by_sync_id
       WHERE s.deleted_at IS NULL AND s.tenant_id = ?
       ORDER BY s.name COLLATE NOCASE
     `).all(req.user.tenantId);
@@ -51,7 +51,7 @@ router.get('/:id', auth, readOnlyGuard, (req, res) => {
     const row = db.prepare(`
       SELECT s.*, (u.first_name || ' ' || u.last_name) AS created_by_name
       FROM shareholders s
-      LEFT JOIN users u ON u.id = s.created_by
+      LEFT JOIN users u ON u.sync_id = s.created_by_sync_id
       WHERE s.id = ? AND s.tenant_id = ?
     `).get(req.params.id, req.user.tenantId);
     if (!row) return res.status(404).json({ error: 'Shareholder not found.' });
