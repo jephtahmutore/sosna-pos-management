@@ -33,36 +33,40 @@ const ACTIONS = ['View', 'Add', 'Edit', 'Delete'];
 //
 // getPageGroups(hq) returns the correct catalog for the current host.
 
+// v1.10.262 — catalog trimmed to match the ACTUAL 20 pages visible in the
+// Lusaka1/Mansa1 branch sidebar (v1.8.29 permanently hides GRN/SIV/BinCard/
+// Categories/StockCount/ExpiryReport/AccountPayables/Suppliers/etc. and
+// they'll never re-appear here). Also added the 5 new keys the routes now
+// require (SalesStockCard, QuickPrice, IncomingStock, StockTransfers,
+// Approvals) — before this bump those routes proxied through Inventory:View
+// or role==='Administrator', so admins couldn't grant them individually.
+//
+// Kassumbalesa (3-station branch) needs Cashier + Dispatch too — kept them
+// here so admins can grant per-user without editing this catalog. Sidebar
+// hides them via workflow_mode='single_pos' on Lusaka/Mansa so no clutter.
 const PAGE_GROUPS_BRANCH = [
   {
     group: 'Sales',
     pages: [
-      { key: 'POS',          label: 'POS (Point of Sale)' },
-      // Kassumbalesa 3-station workflow — separate roles per station.
-      // Grant these to users you trust to take money + release goods.
-      { key: 'Cashier',      label: 'Cashier station (3-station)' },
-      { key: 'Dispatch',     label: 'Dispatch station (3-station)' },
-      { key: 'SalesReport',  label: 'Sales Report' },
+      { key: 'POS',            label: 'POS (Point of Sale)' },
+      { key: 'Cashier',        label: 'Cashier station (3-station)' },
+      { key: 'Dispatch',       label: 'Dispatch station (3-station)' },
+      { key: 'SalesReport',    label: 'Sales Report' },
       { key: 'SalesInventory', label: 'Sales Inventory' },
-      { key: 'CashReport',   label: 'Cash Report' },
-      { key: 'SalesBinCard', label: 'Sales Bin Card' },
+      { key: 'CashReport',     label: 'Cash Report' },
+      { key: 'SalesBinCard',   label: 'Sales Bin Card' },
+      { key: 'SalesStockCard', label: 'Sales Stock Card' },
     ],
   },
   {
     group: 'Store',
     pages: [
-      { key: 'Items',                label: 'Items / Products' },
-      { key: 'Categories',           label: 'Categories' },
-      { key: 'GRN',                  label: 'GRN (Goods Received)' },
-      { key: 'SIV',                  label: 'SIV (Stock Issue Voucher)' },
-      { key: 'SalesReturns',         label: 'Sales Returns' },
-      { key: 'Production',           label: 'Production' },
-      { key: 'StockAdjustment',      label: 'Stock Adjustments' },
+      { key: 'Items',                label: 'Item Details' },
+      { key: 'QuickPrice',           label: 'Quick Price' },
+      { key: 'SalesReturns',         label: 'Sales Damages' },
       { key: 'StockReconciliation',  label: 'Stock Reconciliation' },
-      { key: 'StockCount',           label: 'Stock Count' },
-      { key: 'Inventory',            label: 'Inventory' },
-      { key: 'BinCard',              label: 'Bin Card' },
-      { key: 'ExpiryReport',         label: 'Expiry Report' },
+      { key: 'IncomingStock',        label: 'Incoming Stock' },
+      { key: 'StockTransfers',       label: 'Inter-Branch Transfers' },
     ],
   },
   {
@@ -70,24 +74,22 @@ const PAGE_GROUPS_BRANCH = [
     pages: [
       { key: 'CashReceipt',        label: 'Cash Receipt (CR)' },
       { key: 'PaymentVoucher',     label: 'Payment Voucher (PV)' },
-      { key: 'PvTypes',            label: 'PV Types' },
       { key: 'CashBook',           label: 'Cash Book' },
       { key: 'HQDeposits',         label: 'HQ Deposits' },
-      { key: 'FxRates',            label: 'Currency Rates' },
-      { key: 'AccountPayables',    label: 'Account Payables' },
       { key: 'AccountReceivables', label: 'Account Receivables' },
-      { key: 'CapitalAccount',     label: 'Capital Account' },
-      { key: 'DividendAccount',    label: 'Dividend Account' },
-      { key: 'Shareholders',       label: 'Shareholders' },
-      { key: 'LoanAccount',        label: 'Loan Account' },
       { key: 'ProfitReport',       label: 'Profit Report' },
     ],
   },
   {
     group: 'Contacts',
     pages: [
-      { key: 'Suppliers', label: 'Suppliers' },
       { key: 'Customers', label: 'Customers' },
+    ],
+  },
+  {
+    group: 'Approvals',
+    pages: [
+      { key: 'Approvals', label: 'Approvals (Discount Requests)' },
     ],
   },
 ];

@@ -10,7 +10,7 @@
 
 const router = require('express').Router();
 const db = require('../config/database');
-const { auth, readOnlyGuard } = require('../middleware/auth');
+const { auth, readOnlyGuard, requirePagePerm } = require('../middleware/auth');
 const syncConfig = require('../config/syncConfig');
 const { randomUUID } = require('crypto');
 
@@ -131,11 +131,11 @@ router.get('/:syncId', auth, readOnlyGuard, (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// ── Approve / Reject (Administrator only) ────────────────────────────────────
+// ── Approve / Reject (gated by 'Approvals' permission) ──────────────────────
+// v1.10.262 — released from Administrator-only. Admins auto-pass via
+// requirePagePerm; the permission is now delegatable to any user who
+// has the 'Approvals' checkbox in Users → Permissions.
 function setVerdict(req, res, verdict) {
-  if (req.user.role !== 'Administrator') {
-    return res.status(403).json({ error: 'Only administrators can ' + verdict + ' discount requests.' });
-  }
   const row = db.prepare(
     'SELECT * FROM discount_requests WHERE sync_id = ? AND tenant_id = ? AND deleted_at IS NULL'
   ).get(req.params.syncId, req.user.tenantId);
@@ -156,11 +156,11 @@ function setVerdict(req, res, verdict) {
   res.json(updated);
 }
 
-router.put('/:syncId/approve', auth, (req, res) => {
+router.put('/:syncId/approve', auth, requirePagePerm('Approvals'), (req, res) => {
   try { setVerdict(req, res, 'approve'); }
   catch (e) { res.status(500).json({ error: e.message }); }
 });
-router.put('/:syncId/reject', auth, (req, res) => {
+router.put('/:syncId/reject', auth, requirePagePerm('Approvals'), (req, res) => {
   try { setVerdict(req, res, 'reject'); }
   catch (e) { res.status(500).json({ error: e.message }); }
 });

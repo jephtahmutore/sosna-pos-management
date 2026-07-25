@@ -481,7 +481,7 @@ const Layout = () => {
                       <FiBook className="nav-icon" /> <span>Sales Bin Card</span>
                     </div>
                   )}
-                  {!hq && hasPageAccess('Inventory') && (
+                  {!hq && hasPageAccess('SalesStockCard') && (
                     <div className={`nav-item ${isActive('/pos/sales-stock-card') ? 'active' : ''}`} onClick={() => navigate('/pos/sales-stock-card')}>
                       <FiList className="nav-icon" /> <span>Sales Stock Card</span>
                     </div>
@@ -573,7 +573,7 @@ const Layout = () => {
                       Branch-only (HQ doesn't manage prices) and gated by
                       Items:Edit so cashier-supervisors can adjust prices
                       without full item-edit rights. */}
-                  {!hq && hasPageAccess('Items') && (
+                  {!hq && hasPageAccess('QuickPrice') && (
                     <div className={`nav-item ${isActive('/stock/quick-price') ? 'active' : ''}`} onClick={() => navigate('/stock/quick-price')}>
                       <FiDollarSign className="nav-icon" /> <span>Quick Price</span>
                     </div>
@@ -646,13 +646,13 @@ const Layout = () => {
                       <FiClipboard className="nav-icon" /> <span>Stock Count</span>
                     </div>
                   )}
-                  {!hq && hasPageAccess('Inventory') && (
+                  {!hq && hasPageAccess('IncomingStock') && (
                     <div className={`nav-item ${isActive('/stock/incoming') ? 'active' : ''}`} onClick={() => navigate('/stock/incoming')}>
                       <FiInbox className="nav-icon" /> <span>Incoming Stock</span>
                       {badges.incoming_stock > 0 && <SidebarBadge n={badges.incoming_stock} />}
                     </div>
                   )}
-                  {!hq && hasPageAccess('Inventory') && (
+                  {!hq && hasPageAccess('StockTransfers') && (
                     <div className={`nav-item ${isActive('/stock/transfers') ? 'active' : ''}`} onClick={() => navigate('/stock/transfers')}>
                       <FiTruck className="nav-icon" /> <span>Inter-Branch Transfers</span>
                       {badges.incoming_transfers > 0 && <SidebarBadge n={badges.incoming_transfers} />}
@@ -828,11 +828,14 @@ const Layout = () => {
             </>
           )}
 
-          {/* Approvals — admin-only top-level entry. Red badge shows the
-              count of pending discount requests. Polled every 10s in the
-              useEffect above. v1.8.9 — hidden at HQ (discount requests
-              originate at branches, never at HQ). */}
-          {!hq && !collapsed && user?.role === 'Administrator' && (
+          {/* Approvals — top-level entry, gated by the 'Approvals'
+              permission. v1.10.262 — released from admin-only (was
+              user?.role === 'Administrator') so an admin can delegate
+              discount approvals to a manager without granting full
+              admin. Administrator role auto-passes via hasPageAccess.
+              v1.8.9 — hidden at HQ (discount requests originate at
+              branches, never at HQ). */}
+          {!hq && !collapsed && hasPageAccess('Approvals') && (
             <div
               className={`nav-item ${isActive('/approvals/discounts') ? 'active' : ''}`}
               onClick={() => navigate('/approvals/discounts')}

@@ -297,11 +297,11 @@ function AppRoutes() {
         <Route path="hq/suppliers"        element={<HqRoute><HqSuppliers /></HqRoute>} />
         <Route path="pos/sales-report" element={<PermRoute perms={['Sales','Reports','SalesReport:View','SalesReport:Add','SalesReport:Edit','SalesReport:Delete']}><SalesReport /></PermRoute>} />
         <Route path="pos/sales-inventory" element={<PermRoute perms={['Sales','Reports','SalesInventory:View','SalesInventory:Add','SalesInventory:Edit','SalesInventory:Delete']}><SalesInventory /></PermRoute>} />
-        <Route path="pos/sales-stock-card" element={<PermRoute perms={['Sales','Reports','SalesInventory:View','Inventory:View']}><Inventory viewLocation="sales" /></PermRoute>} />
+        <Route path="pos/sales-stock-card" element={<PermRoute perms={['Sales','Reports','SalesStockCard','SalesStockCard:View','SalesInventory:View','Inventory:View']}><Inventory viewLocation="sales" /></PermRoute>} />
         <Route path="pos/cash-report" element={<PermRoute perms={['Sales','Reports','CashReport:View','CashReport:Add','CashReport:Edit','CashReport:Delete']}><CashReport /></PermRoute>} />
         <Route path="pos/sales-bin-card" element={<PermRoute perms={['Sales','Reports','SalesBinCard:View','SalesBinCard:Add','SalesBinCard:Edit','SalesBinCard:Delete']}><SalesBinCard /></PermRoute>} />
         <Route path="stock/items" element={<PermRoute perms={['Stock','GRN','SIV','Items:View','Items:Add','Items:Edit','Items:Delete']}><ItemDetails /></PermRoute>} />
-        <Route path="stock/quick-price" element={<PermRoute perms={['Stock','Items:Edit','QuickPrice:View']}><QuickPrice /></PermRoute>} />
+        <Route path="stock/quick-price" element={<PermRoute perms={['Stock','QuickPrice','QuickPrice:View','Items:Edit']}><QuickPrice /></PermRoute>} />
         <Route path="stock/grn" element={<PermRoute perms={['GRN','Stock','GRN:View','GRN:Add','GRN:Edit','GRN:Delete']}><GRN /></PermRoute>} />
         <Route path="stock/empty-returns" element={<PermRoute perms={['GRN','Stock','GRN:View','GRN:Add','GRN:Edit','GRN:Delete']}><EmptyReturns /></PermRoute>} />
         <Route path="stock/siv" element={<PermRoute perms={['SIV','Stock','SIV:View','SIV:Add','SIV:Edit','SIV:Delete']}><SIV /></PermRoute>} />
@@ -315,8 +315,8 @@ function AppRoutes() {
         <Route path="stock/sales-returns" element={<Navigate to="/stock/sales-damages" replace />} />
         <Route path="stock/expiry-report" element={<PermRoute perms={['Stock','GRN','ExpiryReport:View']}><ExpiryReport /></PermRoute>} />
         <Route path="stock/stock-count" element={<PermRoute perms={['Stock','StockCount:View','StockCount:Add']}><StockCount /></PermRoute>} />
-        <Route path="stock/transfers"   element={<PermRoute perms={['Stock','GRN','SIV','Inventory:View']}><StockTransfers /></PermRoute>} />
-        <Route path="stock/incoming"    element={<PermRoute perms={['Stock','GRN','SIV','Inventory:View']}><IncomingStock /></PermRoute>} />
+        <Route path="stock/transfers"   element={<PermRoute perms={['Stock','StockTransfers','StockTransfers:View','Inventory:View']}><StockTransfers /></PermRoute>} />
+        <Route path="stock/incoming"    element={<PermRoute perms={['Stock','IncomingStock','IncomingStock:View','Inventory:View']}><IncomingStock /></PermRoute>} />
         <Route path="accounting/cash-receipts" element={<PermRoute perms={['Accounting','CashReceipt:View','CashReceipt:Add','CashReceipt:Edit','CashReceipt:Delete']}><CashReceipt /></PermRoute>} />
         <Route path="accounting/payment-vouchers" element={<PermRoute perms={['Accounting','PaymentVoucher:View','PaymentVoucher:Add','PaymentVoucher:Edit','PaymentVoucher:Delete']}><PaymentVoucher /></PermRoute>} />
         <Route path="accounting/cash-book" element={<PermRoute perms={['Accounting','CashBook:View','CashBook:Add','CashBook:Edit','CashBook:Delete']}><CashBook /></PermRoute>} />
@@ -335,7 +335,7 @@ function AppRoutes() {
         <Route path="settings/profile" element={<PermRoute allAccessOnly><Profile /></PermRoute>} />
         <Route path="settings/system" element={<PermRoute allAccessOnly><SystemSettings /></PermRoute>} />
         <Route path="settings/users" element={<PermRoute allAccessOnly adminOnly><Users /></PermRoute>} />
-        <Route path="approvals/discounts" element={<PermRoute allAccessOnly adminOnly><PendingApprovals /></PermRoute>} />
+        <Route path="approvals/discounts" element={<PermRoute perms={['Approvals','Approvals:View','Approvals:Add','Approvals:Edit','Approvals:Delete']}><PendingApprovals /></PermRoute>} />
         <Route path="no-access" element={
           <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '60vh', color: '#6b7280', textAlign: 'center' }}>
             <div style={{ fontSize: 48, marginBottom: 16 }}>🔒</div>
