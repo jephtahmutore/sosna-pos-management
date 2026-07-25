@@ -156,10 +156,10 @@ const AccountReceivables = () => {
         <td style="padding:8px 10px;font-size:10.5px">${idx + 1}</td>
         <td style="padding:8px 10px;font-weight:700">${r.name}</td>
         <td style="padding:8px 10px">${r.phone || '—'}</td>
-        <td style="padding:8px 10px;text-align:right">${parseFloat(r.credit_limit) > 0 ? '$' + fmtPlain(r.credit_limit) : '—'}</td>
-        <td style="padding:8px 10px;text-align:right">$${fmtPlain(r._sold)}</td>
-        <td style="padding:8px 10px;text-align:right;font-weight:600">$${fmtPlain(r._paid)}</td>
-        <td style="padding:8px 10px;text-align:right;font-weight:700">$${fmtPlain(Math.abs(r._balance))}${r._balance < -0.01 ? ' (owed)' : r._balance > 0.01 ? ' (advance)' : ''}</td>
+        <td style="padding:8px 10px;text-align:right">${parseFloat(r.credit_limit) > 0 ? curSym + fmtPlain(r.credit_limit) : '—'}</td>
+        <td style="padding:8px 10px;text-align:right">${curSym}${fmtPlain(r._sold)}</td>
+        <td style="padding:8px 10px;text-align:right;font-weight:600">${curSym}${fmtPlain(r._paid)}</td>
+        <td style="padding:8px 10px;text-align:right;font-weight:700">${curSym}${fmtPlain(Math.abs(r._balance))}${r._balance < -0.01 ? ' (owed)' : r._balance > 0.01 ? ' (advance)' : ''}</td>
         <td style="padding:8px 10px">${r._status === 'OnHold' ? 'On Hold' : r._status}</td>
       </tr>`).join('');
     const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><style>
@@ -183,9 +183,9 @@ const AccountReceivables = () => {
       </div>
       <div style="display:flex;gap:10px;margin-bottom:16px">
         ${[
-          ['Total Sales', '$' + fmtPlain(stats.totalSales)],
-          ['Total Received', '$' + fmtPlain(stats.totalReceived)],
-          ['Outstanding', '$' + fmtPlain(stats.outstanding)],
+          ['Total Sales', curSym + fmtPlain(stats.totalSales)],
+          ['Total Received', curSym + fmtPlain(stats.totalReceived)],
+          ['Outstanding', curSym + fmtPlain(stats.outstanding)],
           ['Customers', `${stats.customers} (${stats.owingCount} owing)`],
         ].map(([lbl, val]) => `
           <div style="flex:1;padding:10px 12px;border:1.5px solid #000;text-align:center">
@@ -204,9 +204,9 @@ const AccountReceivables = () => {
           <tbody>${rowsHtml || `<tr><td colspan="8" style="padding:24px;text-align:center;color:#666">No receivables for this period.</td></tr>`}</tbody>
           ${receivablesRows.length > 0 ? `<tfoot><tr>
             <td colspan="4">TOTAL — ${receivablesRows.length} Customer${receivablesRows.length !== 1 ? 's' : ''}</td>
-            <td style="text-align:right">$${fmtPlain(receivablesRows.reduce((s, r) => s + r._sold, 0))}</td>
-            <td style="text-align:right">$${fmtPlain(receivablesRows.reduce((s, r) => s + r._paid, 0))}</td>
-            <td style="text-align:right;font-size:13px">$${fmtPlain(receivablesRows.reduce((s, r) => s + r._balance, 0))} (net)</td>
+            <td style="text-align:right">${curSym}${fmtPlain(receivablesRows.reduce((s, r) => s + r._sold, 0))}</td>
+            <td style="text-align:right">${curSym}${fmtPlain(receivablesRows.reduce((s, r) => s + r._paid, 0))}</td>
+            <td style="text-align:right;font-size:13px">${curSym}${fmtPlain(receivablesRows.reduce((s, r) => s + r._balance, 0))} (net)</td>
             <td></td>
           </tr></tfoot>` : ''}
         </table>
@@ -754,14 +754,14 @@ const AccountReceivables = () => {
             <tr style="border-bottom:1px solid #ddd">
               <td style="padding:7px 10px;color:#666">${o.order_number || '—'}</td>
               <td style="padding:7px 10px">${fmtDate(o.date)}</td>
-              <td style="padding:7px 10px;text-align:right;font-weight:600">$${fmtP(o.amount)}</td>
+              <td style="padding:7px 10px;text-align:right;font-weight:600">${curSym}${fmtP(o.amount)}</td>
             </tr>`).join('');
           const paymentsHtml = payments.map(p => `
             <tr style="border-bottom:1px solid #ddd">
               <td style="padding:7px 10px;color:#666">${p.payment_method || '—'}${p.reference ? ' · ' + p.reference : ''}</td>
               <td style="padding:7px 10px">${fmtDate(p.date)}</td>
               <td style="padding:7px 10px;color:#666">${p.notes || '—'}</td>
-              <td style="padding:7px 10px;text-align:right;font-weight:600;color:#16a34a">$${fmtP(Math.abs(p.amount))}</td>
+              <td style="padding:7px 10px;text-align:right;font-weight:600;color:#16a34a">${curSym}${fmtP(Math.abs(p.amount))}</td>
             </tr>`).join('');
           const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><style>
             @page{size:A4 portrait;margin:14mm}*{box-sizing:border-box;margin:0;padding:0}
@@ -788,7 +788,7 @@ const AccountReceivables = () => {
                 <tbody>${ordersHtml}
                   <tr style="background:#f0fdf4;font-weight:700">
                     <td colspan="2" style="padding:7px 10px;text-align:right">Total Sales:</td>
-                    <td style="padding:7px 10px;text-align:right;color:#dc2626">$${fmtP(totalSales)}</td>
+                    <td style="padding:7px 10px;text-align:right;color:#dc2626">${curSym}${fmtP(totalSales)}</td>
                   </tr>
                 </tbody>
               </table>`}
@@ -799,7 +799,7 @@ const AccountReceivables = () => {
                 <tbody>${paymentsHtml}
                   <tr style="background:#f0fdf4;font-weight:700">
                     <td colspan="3" style="padding:7px 10px;text-align:right">Total Paid:</td>
-                    <td style="padding:7px 10px;text-align:right;color:#16a34a">$${fmtP(totalPaid)}</td>
+                    <td style="padding:7px 10px;text-align:right;color:#16a34a">${curSym}${fmtP(totalPaid)}</td>
                   </tr>
                 </tbody>
               </table>`}

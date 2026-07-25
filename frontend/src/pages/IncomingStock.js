@@ -20,7 +20,7 @@ function currentBranchSlug() {
   catch { return ''; }
 }
 
-const fmtMoney = (n) => `$${parseFloat(n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+// v1.10.261 — removed unused fmtMoney helper (hardcoded '$', never called).
 const fmtQty   = (n) => parseFloat(n || 0).toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 });
 
 export default function IncomingStock() {

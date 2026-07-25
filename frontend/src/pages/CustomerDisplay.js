@@ -1,11 +1,26 @@
 import React, { useState, useEffect } from 'react';
 
+// v1.10.261 — read primary currency symbol from CurrencyContext's localStorage
+// cache. CustomerDisplay renders OUTSIDE the provider tree (deliberately —
+// separate window, no auth) so it can't call useCurrency directly. The cache
+// is populated by CurrencyContext on every successful settings load (see
+// context/CurrencyContext.js writeCache).
+function readCurrencySymbol() {
+  try {
+    const raw = localStorage.getItem('currencyCtx.cache');
+    if (!raw) return 'K';   // K-first default (safer than $ for Sosna branches)
+    const parsed = JSON.parse(raw);
+    return parsed?.symbol || 'K';
+  } catch { return 'K'; }
+}
+
 const CustomerDisplay = () => {
   const [cart, setCart] = useState(null); // null = idle
   const [screen, setScreen] = useState('idle'); // idle | cart | payment
   const [paymentData, setPaymentData] = useState(null); // { amount, total }
   const urlBizName = new URLSearchParams(window.location.search).get('bizName') || '';
   const [businessName, setBusinessName] = useState(urlBizName || 'Sosna');
+  const curSym = readCurrencySymbol();
 
 
   // Listen for cart updates from the POS window (via BroadcastChannel)
@@ -120,7 +135,7 @@ const CustomerDisplay = () => {
                   <tr key={idx} style={{ borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
                     <td style={{ padding: '16px 0', fontWeight: 500 }}>{item.product_name}</td>
                     <td style={{ padding: '16px 0', textAlign: 'center', color: '#93c5fd' }}>{item.quantity}</td>
-                    <td style={{ padding: '16px 0', textAlign: 'right', fontWeight: 600 }}>${(parseFloat(parseFloat(item.total_price || 0))||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</td>
+                    <td style={{ padding: '16px 0', textAlign: 'right', fontWeight: 600 }}>{curSym}{(parseFloat(parseFloat(item.total_price || 0))||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</td>
                   </tr>
                 ))}
               </tbody>
@@ -129,7 +144,7 @@ const CustomerDisplay = () => {
             {/* Total */}
             <div style={{ marginTop: 32, borderTop: '2px solid rgba(59,130,246,0.4)', paddingTop: 24, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
               <span style={{ fontSize: 22, color: '#9ca3af', textTransform: 'uppercase', letterSpacing: 2 }}>Total</span>
-              <span style={{ fontSize: 48, fontWeight: 800, color: '#3b82f6' }}>${(parseFloat(total)||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</span>
+              <span style={{ fontSize: 48, fontWeight: 800, color: '#3b82f6' }}>{curSym}{(parseFloat(total)||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</span>
             </div>
           </>
         )}

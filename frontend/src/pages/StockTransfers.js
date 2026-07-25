@@ -12,6 +12,7 @@
 //   Incoming — transfers HEADED TO current branch. PENDING ones can be
 //              received (increments destination stock).
 import React, { useEffect, useState, useMemo } from 'react';
+import { useCurrency } from '../context/CurrencyContext';
 import {
   FiRefreshCw, FiPlus, FiTruck, FiInbox, FiCheckCircle, FiXCircle, FiTrash2, FiEye, FiAlertTriangle,
 } from 'react-icons/fi';
@@ -73,7 +74,9 @@ function currentBranchSlug() {
   } catch { return getBranchSlug() || ''; }
 }
 
-const fmtMoney = (n) => `$${parseFloat(n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+// v1.10.261 — removed the module-level `fmtMoney` that hardcoded '$'. The
+// list values on K-only branches (Lusaka/Mansa) were rendering as $
+// instead of K. TransferTable now reads the symbol from useCurrency().
 const fmtQty   = (n) => parseFloat(n || 0).toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 });
 
 // v1.9.22 — default the history date range to the last 30 days. Outgoing
@@ -345,6 +348,8 @@ function TabButton({ active, onClick, children }) {
 }
 
 function TransferTable({ rows, loading, direction, onReceive, onCancel, onView }) {
+  // v1.10.261 — use money() from CurrencyContext so K-only branches see K.
+  const { money } = useCurrency();
   if (loading && rows.length === 0) return <p style={{ color: '#64748b' }}>Loading…</p>;
   if (rows.length === 0) return <p style={{ color: '#94a3b8', fontStyle: 'italic' }}>No transfers.</p>;
 
@@ -372,7 +377,7 @@ function TransferTable({ rows, loading, direction, onReceive, onCancel, onView }
                 <span style={{ color: '#94a3b8', fontSize: 11 }}>({direction === 'out' ? t.to_slug : t.from_slug})</span>
               </td>
               <td style={{ ...td, textAlign: 'right' }}>{t.total_items}</td>
-              <td style={{ ...td, textAlign: 'right', fontWeight: 700 }}>{fmtMoney(t.total_value)}</td>
+              <td style={{ ...td, textAlign: 'right', fontWeight: 700 }}>{money(t.total_value)}</td>
               <td style={td}>{statusBadge(t.status)}</td>
               <td style={td}>{t.created_at ? new Date(t.created_at).toLocaleString() : '—'}</td>
               <td style={td}>{t.created_by_name || '—'}</td>

@@ -113,10 +113,15 @@ export const CurrencyProvider = ({ children }) => {
       setLegacyProcurementEnabled(legacyProc);
       // v1.10.183 — persist settings for the next mount so Liquor
       // branches skip the loading blocker on subsequent page loads.
+      // v1.10.261 — also persist the primary currency symbol so
+      // CustomerDisplay (which renders outside the provider tree
+      // and can't call useCurrency) can read it from localStorage.
+      const primaryForCache = parsedCurrencies.find(c => c.is_primary) || parsedCurrencies[0];
       writeCache({
         currencyMode: cm, paymentMethods: pm,
         workflowMode: workflow, legacyProcurementEnabled: legacyProc,
         isLiquorStyle: cm === 'K' && pm === 'cash_momo_bank',
+        symbol: primaryForCache?.symbol || '$',
       });
     } catch { /* keep defaults */ }
   }, []);

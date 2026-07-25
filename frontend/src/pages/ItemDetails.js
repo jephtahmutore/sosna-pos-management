@@ -599,7 +599,7 @@ const ItemDetails = () => {
         </div>
       </div>
       <div style="display:flex;gap:10px;margin-bottom:14px">
-        ${[['Total Items', items.length], ['Categories', categories.length], ['Low Stock', lowStockItems.length], ['Avg. Sell Price', '$' + avgSell]].map(([lbl, val]) => `
+        ${[['Total Items', items.length], ['Categories', categories.length], ['Low Stock', lowStockItems.length], ['Avg. Sell Price', curSym + avgSell]].map(([lbl, val]) => `
           <div style="flex:1;padding:10px 12px;border:1.5px solid #000;text-align:center">
             <div style="font-size:9px;letter-spacing:0.8px;text-transform:uppercase;font-weight:600;margin-bottom:4px">${lbl}</div>
             <div style="font-size:16px;font-weight:800">${val}</div>
@@ -1723,7 +1723,7 @@ const ItemDetails = () => {
                   { label: 'Total Items',   value: items.length,        bg: '#eff6ff', color: '#1d4ed8', border: '#bfdbfe' },
                   { label: 'Categories',    value: categories.length,   bg: '#f0fdf4', color: '#15803d', border: '#86efac' },
                   { label: 'Low Stock',     value: lowStockItems.length, bg: lowStockItems.length > 0 ? '#fef2f2' : '#f0fdf4', color: lowStockItems.length > 0 ? '#dc2626' : '#15803d', border: lowStockItems.length > 0 ? '#fca5a5' : '#86efac' },
-                  { label: 'Avg. Sell Price', value: items.length > 0 ? '$' + (items.reduce((s, i) => s + parseFloat(i.selling_price || 0), 0) / items.length).toFixed(2) : '$0.00', bg: '#fff7ed', color: '#c2410c', border: '#fed7aa' },
+                  { label: 'Avg. Sell Price', value: items.length > 0 ? curSym + (items.reduce((s, i) => s + parseFloat(i.selling_price || 0), 0) / items.length).toFixed(2) : `${curSym}0.00`, bg: '#fff7ed', color: '#c2410c', border: '#fed7aa' },
                 ].map(chip => (
                   <div key={chip.label} style={{ padding: '12px 16px', borderRadius: 10, background: chip.bg, border: `1.5px solid ${chip.border}`, textAlign: 'center' }}>
                     <div style={{ fontSize: 9.5, letterSpacing: 0.8, textTransform: 'uppercase', color: '#64748b', fontWeight: 600, marginBottom: 6 }}>{chip.label}</div>
