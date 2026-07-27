@@ -167,6 +167,35 @@ const SYNC_TABLES = [
   'order_payment_edits',
 ];
 
+// ─── Push guardrails ─────────────────────────────────────────────────────────
+// Second layer on top of the v1.8.89 timestamp check. Even if two rows share
+// the same updated_at (or a client has a bad clock), some state transitions
+// should NEVER happen via sync: un-reverse an order, un-delete a row, blank a
+// Reversed status. Legitimate un-reverse / restore must go through explicit
+// routes.
+function pushWouldRegress(table, existing, row) {
+  if (!existing || !row) return null;
+  if (existing.deleted_at && !row.deleted_at && 'deleted_at' in row) {
+    return 'would un-delete a soft-deleted row';
+  }
+  if (table === 'order_items') {
+    if (existing.reversed === 1 && row.reversed === 0) {
+      return 'would un-reverse a fully-reversed order_item';
+    }
+    if (parseFloat(existing.reversed_quantity || 0) > parseFloat(row.reversed_quantity || 0)) {
+      return 'would decrease reversed_quantity';
+    }
+  }
+  if (table === 'orders') {
+    const cur = String(existing.status || '').toLowerCase();
+    const nxt = String(row.status || '').toLowerCase();
+    if ((cur === 'reversed' || cur === 'partial') && (nxt === '' || nxt === 'completed')) {
+      return `would blank order.status (was '${existing.status}')`;
+    }
+  }
+  return null;
+}
+
 // ─── POST /api/sync/register ─────────────────────────────────────────────────
 // Called by a new device to get/create a tenant + branch
 // Requires: branchName + licenseKey. Subdomain must be pre-registered by admin.
@@ -469,6 +498,12 @@ router.post('/push', lanGate, async (req, res) => {
                 continue;
               }
             }
+            const stale = pushWouldRegress(table, existing, row);
+            if (stale) {
+              conflicts.push({ table, sync_id: row.sync_id, reason: stale });
+              slog(`push: REJECT [${table}] sync_id=${row.sync_id} — ${stale}`);
+              continue;
+            }
             const updateCols = cols.filter(c => c !== 'id' && c !== 'sync_id' && row[c] !== undefined);
             const setClause = updateCols.map(c => `${c} = ?`).join(', ');
             const values = [...updateCols.map(c => row[c]), row.sync_id];
@@ -498,7 +533,7 @@ router.post('/push', lanGate, async (req, res) => {
       db.pragma('foreign_keys = ON');
     }
 
-    res.json({ success: true, conflicts });
+    res.json({ success: true, conflicts, rejected: conflicts.length });
   } catch (error) {
     db.pragma('foreign_keys = ON');
     // v1.9.2 — log the full stack to pm2 logs so silent push failures are
