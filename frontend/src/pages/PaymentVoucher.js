@@ -548,6 +548,10 @@ const PaymentVoucher = () => {
                 {/* v1.10.156 — mirror CashReceipt layout: Payment Method
                     badge on non-Liquor, Cash/MoMo/Bank cols on pure Liquor. */}
                 {isLiquorStyle ? null : <th>Payment Method</th>}
+                {/* v1.10.265 — Created By column so the list shows who
+                    entered each PV. Backend joins users by sync_id
+                    (portable across devices — see v1.10.259 sweep). */}
+                <th>Created By</th>
                 {isLiquorStyle ? (
                   <>
                     <th style={{ textAlign: 'right', color: '#16a34a' }}>CASH</th>
@@ -609,6 +613,7 @@ const PaymentVoucher = () => {
                   {!isLiquorStyle && (
                     <td><span className={`badge ${getPaymentColor(paymentMethod)}`}>{paymentMethod}</span></td>
                   )}
+                  <td style={{ color: v.created_by_name ? '#374151' : '#9ca3af' }}>{v.created_by_name || '—'}</td>
                   <td style={{ textAlign: 'right', color: va > 0 ? '#16a34a' : '', fontWeight: va > 0 ? 700 : 400 }}>{va > 0 ? fmtA(va) : dash}</td>
                   <td style={{ textAlign: 'right', color: vb > 0 ? '#7c3aed' : '', fontWeight: vb > 0 ? 700 : 400 }}>{vb > 0 ? fmtB(vb) : dash}</td>
                   <td style={{ textAlign: 'right', color: vc > 0 ? '#ea580c' : '', fontWeight: vc > 0 ? 700 : 400 }}>{vc > 0 ? fmtC(vc) : dash}</td>

@@ -22,9 +22,16 @@ const todayStr = () => {
 };
 
 const PendingApprovals = () => {
-  const { user } = useAuth();
+  const { user, hasPermission } = useAuth();
   const { symbol: curSym, money } = useCurrency();
-  const isAdmin = user?.role === 'Administrator';
+  // v1.10.265 — released the internal gate to match v1.10.262's release of
+  // Approvals from admin-only. Route + sidebar + backend all now honour
+  // the 'Approvals' permission; this component was still admin-only,
+  // rendering "Only administrators can view this page" to anyone with
+  // the delegated Approvals permission (real report from Lusaka1
+  // Manager 'ibrahim ali' 2026-07-28). Administrator role still passes
+  // via hasPermission's Admin bypass.
+  const canApprove = user?.role === 'Administrator' || hasPermission?.('Approvals');
 
   const [statusFilter, setStatusFilter] = useState('pending');
   const [dateFrom, setDateFrom] = useState(todayStr());
@@ -95,11 +102,11 @@ const PendingApprovals = () => {
     }
   };
 
-  if (!isAdmin) {
+  if (!canApprove) {
     return (
       <div style={{ padding: 30 }}>
         <h2>Pending Approvals</h2>
-        <p style={{ color: '#6b7280' }}>Only administrators can view this page.</p>
+        <p style={{ color: '#6b7280' }}>You don't have permission to view this page.</p>
       </div>
     );
   }

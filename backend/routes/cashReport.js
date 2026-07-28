@@ -552,6 +552,22 @@ router.post('/', auth, (req, res) => {
     const kExpense   = parseFloat(k_expenses   ?? 0) || 0;
 
     const cashierId = cashier_id !== undefined ? parseInt(cashier_id) : 0; // 0 = All
+    // v1.10.264 — reject cashier_id=0 ("All Cashiers"). This option was
+    // removed from the UI in v1.8.22 but the backend still accepted it,
+    // so any legacy Electron install / cached browser bundle / direct
+    // API call with cashier_id=0 (or omitted) would save an aggregate
+    // "All" report ALONGSIDE the per-cashier report — the auto-CR
+    // generation then wrote two Cash Receipts for the same money and
+    // Cash Book double-counted the inflow. Real incident 2026-07-28:
+    // Lusaka1 CR-...0095 (Sales / doris K130,775) + CR-...0098 (Sales
+    // K130,775) landed on the same day and inflated Cash Book by
+    // K130,775. Blocking at the backend closes the last remaining
+    // path — even a stale device can no longer save the aggregate.
+    if (!cashierId || cashierId <= 0) {
+      return res.status(400).json({
+        error: 'A specific cashier must be selected. Aggregate "All Cashiers" saves are no longer allowed.',
+      });
+    }
     const tenantId = syncConfig.getTenantId(req);
     const { branchId, deviceId } = syncConfig.getConfig();
 

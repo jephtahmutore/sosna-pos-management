@@ -123,6 +123,24 @@ router.post('/', auth, (req, res) => {
     const supplierSyncId = req.body.supplier_sync_id
       || (supplier_id ? db.prepare('SELECT sync_id FROM suppliers WHERE id = ?').get(supplier_id)?.sync_id : null)
       || null;
+    // v1.10.264 — safety net for legacy client payloads that send k_amount +
+    // paid_from='K · Cash/Bank/MoMo' WITHOUT the cash/bank/momo split. If the
+    // K amount has no per-method split but the label says which sub-drawer
+    // funded it, populate the corresponding method field from k_amount so
+    // Cash Book's K sub-drawer breakdown stays consistent with the K tile.
+    // Real incident 2026-07-27 APR-2026-C0AB98-0054: K117,600 with
+    // paid_from='K · Cash', cash_amount=0 → Cash sub-drawer ran K117,600
+    // higher than the K tile until this net was added.
+    let cashOut = cash, bankOut = bank, momoOut = momo;
+    if (kAmt > 0 && cash + bank + momo === 0) {
+      const pf = String(derivedPaidFrom || '').toLowerCase().trim();
+      if (pf === 'k · cash' || pf === 'cash')                                                     cashOut = kAmt;
+      else if (pf === 'k · bank' || pf === 'bank')                                                bankOut = kAmt;
+      else if (pf === 'k · momo' || pf === 'k · mobile money' || pf === 'mobile money')           momoOut = kAmt;
+      if (cashOut + bankOut + momoOut === 0) {
+        console.warn(`[ap_payments POST] K${kAmt} with paid_from='${derivedPaidFrom}' has no method split — Cash Book sub-drawer will drift. Investigate client.`);
+      }
+    }
     // v1.10.180 — atomic ledger INSERT + K-pool drain. K portion of the
     // AP payment pulls K out of the pool. USD/FRA portions don't touch
     // the K pool (they'd need FRA/USD equivalents, deferred beyond 2b).
@@ -135,7 +153,7 @@ router.post('/', auth, (req, res) => {
                                   sync_id, tenant_id, branch_id, device_id, synced, created_at, updated_at)
         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,datetime('now'),datetime('now'))
       `).run(paymentNum, supplier_id || null, supplierSyncId, supplier_name || null,
-             total, cash, bank, momo,
+             total, cashOut, bankOut, momoOut,
              usd, fra, kAmt,
              description || null, date || new Date().toISOString().split('T')[0],
              derivedPaidFrom, invoice_attachment || null, req.user.id,
@@ -205,6 +223,19 @@ router.put('/:id', auth, (req, res) => {
       return null;
     })();
 
+    // v1.10.264 — same safety net as POST. If paid_from labels a K sub-drawer
+    // but the split fields are all zero, infer the method amount from k_amount.
+    let cashOut = cash, bankOut = bank, momoOut = momo;
+    if (kAmt > 0 && cash + bank + momo === 0) {
+      const pf = String(derivedPaidFrom || '').toLowerCase().trim();
+      if (pf === 'k · cash' || pf === 'cash')                                                     cashOut = kAmt;
+      else if (pf === 'k · bank' || pf === 'bank')                                                bankOut = kAmt;
+      else if (pf === 'k · momo' || pf === 'k · mobile money' || pf === 'mobile money')           momoOut = kAmt;
+      if (cashOut + bankOut + momoOut === 0) {
+        console.warn(`[ap_payments PUT] K${kAmt} with paid_from='${derivedPaidFrom}' has no method split — Cash Book sub-drawer will drift. Investigate client.`);
+      }
+    }
+
     // invoice_attachment: pass null to clear, omit to keep existing.
     const keepAttachment = invoice_attachment === undefined;
     const sql = keepAttachment
@@ -217,8 +248,8 @@ router.put('/:id', auth, (req, res) => {
                                 date=?, description=?, paid_from=?, invoice_attachment=?, synced=0, updated_at=datetime('now')
           WHERE id=? AND deleted_at IS NULL`;
     const args = keepAttachment
-      ? [total, cash, bank, momo, usd, fra, kAmt, date, description || null, derivedPaidFrom, req.params.id]
-      : [total, cash, bank, momo, usd, fra, kAmt, date, description || null, derivedPaidFrom, invoice_attachment || null, req.params.id];
+      ? [total, cashOut, bankOut, momoOut, usd, fra, kAmt, date, description || null, derivedPaidFrom, req.params.id]
+      : [total, cashOut, bankOut, momoOut, usd, fra, kAmt, date, description || null, derivedPaidFrom, invoice_attachment || null, req.params.id];
 
     db.transaction(() => {
       db.prepare(sql).run(...args);

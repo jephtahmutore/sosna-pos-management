@@ -27,11 +27,21 @@ router.get('/', auth, readOnlyGuard, (req, res) => {
   try {
     const { date, paid_from, cashier_id, is_landed_cost, exclude_landed_cost,
             linked_purchase_sync_id, linked_transfer_sync_id } = req.query;
-    let q = 'SELECT * FROM payment_vouchers WHERE deleted_at IS NULL AND tenant_id = ?';
+    // v1.10.265 — added `created_by_name` derived from the users table so
+    // the PV list can show who created each voucher. Join by sync_id
+    // (portable across devices) with a legacy integer-id fallback for
+    // pre-v1.10.259 rows that don't have created_by_sync_id populated yet.
+    let q = `SELECT pv.*,
+                    TRIM(COALESCE(u.first_name, '') || ' ' || COALESCE(u.last_name, '')) AS created_by_name
+               FROM payment_vouchers pv
+               LEFT JOIN users u
+                      ON u.sync_id = pv.created_by_sync_id
+                      OR (pv.created_by_sync_id IS NULL AND u.id = pv.created_by)
+              WHERE pv.deleted_at IS NULL AND pv.tenant_id = ?`;
     const params = [req.user.tenantId];
-    if (date)      { params.push(date);      q += ' AND date = ?'; }
-    if (paid_from) { params.push(paid_from); q += ' AND paid_from = ?'; }
-    if (cashier_id !== undefined) { params.push(parseInt(cashier_id)); q += ' AND cashier_id = ?'; }
+    if (date)      { params.push(date);      q += ' AND pv.date = ?'; }
+    if (paid_from) { params.push(paid_from); q += ' AND pv.paid_from = ?'; }
+    if (cashier_id !== undefined) { params.push(parseInt(cashier_id)); q += ' AND pv.cashier_id = ?'; }
     // v1.10.185 — LCV filters for the Cost of Delivery page and to
     // keep the regular PV list free of LCVs. Both switches accept '1'.
     if (is_landed_cost === '1' || is_landed_cost === 1 || is_landed_cost === 'true') {
@@ -43,9 +53,9 @@ router.get('/', auth, readOnlyGuard, (req, res) => {
     // v1.10.187 — narrow to a single PO / transfer's LCVs. Powers the
     // Generate GRN modal's "delivery costs attached" section and the
     // future Transfer Receive modal.
-    if (linked_purchase_sync_id) { params.push(linked_purchase_sync_id); q += ' AND linked_purchase_sync_id = ?'; }
-    if (linked_transfer_sync_id) { params.push(linked_transfer_sync_id); q += ' AND linked_transfer_sync_id = ?'; }
-    q += ' ORDER BY date DESC';
+    if (linked_purchase_sync_id) { params.push(linked_purchase_sync_id); q += ' AND pv.linked_purchase_sync_id = ?'; }
+    if (linked_transfer_sync_id) { params.push(linked_transfer_sync_id); q += ' AND pv.linked_transfer_sync_id = ?'; }
+    q += ' ORDER BY pv.date DESC';
     const rows = db.prepare(q).all(...params);
     res.json(rows);
   } catch (error) {
