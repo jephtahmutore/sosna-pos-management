@@ -1094,6 +1094,36 @@ router.get('/stats', auth, readOnlyGuard, (req, res) => {
     const kSubExchIn  = kSubMethodExchSum(df, dp, 'in');
     const kSubExchOut = kSubMethodExchSum(df, dp, 'out');
 
+    // v1.10.268 — K sub-drawer contribution for loan_transactions. Same
+    // shape as kSubMethodSum but split by type so Disbursement (K) lands
+    // in the IN column and Principal / Interest (K) in OUT. Filtered on
+    // COALESCE(k_amount, 0) > 0 so USD / FRA loan legs don't leak in.
+    const kSubMethodLoanSum = (dateClause, dateParams, types) => {
+      try {
+        const placeholders = types.map(() => '?').join(',');
+        const row = db.prepare(`
+          SELECT COALESCE(SUM(cash_amount), 0) AS cash,
+                 COALESCE(SUM(bank_amount), 0) AS bank,
+                 COALESCE(SUM(momo_amount), 0) AS momo
+            FROM loan_transactions
+           WHERE deleted_at IS NULL
+             AND tenant_id = ?
+             AND COALESCE(k_amount, 0) > 0
+             AND type IN (${placeholders})
+             ${dateClause}
+        `).get(tenantId, ...types, ...dateParams);
+        return {
+          cash: parseFloat(row.cash) || 0,
+          bank: parseFloat(row.bank) || 0,
+          momo: parseFloat(row.momo) || 0,
+        };
+      } catch (_) {
+        return { cash: 0, bank: 0, momo: 0 };
+      }
+    };
+    const kSubLoanIn  = kSubMethodLoanSum(df, dp, ['Disbursement']);
+    const kSubLoanOut = kSubMethodLoanSum(df, dp, ['Principal', 'Interest']);
+
     // v1.10.137 — HQ K sub-drawer transfers shift K from one sub-drawer to
     // another. Direction:
     //   to_method   → K IN  → amount into that sub-drawer
@@ -1127,14 +1157,14 @@ router.get('/stats', auth, readOnlyGuard, (req, res) => {
     const kSubTrfOut = kSubMethodTransferSum(df, dp, 'out');
 
     const kSubOut = {
-      cash: kSubOutPV.cash + kSubOutAP.cash + kSubDepOut.cash + kSubExchOut.cash + kSubTrfOut.cash,
-      bank: kSubOutPV.bank + kSubOutAP.bank + kSubDepOut.bank + kSubExchOut.bank + kSubTrfOut.bank,
-      momo: kSubOutPV.momo + kSubOutAP.momo + kSubDepOut.momo + kSubExchOut.momo + kSubTrfOut.momo,
+      cash: kSubOutPV.cash + kSubOutAP.cash + kSubDepOut.cash + kSubExchOut.cash + kSubTrfOut.cash + kSubLoanOut.cash,
+      bank: kSubOutPV.bank + kSubOutAP.bank + kSubDepOut.bank + kSubExchOut.bank + kSubTrfOut.bank + kSubLoanOut.bank,
+      momo: kSubOutPV.momo + kSubOutAP.momo + kSubDepOut.momo + kSubExchOut.momo + kSubTrfOut.momo + kSubLoanOut.momo,
     };
     const kSubNet = {
-      cash: kSubIn.cash + kSubDepIn.cash + kSubExchIn.cash + kSubTrfIn.cash - kSubOut.cash,
-      bank: kSubIn.bank + kSubDepIn.bank + kSubExchIn.bank + kSubTrfIn.bank - kSubOut.bank,
-      momo: kSubIn.momo + kSubDepIn.momo + kSubExchIn.momo + kSubTrfIn.momo - kSubOut.momo,
+      cash: kSubIn.cash + kSubDepIn.cash + kSubExchIn.cash + kSubTrfIn.cash + kSubLoanIn.cash - kSubOut.cash,
+      bank: kSubIn.bank + kSubDepIn.bank + kSubExchIn.bank + kSubTrfIn.bank + kSubLoanIn.bank - kSubOut.bank,
+      momo: kSubIn.momo + kSubDepIn.momo + kSubExchIn.momo + kSubTrfIn.momo + kSubLoanIn.momo - kSubOut.momo,
     };
 
     // Fold pre-period K sub-method activity into an opening snapshot too,
@@ -1156,10 +1186,13 @@ router.get('/stats', auth, readOnlyGuard, (req, res) => {
       // v1.10.137 — pre-period K sub-drawer transfers also fold in.
       const bTrfIn  = kSubMethodTransferSum(' AND date < ?', [from], 'in');
       const bTrfOut = kSubMethodTransferSum(' AND date < ?', [from], 'out');
+      // v1.10.268 — pre-period K loan disbursement / repayment fold-in.
+      const bLoanIn  = kSubMethodLoanSum(' AND date < ?', [from], ['Disbursement']);
+      const bLoanOut = kSubMethodLoanSum(' AND date < ?', [from], ['Principal', 'Interest']);
       kSubOpening = {
-        cash: kSubOpening.cash + bIn.cash + bDepIn.cash + bExchIn.cash + bTrfIn.cash - bPV.cash - bAP.cash - bDepOut.cash - bExchOut.cash - bTrfOut.cash,
-        bank: kSubOpening.bank + bIn.bank + bDepIn.bank + bExchIn.bank + bTrfIn.bank - bPV.bank - bAP.bank - bDepOut.bank - bExchOut.bank - bTrfOut.bank,
-        momo: kSubOpening.momo + bIn.momo + bDepIn.momo + bExchIn.momo + bTrfIn.momo - bPV.momo - bAP.momo - bDepOut.momo - bExchOut.momo - bTrfOut.momo,
+        cash: kSubOpening.cash + bIn.cash + bDepIn.cash + bExchIn.cash + bTrfIn.cash + bLoanIn.cash - bPV.cash - bAP.cash - bDepOut.cash - bExchOut.cash - bTrfOut.cash - bLoanOut.cash,
+        bank: kSubOpening.bank + bIn.bank + bDepIn.bank + bExchIn.bank + bTrfIn.bank + bLoanIn.bank - bPV.bank - bAP.bank - bDepOut.bank - bExchOut.bank - bTrfOut.bank - bLoanOut.bank,
+        momo: kSubOpening.momo + bIn.momo + bDepIn.momo + bExchIn.momo + bTrfIn.momo + bLoanIn.momo - bPV.momo - bAP.momo - bDepOut.momo - bExchOut.momo - bTrfOut.momo - bLoanOut.momo,
       };
     }
     const kSubCurrent = {
