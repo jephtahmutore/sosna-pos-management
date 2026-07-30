@@ -42,18 +42,41 @@ function outstandingFor(loanSyncId, tenantId) {
 router.get('/', auth, readOnlyGuard, (req, res) => {
   try {
     const { status, lender } = req.query;
+    // v1.10.267 — per-currency subtotals so the frontend can show
+    // "K60,000" instead of "$60,000" for a K-only loan. Sums the
+    // Disbursement transaction rows split by usd/fra/k. Same shape for
+    // Principal so outstanding-per-currency can be computed downstream.
     let sql = `
       SELECT l.*,
         (u.first_name || ' ' || u.last_name) AS created_by_name,
         COALESCE(disbursed_agg.s, 0) AS total_disbursed,
         COALESCE(principal_agg.s, 0) AS total_principal_paid,
         COALESCE(interest_agg.s, 0)  AS total_interest_paid,
-        COALESCE(disbursed_agg.s, 0) - COALESCE(principal_agg.s, 0) AS outstanding
+        COALESCE(disbursed_agg.s, 0) - COALESCE(principal_agg.s, 0) AS outstanding,
+        COALESCE(disbursed_agg.usd, 0) AS disbursed_usd,
+        COALESCE(disbursed_agg.fra, 0) AS disbursed_fra,
+        COALESCE(disbursed_agg.k,   0) AS disbursed_k,
+        COALESCE(principal_agg.usd, 0) AS principal_paid_usd,
+        COALESCE(principal_agg.fra, 0) AS principal_paid_fra,
+        COALESCE(principal_agg.k,   0) AS principal_paid_k,
+        COALESCE(disbursed_agg.usd, 0) - COALESCE(principal_agg.usd, 0) AS outstanding_usd,
+        COALESCE(disbursed_agg.fra, 0) - COALESCE(principal_agg.fra, 0) AS outstanding_fra,
+        COALESCE(disbursed_agg.k,   0) - COALESCE(principal_agg.k,   0) AS outstanding_k
       FROM loans l
       LEFT JOIN users u ON u.sync_id = l.created_by_sync_id
-      LEFT JOIN (SELECT loan_sync_id, SUM(amount) AS s FROM loan_transactions WHERE deleted_at IS NULL AND type='Disbursement' GROUP BY loan_sync_id) disbursed_agg ON disbursed_agg.loan_sync_id = l.sync_id
-      LEFT JOIN (SELECT loan_sync_id, SUM(amount) AS s FROM loan_transactions WHERE deleted_at IS NULL AND type='Principal'    GROUP BY loan_sync_id) principal_agg ON principal_agg.loan_sync_id = l.sync_id
-      LEFT JOIN (SELECT loan_sync_id, SUM(amount) AS s FROM loan_transactions WHERE deleted_at IS NULL AND type='Interest'     GROUP BY loan_sync_id) interest_agg  ON interest_agg.loan_sync_id  = l.sync_id
+      LEFT JOIN (SELECT loan_sync_id,
+                        SUM(amount)     AS s,
+                        SUM(usd_amount) AS usd,
+                        SUM(fra_amount) AS fra,
+                        SUM(k_amount)   AS k
+                   FROM loan_transactions WHERE deleted_at IS NULL AND type='Disbursement' GROUP BY loan_sync_id) disbursed_agg ON disbursed_agg.loan_sync_id = l.sync_id
+      LEFT JOIN (SELECT loan_sync_id,
+                        SUM(amount)     AS s,
+                        SUM(usd_amount) AS usd,
+                        SUM(fra_amount) AS fra,
+                        SUM(k_amount)   AS k
+                   FROM loan_transactions WHERE deleted_at IS NULL AND type='Principal' GROUP BY loan_sync_id) principal_agg ON principal_agg.loan_sync_id = l.sync_id
+      LEFT JOIN (SELECT loan_sync_id, SUM(amount) AS s FROM loan_transactions WHERE deleted_at IS NULL AND type='Interest' GROUP BY loan_sync_id) interest_agg  ON interest_agg.loan_sync_id  = l.sync_id
       WHERE l.deleted_at IS NULL AND l.tenant_id = ?
     `;
     const params = [req.user.tenantId];
@@ -98,6 +121,16 @@ router.get('/:id', auth, readOnlyGuard, (req, res) => {
       ORDER BY date ASC, id ASC
     `).all(loan.sync_id, req.user.tenantId);
     loan.outstanding = outstandingFor(loan.sync_id, req.user.tenantId);
+    // v1.10.267 — same per-currency subtotals the list endpoint returns,
+    // so the detail modal can render "K60,000" instead of "$60,000" on
+    // K-only loans.
+    const dis = db.prepare(`SELECT COALESCE(SUM(usd_amount),0) AS u, COALESCE(SUM(fra_amount),0) AS f, COALESCE(SUM(k_amount),0) AS k FROM loan_transactions WHERE deleted_at IS NULL AND type='Disbursement' AND loan_sync_id = ? AND tenant_id = ?`).get(loan.sync_id, req.user.tenantId);
+    const pri = db.prepare(`SELECT COALESCE(SUM(usd_amount),0) AS u, COALESCE(SUM(fra_amount),0) AS f, COALESCE(SUM(k_amount),0) AS k FROM loan_transactions WHERE deleted_at IS NULL AND type='Principal'    AND loan_sync_id = ? AND tenant_id = ?`).get(loan.sync_id, req.user.tenantId);
+    loan.disbursed_usd = dis.u; loan.disbursed_fra = dis.f; loan.disbursed_k = dis.k;
+    loan.principal_paid_usd = pri.u; loan.principal_paid_fra = pri.f; loan.principal_paid_k = pri.k;
+    loan.outstanding_usd = dis.u - pri.u;
+    loan.outstanding_fra = dis.f - pri.f;
+    loan.outstanding_k   = dis.k - pri.k;
     res.json({ ...loan, transactions });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });

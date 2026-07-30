@@ -9,7 +9,7 @@
 //   Principal → reduces what we owe, NOT an expense
 //   Interest  → real expense, shows up on Profit Report as Interest Expense
 //   Disbursement → money received from the lender, NOT income
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   getLoans, getLoanStats, getLoan,
   createLoan, updateLoan, deleteLoan,
@@ -46,6 +46,41 @@ const TX_TYPE_STYLE = {
 const LoanAccount = () => {
   const { hasPermission } = useAuth();
   const { symbol: curSym } = useCurrency();
+  // v1.10.267 — display helper for tri-currency loan amounts. Reads
+  // per-currency subtotals returned by GET /api/loans (v1.10.267
+  // backend) and picks the right symbol per leg. Returns "—" if all
+  // zeros, single-currency ("K60,000") when one leg is populated, and
+  // a middle-dot separated composite ("$5,000 · K30,000") when mixed.
+  const fmtNum = (n) => parseFloat(n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const money3 = (usd, fra, k) => {
+    const u = parseFloat(usd || 0) || 0;
+    const f = parseFloat(fra || 0) || 0;
+    const kk = parseFloat(k   || 0) || 0;
+    const parts = [];
+    if (u  > 0) parts.push(`$${fmtNum(u)}`);
+    if (f  > 0) parts.push(`FRA ${fmtNum(f)}`);
+    if (kk > 0) parts.push(`K${fmtNum(kk)}`);
+    return parts.length ? parts.join(' · ') : '—';
+  };
+  // v1.10.267 — roll the per-currency subtotals from every loan row
+  // into page-level tiles so Outstanding / Disbursed / Principal Repaid
+  // read "K60,000" not "$60,000" for K-only tenants.
+  const statsByCcy = useMemo(() => {
+    const zero = () => ({ usd: 0, fra: 0, k: 0 });
+    const acc = { outstanding: zero(), disbursed: zero(), principalPaid: zero() };
+    (loans || []).forEach(l => {
+      acc.outstanding.usd    += parseFloat(l.outstanding_usd || 0) || 0;
+      acc.outstanding.fra    += parseFloat(l.outstanding_fra || 0) || 0;
+      acc.outstanding.k      += parseFloat(l.outstanding_k   || 0) || 0;
+      acc.disbursed.usd      += parseFloat(l.disbursed_usd   || 0) || 0;
+      acc.disbursed.fra      += parseFloat(l.disbursed_fra   || 0) || 0;
+      acc.disbursed.k        += parseFloat(l.disbursed_k     || 0) || 0;
+      acc.principalPaid.usd  += parseFloat(l.principal_paid_usd || 0) || 0;
+      acc.principalPaid.fra  += parseFloat(l.principal_paid_fra || 0) || 0;
+      acc.principalPaid.k    += parseFloat(l.principal_paid_k   || 0) || 0;
+    });
+    return acc;
+  }, [loans]);
   const [stats, setStats]   = useState({ activeLoans: 0, totalDisbursed: 0, totalPrincipalPaid: 0, outstanding: 0, interestYTD: 0 });
   const [loans, setLoans]   = useState([]);
   const [toast, setToast]   = useState(null);
@@ -304,16 +339,16 @@ const LoanAccount = () => {
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 14, marginBottom: 18 }}>
         <div style={{ padding: 18, borderRadius: 12, background: 'linear-gradient(135deg,#dc2626,#991b1b)', color: '#fff' }}>
           <div style={{ fontSize: 11, opacity: 0.85, fontWeight: 700, textTransform: 'uppercase' }}>Outstanding</div>
-          <div style={{ fontSize: 24, fontWeight: 800, marginTop: 6 }}>{curSym}{parseFloat(stats.outstanding).toLocaleString(undefined, { minimumFractionDigits: 2 })}</div>
+          <div style={{ fontSize: 20, fontWeight: 800, marginTop: 6, lineHeight: 1.25 }}>{money3(statsByCcy.outstanding.usd, statsByCcy.outstanding.fra, statsByCcy.outstanding.k)}</div>
           <div style={{ fontSize: 11, opacity: 0.85, marginTop: 2 }}>{stats.activeLoans} active loan{stats.activeLoans !== 1 ? 's' : ''}</div>
         </div>
         <div style={{ padding: 18, borderRadius: 12, background: 'linear-gradient(135deg,#16a34a,#15803d)', color: '#fff' }}>
           <div style={{ fontSize: 11, opacity: 0.85, fontWeight: 700, textTransform: 'uppercase' }}>Total Disbursed</div>
-          <div style={{ fontSize: 24, fontWeight: 800, marginTop: 6 }}>{curSym}{parseFloat(stats.totalDisbursed).toLocaleString(undefined, { minimumFractionDigits: 2 })}</div>
+          <div style={{ fontSize: 20, fontWeight: 800, marginTop: 6, lineHeight: 1.25 }}>{money3(statsByCcy.disbursed.usd, statsByCcy.disbursed.fra, statsByCcy.disbursed.k)}</div>
         </div>
         <div style={{ padding: 18, borderRadius: 12, background: 'linear-gradient(135deg,#1e40af,#1e3a8a)', color: '#fff' }}>
           <div style={{ fontSize: 11, opacity: 0.85, fontWeight: 700, textTransform: 'uppercase' }}>Principal Repaid</div>
-          <div style={{ fontSize: 24, fontWeight: 800, marginTop: 6 }}>{curSym}{parseFloat(stats.totalPrincipalPaid).toLocaleString(undefined, { minimumFractionDigits: 2 })}</div>
+          <div style={{ fontSize: 20, fontWeight: 800, marginTop: 6, lineHeight: 1.25 }}>{money3(statsByCcy.principalPaid.usd, statsByCcy.principalPaid.fra, statsByCcy.principalPaid.k)}</div>
         </div>
         <div style={{ padding: 18, borderRadius: 12, background: 'linear-gradient(135deg,#f59e0b,#b45309)', color: '#fff' }}>
           <div style={{ fontSize: 11, opacity: 0.85, fontWeight: 700, textTransform: 'uppercase' }}>Interest Paid YTD</div>
@@ -354,8 +389,8 @@ const LoanAccount = () => {
                   <td style={{ fontWeight: 600 }}>{l.loan_number}</td>
                   <td>{l.lender_name || '—'}</td>
                   <td>{formatDate(l.start_date)}</td>
-                  <td style={{ textAlign: 'right' }}>{curSym}{parseFloat(l.principal_amount).toLocaleString(undefined, { minimumFractionDigits: 2 })}</td>
-                  <td style={{ textAlign: 'right', fontWeight: 700, color: l.outstanding > 0 ? '#dc2626' : '#16a34a' }}>{curSym}{parseFloat(l.outstanding).toLocaleString(undefined, { minimumFractionDigits: 2 })}</td>
+                  <td style={{ textAlign: 'right', whiteSpace: 'nowrap', fontSize: 12 }}>{money3(l.disbursed_usd, l.disbursed_fra, l.disbursed_k)}</td>
+                  <td style={{ textAlign: 'right', fontWeight: 700, color: l.outstanding > 0 ? '#dc2626' : '#16a34a', whiteSpace: 'nowrap', fontSize: 12 }}>{money3(l.outstanding_usd, l.outstanding_fra, l.outstanding_k)}</td>
                   <td style={{ textAlign: 'right' }}>{l.interest_rate > 0 ? `${l.interest_rate}%` : '—'}</td>
                   <td><span style={{ padding: '2px 10px', borderRadius: 20, fontSize: 11, fontWeight: 700, background: ss.bg, color: ss.color, border: `1px solid ${ss.border}` }}>{l.status}</span></td>
                   <td style={{ textAlign: 'center' }}>
@@ -513,8 +548,8 @@ const LoanAccount = () => {
               </div>
               <div className="modal-body">
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12, marginBottom: 14 }}>
-                  <div><div style={{ fontSize: 10, color: '#6b7280', textTransform: 'uppercase', fontWeight: 700 }}>Principal</div><div style={{ fontWeight: 700, marginTop: 3 }}>{curSym}{parseFloat(detailLoan.principal_amount).toLocaleString(undefined, { minimumFractionDigits: 2 })}</div></div>
-                  <div><div style={{ fontSize: 10, color: '#6b7280', textTransform: 'uppercase', fontWeight: 700 }}>Outstanding</div><div style={{ fontWeight: 700, marginTop: 3, color: detailLoan.outstanding > 0 ? '#dc2626' : '#16a34a' }}>{curSym}{parseFloat(detailLoan.outstanding).toLocaleString(undefined, { minimumFractionDigits: 2 })}</div></div>
+                  <div><div style={{ fontSize: 10, color: '#6b7280', textTransform: 'uppercase', fontWeight: 700 }}>Principal</div><div style={{ fontWeight: 700, marginTop: 3 }}>{money3(detailLoan.disbursed_usd, detailLoan.disbursed_fra, detailLoan.disbursed_k)}</div></div>
+                  <div><div style={{ fontSize: 10, color: '#6b7280', textTransform: 'uppercase', fontWeight: 700 }}>Outstanding</div><div style={{ fontWeight: 700, marginTop: 3, color: detailLoan.outstanding > 0 ? '#dc2626' : '#16a34a' }}>{money3(detailLoan.outstanding_usd, detailLoan.outstanding_fra, detailLoan.outstanding_k)}</div></div>
                   <div><div style={{ fontSize: 10, color: '#6b7280', textTransform: 'uppercase', fontWeight: 700 }}>Interest Rate</div><div style={{ fontWeight: 700, marginTop: 3 }}>{detailLoan.interest_rate > 0 ? `${detailLoan.interest_rate}%` : '—'}</div></div>
                 </div>
 
@@ -550,7 +585,7 @@ const LoanAccount = () => {
                             <td style={{ padding: '8px 10px', fontWeight: 600 }}>{tx.transaction_number}</td>
                             <td style={{ padding: '8px 10px' }}>{formatDate(tx.date)}</td>
                             <td style={{ padding: '8px 10px' }}><span style={{ padding: '2px 8px', borderRadius: 12, fontSize: 10, fontWeight: 700, background: ts.bg, color: ts.color, border: `1px solid ${ts.border}` }}>{tx.type}</span></td>
-                            <td style={{ padding: '8px 10px', textAlign: 'right', fontWeight: 700, color }}>{sign}{curSym}{parseFloat(tx.amount).toLocaleString(undefined, { minimumFractionDigits: 2 })}</td>
+                            <td style={{ padding: '8px 10px', textAlign: 'right', fontWeight: 700, color, whiteSpace: 'nowrap' }}>{sign}{money3(tx.usd_amount, tx.fra_amount, tx.k_amount)}</td>
                             <td style={{ padding: '8px 10px', color: '#6b7280' }}>{tx.description || '—'}</td>
                             {canDelete && (
                               <td style={{ padding: '8px 10px', textAlign: 'center' }}>

@@ -224,6 +224,28 @@ function ccyReceiptsPayments(tenantId, slug, dateClause, dateParams) {
       }
     } catch (_) { /* non-fatal */ }
   }
+  // v1.10.267 — loan_transactions per-currency contribution. Disbursements
+  // are receipts; Principal + Interest are payments. Uses the tri-currency
+  // columns directly (populated by v1.10.266 backend routes). Without this,
+  // pre-period loans silently drop from the openingByCcy fold when the
+  // user shifts From backwards.
+  try {
+    const loanRows = db.prepare(`
+      SELECT type,
+             COALESCE(SUM(usd_amount), 0) AS usd,
+             COALESCE(SUM(fra_amount), 0) AS fra,
+             COALESCE(SUM(k_amount),   0) AS k
+        FROM loan_transactions
+       WHERE deleted_at IS NULL AND tenant_id = ?${dateClause}
+       GROUP BY type
+    `).all(tenantId, ...dateParams);
+    for (const r of loanRows) {
+      const bucket = r.type === 'Disbursement' ? receipts : payments;
+      bucket.usd += num(r.usd);
+      bucket.fra += num(r.fra);
+      bucket.k   += num(r.k);
+    }
+  } catch (_) { /* non-fatal */ }
   return { receipts, payments };
 }
 
@@ -283,12 +305,20 @@ function sumMethod(tenantId, methodCol, dateClause, dateParams, hqSlug) {
   const capIn  = db.prepare(`SELECT COALESCE(SUM(${methodCol}), 0) AS t FROM capital_account  WHERE deleted_at IS NULL AND tenant_id = ? AND type='Injection'${dateClause}`).get(tenantId, ...dateParams).t;
   const capOut = db.prepare(`SELECT COALESCE(SUM(${methodCol}), 0) AS t FROM capital_account  WHERE deleted_at IS NULL AND tenant_id = ? AND type='Drawing'${dateClause}`).get(tenantId, ...dateParams).t;
   const div    = db.prepare(`SELECT COALESCE(SUM(${methodCol}), 0) AS t FROM dividend_account WHERE deleted_at IS NULL AND tenant_id = ?${dateClause}`).get(tenantId, ...dateParams).t;
-  // v1.10.266 — loan_transactions now has the currency columns (v1.10.266
-  // migration). Use the same CASE fallback as CR/PV/AP so USD/FRA/K
-  // legs land in the right tile, and old K-only rows keep working.
-  const loanIn   = db.prepare(`SELECT COALESCE(SUM(${exprCcy}), 0) AS t FROM loan_transactions WHERE deleted_at IS NULL AND tenant_id = ? AND type='Disbursement'${dateClause}`).get(tenantId, ...dateParams).t;
-  const loanPrin = db.prepare(`SELECT COALESCE(SUM(${exprCcy}), 0) AS t FROM loan_transactions WHERE deleted_at IS NULL AND tenant_id = ? AND type='Principal'${dateClause}`).get(tenantId, ...dateParams).t;
-  const loanInt  = db.prepare(`SELECT COALESCE(SUM(${exprCcy}), 0) AS t FROM loan_transactions WHERE deleted_at IS NULL AND tenant_id = ? AND type='Interest'${dateClause}`).get(tenantId, ...dateParams).t;
+  // v1.10.267 — sub-drawer sum for loans must use the METHOD column directly
+  // (cash_amount / bank_amount / momo_amount), NOT the CR/PV/AP CASE fallback.
+  // On CR/PV/AP the currency column and method column DO overlap
+  // (bank_amount ↔ K currency, cash_amount ↔ USD currency) so the CASE
+  // routes the right leg to the right sub-drawer. Loans, in contrast,
+  // populate BOTH the currency columns (usd/fra/k) AND the K sub-method
+  // split (cash/bank/momo) independently — using exprCcy would read
+  // k_amount into the "Bank" sub-drawer (a K-currency-total inflating one
+  // K sub-drawer bucket) and misroute the loan entirely. Real incident
+  // 2026-07-30: K10k Cash + K20k Bank + K30k MoMo Disbursement showed
+  // wrong sub-drawer numbers on HQ Cash Book.
+  const loanIn   = db.prepare(`SELECT COALESCE(SUM(${methodCol}), 0) AS t FROM loan_transactions WHERE deleted_at IS NULL AND tenant_id = ? AND type='Disbursement'${dateClause}`).get(tenantId, ...dateParams).t;
+  const loanPrin = db.prepare(`SELECT COALESCE(SUM(${methodCol}), 0) AS t FROM loan_transactions WHERE deleted_at IS NULL AND tenant_id = ? AND type='Principal'${dateClause}`).get(tenantId, ...dateParams).t;
+  const loanInt  = db.prepare(`SELECT COALESCE(SUM(${methodCol}), 0) AS t FROM loan_transactions WHERE deleted_at IS NULL AND tenant_id = ? AND type='Interest'${dateClause}`).get(tenantId, ...dateParams).t;
   // Net cash transfer effect on this method = inflow (to_method) - outflow (from_method)
   const methodName = methodCol === 'cash_amount' ? 'Cash' : methodCol === 'bank_amount' ? 'Bank' : 'Mobile Money';
   // v1.10.137 — only USD transfers feed the legacy USD method-flow tracking.
@@ -903,18 +933,47 @@ router.get('/stats', auth, readOnlyGuard, (req, res) => {
     // time the user shifted From backwards (Jul 5→5 = $27,035; Jul 4→5 =
     // $61,275; Jul 3→5 = $74,725 — the delta between them = each prior
     // day's POS orders, added exactly once too many).
+    // v1.10.267 — loan_transactions per-currency sum so the K/USD/FRA TILES
+    // include loan disbursements (inflow) and Principal + Interest payments
+    // (outflow). Reads the currency columns directly — the tri-currency
+    // migration in v1.10.266 populated them explicitly and there's no
+    // legacy path to fall back to (loan_transactions never used the
+    // CR/PV/AP overlap where bank_amount doubled as K currency).
+    const loanByCcy = (() => {
+      try {
+        const row = db.prepare(`
+          SELECT
+            COALESCE(SUM(CASE WHEN type='Disbursement' THEN usd_amount ELSE 0 END), 0) AS in_usd,
+            COALESCE(SUM(CASE WHEN type='Disbursement' THEN fra_amount ELSE 0 END), 0) AS in_fra,
+            COALESCE(SUM(CASE WHEN type='Disbursement' THEN k_amount   ELSE 0 END), 0) AS in_k,
+            COALESCE(SUM(CASE WHEN type IN ('Principal','Interest') THEN usd_amount ELSE 0 END), 0) AS out_usd,
+            COALESCE(SUM(CASE WHEN type IN ('Principal','Interest') THEN fra_amount ELSE 0 END), 0) AS out_fra,
+            COALESCE(SUM(CASE WHEN type IN ('Principal','Interest') THEN k_amount   ELSE 0 END), 0) AS out_k
+          FROM loan_transactions
+          WHERE deleted_at IS NULL AND tenant_id = ?${df}
+        `).get(tenantId, ...dp);
+        return {
+          in:  { usd: parseFloat(row.in_usd),  fra: parseFloat(row.in_fra),  k: parseFloat(row.in_k) },
+          out: { usd: parseFloat(row.out_usd), fra: parseFloat(row.out_fra), k: parseFloat(row.out_k) },
+        };
+      } catch (_) {
+        return { in: { usd: 0, fra: 0, k: 0 }, out: { usd: 0, fra: 0, k: 0 } };
+      }
+    })();
+
     const receiptsByCcy = {
-      usd: crByCcy.usd + depInByCcy.usd + exchIn.usd,
-      fra: crByCcy.fra + depInByCcy.fra + exchIn.fra,
-      k:   crByCcy.k   + depInByCcy.k   + exchIn.k,
+      usd: crByCcy.usd + depInByCcy.usd + exchIn.usd + loanByCcy.in.usd,
+      fra: crByCcy.fra + depInByCcy.fra + exchIn.fra + loanByCcy.in.fra,
+      k:   crByCcy.k   + depInByCcy.k   + exchIn.k   + loanByCcy.in.k,
     };
     const paymentsByCcy = {
       // v1.10.79 — AP now contributes per-currency (was apUsd — a single
       // sum dumped into USD). apByCcy.k picks up the ALASKAL K32,000 so
       // the K balance card actually drops when a supplier is paid in K.
-      usd: pvByCcy.usd + apByCcy.usd + depOutByCcy.usd + exchOut.usd,
-      fra: pvByCcy.fra + apByCcy.fra + depOutByCcy.fra + exchOut.fra,
-      k:   pvByCcy.k   + apByCcy.k   + depOutByCcy.k   + exchOut.k,
+      // v1.10.267 — loan Principal + Interest also drain the tile.
+      usd: pvByCcy.usd + apByCcy.usd + depOutByCcy.usd + exchOut.usd + loanByCcy.out.usd,
+      fra: pvByCcy.fra + apByCcy.fra + depOutByCcy.fra + exchOut.fra + loanByCcy.out.fra,
+      k:   pvByCcy.k   + apByCcy.k   + depOutByCcy.k   + exchOut.k   + loanByCcy.out.k,
     };
     // Per-currency closing balance = opening + receipts − payments.
     // v1.10.25 — fold pre-period activity into openingByCcy when `from`
