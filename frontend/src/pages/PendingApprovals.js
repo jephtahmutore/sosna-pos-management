@@ -22,16 +22,17 @@ const todayStr = () => {
 };
 
 const PendingApprovals = () => {
-  const { user, hasPermission } = useAuth();
+  const { user, hasPageAccess } = useAuth();
   const { symbol: curSym, money } = useCurrency();
-  // v1.10.265 — released the internal gate to match v1.10.262's release of
-  // Approvals from admin-only. Route + sidebar + backend all now honour
-  // the 'Approvals' permission; this component was still admin-only,
-  // rendering "Only administrators can view this page" to anyone with
-  // the delegated Approvals permission (real report from Lusaka1
-  // Manager 'ibrahim ali' 2026-07-28). Administrator role still passes
-  // via hasPermission's Admin bypass.
-  const canApprove = user?.role === 'Administrator' || hasPermission?.('Approvals');
+  // v1.10.265 — use hasPageAccess (matches sidebar visibility check) instead
+  // of hasPermission. v1.10.264 used hasPermission('Approvals') which only
+  // matches the bare 'Approvals' key, but real users hold action-suffixed
+  // keys ('Approvals:View', 'Approvals:Add', 'Approvals:Edit', 'Approvals:Delete')
+  // set by the checkbox modal. Sidebar showed the entry via hasPageAccess
+  // (which iterates the 4 actions) but the component's hasPermission missed
+  // → user saw the sidebar link, clicked, and hit "No permission".
+  // Real report: Lusaka1 Manager 'ibrahim ali' 2026-07-30.
+  const canApprove = user?.role === 'Administrator' || hasPageAccess?.('Approvals');
 
   const [statusFilter, setStatusFilter] = useState('pending');
   const [dateFrom, setDateFrom] = useState(todayStr());
