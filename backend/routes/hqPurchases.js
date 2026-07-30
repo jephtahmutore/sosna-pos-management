@@ -25,7 +25,7 @@ const { randomUUID } = require('crypto');
 const { listTenants, isRegistered, masterDb } = require('../config/masterDb');
 // v1.10.245 — HQ page perm gate. Applied at router level (see below) so
 // every endpoint in this file demands HqPurchases perm.
-const { requirePagePerm } = require('../middleware/auth');
+const { requirePagePerm, requireAnyPagePerm } = require('../middleware/auth');
 const { getTenantDb } = require('../config/tenantDb');
 const { conversionToBase } = require('../config/unitsHelper');
 // v1.10.214 — per-device shortcode via syncConfig (Electron-safe).
@@ -279,7 +279,11 @@ router.get('/', hqAuth, requirePagePerm('HqPurchases'), (req, res) => {
 // GRN_SUBMITTED = waiting for HQ confirmation, branch can see it but
 // can't re-submit). Sort by submitted/created time so the freshest
 // arrivals float to the top.
-router.get('/incoming', hqAuth, requirePagePerm('HqPurchases'), (req, res) => {
+// v1.10.271 — Branch-facing endpoint. HQ users see it via HqPurchases;
+// branch managers/cashiers see their own incoming via IncomingStock or
+// the Store umbrella. Requiring HqPurchases alone 403'd every non-admin
+// branch user (ibrahim ali · Lusaka1 · 2026-07-30 report).
+router.get('/incoming', hqAuth, requireAnyPagePerm(['HqPurchases', 'IncomingStock', 'Stock']), (req, res) => {
   try {
     const slug = String(req.query.slug || '').toLowerCase();
     if (!slug) return res.status(400).json({ error: 'slug is required' });
@@ -365,7 +369,8 @@ function maybeCompleteHeader(purchaseId) {
 // yet** — that happens when HQ confirms the GRN, because HQ is the only
 // place authorised to lock in supplier AP. If branch needs to re-submit
 // (HQ rejected), the same endpoint accepts it again from AWAITING_GRN.
-router.put('/items/:itemId/submit-grn', hqAuth, requirePagePerm('HqPurchases'), (req, res) => {
+// v1.10.271 — branch-facing (see /incoming). Same perm-set applies.
+router.put('/items/:itemId/submit-grn', hqAuth, requireAnyPagePerm(['HqPurchases', 'IncomingStock', 'Stock']), (req, res) => {
   try {
     // v1.8.65 — reason field aligned with transfer_variances vocabulary.
     // Accepts 'OK' | 'Short' | 'Damaged' | 'Lost'. Defaults to derived
@@ -612,7 +617,8 @@ router.put('/items/:itemId/reject', hqAuth, requirePagePerm('HqPurchases'), (req
 // different branch or cancel it outright.
 //
 // Body: { reason }  — required, surfaced on HQ's incoming view.
-router.put('/items/:itemId/branch-reject', hqAuth, requirePagePerm('HqPurchases'), (req, res) => {
+// v1.10.271 — branch-facing (see /incoming). Same perm-set applies.
+router.put('/items/:itemId/branch-reject', hqAuth, requireAnyPagePerm(['HqPurchases', 'IncomingStock', 'Stock']), (req, res) => {
   try {
     const reason = ((req.body && req.body.reason) || '').toString().trim();
     if (!reason) return res.status(400).json({ error: 'A rejection reason is required.' });

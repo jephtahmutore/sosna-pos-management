@@ -88,4 +88,32 @@ function withTenantDb(req, res, next) {
   next();
 }
 
-module.exports = { auth, adminOnly, readOnlyGuard, requirePagePerm, withTenantDb };
+// v1.10.271 — page-perm gate that passes when the user has ANY of the
+// listed pages. Same rules as requirePagePerm (Admin > role > page > All /
+// Full Access > HQ umbrella for Hq*), applied to each page in turn. Used
+// on endpoints served to both HQ and a branch — e.g. /hq/purchases/incoming
+// is browsed by HQ (needs HqPurchases) and every branch cashier/manager
+// (needs IncomingStock / Stock). Requiring only HqPurchases 403'd every
+// branch user off their own incoming queue.
+function requireAnyPagePerm(pages) {
+  return (req, res, next) => {
+    try {
+      if (!req.user) return res.status(401).json({ error: 'Access denied' });
+      if (req.user.role === 'Administrator') return next();
+      const u = db.prepare('SELECT permissions FROM users WHERE id = ?').get(req.user.id);
+      let perms = [];
+      try { perms = JSON.parse(u?.permissions || '[]'); } catch { /* ignore */ }
+      if (perms.some(p => p === 'All' || p === 'Full Access')) return next();
+      for (const page of pages) {
+        if (req.user.role === page) return next();
+        if (perms.some(p => p === page || p === `${page}:Add` || p === `${page}:Edit` || p === `${page}:View` || p === `${page}:Delete`)) return next();
+        if (page.startsWith('Hq') && perms.includes('HQ')) return next();
+      }
+      return res.status(403).json({ error: `${pages[0]} permission required` });
+    } catch (e) {
+      return res.status(500).json({ error: e.message });
+    }
+  };
+}
+
+module.exports = { auth, adminOnly, readOnlyGuard, requirePagePerm, requireAnyPagePerm, withTenantDb };
