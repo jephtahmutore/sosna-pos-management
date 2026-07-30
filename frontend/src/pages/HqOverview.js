@@ -11,9 +11,9 @@ import React, { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   FiRefreshCw, FiTrendingUp, FiClock, FiTruck, FiDollarSign, FiPackage,
-  FiAlertTriangle, FiArrowRight, FiUploadCloud, FiX, FiCheckCircle,
+  FiAlertTriangle, FiUploadCloud, FiX, FiCheckCircle,
 } from 'react-icons/fi';
-import { getHqOverview, setHqBranch, mirrorHqToAllBranches } from '../services/api';
+import { getHqOverview, mirrorHqToAllBranches } from '../services/api';
 
 // v1.10.146 — money formatters honour a currency symbol argument. Default
 // stays '$' for callers that don't pass one. Branch cards + rollups both
@@ -67,12 +67,8 @@ export default function HqOverview() {
     return () => clearInterval(id);
   }, []);
 
-  const openBranch = (slug) => {
-    setHqBranch(slug);
-    // Hard reload so every page re-fetches its data via the new X-Branch.
-    window.location.href = '/dashboard';
-  };
-
+  // v1.10.274 — openBranch removed with the "Open" branch buttons; the
+  // sidebar dropdown is now the only jump-to-branch control.
   return (
     <div className="page-content">
       <div className="page-header">
@@ -185,10 +181,10 @@ export default function HqOverview() {
                       {!['three_station', 'two_station'].includes(b.workflow_mode) && <span style={tagStyle('#f1f5f9', '#475569')}>Single POS</span>}
                     </div>
                   </div>
-                  <button onClick={() => openBranch(b.slug)}
-                    style={{ padding: '6px 10px', background: '#0ea5e9', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 12, fontWeight: 600 }}>
-                    Open <FiArrowRight size={12} />
-                  </button>
+                  {/* v1.10.274 — "Open" branch shortcut removed per user
+                      request. The active-branch dropdown in the sidebar
+                      does the same job and avoids the double-navigation
+                      pattern. */}
                 </div>
 
                 {b.error ? (
