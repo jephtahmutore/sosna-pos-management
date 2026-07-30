@@ -5,7 +5,7 @@ import { Outlet, useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { useLanguage } from '../context/LanguageContext';
 import { useCurrency } from '../context/CurrencyContext';
-import { isHqHost, getHqBranch, setHqBranch, getHqBranches, getNotificationBadges } from '../services/api';
+import { isHqHost, getNotificationBadges } from '../services/api';
 import SyncStatus from './SyncStatus';
 import { getDiscountRequestsPendingCount } from '../services/api';
 import { matchTokens } from '../utils/tokenSearch';
@@ -57,12 +57,19 @@ const Layout = () => {
   // AFTER branchOnly — referencing it earlier was the v1.3.9 TDZ crash
   // that blanked Layout.js for every branch.
   const showLegacyProcurement = !branchOnly || legacyProcurementEnabled;
-  const [hqBranches, setHqBranches] = useState([]);
-  const [currentHqBranch, setCurrentHqBranch] = useState(() => getHqBranch());
+  // v1.10.279 — HQ branch dropdown deleted; HQ context is fixed. On
+  // first mount, wipe any stale localStorage `hq.branch` written by
+  // earlier versions so requests stop sending X-Branch (they'd route
+  // to a branch DB → the AP/GRN "empty page" issue #4/#9 all over).
   useEffect(() => {
     if (!hq) return;
-    getHqBranches().then(r => setHqBranches(r.data?.branches || [])).catch(() => {});
+    try {
+      if (localStorage.getItem('hq.branch')) {
+        localStorage.removeItem('hq.branch');
+      }
+    } catch (_) { /* ignore */ }
   }, [hq]);
+  const currentHqBranch = '';
   // Sidebar badge counts for the current branch (Cashier / Dispatch
   // pending + Incoming Stock from HQ + Incoming Inter-Branch Transfers).
   // Derives slug the same way StockTransfers / IncomingStock do: HQ
@@ -84,22 +91,7 @@ const Layout = () => {
   // eslint-disable-next-line
   }, [hq, currentHqBranch, user?.id]);
 
-  const switchHqBranch = (slug) => {
-    // v1.10.273 — slug '' now means "HQ (Head Office) — no X-Branch
-    // override, read the hq mirror DB". Was previously a no-op which
-    // trapped the user in whatever branch they last picked. Same
-    // sign-out prompt fires either way so the login lands on the
-    // correct DB scope.
-    if (slug === currentHqBranch) return;
-    const target = slug ? hqBranches.find(b => b.slug === slug) : null;
-    const label = target ? `${target.name} (${slug})` : (slug ? slug : 'HQ (Head Office)');
-    if (!window.confirm(`Switch to ${label}? You'll be signed out and asked to sign in again to that scope.`)) return;
-    setHqBranch(slug);
-    setCurrentHqBranch(slug);
-    // Clear auth so the login screen re-runs against the new branch's DB.
-    try { localStorage.removeItem('token'); localStorage.removeItem('user'); } catch (_) {}
-    window.location.href = '/login';
-  };
+  // v1.10.279 — switchHqBranch removed with the dropdown.
   const navigate = useNavigate();
   const location = useLocation();
   const [collapsed, setCollapsed] = useState(false);
@@ -365,38 +357,12 @@ const Layout = () => {
           )}
         </div>
 
-        {/* HQ branch selector — visible only when serving from bare sosnazm.com.
-            Switching forces a re-login against the chosen branch (see
-            switchHqBranch above). Hidden when sidebar is collapsed. */}
-        {hq && !collapsed && (
-          <div style={{ padding: '8px 12px 4px', borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
-            <label style={{ display: 'block', fontSize: 10, color: 'rgba(255,255,255,0.55)', textTransform: 'uppercase', letterSpacing: 0.6, marginBottom: 4 }}>
-              Active Branch
-            </label>
-            <select value={currentHqBranch}
-              onChange={e => switchHqBranch(e.target.value)}
-              style={{
-                width: '100%', padding: '7px 10px',
-                background: 'rgba(255,255,255,0.08)', color: '#fff',
-                border: '1px solid rgba(255,255,255,0.15)', borderRadius: 6,
-                fontSize: 13, fontWeight: 600, outline: 'none',
-              }}>
-              {/* v1.10.273 — HQ is the always-visible default. Removes the
-                  old "— pick a branch —" placeholder which left first-time
-                  HQ users staring at empty pages (Cash Book, GRN, AP all
-                  route via active-branch scope). Selecting HQ (value='')
-                  clears the X-Branch override so requests hit the sosna.db
-                  mirror. */}
-              <option value="" style={{ color: '#0f172a' }}>HQ (Head Office)</option>
-              {hqBranches.map(b => (
-                <option key={b.slug} value={b.slug} style={{ color: '#0f172a' }}>
-                  {b.name} ({b.slug})
-                </option>
-              ))}
-            </select>
-          </div>
-        )}
-
+        {/* v1.10.279 — HQ branch dropdown removed entirely. HQ operators
+            work exclusively against the HQ mirror (backend/sosna.db); to
+            act as a branch, they open that branch's subdomain in another
+            tab. Removing the dropdown here also stops the double sign-out
+            trap the old switch flow could cause. currentHqBranch is
+            forced empty below so every request omits X-Branch. */}
         <nav className="sidebar-nav">
           {/* HQ Overview — only when serving from bare sosnazm.com.
               Sits above Dashboard because it's the natural landing page

@@ -7,7 +7,7 @@
 // Backend: GET /api/hq/sales-report (loops over each tenant DB).
 import React, { useEffect, useMemo, useState } from 'react';
 import { FiRefreshCw, FiTrendingUp, FiAlertTriangle } from 'react-icons/fi';
-import { getHqSalesReport, getHqBranches, setHqBranch } from '../services/api';
+import { getHqSalesReport, getHqBranches } from '../services/api';
 
 // v1.10.236 — money formatting is currency-aware. Every order carries its
 // branch's currency ('USD' or 'K'); totals are split into per-currency
@@ -62,15 +62,7 @@ export default function HqSalesReport() {
       .filter(r => r.revenue !== 0 || r.received !== 0);
   }, [data]);
 
-  const openInBranch = (slug, orderId) => {
-    setHqBranch(slug);
-    // The per-branch SalesReport accepts the order via its URL hash
-    // (already implemented in the branch UI) — for v1 we just navigate
-    // to the branch's sales-report root and let the operator filter.
-    window.location.href = '/pos/sales-report';
-    void orderId;
-  };
-
+  // v1.10.279 — openInBranch removed with the per-row "Open" buttons.
   return (
     <div className="page-content">
       <div className="page-header">
@@ -167,7 +159,6 @@ export default function HqSalesReport() {
                       <th style={{ ...th, textAlign: 'right' }}>Received</th>
                       <th style={th}>Status</th>
                       <th style={th}>By</th>
-                      <th style={th}></th>
                     </tr>
                   </thead>
                   <tbody>
@@ -185,12 +176,9 @@ export default function HqSalesReport() {
                           <td style={{ ...td, textAlign: 'right' }}>{fmtMoneyCcy(o.amount_received, o.branch_currency || o.currency)}</td>
                           <td style={td}>{statusBadge(o.status)}</td>
                           <td style={td}>{o.created_by_name || '—'}</td>
-                          <td style={td}>
-                            <button onClick={() => openInBranch(o.branch_slug, o.id)}
-                              style={{ padding: '4px 10px', background: '#0ea5e9', color: '#fff', border: 'none', borderRadius: 4, cursor: 'pointer', fontSize: 11, fontWeight: 600 }}>
-                              Open
-                            </button>
-                          </td>
+                          {/* v1.10.279 — per-row "Open" branch button
+                              removed (same rationale as v1.10.274-276);
+                              sidebar dropdown is the sole branch switch. */}
                         </tr>
                       );
                     })}
