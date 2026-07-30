@@ -85,10 +85,15 @@ const Layout = () => {
   }, [hq, currentHqBranch, user?.id]);
 
   const switchHqBranch = (slug) => {
-    if (!slug || slug === currentHqBranch) return;
-    const target = hqBranches.find(b => b.slug === slug);
-    const label = target ? `${target.name} (${slug})` : slug;
-    if (!window.confirm(`Switch HQ to ${label}? You'll be signed out and asked to sign in again to that branch.`)) return;
+    // v1.10.273 — slug '' now means "HQ (Head Office) — no X-Branch
+    // override, read the hq mirror DB". Was previously a no-op which
+    // trapped the user in whatever branch they last picked. Same
+    // sign-out prompt fires either way so the login lands on the
+    // correct DB scope.
+    if (slug === currentHqBranch) return;
+    const target = slug ? hqBranches.find(b => b.slug === slug) : null;
+    const label = target ? `${target.name} (${slug})` : (slug ? slug : 'HQ (Head Office)');
+    if (!window.confirm(`Switch to ${label}? You'll be signed out and asked to sign in again to that scope.`)) return;
     setHqBranch(slug);
     setCurrentHqBranch(slug);
     // Clear auth so the login screen re-runs against the new branch's DB.
@@ -376,7 +381,13 @@ const Layout = () => {
                 border: '1px solid rgba(255,255,255,0.15)', borderRadius: 6,
                 fontSize: 13, fontWeight: 600, outline: 'none',
               }}>
-              {!currentHqBranch && <option value="">— pick a branch —</option>}
+              {/* v1.10.273 — HQ is the always-visible default. Removes the
+                  old "— pick a branch —" placeholder which left first-time
+                  HQ users staring at empty pages (Cash Book, GRN, AP all
+                  route via active-branch scope). Selecting HQ (value='')
+                  clears the X-Branch override so requests hit the sosna.db
+                  mirror. */}
+              <option value="" style={{ color: '#0f172a' }}>HQ (Head Office)</option>
               {hqBranches.map(b => (
                 <option key={b.slug} value={b.slug} style={{ color: '#0f172a' }}>
                   {b.name} ({b.slug})
