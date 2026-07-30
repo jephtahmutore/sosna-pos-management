@@ -838,6 +838,11 @@ function initTenantDb(db) {
     // cashReport.js:316; the created_by column is also used elsewhere.
     // Add both siblings so the filter works cross-device.
     'payment_vouchers',
+    // v1.10.277 — cash_receipts joins users to show "Created By" on the
+    // CR list. Same JOIN-by-sync_id pattern payment_vouchers uses (see
+    // paymentVouchers.js v1.10.264). Backfill + trigger below cover
+    // legacy rows and future INSERTs respectively.
+    'cash_receipts',
   ];
   for (const t of CREATED_BY_SYNC_TABLES) {
     addCol(t, 'created_by_sync_id', 'TEXT');

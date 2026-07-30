@@ -19,7 +19,18 @@ function deriveCRSplits(payment_method, amount) {
 
 router.get('/', auth, readOnlyGuard, (req, res) => {
   try {
-    const rows = db.prepare('SELECT * FROM cash_receipts WHERE deleted_at IS NULL AND tenant_id = ? ORDER BY date DESC').all(req.user.tenantId);
+    // v1.10.277 — LEFT JOIN users via created_by_sync_id so the CR
+    // list can render a "Created By" column. Cross-device stable —
+    // same pattern payment_vouchers already uses (see paymentVouchers.js
+    // v1.10.264).
+    const rows = db.prepare(`
+      SELECT cr.*,
+             (u.first_name || ' ' || u.last_name) AS created_by_name
+        FROM cash_receipts cr
+        LEFT JOIN users u ON u.sync_id = cr.created_by_sync_id
+       WHERE cr.deleted_at IS NULL AND cr.tenant_id = ?
+       ORDER BY cr.date DESC
+    `).all(req.user.tenantId);
     res.json(rows);
   } catch (error) {
     res.status(500).json({ error: error.message });

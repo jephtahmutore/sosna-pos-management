@@ -413,7 +413,7 @@ const CashReceipt = () => {
           <table className="data-table">
             <thead>
               <tr>
-                <th>{t('receiptNumber')}</th><th>{t('date')}</th><th>{t('receivedFrom')}</th><th>{t('description')}</th><th>{t('paymentMethod')}</th>
+                <th>{t('receiptNumber')}</th><th>{t('date')}</th><th>{t('receivedFrom')}</th><th>{t('description')}</th><th>{t('paymentMethod')}</th><th>Created By</th>
                 {/* v1.8.32 — single Amount column split into 3 per-currency.
                     v1.10.45 — on Liquor branches all three slots are the
                     same currency, so collapse back to a single AMOUNT
@@ -467,6 +467,10 @@ const CashReceipt = () => {
                   <td>{r.received_from}</td>
                   <td style={{ color: '#6b7280' }}>{r.description || '—'}</td>
                   <td><span className={`badge ${getPaymentColor(r.payment_method)}`}>{r.payment_method}</span></td>
+                  {/* v1.10.277 — Created By column reads created_by_name
+                      the backend now returns via LEFT JOIN users on
+                      cr.created_by_sync_id. Cross-device stable. */}
+                  <td style={{ color: '#6b7280', fontSize: 12 }}>{r.created_by_name || '—'}</td>
                   {isLiquorStyle ? (
                     <td style={{ textAlign: 'right', color: liquorTotal > 0 ? '#16a34a' : '', fontWeight: liquorTotal > 0 ? 700 : 400 }}>
                       {liquorTotal > 0 ? `${curSym}${fmt2(liquorTotal)}` : dash}
@@ -516,7 +520,7 @@ const CashReceipt = () => {
             <tfoot>
               {/* v1.8.32 — per-currency footer totals. */}
               <tr style={{ fontWeight: 700, borderTop: '2px solid #e5e7eb', background: '#f9fafb' }}>
-                <td colSpan={5} style={{ padding: '10px 14px', textAlign: 'right', color: '#374151', fontSize: 13 }}>
+                <td colSpan={6} style={{ padding: '10px 14px', textAlign: 'right', color: '#374151', fontSize: 13 }}>
                   Total ({filteredReceipts.length} receipt{filteredReceipts.length !== 1 ? 's' : ''})
                 </td>
                 {(() => {
