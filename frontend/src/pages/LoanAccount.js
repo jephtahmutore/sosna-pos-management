@@ -62,9 +62,15 @@ const LoanAccount = () => {
     if (kk > 0) parts.push(`K${fmtNum(kk)}`);
     return parts.length ? parts.join(' · ') : '—';
   };
+  const [stats, setStats]   = useState({ activeLoans: 0, totalDisbursed: 0, totalPrincipalPaid: 0, outstanding: 0, interestYTD: 0 });
+  const [loans, setLoans]   = useState([]);
+  const [toast, setToast]   = useState(null);
+  const [filterStatus, setFilterStatus] = useState('All');
+
   // v1.10.267 — roll the per-currency subtotals from every loan row
   // into page-level tiles so Outstanding / Disbursed / Principal Repaid
-  // read "K60,000" not "$60,000" for K-only tenants.
+  // read "K60,000" not "$60,000" for K-only tenants. Must come AFTER
+  // the `loans` useState above — TDZ error otherwise (v1.10.267 crash).
   const statsByCcy = useMemo(() => {
     const zero = () => ({ usd: 0, fra: 0, k: 0 });
     const acc = { outstanding: zero(), disbursed: zero(), principalPaid: zero() };
@@ -81,10 +87,6 @@ const LoanAccount = () => {
     });
     return acc;
   }, [loans]);
-  const [stats, setStats]   = useState({ activeLoans: 0, totalDisbursed: 0, totalPrincipalPaid: 0, outstanding: 0, interestYTD: 0 });
-  const [loans, setLoans]   = useState([]);
-  const [toast, setToast]   = useState(null);
-  const [filterStatus, setFilterStatus] = useState('All');
 
   // Loan-create / edit modal
   const [showLoanForm, setShowLoanForm] = useState(false);
