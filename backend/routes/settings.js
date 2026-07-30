@@ -355,13 +355,21 @@ router.post('/print-receipt', async (req, res) => {
       lines.push(center('** sold in alternate unit (not default)'));
     }
 
-    const text = lines.join('\n') + '\n\n\n\n\n\n';
+    // v1.10.272 — print 2 copies (Customer + Cashier) in one job. Each
+    // copy gets a small label at the top and its own CUT so the operator
+    // can tear them apart. DRAWER_KICK stays on the first copy only so
+    // the drawer opens once per sale, not twice.
+    const body = lines.join('\n') + '\n\n\n\n\n\n';
+    const copy1 = center('*** CUSTOMER COPY ***') + '\n' + body;
+    const copy2 = center('*** CASHIER COPY ***')  + '\n' + body;
     // v1.10.60 — BOLD_ON wraps the whole body. Without this the printer
     // runs its head in single-strike mode, which prints thin/grey on
     // thermal paper. ESC E 1 (BOLD_ON) tells it to double-strike each
     // dot for solid black. BOLD_OFF closes it before the cut so it
     // doesn't leak into whatever ticket comes next.
-    const ticket = CMD.INIT + CMD.LEFT_MARGIN_24 + CMD.BOLD_ON + CMD.DRAWER_KICK + text + CMD.BOLD_OFF + CMD.CUT;
+    const ticket = CMD.INIT + CMD.LEFT_MARGIN_24 + CMD.BOLD_ON + CMD.DRAWER_KICK
+                 + copy1 + CMD.CUT
+                 + copy2 + CMD.BOLD_OFF + CMD.CUT;
     const result = await sendToPrinter(db, ticket);
     if (!result.ok) return res.status(500).json({ error: 'Failed to print: ' + (result.error || 'unknown') });
     res.json({ success: true });
