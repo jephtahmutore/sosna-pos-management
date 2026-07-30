@@ -2,7 +2,7 @@
 // branch, sorted by stock value. Filters: branch, low-stock only, search.
 import React, { useEffect, useMemo, useState } from 'react';
 import { FiRefreshCw, FiAlertTriangle, FiSearch, FiPackage } from 'react-icons/fi';
-import { getHqInventoryReport, getHqBranches, setHqBranch } from '../services/api';
+import { getHqInventoryReport, getHqBranches } from '../services/api';
 
 // v1.10.149 — currency is per-branch. Prefix with $ only when USD, otherwise
 // suffix with the currency code (e.g. "K 1,430.95"). Cost/Value/Stock Value
@@ -173,21 +173,18 @@ export default function HqInventoryReport() {
                   <th style={{ ...thS, textAlign: 'right' }}>Products</th>
                   <th style={{ ...thS, textAlign: 'right' }}>Low</th>
                   <th style={{ ...thS, textAlign: 'right' }}>Stock Value</th>
-                  <th style={thS}></th>
                 </tr></thead>
                 <tbody>
+                  {/* v1.10.275 — per-row "Open" branch button removed
+                      per user request. Sidebar dropdown is the only
+                      jump-to-branch entry point now (also removes the
+                      last remaining setHqBranch caller on this page). */}
                   {perBranch.map(b => (
                     <tr key={b.slug} style={{ borderTop: '1px solid #f1f5f9' }}>
                       <td style={tdS}>{b.name} <span style={{ color: '#94a3b8', fontSize: 11 }}>({b.slug})</span></td>
                       <td style={{ ...tdS, textAlign: 'right' }}>{fmtInt(b.products)}</td>
                       <td style={{ ...tdS, textAlign: 'right', color: b.low > 0 ? '#b91c1c' : '#475569', fontWeight: b.low > 0 ? 700 : 400 }}>{fmtInt(b.low)}</td>
                       <td style={{ ...tdS, textAlign: 'right', fontWeight: 700 }}>{fmtMoney(b.stock_value, b.currency || 'USD')}</td>
-                      <td style={tdS}>
-                        <button onClick={() => { setHqBranch(b.slug); window.location.href = '/stock/items'; }}
-                          style={{ padding: '4px 10px', background: '#0ea5e9', color: '#fff', border: 'none', borderRadius: 4, cursor: 'pointer', fontSize: 11, fontWeight: 600 }}>
-                          Open
-                        </button>
-                      </td>
                     </tr>
                   ))}
                 </tbody>
