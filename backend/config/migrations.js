@@ -635,6 +635,11 @@ function initTenantDb(db) {
       status            TEXT NOT NULL DEFAULT 'Active', -- 'Active' | 'Paid Off' | 'Defaulted'
       notes             TEXT,
       invoice_attachment TEXT,
+      -- v1.10.270 — 'Payable' = money we borrowed (we owe); 'Receivable'
+      -- = money we lent out (they owe us). Cash Book direction is flipped
+      -- for Receivable so a Disbursement drains the drawer instead of
+      -- filling it. See cashBook.js loanFlow helper for the CASE logic.
+      direction         TEXT NOT NULL DEFAULT 'Payable',
       created_by        INTEGER REFERENCES users(id),
       created_at        TEXT NOT NULL DEFAULT (datetime('now')),
       updated_at        TEXT NOT NULL DEFAULT (datetime('now'))
@@ -1229,6 +1234,15 @@ function initTenantDb(db) {
   addCol('loan_transactions', 'usd_amount', 'REAL NOT NULL DEFAULT 0');
   addCol('loan_transactions', 'fra_amount', 'REAL NOT NULL DEFAULT 0');
   addCol('loan_transactions', 'k_amount',   'REAL NOT NULL DEFAULT 0');
+
+  // v1.10.270 — Loans Receivable. Same loans + loan_transactions tables,
+  // one new column that flips the Cash Book direction: Payable = we
+  // borrow (Disbursement IN, Principal/Interest OUT — original behaviour);
+  // Receivable = we lend (Disbursement OUT, Principal/Interest IN).
+  // All pre-existing rows default to 'Payable' so nothing shifts on
+  // upgrade. cashBook.js reads this column via CASE and routes each
+  // transaction to the right side of the ledger.
+  addCol('loans', 'direction', "TEXT NOT NULL DEFAULT 'Payable'");
 
   // ── Receipt printer configuration ───────────────────────────────────────────
   // USB mode: prints via the Windows Print Spooler queue named `receipt_printer_name`

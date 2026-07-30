@@ -96,6 +96,11 @@ const LoanAccount = () => {
   const [loanForm, setLoanForm] = useState({
     lender_name: '', principal_amount: '', interest_rate: '',
     start_date: todayStr, maturity_date: '', status: 'Active', notes: '',
+    // v1.10.270 — 'Payable' (we borrowed) or 'Receivable' (we lent out).
+    // Baked in at creation and never edited afterwards — flipping direction
+    // on an existing loan would reverse every past transaction's Cash Book
+    // sign, so the New Loan modal is the only place this is set.
+    direction: 'Payable',
     // Initial disbursement fields — only used when creating a new loan.
     // On edit the user manages transactions through the detail modal.
     // v1.10.266 — tri-currency: USD + FRA rows for pure-currency legs,
@@ -103,6 +108,10 @@ const LoanAccount = () => {
     disb_usd: '', disb_fra: '',
     disb_cash: '', disb_bank: '', disb_momo: '',
   });
+  // v1.10.270 — direction filter tabs above the list. 'All' shows both;
+  // Payable/Receivable narrows the list. Independent of Active/Paid Off
+  // status filter — the two filters compose.
+  const [filterDirection, setFilterDirection] = useState('All');
 
   // Loan detail modal (with transactions)
   const [detailLoan, setDetailLoan] = useState(null);
@@ -145,6 +154,7 @@ const LoanAccount = () => {
     setLoanForm({
       lender_name: '', principal_amount: '', interest_rate: '',
       start_date: todayStr, maturity_date: '', status: 'Active', notes: '',
+      direction: 'Payable',
       disb_usd: '', disb_fra: '',
       disb_cash: '', disb_bank: '', disb_momo: '',
     });
@@ -164,6 +174,7 @@ const LoanAccount = () => {
       maturity_date:    l.maturity_date || '',
       status:           l.status || 'Active',
       notes:            l.notes || '',
+      direction:        l.direction || 'Payable',
       disb_usd: '', disb_fra: '',
       disb_cash: '', disb_bank: '', disb_momo: '', // not used on edit
     });
@@ -204,6 +215,9 @@ const LoanAccount = () => {
         maturity_date:    loanForm.maturity_date || null,
         status:           loanForm.status,
         notes:            loanForm.notes.trim() || null,
+        // v1.10.270 — 'Payable' | 'Receivable'; ignored on edit by backend
+        // (routes/loans.js PUT never reads direction — baked at create).
+        direction:        loanForm.direction || 'Payable',
       };
       if (editLoanId) {
         await updateLoan(editLoanId, payload);
@@ -359,6 +373,31 @@ const LoanAccount = () => {
         </div>
       </div>
 
+      {/* v1.10.270 — direction tabs: quick visual split between money we
+          borrowed and money we lent out. Composes with the status filter. */}
+      <div style={{ display: 'flex', gap: 6, marginBottom: 10, padding: 4, background: '#f3f4f6', borderRadius: 10 }}>
+        {[
+          { key: 'All',        label: 'All Loans',        color: '#6b7280' },
+          { key: 'Payable',    label: 'Money We Borrowed', color: '#dc2626' },
+          { key: 'Receivable', label: 'Money We Lent Out', color: '#16a34a' },
+        ].map(t => {
+          const active = filterDirection === t.key;
+          return (
+            <button
+              key={t.key}
+              type="button"
+              onClick={() => setFilterDirection(t.key)}
+              style={{
+                flex: 1, padding: '10px 12px', borderRadius: 8, border: 'none', cursor: 'pointer',
+                background: active ? t.color : 'transparent',
+                color: active ? '#fff' : '#374151',
+                fontWeight: 700, fontSize: 13, transition: 'background 0.15s',
+              }}
+            >{t.label}</button>
+          );
+        })}
+      </div>
+
       <div style={{ display: 'flex', gap: 10, alignItems: 'center', marginBottom: 14, padding: 12, background: '#f9fafb', borderRadius: 10 }}>
         <span style={{ fontSize: 12, fontWeight: 700, color: '#374151' }}>Status:</span>
         <select value={filterStatus} onChange={e => setFilterStatus(e.target.value)} style={{ padding: '6px 10px', border: '1px solid #d1d5db', borderRadius: 6, fontSize: 12, background: '#fff' }}>
@@ -373,7 +412,10 @@ const LoanAccount = () => {
         <table className="data-table">
           <thead>
             <tr>
-              <th>LOAN #</th><th>LENDER</th><th>START</th>
+              <th>LOAN #</th>
+              <th>PARTY</th>
+              <th>DIRECTION</th>
+              <th>START</th>
               <th style={{ textAlign: 'right' }}>PRINCIPAL</th>
               <th style={{ textAlign: 'right' }}>OUTSTANDING</th>
               <th style={{ textAlign: 'right' }}>INTEREST RATE</th>
@@ -382,27 +424,44 @@ const LoanAccount = () => {
             </tr>
           </thead>
           <tbody>
-            {loans.length === 0 ? (
-              <tr><td colSpan={8} style={{ textAlign: 'center', padding: 40, color: '#9ca3af' }}>No loans recorded.</td></tr>
-            ) : loans.map(l => {
-              const ss = STATUS_STYLE[l.status] || STATUS_STYLE.Active;
-              return (
-                <tr key={l.id}>
-                  <td style={{ fontWeight: 600 }}>{l.loan_number}</td>
-                  <td>{l.lender_name || '—'}</td>
-                  <td>{formatDate(l.start_date)}</td>
-                  <td style={{ textAlign: 'right', whiteSpace: 'nowrap', fontSize: 12 }}>{money3(l.disbursed_usd, l.disbursed_fra, l.disbursed_k)}</td>
-                  <td style={{ textAlign: 'right', fontWeight: 700, color: l.outstanding > 0 ? '#dc2626' : '#16a34a', whiteSpace: 'nowrap', fontSize: 12 }}>{money3(l.outstanding_usd, l.outstanding_fra, l.outstanding_k)}</td>
-                  <td style={{ textAlign: 'right' }}>{l.interest_rate > 0 ? `${l.interest_rate}%` : '—'}</td>
-                  <td><span style={{ padding: '2px 10px', borderRadius: 20, fontSize: 11, fontWeight: 700, background: ss.bg, color: ss.color, border: `1px solid ${ss.border}` }}>{l.status}</span></td>
-                  <td style={{ textAlign: 'center' }}>
-                    <button onClick={() => openDetail(l)} title="View / Record transaction" style={{ background: 'none', border: 'none', color: '#0369a1', cursor: 'pointer', padding: 4 }}><FiEye /></button>
-                    {canEdit && <button onClick={() => openEditLoan(l)} title="Edit loan" style={{ background: 'none', border: 'none', color: '#6b7280', cursor: 'pointer', padding: 4 }}><FiEdit2 /></button>}
-                    {canDelete && <button onClick={() => handleDeleteLoan(l)} title="Delete" style={{ background: 'none', border: 'none', color: '#dc2626', cursor: 'pointer', padding: 4 }}><FiTrash2 /></button>}
-                  </td>
-                </tr>
+            {(() => {
+              const shown = (loans || []).filter(l => {
+                if (filterDirection === 'All') return true;
+                return (l.direction || 'Payable') === filterDirection;
+              });
+              if (shown.length === 0) return (
+                <tr><td colSpan={9} style={{ textAlign: 'center', padding: 40, color: '#9ca3af' }}>No loans recorded.</td></tr>
               );
-            })}
+              return shown.map(l => {
+                const ss = STATUS_STYLE[l.status] || STATUS_STYLE.Active;
+                const isRec = (l.direction || 'Payable') === 'Receivable';
+                const dirChip = isRec
+                  ? { bg: '#dcfce7', color: '#166534', border: '#86efac', label: 'THEY OWE US' }
+                  : { bg: '#fee2e2', color: '#991b1b', border: '#fca5a5', label: 'WE OWE' };
+                // v1.10.270 — Outstanding color: red for Payable (bad, we owe),
+                // blue for Receivable (asset, they owe us, positive).
+                const outstColor = l.outstanding > 0
+                  ? (isRec ? '#1e40af' : '#dc2626')
+                  : '#16a34a';
+                return (
+                  <tr key={l.id}>
+                    <td style={{ fontWeight: 600 }}>{l.loan_number}</td>
+                    <td>{l.lender_name || '—'}</td>
+                    <td><span style={{ padding: '2px 8px', borderRadius: 20, fontSize: 10, fontWeight: 700, background: dirChip.bg, color: dirChip.color, border: `1px solid ${dirChip.border}`, whiteSpace: 'nowrap' }}>{dirChip.label}</span></td>
+                    <td>{formatDate(l.start_date)}</td>
+                    <td style={{ textAlign: 'right', whiteSpace: 'nowrap', fontSize: 12 }}>{money3(l.disbursed_usd, l.disbursed_fra, l.disbursed_k)}</td>
+                    <td style={{ textAlign: 'right', fontWeight: 700, color: outstColor, whiteSpace: 'nowrap', fontSize: 12 }}>{money3(l.outstanding_usd, l.outstanding_fra, l.outstanding_k)}</td>
+                    <td style={{ textAlign: 'right' }}>{l.interest_rate > 0 ? `${l.interest_rate}%` : '—'}</td>
+                    <td><span style={{ padding: '2px 10px', borderRadius: 20, fontSize: 11, fontWeight: 700, background: ss.bg, color: ss.color, border: `1px solid ${ss.border}` }}>{l.status}</span></td>
+                    <td style={{ textAlign: 'center' }}>
+                      <button onClick={() => openDetail(l)} title="View / Record transaction" style={{ background: 'none', border: 'none', color: '#0369a1', cursor: 'pointer', padding: 4 }}><FiEye /></button>
+                      {canEdit && <button onClick={() => openEditLoan(l)} title="Edit loan" style={{ background: 'none', border: 'none', color: '#6b7280', cursor: 'pointer', padding: 4 }}><FiEdit2 /></button>}
+                      {canDelete && <button onClick={() => handleDeleteLoan(l)} title="Delete" style={{ background: 'none', border: 'none', color: '#dc2626', cursor: 'pointer', padding: 4 }}><FiTrash2 /></button>}
+                    </td>
+                  </tr>
+                );
+              });
+            })()}
           </tbody>
         </table>
       </div>
@@ -418,10 +477,39 @@ const LoanAccount = () => {
               </div>
               <div className="modal-body">
                 {loanError && <div style={{ color: '#dc2626', marginBottom: 12, fontSize: 13 }}>{loanError}</div>}
+                {/* v1.10.270 — direction picker. Hidden on edit because
+                    flipping direction after transactions exist would
+                    reverse every past Cash Book entry. Baked at create. */}
+                {!editLoanId && (
+                  <div style={{ display: 'flex', gap: 10, marginBottom: 14, padding: 4, background: '#f3f4f6', borderRadius: 10 }}>
+                    {[
+                      { key: 'Payable',    label: 'Money We Borrowed',  hint: 'They gave us money — we owe them.', bg: '#fee2e2', activeBg: '#dc2626' },
+                      { key: 'Receivable', label: 'Money We Lent Out',  hint: 'We gave them money — they owe us.', bg: '#dcfce7', activeBg: '#16a34a' },
+                    ].map(d => {
+                      const active = loanForm.direction === d.key;
+                      return (
+                        <button
+                          key={d.key}
+                          type="button"
+                          onClick={() => setLoanForm({ ...loanForm, direction: d.key })}
+                          style={{
+                            flex: 1, padding: '12px 14px', borderRadius: 8, border: 'none', cursor: 'pointer',
+                            background: active ? d.activeBg : '#fff',
+                            color: active ? '#fff' : '#374151',
+                            fontWeight: 700, textAlign: 'left', transition: 'background 0.15s',
+                          }}
+                        >
+                          <div style={{ fontSize: 13 }}>{d.label}</div>
+                          <div style={{ fontSize: 11, fontWeight: 400, opacity: 0.85, marginTop: 3 }}>{d.hint}</div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
                 <div className="form-row">
                   <div className="form-group">
-                    <label>Lender</label>
-                    <input value={loanForm.lender_name} onChange={e => setLoanForm({ ...loanForm, lender_name: e.target.value })} placeholder="e.g. FNB Bank / Sirak's brother" />
+                    <label>{loanForm.direction === 'Receivable' ? 'Borrower' : 'Lender'}</label>
+                    <input value={loanForm.lender_name} onChange={e => setLoanForm({ ...loanForm, lender_name: e.target.value })} placeholder={loanForm.direction === 'Receivable' ? 'e.g. Ibrahim Ali / Staff advance' : "e.g. FNB Bank / Sirak's brother"} />
                   </div>
                   <div className="form-group">
                     <label>Status</label>
@@ -545,7 +633,16 @@ const LoanAccount = () => {
           <div className="modal-overlay" onClick={() => setDetailLoan(null)}>
             <div className="modal" style={{ maxWidth: 820 }} onClick={e => e.stopPropagation()}>
               <div className="modal-header">
-                <h3>{detailLoan.loan_number} — {detailLoan.lender_name || 'Lender'}</h3>
+                <h3 style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                  <span>{detailLoan.loan_number} — {detailLoan.lender_name || ((detailLoan.direction || 'Payable') === 'Receivable' ? 'Borrower' : 'Lender')}</span>
+                  {(() => {
+                    const isRec = (detailLoan.direction || 'Payable') === 'Receivable';
+                    const chip = isRec
+                      ? { bg: '#dcfce7', color: '#166534', border: '#86efac', label: 'THEY OWE US' }
+                      : { bg: '#fee2e2', color: '#991b1b', border: '#fca5a5', label: 'WE OWE' };
+                    return <span style={{ padding: '2px 10px', borderRadius: 20, fontSize: 11, fontWeight: 700, background: chip.bg, color: chip.color, border: `1px solid ${chip.border}` }}>{chip.label}</span>;
+                  })()}
+                </h3>
                 <button className="modal-close" onClick={() => setDetailLoan(null)}>×</button>
               </div>
               <div className="modal-body">
@@ -557,9 +654,21 @@ const LoanAccount = () => {
 
                 {hasPermission('LoanAccount:Add') && (
                   <div style={{ display: 'flex', gap: 8, marginBottom: 14, padding: 10, background: '#f9fafb', borderRadius: 8 }}>
-                    <button className="btn btn-primary" style={{ background: '#16a34a' }} onClick={() => openTxForm('Disbursement')}>+ Disbursement</button>
-                    <button className="btn btn-primary" style={{ background: '#dc2626' }} onClick={() => openTxForm('Principal')}>+ Principal Payment</button>
-                    <button className="btn btn-primary" style={{ background: '#f59e0b' }} onClick={() => openTxForm('Interest')}>+ Interest Payment</button>
+                    {/* v1.10.270 — button labels swap for Receivable so the
+                        user sees plain-English direction, not accounting jargon. */}
+                    {(detailLoan.direction || 'Payable') === 'Receivable' ? (
+                      <>
+                        <button className="btn btn-primary" style={{ background: '#dc2626' }} onClick={() => openTxForm('Disbursement')}>+ Money Given</button>
+                        <button className="btn btn-primary" style={{ background: '#16a34a' }} onClick={() => openTxForm('Principal')}>+ They Paid Back</button>
+                        <button className="btn btn-primary" style={{ background: '#f59e0b' }} onClick={() => openTxForm('Interest')}>+ Interest Received</button>
+                      </>
+                    ) : (
+                      <>
+                        <button className="btn btn-primary" style={{ background: '#16a34a' }} onClick={() => openTxForm('Disbursement')}>+ Money Received</button>
+                        <button className="btn btn-primary" style={{ background: '#dc2626' }} onClick={() => openTxForm('Principal')}>+ We Paid Back</button>
+                        <button className="btn btn-primary" style={{ background: '#f59e0b' }} onClick={() => openTxForm('Interest')}>+ Interest Paid</button>
+                      </>
+                    )}
                   </div>
                 )}
 
@@ -580,8 +689,13 @@ const LoanAccount = () => {
                         <tr><td colSpan={6} style={{ textAlign: 'center', padding: 30, color: '#9ca3af' }}>No transactions yet. Click + Disbursement to record the loan being received.</td></tr>
                       ) : detailLoan.transactions.map(tx => {
                         const ts = TX_TYPE_STYLE[tx.type] || TX_TYPE_STYLE.Disbursement;
-                        const sign = tx.type === 'Disbursement' ? '+' : '−';
-                        const color = tx.type === 'Disbursement' ? '#16a34a' : (tx.type === 'Interest' ? '#92400e' : '#dc2626');
+                        // v1.10.270 — sign shows real drawer direction.
+                        // Payable: Disbursement=+ (money in), Principal/Interest=− (paid out).
+                        // Receivable: flipped — Disbursement=− (we gave), Principal/Interest=+ (they paid us).
+                        const isRecTx = (detailLoan.direction || 'Payable') === 'Receivable';
+                        const isInflow = isRecTx ? tx.type !== 'Disbursement' : tx.type === 'Disbursement';
+                        const sign = isInflow ? '+' : '−';
+                        const color = isInflow ? '#16a34a' : (tx.type === 'Interest' ? '#92400e' : '#dc2626');
                         return (
                           <tr key={tx.id} style={{ borderTop: '1px solid #f3f4f6' }}>
                             <td style={{ padding: '8px 10px', fontWeight: 600 }}>{tx.transaction_number}</td>
@@ -622,9 +736,20 @@ const LoanAccount = () => {
                 {txError && <div style={{ color: '#dc2626', marginBottom: 12, fontSize: 13 }}>{txError}</div>}
 
                 <div style={{ padding: '10px 12px', background: txType === 'Interest' ? '#fef3c7' : (txType === 'Disbursement' ? '#dcfce7' : '#fee2e2'), borderRadius: 8, marginBottom: 14, fontSize: 12 }}>
-                  {txType === 'Disbursement' && <>💰 <strong>Disbursement</strong> = money received from the lender. Cash IN. Loan balance goes UP. Not income.</>}
-                  {txType === 'Principal'    && <>↩ <strong>Principal Payment</strong> = paying back what you borrowed. Cash OUT. Loan balance goes DOWN. Not an expense.</>}
-                  {txType === 'Interest'     && <>💸 <strong>Interest Payment</strong> = the cost of borrowing. Cash OUT. Real expense on the Profit Report. Loan balance unchanged.</>}
+                  {/* v1.10.270 — explainer wording flips for Receivable. */}
+                  {(detailLoan?.direction || 'Payable') === 'Receivable' ? (
+                    <>
+                      {txType === 'Disbursement' && <>💸 <strong>Money Given</strong> = we handed over the loan. Cash OUT of our drawer. Outstanding balance goes UP (they owe us more).</>}
+                      {txType === 'Principal'    && <>💰 <strong>They Paid Back</strong> = borrower returning what they owed. Cash IN. Outstanding balance goes DOWN.</>}
+                      {txType === 'Interest'     && <>📈 <strong>Interest Received</strong> = the borrower paying interest. Cash IN. Real income on the Profit Report. Outstanding balance unchanged.</>}
+                    </>
+                  ) : (
+                    <>
+                      {txType === 'Disbursement' && <>💰 <strong>Disbursement</strong> = money received from the lender. Cash IN. Loan balance goes UP. Not income.</>}
+                      {txType === 'Principal'    && <>↩ <strong>Principal Payment</strong> = paying back what you borrowed. Cash OUT. Loan balance goes DOWN. Not an expense.</>}
+                      {txType === 'Interest'     && <>💸 <strong>Interest Payment</strong> = the cost of borrowing. Cash OUT. Real expense on the Profit Report. Loan balance unchanged.</>}
+                    </>
+                  )}
                 </div>
 
                 <div className="form-group">

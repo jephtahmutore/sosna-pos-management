@@ -11,6 +11,30 @@ try { masterDb = require('../config/masterDb').masterDb; } catch (_) { /* offlin
 
 const HQ_INBOX_SLUGS = new Set(['hq', 'sosna', 'sosnazm']);
 
+// v1.10.270 — Loans Receivable. Every loan_transactions read in this
+// file now JOINs loans and routes each row to IN or OUT based on the
+// combination of `direction` and `type`. Two shared SQL fragments used
+// by every helper below so the direction logic lives in exactly one
+// place; if either predicate changes both must change together.
+//
+//   Payable   (we borrow)  → Disbursement IN,  Principal/Interest OUT
+//   Receivable(we lend)    → Disbursement OUT, Principal/Interest IN
+//
+// COALESCE default is 'Payable' so any pre-v1.10.270 rows (before the
+// migration backfills) keep the original behaviour.
+const LOAN_INFLOW_PRED = `
+  (
+    (COALESCE(l.direction, 'Payable') = 'Payable'    AND lt.type = 'Disbursement') OR
+    (COALESCE(l.direction, 'Payable') = 'Receivable' AND lt.type IN ('Principal', 'Interest'))
+  )
+`;
+const LOAN_OUTFLOW_PRED = `
+  (
+    (COALESCE(l.direction, 'Payable') = 'Payable'    AND lt.type IN ('Principal', 'Interest')) OR
+    (COALESCE(l.direction, 'Payable') = 'Receivable' AND lt.type = 'Disbursement')
+  )
+`;
+
 // v1.10.171 — belt-and-suspenders check: if the request is for an HQ host,
 // force isLiquorK=false regardless of what business_settings.currency_mode
 // says. Reason: HQ shipped v1 with currency_mode='K' (leftover from the
@@ -224,27 +248,29 @@ function ccyReceiptsPayments(tenantId, slug, dateClause, dateParams) {
       }
     } catch (_) { /* non-fatal */ }
   }
-  // v1.10.267 — loan_transactions per-currency contribution. Disbursements
-  // are receipts; Principal + Interest are payments. Uses the tri-currency
-  // columns directly (populated by v1.10.266 backend routes). Without this,
-  // pre-period loans silently drop from the openingByCcy fold when the
-  // user shifts From backwards.
+  // v1.10.267 — loan_transactions per-currency contribution.
+  // v1.10.270 — direction-aware via LOAN_INFLOW_PRED / LOAN_OUTFLOW_PRED
+  // (JOIN loans). Receivable Disbursement → payment, Receivable
+  // Principal/Interest → receipt.
   try {
-    const loanRows = db.prepare(`
-      SELECT type,
-             COALESCE(SUM(usd_amount), 0) AS usd,
-             COALESCE(SUM(fra_amount), 0) AS fra,
-             COALESCE(SUM(k_amount),   0) AS k
-        FROM loan_transactions
-       WHERE deleted_at IS NULL AND tenant_id = ?${dateClause}
-       GROUP BY type
-    `).all(tenantId, ...dateParams);
-    for (const r of loanRows) {
-      const bucket = r.type === 'Disbursement' ? receipts : payments;
-      bucket.usd += num(r.usd);
-      bucket.fra += num(r.fra);
-      bucket.k   += num(r.k);
-    }
+    const loanRow = db.prepare(`
+      SELECT
+        COALESCE(SUM(CASE WHEN ${LOAN_INFLOW_PRED}  THEN lt.usd_amount ELSE 0 END), 0) AS in_usd,
+        COALESCE(SUM(CASE WHEN ${LOAN_INFLOW_PRED}  THEN lt.fra_amount ELSE 0 END), 0) AS in_fra,
+        COALESCE(SUM(CASE WHEN ${LOAN_INFLOW_PRED}  THEN lt.k_amount   ELSE 0 END), 0) AS in_k,
+        COALESCE(SUM(CASE WHEN ${LOAN_OUTFLOW_PRED} THEN lt.usd_amount ELSE 0 END), 0) AS out_usd,
+        COALESCE(SUM(CASE WHEN ${LOAN_OUTFLOW_PRED} THEN lt.fra_amount ELSE 0 END), 0) AS out_fra,
+        COALESCE(SUM(CASE WHEN ${LOAN_OUTFLOW_PRED} THEN lt.k_amount   ELSE 0 END), 0) AS out_k
+        FROM loan_transactions lt
+        LEFT JOIN loans l ON l.sync_id = lt.loan_sync_id
+       WHERE lt.deleted_at IS NULL AND lt.tenant_id = ?${dateClause.replace(/\bdate\b/g, 'lt.date')}
+    `).get(tenantId, ...dateParams);
+    receipts.usd += num(loanRow.in_usd);
+    receipts.fra += num(loanRow.in_fra);
+    receipts.k   += num(loanRow.in_k);
+    payments.usd += num(loanRow.out_usd);
+    payments.fra += num(loanRow.out_fra);
+    payments.k   += num(loanRow.out_k);
   } catch (_) { /* non-fatal */ }
   return { receipts, payments };
 }
@@ -307,18 +333,27 @@ function sumMethod(tenantId, methodCol, dateClause, dateParams, hqSlug) {
   const div    = db.prepare(`SELECT COALESCE(SUM(${methodCol}), 0) AS t FROM dividend_account WHERE deleted_at IS NULL AND tenant_id = ?${dateClause}`).get(tenantId, ...dateParams).t;
   // v1.10.267 — sub-drawer sum for loans must use the METHOD column directly
   // (cash_amount / bank_amount / momo_amount), NOT the CR/PV/AP CASE fallback.
-  // On CR/PV/AP the currency column and method column DO overlap
-  // (bank_amount ↔ K currency, cash_amount ↔ USD currency) so the CASE
-  // routes the right leg to the right sub-drawer. Loans, in contrast,
-  // populate BOTH the currency columns (usd/fra/k) AND the K sub-method
-  // split (cash/bank/momo) independently — using exprCcy would read
-  // k_amount into the "Bank" sub-drawer (a K-currency-total inflating one
-  // K sub-drawer bucket) and misroute the loan entirely. Real incident
-  // 2026-07-30: K10k Cash + K20k Bank + K30k MoMo Disbursement showed
-  // wrong sub-drawer numbers on HQ Cash Book.
-  const loanIn   = db.prepare(`SELECT COALESCE(SUM(${methodCol}), 0) AS t FROM loan_transactions WHERE deleted_at IS NULL AND tenant_id = ? AND type='Disbursement'${dateClause}`).get(tenantId, ...dateParams).t;
-  const loanPrin = db.prepare(`SELECT COALESCE(SUM(${methodCol}), 0) AS t FROM loan_transactions WHERE deleted_at IS NULL AND tenant_id = ? AND type='Principal'${dateClause}`).get(tenantId, ...dateParams).t;
-  const loanInt  = db.prepare(`SELECT COALESCE(SUM(${methodCol}), 0) AS t FROM loan_transactions WHERE deleted_at IS NULL AND tenant_id = ? AND type='Interest'${dateClause}`).get(tenantId, ...dateParams).t;
+  // v1.10.270 — direction-aware. loanIn/loanOut are TRUE drawer flows
+  // (already sign-flipped for Receivable loans). loanDisburse/loanPrin/
+  // loanInt are gross tallies by event type — used only by /stats tiles
+  // to display "Total Disbursements / Principal Repayments / Interest",
+  // regardless of direction.
+  const loanRow = db.prepare(`
+    SELECT
+      COALESCE(SUM(CASE WHEN ${LOAN_INFLOW_PRED}  THEN lt.${methodCol} ELSE 0 END), 0) AS in_amt,
+      COALESCE(SUM(CASE WHEN ${LOAN_OUTFLOW_PRED} THEN lt.${methodCol} ELSE 0 END), 0) AS out_amt,
+      COALESCE(SUM(CASE WHEN lt.type='Disbursement' THEN lt.${methodCol} ELSE 0 END), 0) AS disb_amt,
+      COALESCE(SUM(CASE WHEN lt.type='Principal'    THEN lt.${methodCol} ELSE 0 END), 0) AS prin_amt,
+      COALESCE(SUM(CASE WHEN lt.type='Interest'     THEN lt.${methodCol} ELSE 0 END), 0) AS int_amt
+    FROM loan_transactions lt
+    LEFT JOIN loans l ON l.sync_id = lt.loan_sync_id
+    WHERE lt.deleted_at IS NULL AND lt.tenant_id = ?${dateClause.replace(/\bdate\b/g, 'lt.date')}
+  `).get(tenantId, ...dateParams);
+  const loanIn   = parseFloat(loanRow.in_amt);
+  const loanOut  = parseFloat(loanRow.out_amt);
+  const loanDisburse = parseFloat(loanRow.disb_amt);
+  const loanPrin = parseFloat(loanRow.prin_amt);
+  const loanInt  = parseFloat(loanRow.int_amt);
   // Net cash transfer effect on this method = inflow (to_method) - outflow (from_method)
   const methodName = methodCol === 'cash_amount' ? 'Cash' : methodCol === 'bank_amount' ? 'Bank' : 'Mobile Money';
   // v1.10.137 — only USD transfers feed the legacy USD method-flow tracking.
@@ -329,7 +364,9 @@ function sumMethod(tenantId, methodCol, dateClause, dateParams, hqSlug) {
   return {
     cr: parseFloat(cr), pv: parseFloat(pv), ap: parseFloat(ap),
     capIn: parseFloat(capIn), capOut: parseFloat(capOut), div: parseFloat(div),
-    loanIn: parseFloat(loanIn), loanPrin: parseFloat(loanPrin), loanInt: parseFloat(loanInt),
+    // v1.10.270 — loanIn/loanOut = true drawer flows (direction-aware).
+    // loanDisburse/loanPrin/loanInt = gross event counts for display only.
+    loanIn, loanOut, loanDisburse, loanPrin, loanInt,
     transferNet: parseFloat(trIn) - parseFloat(trOut),
   };
 }
@@ -396,7 +433,7 @@ router.get('/', auth, readOnlyGuard, (req, res) => {
         const m = sumMethod(tenantId, col, beforeClause, [from], hqSlugForSubcalls);
         openingByMethod[key] = openingByMethod[key]
           + m.cr + m.capIn + m.loanIn
-          - m.pv - m.ap - m.capOut - m.div - m.loanPrin - m.loanInt
+          - m.pv - m.ap - m.capOut - m.div - m.loanOut
           + m.transferNet;
       });
       openingBalance = openingByMethod.cash + openingByMethod.bank + openingByMethod.momo;
@@ -530,29 +567,36 @@ router.get('/', auth, readOnlyGuard, (req, res) => {
       WHERE deleted_at IS NULL AND tenant_id = ?${dateFilter}
       UNION ALL
       -- v1.10.266 — split loan amounts by currency for the ledger UNION.
-      -- Old rows (v1.10.265 and earlier) have usd/fra/k=0, so the COALESCE
-      -- falls back to the K amount (cash+bank+momo total) and lands in the
-      -- k_in / k_out columns. New tri-currency rows flow into the right tile.
+      -- v1.10.270 — direction-aware: receipt/payment sides are picked by
+      -- LOAN_INFLOW_PRED / LOAN_OUTFLOW_PRED (shared constants above), so
+      -- a Receivable Disbursement shows as a payment and a Receivable
+      -- Principal/Interest shows as a receipt. Description prepends the
+      -- direction so the ledger line reads unambiguously.
       SELECT lt.date,
         CASE lt.type
-          WHEN 'Disbursement' THEN 'LOAN-IN'
-          WHEN 'Principal'    THEN 'LOAN-PRIN'
-          ELSE                     'LOAN-INT'
+          WHEN 'Disbursement' THEN
+            CASE WHEN COALESCE(l.direction,'Payable')='Receivable' THEN 'LOAN-OUT' ELSE 'LOAN-IN' END
+          WHEN 'Principal'    THEN
+            CASE WHEN COALESCE(l.direction,'Payable')='Receivable' THEN 'LOAN-PRIN-IN' ELSE 'LOAN-PRIN' END
+          ELSE
+            CASE WHEN COALESCE(l.direction,'Payable')='Receivable' THEN 'LOAN-INT-IN'  ELSE 'LOAN-INT' END
         END AS type,
         lt.transaction_number AS reference,
-        COALESCE(l.lender_name, '') || ' - ' || lt.type || COALESCE(' (' || lt.description || ')', '') AS description,
-        CASE WHEN lt.type='Disbursement' THEN lt.amount ELSE 0 END AS receipt_amount,
-        CASE WHEN lt.type IN ('Principal','Interest') THEN lt.amount ELSE 0 END AS payment_amount,
-        CASE WHEN lt.type='Disbursement'                  THEN COALESCE(lt.usd_amount, 0) ELSE 0 END AS usd_in,
-        CASE WHEN lt.type='Disbursement'                  THEN COALESCE(lt.fra_amount, 0) ELSE 0 END AS fra_in,
-        CASE WHEN lt.type='Disbursement'                  THEN CASE WHEN COALESCE(lt.k_amount,0) > 0 THEN lt.k_amount
-                                                                    ELSE COALESCE(lt.cash_amount,0)+COALESCE(lt.bank_amount,0)+COALESCE(lt.momo_amount,0)
-                                                               END ELSE 0 END AS k_in,
-        CASE WHEN lt.type IN ('Principal','Interest')     THEN COALESCE(lt.usd_amount, 0) ELSE 0 END AS usd_out,
-        CASE WHEN lt.type IN ('Principal','Interest')     THEN COALESCE(lt.fra_amount, 0) ELSE 0 END AS fra_out,
-        CASE WHEN lt.type IN ('Principal','Interest')     THEN CASE WHEN COALESCE(lt.k_amount,0) > 0 THEN lt.k_amount
-                                                                    ELSE COALESCE(lt.cash_amount,0)+COALESCE(lt.bank_amount,0)+COALESCE(lt.momo_amount,0)
-                                                               END ELSE 0 END AS k_out
+        COALESCE(l.lender_name, '') || ' - ' || lt.type ||
+          CASE WHEN COALESCE(l.direction,'Payable')='Receivable' THEN ' [Receivable]' ELSE '' END ||
+          COALESCE(' (' || lt.description || ')', '') AS description,
+        CASE WHEN ${LOAN_INFLOW_PRED}  THEN lt.amount ELSE 0 END AS receipt_amount,
+        CASE WHEN ${LOAN_OUTFLOW_PRED} THEN lt.amount ELSE 0 END AS payment_amount,
+        CASE WHEN ${LOAN_INFLOW_PRED}  THEN COALESCE(lt.usd_amount, 0) ELSE 0 END AS usd_in,
+        CASE WHEN ${LOAN_INFLOW_PRED}  THEN COALESCE(lt.fra_amount, 0) ELSE 0 END AS fra_in,
+        CASE WHEN ${LOAN_INFLOW_PRED}  THEN CASE WHEN COALESCE(lt.k_amount,0) > 0 THEN lt.k_amount
+                                                 ELSE COALESCE(lt.cash_amount,0)+COALESCE(lt.bank_amount,0)+COALESCE(lt.momo_amount,0)
+                                            END ELSE 0 END AS k_in,
+        CASE WHEN ${LOAN_OUTFLOW_PRED} THEN COALESCE(lt.usd_amount, 0) ELSE 0 END AS usd_out,
+        CASE WHEN ${LOAN_OUTFLOW_PRED} THEN COALESCE(lt.fra_amount, 0) ELSE 0 END AS fra_out,
+        CASE WHEN ${LOAN_OUTFLOW_PRED} THEN CASE WHEN COALESCE(lt.k_amount,0) > 0 THEN lt.k_amount
+                                                 ELSE COALESCE(lt.cash_amount,0)+COALESCE(lt.bank_amount,0)+COALESCE(lt.momo_amount,0)
+                                            END ELSE 0 END AS k_out
       FROM loan_transactions lt
       LEFT JOIN loans l ON l.sync_id = lt.loan_sync_id
       WHERE lt.deleted_at IS NULL AND lt.tenant_id = ?${dateFilter.replace(/date/g, 'lt.date')}
@@ -738,7 +782,7 @@ router.get('/stats', auth, readOnlyGuard, (req, res) => {
         const b = sumMethod(tenantId, col, ' AND date < ?', [from], hqSlugForStats);
         openingByMethod[key] = openingByMethod[key]
           + b.cr + b.capIn + b.loanIn
-          - b.pv - b.ap - b.capOut - b.div - b.loanPrin - b.loanInt
+          - b.pv - b.ap - b.capOut - b.div - b.loanOut
           + b.transferNet;
       });
       // v1.10.49 — subtract pre-period deposits per drawer so Jul-2's
@@ -765,9 +809,9 @@ router.get('/stats', auth, readOnlyGuard, (req, res) => {
     }
 
     const currentByMethod = {
-      cash: openingByMethod.cash + cash.cr + cash.capIn + cash.loanIn - cash.pv - cash.ap - cash.capOut - cash.div - cash.loanPrin - cash.loanInt + cash.transferNet,
-      bank: openingByMethod.bank + bank.cr + bank.capIn + bank.loanIn - bank.pv - bank.ap - bank.capOut - bank.div - bank.loanPrin - bank.loanInt + bank.transferNet,
-      momo: openingByMethod.momo + momo.cr + momo.capIn + momo.loanIn - momo.pv - momo.ap - momo.capOut - momo.div - momo.loanPrin - momo.loanInt + momo.transferNet,
+      cash: openingByMethod.cash + cash.cr + cash.capIn + cash.loanIn - cash.pv - cash.ap - cash.capOut - cash.div - cash.loanOut + cash.transferNet,
+      bank: openingByMethod.bank + bank.cr + bank.capIn + bank.loanIn - bank.pv - bank.ap - bank.capOut - bank.div - bank.loanOut + bank.transferNet,
+      momo: openingByMethod.momo + momo.cr + momo.capIn + momo.loanIn - momo.pv - momo.ap - momo.capOut - momo.div - momo.loanOut + momo.transferNet,
     };
     const totalReceipts   = cash.cr + bank.cr + momo.cr;
     const totalPV         = cash.pv + bank.pv + momo.pv;
@@ -939,18 +983,21 @@ router.get('/stats', auth, readOnlyGuard, (req, res) => {
     // migration in v1.10.266 populated them explicitly and there's no
     // legacy path to fall back to (loan_transactions never used the
     // CR/PV/AP overlap where bank_amount doubled as K currency).
+    // v1.10.270 — direction-aware. Receivable Disbursement drains the
+    // tile; Receivable Principal/Interest fills it.
     const loanByCcy = (() => {
       try {
         const row = db.prepare(`
           SELECT
-            COALESCE(SUM(CASE WHEN type='Disbursement' THEN usd_amount ELSE 0 END), 0) AS in_usd,
-            COALESCE(SUM(CASE WHEN type='Disbursement' THEN fra_amount ELSE 0 END), 0) AS in_fra,
-            COALESCE(SUM(CASE WHEN type='Disbursement' THEN k_amount   ELSE 0 END), 0) AS in_k,
-            COALESCE(SUM(CASE WHEN type IN ('Principal','Interest') THEN usd_amount ELSE 0 END), 0) AS out_usd,
-            COALESCE(SUM(CASE WHEN type IN ('Principal','Interest') THEN fra_amount ELSE 0 END), 0) AS out_fra,
-            COALESCE(SUM(CASE WHEN type IN ('Principal','Interest') THEN k_amount   ELSE 0 END), 0) AS out_k
-          FROM loan_transactions
-          WHERE deleted_at IS NULL AND tenant_id = ?${df}
+            COALESCE(SUM(CASE WHEN ${LOAN_INFLOW_PRED}  THEN COALESCE(lt.usd_amount,0) ELSE 0 END), 0) AS in_usd,
+            COALESCE(SUM(CASE WHEN ${LOAN_INFLOW_PRED}  THEN COALESCE(lt.fra_amount,0) ELSE 0 END), 0) AS in_fra,
+            COALESCE(SUM(CASE WHEN ${LOAN_INFLOW_PRED}  THEN COALESCE(lt.k_amount,0)   ELSE 0 END), 0) AS in_k,
+            COALESCE(SUM(CASE WHEN ${LOAN_OUTFLOW_PRED} THEN COALESCE(lt.usd_amount,0) ELSE 0 END), 0) AS out_usd,
+            COALESCE(SUM(CASE WHEN ${LOAN_OUTFLOW_PRED} THEN COALESCE(lt.fra_amount,0) ELSE 0 END), 0) AS out_fra,
+            COALESCE(SUM(CASE WHEN ${LOAN_OUTFLOW_PRED} THEN COALESCE(lt.k_amount,0)   ELSE 0 END), 0) AS out_k
+          FROM loan_transactions lt
+          LEFT JOIN loans l ON l.sync_id = lt.loan_sync_id
+          WHERE lt.deleted_at IS NULL AND lt.tenant_id = ?${df.replace(/\bdate\b/g, 'lt.date')}
         `).get(tenantId, ...dp);
         return {
           in:  { usd: parseFloat(row.in_usd),  fra: parseFloat(row.in_fra),  k: parseFloat(row.in_k) },
@@ -1094,24 +1141,26 @@ router.get('/stats', auth, readOnlyGuard, (req, res) => {
     const kSubExchIn  = kSubMethodExchSum(df, dp, 'in');
     const kSubExchOut = kSubMethodExchSum(df, dp, 'out');
 
-    // v1.10.268 — K sub-drawer contribution for loan_transactions. Same
-    // shape as kSubMethodSum but split by type so Disbursement (K) lands
-    // in the IN column and Principal / Interest (K) in OUT. Filtered on
-    // COALESCE(k_amount, 0) > 0 so USD / FRA loan legs don't leak in.
-    const kSubMethodLoanSum = (dateClause, dateParams, types) => {
+    // v1.10.268 — K sub-drawer contribution for loan_transactions.
+    // v1.10.270 — direction-aware: `flow` is 'in' or 'out'; the SQL
+    // uses the shared LOAN_INFLOW_PRED / LOAN_OUTFLOW_PRED so a
+    // Receivable Disbursement lands in OUT (drains the K sub-drawer)
+    // and a Receivable Principal/Interest lands in IN.
+    const kSubMethodLoanSum = (dateClause, dateParams, flow) => {
       try {
-        const placeholders = types.map(() => '?').join(',');
+        const pred = flow === 'in' ? LOAN_INFLOW_PRED : LOAN_OUTFLOW_PRED;
         const row = db.prepare(`
-          SELECT COALESCE(SUM(cash_amount), 0) AS cash,
-                 COALESCE(SUM(bank_amount), 0) AS bank,
-                 COALESCE(SUM(momo_amount), 0) AS momo
-            FROM loan_transactions
-           WHERE deleted_at IS NULL
-             AND tenant_id = ?
-             AND COALESCE(k_amount, 0) > 0
-             AND type IN (${placeholders})
-             ${dateClause}
-        `).get(tenantId, ...types, ...dateParams);
+          SELECT COALESCE(SUM(lt.cash_amount), 0) AS cash,
+                 COALESCE(SUM(lt.bank_amount), 0) AS bank,
+                 COALESCE(SUM(lt.momo_amount), 0) AS momo
+            FROM loan_transactions lt
+            LEFT JOIN loans l ON l.sync_id = lt.loan_sync_id
+           WHERE lt.deleted_at IS NULL
+             AND lt.tenant_id = ?
+             AND COALESCE(lt.k_amount, 0) > 0
+             AND ${pred}
+             ${dateClause.replace(/\bdate\b/g, 'lt.date')}
+        `).get(tenantId, ...dateParams);
         return {
           cash: parseFloat(row.cash) || 0,
           bank: parseFloat(row.bank) || 0,
@@ -1121,8 +1170,8 @@ router.get('/stats', auth, readOnlyGuard, (req, res) => {
         return { cash: 0, bank: 0, momo: 0 };
       }
     };
-    const kSubLoanIn  = kSubMethodLoanSum(df, dp, ['Disbursement']);
-    const kSubLoanOut = kSubMethodLoanSum(df, dp, ['Principal', 'Interest']);
+    const kSubLoanIn  = kSubMethodLoanSum(df, dp, 'in');
+    const kSubLoanOut = kSubMethodLoanSum(df, dp, 'out');
 
     // v1.10.137 — HQ K sub-drawer transfers shift K from one sub-drawer to
     // another. Direction:
@@ -1187,8 +1236,9 @@ router.get('/stats', auth, readOnlyGuard, (req, res) => {
       const bTrfIn  = kSubMethodTransferSum(' AND date < ?', [from], 'in');
       const bTrfOut = kSubMethodTransferSum(' AND date < ?', [from], 'out');
       // v1.10.268 — pre-period K loan disbursement / repayment fold-in.
-      const bLoanIn  = kSubMethodLoanSum(' AND date < ?', [from], ['Disbursement']);
-      const bLoanOut = kSubMethodLoanSum(' AND date < ?', [from], ['Principal', 'Interest']);
+      // v1.10.270 — signature updated to 'in'/'out' + direction-aware.
+      const bLoanIn  = kSubMethodLoanSum(' AND date < ?', [from], 'in');
+      const bLoanOut = kSubMethodLoanSum(' AND date < ?', [from], 'out');
       kSubOpening = {
         cash: kSubOpening.cash + bIn.cash + bDepIn.cash + bExchIn.cash + bTrfIn.cash + bLoanIn.cash - bPV.cash - bAP.cash - bDepOut.cash - bExchOut.cash - bTrfOut.cash - bLoanOut.cash,
         bank: kSubOpening.bank + bIn.bank + bDepIn.bank + bExchIn.bank + bTrfIn.bank + bLoanIn.bank - bPV.bank - bAP.bank - bDepOut.bank - bExchOut.bank - bTrfOut.bank - bLoanOut.bank,

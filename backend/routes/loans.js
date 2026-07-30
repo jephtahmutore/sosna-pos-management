@@ -138,20 +138,27 @@ router.get('/:id', auth, readOnlyGuard, (req, res) => {
 // ── Create loan agreement (no transactions yet) ──────────────────────────────
 router.post('/', auth, (req, res) => {
   try {
-    const { lender_name, principal_amount, interest_rate, start_date, maturity_date, status, notes, invoice_attachment } = req.body || {};
+    const { lender_name, principal_amount, interest_rate, start_date, maturity_date, status, notes, invoice_attachment, direction } = req.body || {};
     const principal = parseFloat(principal_amount) || 0;
     if (!(principal > 0)) return res.status(400).json({ error: 'Principal amount must be greater than 0.' });
+    // v1.10.270 — 'Payable' (we borrow) or 'Receivable' (we lend). Anything
+    // else falls back to Payable so old clients that don't send direction
+    // keep the pre-v1.10.270 behaviour.
+    const dir = direction === 'Receivable' ? 'Receivable' : 'Payable';
     const tenantId = syncConfig.getTenantId(req);
     const { branchId, deviceId } = syncConfig.getConfig();
-    const loanNumber = syncConfig.generateNumber('LOAN', 'loans');
+    // v1.10.270 — loan number carries the direction prefix so reports and
+    // ledger lines stay scannable: LN-P-2026-... = Payable, LN-R-... = Receivable.
+    const base = syncConfig.generateNumber('LOAN', 'loans');
+    const loanNumber = base.replace(/^LOAN-/, dir === 'Receivable' ? 'LN-R-' : 'LN-P-');
     const info = db.prepare(`
-      INSERT INTO loans (loan_number, lender_name, principal_amount, interest_rate, start_date, maturity_date, status, notes, invoice_attachment, created_by,
+      INSERT INTO loans (loan_number, lender_name, principal_amount, interest_rate, start_date, maturity_date, status, notes, invoice_attachment, direction, created_by,
                          sync_id, tenant_id, branch_id, device_id, synced, created_at, updated_at)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,datetime('now'),datetime('now'))
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,datetime('now'),datetime('now'))
     `).run(loanNumber, lender_name || null, principal, parseFloat(interest_rate) || 0,
            start_date || null, maturity_date || null,
            VALID_STATUS.includes(status) ? status : 'Active',
-           notes || null, invoice_attachment || null, req.user.id,
+           notes || null, invoice_attachment || null, dir, req.user.id,
            randomUUID(), tenantId, branchId, deviceId);
     res.status(201).json(db.prepare('SELECT * FROM loans WHERE id = ?').get(info.lastInsertRowid));
   } catch (e) { res.status(500).json({ error: e.message }); }
