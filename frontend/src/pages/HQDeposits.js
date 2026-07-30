@@ -445,6 +445,12 @@ const HQDeposits = () => {
                   {onHq && <th style={th}>From</th>}
                   <th style={th}>Currency</th>
                   <th style={{ ...th, textAlign: 'right' }}>Amount</th>
+                  {/* v1.10.278 — pull the operator names forward as their
+                      own columns. The existing "Created" and "Confirmed"
+                      columns still carry the timestamps, but the names
+                      were only visible after horizontal scroll. */}
+                  <th style={th}>Created By</th>
+                  <th style={th}>Confirmed By</th>
                   <th style={th}>Notes</th>
                   <th style={th}>Attachment</th>
                   <th style={th}>Status</th>
@@ -468,9 +474,14 @@ const HQDeposits = () => {
                       <td style={{ ...td, fontFamily: 'monospace', fontSize: 11 }}>{d.deposit_number}</td>
                       {onHq && <td style={td}>{d.from_name || d.from_slug}</td>}
                       <td style={{ ...td, fontWeight: 700 }}>{d.currency}</td>
-                      <td style={{ ...td, textAlign: 'right', fontWeight: 700 }}>
+                      <td style={{ ...td, textAlign: 'right', fontWeight: 700, whiteSpace: 'nowrap' }}>
                         {d.currency === 'USD' ? fmt(d.amount) : `${fmtRaw(d.amount)} ${d.currency}`}
                       </td>
+                      {/* v1.10.278 — dedicated Created By / Confirmed By
+                          columns pulled forward from the timestamped
+                          "Created" and "Confirmed" columns further right. */}
+                      <td style={{ ...td, color: '#374151', fontSize: 12, whiteSpace: 'nowrap' }}>{d.created_by_name || '—'}</td>
+                      <td style={{ ...td, color: '#374151', fontSize: 12, whiteSpace: 'nowrap' }}>{d.confirmed_by_name || '—'}</td>
                       <td style={{ ...td, color: '#6b7280', maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={d.notes}>{d.notes || '—'}</td>
                       <td style={td}>
                         {(() => {
