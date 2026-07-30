@@ -61,6 +61,9 @@ const LoanAccount = () => {
     start_date: todayStr, maturity_date: '', status: 'Active', notes: '',
     // Initial disbursement fields — only used when creating a new loan.
     // On edit the user manages transactions through the detail modal.
+    // v1.10.266 — tri-currency: USD + FRA rows for pure-currency legs,
+    // Cash/Bank/MoMo for the K method split. Total = USD + FRA + (K subs sum).
+    disb_usd: '', disb_fra: '',
     disb_cash: '', disb_bank: '', disb_momo: '',
   });
 
@@ -73,7 +76,12 @@ const LoanAccount = () => {
   const [savingTx, setSavingTx] = useState(false);
   const [txError, setTxError] = useState('');
   const [txForm, setTxForm] = useState({
-    date: todayStr, cash_amount: '', bank_amount: '', momo_amount: '', description: '',
+    date: todayStr,
+    // v1.10.266 — tri-currency: USD + FRA single-currency legs, K
+    // (Cash/Bank/MoMo) for the K sub-drawer split.
+    usd_amount: '', fra_amount: '',
+    cash_amount: '', bank_amount: '', momo_amount: '',
+    description: '',
   });
 
   useModalScrollLock(showLoanForm || !!detailLoan || showTxForm);
@@ -100,6 +108,7 @@ const LoanAccount = () => {
     setLoanForm({
       lender_name: '', principal_amount: '', interest_rate: '',
       start_date: todayStr, maturity_date: '', status: 'Active', notes: '',
+      disb_usd: '', disb_fra: '',
       disb_cash: '', disb_bank: '', disb_momo: '',
     });
     setEditLoanId(null);
@@ -118,6 +127,7 @@ const LoanAccount = () => {
       maturity_date:    l.maturity_date || '',
       status:           l.status || 'Active',
       notes:            l.notes || '',
+      disb_usd: '', disb_fra: '',
       disb_cash: '', disb_bank: '', disb_momo: '', // not used on edit
     });
     setLoanError('');
@@ -126,10 +136,15 @@ const LoanAccount = () => {
 
   const saveLoan = async () => {
     setLoanError('');
+    // v1.10.266 — tri-currency disbursement. K total is Cash+Bank+MoMo;
+    // USD and FRA are single-currency lines. Grand total = USD + FRA + K.
+    const disbUsd  = parseFloat(loanForm.disb_usd)  || 0;
+    const disbFra  = parseFloat(loanForm.disb_fra)  || 0;
     const disbCash = parseFloat(loanForm.disb_cash) || 0;
     const disbBank = parseFloat(loanForm.disb_bank) || 0;
     const disbMomo = parseFloat(loanForm.disb_momo) || 0;
-    const disbTotal = disbCash + disbBank + disbMomo;
+    const disbK    = disbCash + disbBank + disbMomo;
+    const disbTotal = disbUsd + disbFra + disbK;
     // New loans: principal is derived from the disbursement total (the
     // "Principal Amount" field was removed from the New Loan modal because
     // it's always the same as what was actually received). Edit mode keeps
@@ -166,6 +181,13 @@ const LoanAccount = () => {
           await createLoanTransaction(newLoanId, {
             type: 'Disbursement',
             date: loanForm.start_date,
+            // v1.10.266 — pass all six amount fields. Backend routes/loans.js
+            // stores usd/fra/k on the tri-currency columns and cash/bank/momo
+            // as the K sub-method split, letting Cash Book route each leg to
+            // the right tile.
+            usd_amount:  disbUsd,
+            fra_amount:  disbFra,
+            k_amount:    disbK,
             cash_amount: disbCash,
             bank_amount: disbBank,
             momo_amount: disbMomo,
@@ -220,15 +242,22 @@ const LoanAccount = () => {
 
   const saveTx = async () => {
     setTxError('');
+    // v1.10.266 — tri-currency transaction. Total = USD + FRA + K subs sum.
+    const usd  = parseFloat(txForm.usd_amount)  || 0;
+    const fra  = parseFloat(txForm.fra_amount)  || 0;
     const cash = parseFloat(txForm.cash_amount) || 0;
     const bank = parseFloat(txForm.bank_amount) || 0;
     const momo = parseFloat(txForm.momo_amount) || 0;
-    if (cash + bank + momo <= 0) return setTxError('Total must be greater than 0.');
+    const kAmt = cash + bank + momo;
+    if (usd + fra + kAmt <= 0) return setTxError('Total must be greater than 0.');
     setSavingTx(true);
     try {
       const payload = {
         type: txType,
         date: txForm.date,
+        usd_amount:  usd,
+        fra_amount:  fra,
+        k_amount:    kAmt,
         cash_amount: cash, bank_amount: bank, momo_amount: momo,
         description: txForm.description.trim() || null,
       };
@@ -405,15 +434,18 @@ const LoanAccount = () => {
 
                 {!editLoanId && (
                   <>
+                    {/* v1.10.266 — tri-currency Money Received. USD + FRA are
+                        single-line entries; K has its own 3-method split
+                        (Cash/Bank/MoMo). Total = USD + FRA + K subs sum. */}
                     <div className="form-group" style={{ marginTop: 6 }}>
                       <label style={{ fontSize: 11, fontWeight: 700, color: '#6b7280', textTransform: 'uppercase', letterSpacing: 0.5, display: 'block', marginBottom: 8 }}>
-                        Money Received (split across methods) *
+                        Money Received *
                       </label>
-                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10 }}>
+                      {/* USD + FRA rows (single-currency legs) */}
+                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 10 }}>
                         {[
-                          { key: 'disb_cash', label: 'Cash', color: '#16a34a' },
-                          { key: 'disb_bank', label: 'Bank', color: '#2563eb' },
-                          { key: 'disb_momo', label: 'MoMo', color: '#f59e0b' },
+                          { key: 'disb_usd', label: 'USD ($)', color: '#16a34a' },
+                          { key: 'disb_fra', label: 'FRA',     color: '#7c3aed' },
                         ].map(f => (
                           <div key={f.key}>
                             <label style={{ fontSize: 11, color: f.color, fontWeight: 700, textTransform: 'uppercase', marginBottom: 3, display: 'block' }}>{f.label}</label>
@@ -425,15 +457,33 @@ const LoanAccount = () => {
                           </div>
                         ))}
                       </div>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 10px', background: '#f9fafb', borderRadius: 6, fontSize: 13, marginTop: 8 }}>
-                        <span style={{ color: '#6b7280' }}>Total received</span>
-                        <span style={{ fontWeight: 800, color: '#1d4ed8' }}>
-                          {curSym}{(parseFloat(loanForm.disb_cash || 0) + parseFloat(loanForm.disb_bank || 0) + parseFloat(loanForm.disb_momo || 0)).toLocaleString(undefined, { minimumFractionDigits: 2 })}
-                        </span>
+                      {/* K row (Cash + Bank + MoMo split) */}
+                      <label style={{ fontSize: 11, color: '#ea580c', fontWeight: 700, textTransform: 'uppercase', marginBottom: 3, display: 'block' }}>K (split across sub-drawers)</label>
+                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10 }}>
+                        {[
+                          { key: 'disb_cash', label: 'Cash', color: '#16a34a' },
+                          { key: 'disb_bank', label: 'Bank', color: '#2563eb' },
+                          { key: 'disb_momo', label: 'MoMo', color: '#f59e0b' },
+                        ].map(f => (
+                          <div key={f.key}>
+                            <label style={{ fontSize: 10, color: f.color, fontWeight: 700, textTransform: 'uppercase', marginBottom: 2, display: 'block' }}>{f.label}</label>
+                            <input type="number" min="0" step="0.01"
+                              value={loanForm[f.key]}
+                              onChange={e => setLoanForm(prev => ({ ...prev, [f.key]: e.target.value }))}
+                              placeholder="0.00"
+                              style={{ width: '100%', padding: '8px 10px', border: `2px solid ${parseFloat(loanForm[f.key] || 0) > 0 ? f.color : '#d1d5db'}`, borderRadius: 6, fontSize: 14, fontWeight: 600, color: parseFloat(loanForm[f.key] || 0) > 0 ? f.color : '#374151', boxSizing: 'border-box' }} />
+                          </div>
+                        ))}
+                      </div>
+                      {/* Per-currency subtotals + grand total */}
+                      <div style={{ padding: '8px 10px', background: '#f9fafb', borderRadius: 6, fontSize: 12, marginTop: 10, display: 'flex', flexDirection: 'column', gap: 3 }}>
+                        {parseFloat(loanForm.disb_usd || 0) > 0 && <div style={{ display: 'flex', justifyContent: 'space-between' }}><span style={{ color: '#6b7280' }}>USD</span><span style={{ fontWeight: 700, color: '#16a34a' }}>${parseFloat(loanForm.disb_usd || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}</span></div>}
+                        {parseFloat(loanForm.disb_fra || 0) > 0 && <div style={{ display: 'flex', justifyContent: 'space-between' }}><span style={{ color: '#6b7280' }}>FRA</span><span style={{ fontWeight: 700, color: '#7c3aed' }}>{parseFloat(loanForm.disb_fra || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}</span></div>}
+                        {(parseFloat(loanForm.disb_cash || 0) + parseFloat(loanForm.disb_bank || 0) + parseFloat(loanForm.disb_momo || 0)) > 0 && <div style={{ display: 'flex', justifyContent: 'space-between' }}><span style={{ color: '#6b7280' }}>K (Cash+Bank+MoMo)</span><span style={{ fontWeight: 700, color: '#ea580c' }}>K{(parseFloat(loanForm.disb_cash || 0) + parseFloat(loanForm.disb_bank || 0) + parseFloat(loanForm.disb_momo || 0)).toLocaleString(undefined, { minimumFractionDigits: 2 })}</span></div>}
                       </div>
                     </div>
                     <div style={{ background: '#dcfce7', border: '1px solid #86efac', padding: 10, borderRadius: 8, fontSize: 12, color: '#166534' }}>
-                      💡 The amount above is recorded as the initial Disbursement on the loan's start date. To add more disbursements later (e.g. revolving credit line), open the loan and click + Disbursement.
+                      💡 Recorded as the initial Disbursement on the loan's start date. Each currency leg lands in its own Cash Book tile. Add more disbursements later via + Disbursement on the loan detail.
                     </div>
                   </>
                 )}
@@ -545,13 +595,15 @@ const LoanAccount = () => {
                   <input type="date" value={txForm.date} onChange={e => setTxForm({ ...txForm, date: e.target.value })} />
                 </div>
 
+                {/* v1.10.266 — tri-currency Amount. USD + FRA single rows,
+                    K with 3-method split. Grand total = USD + FRA + K subs. */}
                 <div className="form-group">
-                  <label style={{ fontSize: 11, fontWeight: 700, color: '#6b7280', textTransform: 'uppercase' }}>Amount (split across methods)</label>
-                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10 }}>
+                  <label style={{ fontSize: 11, fontWeight: 700, color: '#6b7280', textTransform: 'uppercase' }}>Amount</label>
+                  {/* USD + FRA rows */}
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 10 }}>
                     {[
-                      { key: 'cash_amount', label: 'Cash', color: '#16a34a' },
-                      { key: 'bank_amount', label: 'Bank', color: '#2563eb' },
-                      { key: 'momo_amount', label: 'MoMo', color: '#f59e0b' },
+                      { key: 'usd_amount', label: 'USD ($)', color: '#16a34a' },
+                      { key: 'fra_amount', label: 'FRA',     color: '#7c3aed' },
                     ].map(f => (
                       <div key={f.key}>
                         <label style={{ fontSize: 11, color: f.color, fontWeight: 700, textTransform: 'uppercase', marginBottom: 3, display: 'block' }}>{f.label}</label>
@@ -562,9 +614,28 @@ const LoanAccount = () => {
                       </div>
                     ))}
                   </div>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 10px', background: '#f9fafb', borderRadius: 6, fontSize: 13, marginTop: 8 }}>
-                    <span style={{ color: '#6b7280' }}>Total</span>
-                    <span style={{ fontWeight: 800, color: '#1d4ed8' }}>{curSym}{(parseFloat(txForm.cash_amount || 0) + parseFloat(txForm.bank_amount || 0) + parseFloat(txForm.momo_amount || 0)).toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
+                  {/* K row (Cash + Bank + MoMo split) */}
+                  <label style={{ fontSize: 11, color: '#ea580c', fontWeight: 700, textTransform: 'uppercase', marginBottom: 3, display: 'block' }}>K (split across sub-drawers)</label>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10 }}>
+                    {[
+                      { key: 'cash_amount', label: 'Cash', color: '#16a34a' },
+                      { key: 'bank_amount', label: 'Bank', color: '#2563eb' },
+                      { key: 'momo_amount', label: 'MoMo', color: '#f59e0b' },
+                    ].map(f => (
+                      <div key={f.key}>
+                        <label style={{ fontSize: 10, color: f.color, fontWeight: 700, textTransform: 'uppercase', marginBottom: 2, display: 'block' }}>{f.label}</label>
+                        <input type="number" min="0" step="0.01" value={txForm[f.key]}
+                          onChange={e => setTxForm(prev => ({ ...prev, [f.key]: e.target.value }))}
+                          placeholder="0.00"
+                          style={{ width: '100%', padding: '8px 10px', border: `2px solid ${parseFloat(txForm[f.key] || 0) > 0 ? f.color : '#d1d5db'}`, borderRadius: 6, fontSize: 14, fontWeight: 600, boxSizing: 'border-box' }} />
+                      </div>
+                    ))}
+                  </div>
+                  {/* Per-currency subtotals */}
+                  <div style={{ padding: '8px 10px', background: '#f9fafb', borderRadius: 6, fontSize: 12, marginTop: 10, display: 'flex', flexDirection: 'column', gap: 3 }}>
+                    {parseFloat(txForm.usd_amount || 0) > 0 && <div style={{ display: 'flex', justifyContent: 'space-between' }}><span style={{ color: '#6b7280' }}>USD</span><span style={{ fontWeight: 700, color: '#16a34a' }}>${parseFloat(txForm.usd_amount || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}</span></div>}
+                    {parseFloat(txForm.fra_amount || 0) > 0 && <div style={{ display: 'flex', justifyContent: 'space-between' }}><span style={{ color: '#6b7280' }}>FRA</span><span style={{ fontWeight: 700, color: '#7c3aed' }}>{parseFloat(txForm.fra_amount || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}</span></div>}
+                    {(parseFloat(txForm.cash_amount || 0) + parseFloat(txForm.bank_amount || 0) + parseFloat(txForm.momo_amount || 0)) > 0 && <div style={{ display: 'flex', justifyContent: 'space-between' }}><span style={{ color: '#6b7280' }}>K (Cash+Bank+MoMo)</span><span style={{ fontWeight: 700, color: '#ea580c' }}>K{(parseFloat(txForm.cash_amount || 0) + parseFloat(txForm.bank_amount || 0) + parseFloat(txForm.momo_amount || 0)).toLocaleString(undefined, { minimumFractionDigits: 2 })}</span></div>}
                   </div>
                 </div>
 

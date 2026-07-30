@@ -1218,6 +1218,18 @@ function initTenantDb(db) {
   // as grn_items.grn_sync_id, siv_items.siv_sync_id, etc.).
   addCol('loan_transactions', 'loan_sync_id', 'TEXT');
 
+  // v1.10.266 — tri-currency columns on loan_transactions so HQ can record
+  // Disbursement / Principal / Interest transactions in USD (and FRA if it
+  // ever comes up) alongside the existing K-only cash/bank/momo split.
+  // Same three-column shape used by cash_receipts, payment_vouchers, and
+  // ap_payments. Cash Book's sumMethod uses a CASE fallback (see
+  // cashBook.js) so old K-only rows and new tri-currency rows both count
+  // exactly once. Loans are HQ-only per user's scope decision — branches
+  // never touch these routes.
+  addCol('loan_transactions', 'usd_amount', 'REAL NOT NULL DEFAULT 0');
+  addCol('loan_transactions', 'fra_amount', 'REAL NOT NULL DEFAULT 0');
+  addCol('loan_transactions', 'k_amount',   'REAL NOT NULL DEFAULT 0');
+
   // ── Receipt printer configuration ───────────────────────────────────────────
   // USB mode: prints via the Windows Print Spooler queue named `receipt_printer_name`
   //           (the same queue you'd see in Windows → Devices and Printers).

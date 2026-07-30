@@ -165,12 +165,24 @@ router.delete('/:id', auth, (req, res) => {
 // ── Create a transaction against a loan ──────────────────────────────────────
 router.post('/:id/transactions', auth, (req, res) => {
   try {
-    const { type, date, cash_amount, bank_amount, momo_amount, description, invoice_attachment } = req.body || {};
+    const { type, date,
+            cash_amount, bank_amount, momo_amount,
+            usd_amount, fra_amount, k_amount,
+            description, invoice_attachment } = req.body || {};
     if (!VALID_TX_TYPES.includes(type)) return res.status(400).json({ error: "Type must be 'Disbursement', 'Principal', or 'Interest'." });
     const cash = parseFloat(cash_amount) || 0;
     const bank = parseFloat(bank_amount) || 0;
     const momo = parseFloat(momo_amount) || 0;
-    const total = cash + bank + momo;
+    const usd  = parseFloat(usd_amount)  || 0;
+    const fra  = parseFloat(fra_amount)  || 0;
+    // v1.10.266 — total resolution priority: triple-currency sum > method sum.
+    // On HQ tri-currency the caller sends usd/fra/k. Legacy K-only callers
+    // send cash/bank/momo (K sub-methods). k_amount = cash + bank + momo
+    // when present; explicit k_amount takes precedence if the caller
+    // supplies it directly.
+    const splitSum = cash + bank + momo;
+    const kAmt     = k_amount !== undefined ? (parseFloat(k_amount) || 0) : splitSum;
+    const total    = usd + fra + kAmt;
     if (!(total > 0)) return res.status(400).json({ error: 'Total amount must be greater than 0.' });
 
     const loan = db.prepare('SELECT sync_id, status FROM loans WHERE id = ? AND tenant_id = ? AND deleted_at IS NULL').get(req.params.id, req.user.tenantId);
@@ -178,36 +190,40 @@ router.post('/:id/transactions', auth, (req, res) => {
     if (loan.status === 'Paid Off') return res.status(400).json({ error: 'Loan is already paid off.' });
 
     // v1.10.241 — HQ overdraft guard on Principal + Interest (both drain
-    // cash). Disbursement is inflow, skipped. cash/bank/momo are all K
-    // sub-drawers on HQ.
+    // cash). Disbursement is inflow, skipped. v1.10.266 — extended to
+    // check USD balance too when the transaction has a USD leg.
     const hostLOAN = String(req.hostname || req.headers?.host || '').toLowerCase();
     if ((type === 'Principal' || type === 'Interest') && HQ_HOSTS_LOAN.has(hostLOAN)) {
       const tenantIdForGuard = syncConfig.getTenantId(req);
       const breach = checkHqOverdraft(
         db, tenantIdForGuard,
-        { usd: 0, fra: 0, k: total },
+        { usd, fra, k: kAmt },
         { masterDb: _masterDb, slug: 'sosnazm' },
       );
       if (breach) {
+        const symbol = breach.ccy === 'K' ? 'K' : breach.ccy === 'FRA' ? 'FRA ' : '$';
         return res.status(400).json({
-          error: `${type} payment exceeds HQ K balance (available K${breach.available.toLocaleString(undefined, { maximumFractionDigits: 2 })}, attempting K${breach.requested.toLocaleString(undefined, { maximumFractionDigits: 2 })}). Reduce the amount.`,
+          error: `${type} payment exceeds HQ ${breach.ccy} balance (available ${symbol}${breach.available.toLocaleString(undefined, { maximumFractionDigits: 2 })}, attempting ${symbol}${breach.requested.toLocaleString(undefined, { maximumFractionDigits: 2 })}). Reduce the amount or pick a different currency.`,
           currency:  breach.ccy,
           available: breach.available,
           attempted: breach.requested,
         });
       }
-      const subBreach = checkHqKSubDrawerOverdraft(
-        db, tenantIdForGuard,
-        { cash, bank, momo },
-        { masterDb: _masterDb, slug: 'sosnazm' },
-      );
-      if (subBreach) {
-        return res.status(400).json({
-          error: `${type} payment exceeds ${subBreach.drawer} balance (available K${subBreach.available.toLocaleString(undefined, { maximumFractionDigits: 2 })}, attempting K${subBreach.requested.toLocaleString(undefined, { maximumFractionDigits: 2 })}). Move some or all of the amount to a sub-drawer with more balance.`,
-          drawer:    subBreach.drawer,
-          available: subBreach.available,
-          attempted: subBreach.requested,
-        });
+      // K sub-drawer check only when the K leg is > 0.
+      if (kAmt > 0.0001) {
+        const subBreach = checkHqKSubDrawerOverdraft(
+          db, tenantIdForGuard,
+          { cash, bank, momo },
+          { masterDb: _masterDb, slug: 'sosnazm' },
+        );
+        if (subBreach) {
+          return res.status(400).json({
+            error: `${type} payment exceeds ${subBreach.drawer} balance (available K${subBreach.available.toLocaleString(undefined, { maximumFractionDigits: 2 })}, attempting K${subBreach.requested.toLocaleString(undefined, { maximumFractionDigits: 2 })}). Move some or all of the K amount to a sub-drawer with more balance.`,
+            drawer:    subBreach.drawer,
+            available: subBreach.available,
+            attempted: subBreach.requested,
+          });
+        }
       }
     }
 
@@ -216,14 +232,21 @@ router.post('/:id/transactions', auth, (req, res) => {
     const txNumber = syncConfig.generateNumber('LOANTXN', 'loan_transactions');
     const txDate   = date || new Date().toISOString().split('T')[0];
 
+    // v1.10.266 — write BOTH the currency columns (usd/fra/k) and the K
+    // method split (cash/bank/momo). Cash Book's sumMethod uses a CASE
+    // fallback that trusts the currency columns when populated, so old
+    // K-only rows keep working and new tri-currency rows count exactly
+    // once in the tile they belong to.
     const info = db.prepare(`
       INSERT INTO loan_transactions (transaction_number, loan_id, loan_sync_id, date, type, amount,
                                       cash_amount, bank_amount, momo_amount,
+                                      usd_amount, fra_amount, k_amount,
                                       description, invoice_attachment, created_by,
                                       sync_id, tenant_id, branch_id, device_id, synced, created_at, updated_at)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,datetime('now'),datetime('now'))
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,datetime('now'),datetime('now'))
     `).run(txNumber, req.params.id, loan.sync_id, txDate, type, total,
            cash, bank, momo,
+           usd, fra, kAmt,
            description || null, invoice_attachment || null, req.user.id,
            randomUUID(), tenantId, branchId, deviceId);
 
@@ -237,24 +260,36 @@ router.post('/:id/transactions', auth, (req, res) => {
 // ── Update a transaction ─────────────────────────────────────────────────────
 router.put('/:loanId/transactions/:txId', auth, (req, res) => {
   try {
-    const { type, date, cash_amount, bank_amount, momo_amount, description, invoice_attachment } = req.body || {};
+    const { type, date,
+            cash_amount, bank_amount, momo_amount,
+            usd_amount, fra_amount, k_amount,
+            description, invoice_attachment } = req.body || {};
     if (!VALID_TX_TYPES.includes(type)) return res.status(400).json({ error: 'Invalid type.' });
     const cash = parseFloat(cash_amount) || 0;
     const bank = parseFloat(bank_amount) || 0;
     const momo = parseFloat(momo_amount) || 0;
-    const total = cash + bank + momo;
+    const usd  = parseFloat(usd_amount)  || 0;
+    const fra  = parseFloat(fra_amount)  || 0;
+    // v1.10.266 — same total-resolution as POST.
+    const splitSum = cash + bank + momo;
+    const kAmt     = k_amount !== undefined ? (parseFloat(k_amount) || 0) : splitSum;
+    const total    = usd + fra + kAmt;
     if (!(total > 0)) return res.status(400).json({ error: 'Total amount must be greater than 0.' });
 
     const original = db.prepare('SELECT date, type FROM loan_transactions WHERE id = ? AND tenant_id = ? AND deleted_at IS NULL').get(req.params.txId, req.user.tenantId);
     if (!original) return res.status(404).json({ error: 'Transaction not found.' });
 
+    // v1.10.266 — write all six amount columns so edits reach both the
+    // K sub-drawer breakdown (via cash/bank/momo) AND the tri-currency
+    // tile (via usd/fra/k). Prevents the v1.10.230-class bug where
+    // triple-currency fields silently dropped on edit.
     const keepAttachment = invoice_attachment === undefined;
     const sql = keepAttachment
-      ? `UPDATE loan_transactions SET type=?, date=?, amount=?, cash_amount=?, bank_amount=?, momo_amount=?, description=?, updated_at=datetime('now'), synced=0 WHERE id=? AND tenant_id=?`
-      : `UPDATE loan_transactions SET type=?, date=?, amount=?, cash_amount=?, bank_amount=?, momo_amount=?, description=?, invoice_attachment=?, updated_at=datetime('now'), synced=0 WHERE id=? AND tenant_id=?`;
+      ? `UPDATE loan_transactions SET type=?, date=?, amount=?, cash_amount=?, bank_amount=?, momo_amount=?, usd_amount=?, fra_amount=?, k_amount=?, description=?, updated_at=datetime('now'), synced=0 WHERE id=? AND tenant_id=?`
+      : `UPDATE loan_transactions SET type=?, date=?, amount=?, cash_amount=?, bank_amount=?, momo_amount=?, usd_amount=?, fra_amount=?, k_amount=?, description=?, invoice_attachment=?, updated_at=datetime('now'), synced=0 WHERE id=? AND tenant_id=?`;
     const args = keepAttachment
-      ? [type, date, total, cash, bank, momo, description || null, req.params.txId, req.user.tenantId]
-      : [type, date, total, cash, bank, momo, description || null, invoice_attachment || null, req.params.txId, req.user.tenantId];
+      ? [type, date, total, cash, bank, momo, usd, fra, kAmt, description || null, req.params.txId, req.user.tenantId]
+      : [type, date, total, cash, bank, momo, usd, fra, kAmt, description || null, invoice_attachment || null, req.params.txId, req.user.tenantId];
     db.prepare(sql).run(...args);
 
     // Recalc both original and new date if either was/is Interest.

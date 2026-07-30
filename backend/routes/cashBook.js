@@ -240,10 +240,12 @@ function sumMethod(tenantId, methodCol, dateClause, dateParams, hqSlug) {
   // card even though it appeared in the ledger. Use the same CASE
   // fallback the ledger UNION uses so both eras count once.
   //
-  // capital_account / dividend_account / loan_transactions never got
-  // the currency-column migration — they only have the method column.
-  // Referencing usd/fra/k there throws "no such column", so those
-  // tables keep the plain methodCol read (same as v1.10.95 hotfix).
+  // v1.10.266 — loan_transactions now has the currency-column migration
+  // (usd_amount / fra_amount / k_amount) so its reads switch to the same
+  // CASE fallback as CR/PV/AP. Old K-only rows read via the method
+  // columns; new HQ tri-currency rows read via usd/fra/k. capital_account
+  // and dividend_account still lack the columns — they stay on plain
+  // methodCol until their equivalent migration ships.
   //
   // v1.10.165 — on Liquor branches the mirror OR-fallback double-counts
   // corrupted rows (Simon Fuel PV had both fra_amount=2420 mirror AND
@@ -281,9 +283,12 @@ function sumMethod(tenantId, methodCol, dateClause, dateParams, hqSlug) {
   const capIn  = db.prepare(`SELECT COALESCE(SUM(${methodCol}), 0) AS t FROM capital_account  WHERE deleted_at IS NULL AND tenant_id = ? AND type='Injection'${dateClause}`).get(tenantId, ...dateParams).t;
   const capOut = db.prepare(`SELECT COALESCE(SUM(${methodCol}), 0) AS t FROM capital_account  WHERE deleted_at IS NULL AND tenant_id = ? AND type='Drawing'${dateClause}`).get(tenantId, ...dateParams).t;
   const div    = db.prepare(`SELECT COALESCE(SUM(${methodCol}), 0) AS t FROM dividend_account WHERE deleted_at IS NULL AND tenant_id = ?${dateClause}`).get(tenantId, ...dateParams).t;
-  const loanIn   = db.prepare(`SELECT COALESCE(SUM(${methodCol}), 0) AS t FROM loan_transactions WHERE deleted_at IS NULL AND tenant_id = ? AND type='Disbursement'${dateClause}`).get(tenantId, ...dateParams).t;
-  const loanPrin = db.prepare(`SELECT COALESCE(SUM(${methodCol}), 0) AS t FROM loan_transactions WHERE deleted_at IS NULL AND tenant_id = ? AND type='Principal'${dateClause}`).get(tenantId, ...dateParams).t;
-  const loanInt  = db.prepare(`SELECT COALESCE(SUM(${methodCol}), 0) AS t FROM loan_transactions WHERE deleted_at IS NULL AND tenant_id = ? AND type='Interest'${dateClause}`).get(tenantId, ...dateParams).t;
+  // v1.10.266 — loan_transactions now has the currency columns (v1.10.266
+  // migration). Use the same CASE fallback as CR/PV/AP so USD/FRA/K
+  // legs land in the right tile, and old K-only rows keep working.
+  const loanIn   = db.prepare(`SELECT COALESCE(SUM(${exprCcy}), 0) AS t FROM loan_transactions WHERE deleted_at IS NULL AND tenant_id = ? AND type='Disbursement'${dateClause}`).get(tenantId, ...dateParams).t;
+  const loanPrin = db.prepare(`SELECT COALESCE(SUM(${exprCcy}), 0) AS t FROM loan_transactions WHERE deleted_at IS NULL AND tenant_id = ? AND type='Principal'${dateClause}`).get(tenantId, ...dateParams).t;
+  const loanInt  = db.prepare(`SELECT COALESCE(SUM(${exprCcy}), 0) AS t FROM loan_transactions WHERE deleted_at IS NULL AND tenant_id = ? AND type='Interest'${dateClause}`).get(tenantId, ...dateParams).t;
   // Net cash transfer effect on this method = inflow (to_method) - outflow (from_method)
   const methodName = methodCol === 'cash_amount' ? 'Cash' : methodCol === 'bank_amount' ? 'Bank' : 'Mobile Money';
   // v1.10.137 — only USD transfers feed the legacy USD method-flow tracking.
@@ -494,6 +499,10 @@ router.get('/', auth, readOnlyGuard, (req, res) => {
       FROM dividend_account
       WHERE deleted_at IS NULL AND tenant_id = ?${dateFilter}
       UNION ALL
+      -- v1.10.266 — split loan amounts by currency for the ledger UNION.
+      -- Old rows (v1.10.265 and earlier) have usd/fra/k=0, so the COALESCE
+      -- falls back to the K amount (cash+bank+momo total) and lands in the
+      -- k_in / k_out columns. New tri-currency rows flow into the right tile.
       SELECT lt.date,
         CASE lt.type
           WHEN 'Disbursement' THEN 'LOAN-IN'
@@ -504,10 +513,16 @@ router.get('/', auth, readOnlyGuard, (req, res) => {
         COALESCE(l.lender_name, '') || ' - ' || lt.type || COALESCE(' (' || lt.description || ')', '') AS description,
         CASE WHEN lt.type='Disbursement' THEN lt.amount ELSE 0 END AS receipt_amount,
         CASE WHEN lt.type IN ('Principal','Interest') THEN lt.amount ELSE 0 END AS payment_amount,
-        CASE WHEN lt.type='Disbursement' THEN lt.amount ELSE 0 END AS usd_in,
-        0 AS fra_in, 0 AS k_in,
-        CASE WHEN lt.type IN ('Principal','Interest') THEN lt.amount ELSE 0 END AS usd_out,
-        0 AS fra_out, 0 AS k_out
+        CASE WHEN lt.type='Disbursement'                  THEN COALESCE(lt.usd_amount, 0) ELSE 0 END AS usd_in,
+        CASE WHEN lt.type='Disbursement'                  THEN COALESCE(lt.fra_amount, 0) ELSE 0 END AS fra_in,
+        CASE WHEN lt.type='Disbursement'                  THEN CASE WHEN COALESCE(lt.k_amount,0) > 0 THEN lt.k_amount
+                                                                    ELSE COALESCE(lt.cash_amount,0)+COALESCE(lt.bank_amount,0)+COALESCE(lt.momo_amount,0)
+                                                               END ELSE 0 END AS k_in,
+        CASE WHEN lt.type IN ('Principal','Interest')     THEN COALESCE(lt.usd_amount, 0) ELSE 0 END AS usd_out,
+        CASE WHEN lt.type IN ('Principal','Interest')     THEN COALESCE(lt.fra_amount, 0) ELSE 0 END AS fra_out,
+        CASE WHEN lt.type IN ('Principal','Interest')     THEN CASE WHEN COALESCE(lt.k_amount,0) > 0 THEN lt.k_amount
+                                                                    ELSE COALESCE(lt.cash_amount,0)+COALESCE(lt.bank_amount,0)+COALESCE(lt.momo_amount,0)
+                                                               END ELSE 0 END AS k_out
       FROM loan_transactions lt
       LEFT JOIN loans l ON l.sync_id = lt.loan_sync_id
       WHERE lt.deleted_at IS NULL AND lt.tenant_id = ?${dateFilter.replace(/date/g, 'lt.date')}
