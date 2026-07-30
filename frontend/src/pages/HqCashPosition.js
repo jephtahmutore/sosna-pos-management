@@ -5,7 +5,7 @@
 // to match Sosna's cash-only triple-currency model.
 import React, { useEffect, useState } from 'react';
 import { FiRefreshCw, FiAlertTriangle, FiTrendingUp, FiTrendingDown } from 'react-icons/fi';
-import { getHqCashPosition, setHqBranch } from '../services/api';
+import { getHqCashPosition } from '../services/api';
 
 // Per-currency formatter — USD uses $, FRA/K just show the raw number
 // with the suffix label (no $ sign on foreign currency).
@@ -89,15 +89,12 @@ export default function HqCashPosition() {
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(360px, 1fr))', gap: 14 }}>
             {(data.branches || []).map(b => (
               <div key={b.slug} style={{ background: '#fff', border: '1px solid #e5e7eb', borderRadius: 12, padding: 16 }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 12 }}>
-                  <div>
-                    <h4 style={{ margin: '0 0 2px 0', fontSize: 15, color: '#0f172a' }}>{b.name}</h4>
-                    <span style={{ fontSize: 11, color: '#94a3b8' }}>{b.slug}</span>
-                  </div>
-                  <button onClick={() => { setHqBranch(b.slug); window.location.href = '/accounting/cash-book'; }}
-                    style={{ padding: '5px 12px', background: '#0ea5e9', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer', fontSize: 12, fontWeight: 600 }}>
-                    Open Cash Book
-                  </button>
+                <div style={{ marginBottom: 12 }}>
+                  {/* v1.10.276 — per-branch "Open Cash Book" button
+                      removed; the sidebar dropdown is the sole
+                      jump-to-branch path (matches v1.10.274/275). */}
+                  <h4 style={{ margin: '0 0 2px 0', fontSize: 15, color: '#0f172a' }}>{b.name}</h4>
+                  <span style={{ fontSize: 11, color: '#94a3b8' }}>{b.slug}</span>
                 </div>
                 {b.error ? (
                   <div style={{ padding: 10, background: '#fef2f2', color: '#991b1b', border: '1px solid #fecaca', borderRadius: 6, fontSize: 12 }}>
