@@ -44,7 +44,7 @@ const TX_TYPE_STYLE = {
 };
 
 const LoanAccount = () => {
-  const { hasPermission } = useAuth();
+  const { hasPermission, user } = useAuth();
   const { symbol: curSym } = useCurrency();
   // v1.10.267 — display helper for tri-currency loan amounts. Reads
   // per-currency subtotals returned by GET /api/loans (v1.10.267
@@ -337,8 +337,14 @@ const LoanAccount = () => {
     });
   };
 
-  const canEdit = hasPermission('LoanAccount:Add') || hasPermission('LoanAccount:Edit');
-  const canDelete = hasPermission('LoanAccount:Delete');
+  // v1.10.281 — Administrator always passes the edit/delete gates.
+  // Matches how most other pages treat Admin (implicit-all-perms), and
+  // fixes the "delete button hidden" report where an Admin without the
+  // explicit LoanAccount:Delete checkbox couldn't remove a loan or a
+  // transaction. Non-Admins still need the explicit permissions.
+  const isAdmin = user?.role === 'Administrator';
+  const canEdit = isAdmin || hasPermission('LoanAccount:Add') || hasPermission('LoanAccount:Edit');
+  const canDelete = isAdmin || hasPermission('LoanAccount:Delete');
 
   return (
     <div className="page-content">
