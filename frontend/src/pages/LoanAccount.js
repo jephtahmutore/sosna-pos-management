@@ -637,7 +637,7 @@ const LoanAccount = () => {
       {detailLoan && (
         <Portal>
           <div className="modal-overlay" onClick={() => setDetailLoan(null)}>
-            <div className="modal" style={{ maxWidth: 820 }} onClick={e => e.stopPropagation()}>
+            <div className="modal" style={{ maxWidth: 960 }} onClick={e => e.stopPropagation()}>
               <div className="modal-header">
                 <h3 style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
                   <span>{detailLoan.loan_number} — {detailLoan.lender_name || ((detailLoan.direction || 'Payable') === 'Receivable' ? 'Borrower' : 'Lender')}</span>
@@ -678,8 +678,11 @@ const LoanAccount = () => {
                   </div>
                 )}
 
-                <div style={{ border: '1px solid #e5e7eb', borderRadius: 8, overflow: 'hidden' }}>
-                  <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+                {/* v1.10.282 — horizontal scroll safety net so the last
+                    column (delete trash) is never clipped on narrower
+                    modals (was invisible-behind-edge on ~820px shells). */}
+                <div style={{ border: '1px solid #e5e7eb', borderRadius: 8, overflowX: 'auto' }}>
+                  <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12, minWidth: 720 }}>
                     <thead style={{ background: '#f9fafb' }}>
                       <tr>
                         <th style={{ padding: '8px 10px', textAlign: 'left' }}>TXN #</th>
@@ -687,7 +690,10 @@ const LoanAccount = () => {
                         <th style={{ padding: '8px 10px', textAlign: 'left' }}>TYPE</th>
                         <th style={{ padding: '8px 10px', textAlign: 'right' }}>AMOUNT</th>
                         <th style={{ padding: '8px 10px' }}>NOTE</th>
-                        {canDelete && <th />}
+                        {/* v1.10.282 — fixed width + explicit label so the
+                            column reserves visible space instead of collapsing
+                            behind the modal edge. */}
+                        {canDelete && <th style={{ padding: '8px 10px', textAlign: 'center', width: 60, whiteSpace: 'nowrap' }}>DEL</th>}
                       </tr>
                     </thead>
                     <tbody>
@@ -710,8 +716,8 @@ const LoanAccount = () => {
                             <td style={{ padding: '8px 10px', textAlign: 'right', fontWeight: 700, color, whiteSpace: 'nowrap' }}>{sign}{money3(tx.usd_amount, tx.fra_amount, tx.k_amount)}</td>
                             <td style={{ padding: '8px 10px', color: '#6b7280' }}>{tx.description || '—'}</td>
                             {canDelete && (
-                              <td style={{ padding: '8px 10px', textAlign: 'center' }}>
-                                <button onClick={() => handleDeleteTx(tx)} title="Delete" style={{ background: 'none', border: 'none', color: '#dc2626', cursor: 'pointer', padding: 2 }}><FiTrash2 size={14} /></button>
+                              <td style={{ padding: '8px 10px', textAlign: 'center', width: 60 }}>
+                                <button onClick={() => handleDeleteTx(tx)} title="Delete transaction" style={{ background: '#fee2e2', border: '1px solid #fca5a5', color: '#dc2626', cursor: 'pointer', padding: '4px 8px', borderRadius: 6, display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}><FiTrash2 size={14} /></button>
                               </td>
                             )}
                           </tr>
