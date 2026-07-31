@@ -12,8 +12,17 @@ name: Deploy
 # problem entirely and also removes the VPS password from CI secrets.
 
 on:
+  # 2026-07-31 — cost cut: was `push: branches: [main]` which triggered the
+  # windows-2022 Electron build on EVERY commit. Web deployments are handled
+  # by the VPS's own cron `git pull` and don't need CI, so the only real
+  # reason to run this workflow is to ship a NEW Electron installer.
+  #
+  # Now: fires only when a semver tag is pushed (git tag v1.10.281 && git
+  # push origin v1.10.281) OR when the maintainer clicks "Run workflow"
+  # in the Actions tab. ~90% cost reduction vs the old always-on trigger.
   push:
-    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
 
 jobs:
   build-electron:
