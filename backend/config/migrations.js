@@ -732,8 +732,21 @@ function initTenantDb(db) {
   `);
 
   // ── Add sync columns to all tables ────────────────────────────────────────
+  // v1.10.285 — bail out silently when the table doesn't exist yet.
+  // Root cause of "no such table: currency_exchanges" backend crash on
+  // FRESH installs (Nahom Lusaka · 2026-07-30): a few tables (currency_
+  // exchanges, cash_transfers, supplier_credit_notes, empty_returns, …)
+  // have their CREATE TABLE lower in this file than the addCol('...',
+  // 'sync_id', ...) loop that iterates over `allTables`. On any DB that
+  // doesn't yet have the table, ALTER TABLE threw and killed backend
+  // boot before the later CREATE ever got a chance to run — Electron
+  // window then showed the blank chrome-error page. The CREATE TABLE
+  // definitions further down already bake in the sync columns, so
+  // skipping missing tables here is safe: they get their columns from
+  // their own CREATE, not from this loop.
   function addCol(table, col, def) {
     const cols = db.prepare(`PRAGMA table_info(${table})`).all();
+    if (cols.length === 0) return; // table not created yet — its own CREATE runs later
     if (!cols.find(c => c.name === col)) {
       db.prepare(`ALTER TABLE ${table} ADD COLUMN ${col} ${def}`).run();
     }
