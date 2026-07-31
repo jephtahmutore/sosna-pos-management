@@ -414,19 +414,27 @@ const LoanAccount = () => {
         </select>
       </div>
 
+      {/* v1.10.284 — AP-style list. Party name is the clickable entry
+          point (opens detail modal, same as Supplier → breakdown on AP).
+          Direction chip sits under the party name so it's still glanceable
+          without eating a full column. New Repaid column shows how much
+          has been paid back. Balance carries an explicit ± sign per AP
+          convention: negative = we owe (Payable outstanding), positive =
+          they owe us (Receivable outstanding), zero = settled. Single
+          primary action button per row (Pay Back / Record) replaces the
+          three-icon stack; Edit + Delete move into the detail modal. */}
       <div className="data-table-container">
         <table className="data-table">
           <thead>
             <tr>
-              <th>LOAN #</th>
               <th>PARTY</th>
-              <th>DIRECTION</th>
+              <th>LOAN #</th>
               <th>START</th>
-              <th style={{ textAlign: 'right' }}>PRINCIPAL</th>
-              <th style={{ textAlign: 'right' }}>OUTSTANDING</th>
-              <th style={{ textAlign: 'right' }}>INTEREST RATE</th>
+              <th style={{ textAlign: 'right' }}>DISBURSED</th>
+              <th style={{ textAlign: 'right' }}>REPAID</th>
+              <th style={{ textAlign: 'right' }}>BALANCE</th>
               <th>STATUS</th>
-              <th style={{ textAlign: 'center' }}>ACTIONS</th>
+              <th style={{ textAlign: 'center' }}>ACTION</th>
             </tr>
           </thead>
           <tbody>
@@ -436,7 +444,7 @@ const LoanAccount = () => {
                 return (l.direction || 'Payable') === filterDirection;
               });
               if (shown.length === 0) return (
-                <tr><td colSpan={9} style={{ textAlign: 'center', padding: 40, color: '#9ca3af' }}>No loans recorded.</td></tr>
+                <tr><td colSpan={8} style={{ textAlign: 'center', padding: 40, color: '#9ca3af' }}>No loans recorded.</td></tr>
               );
               return shown.map(l => {
                 const ss = STATUS_STYLE[l.status] || STATUS_STYLE.Active;
@@ -444,25 +452,48 @@ const LoanAccount = () => {
                 const dirChip = isRec
                   ? { bg: '#dcfce7', color: '#166534', border: '#86efac', label: 'THEY OWE US' }
                   : { bg: '#fee2e2', color: '#991b1b', border: '#fca5a5', label: 'WE OWE' };
-                // v1.10.270 — Outstanding color: red for Payable (bad, we owe),
-                // blue for Receivable (asset, they owe us, positive).
-                const outstColor = l.outstanding > 0
-                  ? (isRec ? '#1e40af' : '#dc2626')
-                  : '#16a34a';
+                // Repaid = money3 of principal_paid subtotals; helper returns
+                // '—' when all three are zero.
+                const repaid = money3(l.principal_paid_usd, l.principal_paid_fra, l.principal_paid_k);
+                // Balance sign: Payable outstanding shows as negative (we
+                // owe), Receivable outstanding shows as positive (they owe
+                // us), zero shows plain. Colour mirrors the sign.
+                const outVal = parseFloat(l.outstanding) || 0;
+                const balSign = outVal <= 0.001 ? '' : (isRec ? '+' : '−');
+                const balColor = outVal <= 0.001
+                  ? '#16a34a'
+                  : (isRec ? '#1e40af' : '#dc2626');
+                const bal = money3(l.outstanding_usd, l.outstanding_fra, l.outstanding_k);
+                // Shortened loan number: LN-P-2026-C0AB98-0005 → LN-P-…0005
+                const shortLoanNo = (l.loan_number || '').replace(/^(LN-[PR]-).*?(\d{4})$/, '$1…$2');
+                // Action button: red "Pay Back" for Payable, green "Record"
+                // for Receivable. Both open the detail modal so the user
+                // can pick Principal / Interest / additional Disbursement
+                // — same three buttons available inside.
+                const actionColor = isRec ? '#16a34a' : '#dc2626';
+                const actionLabel = isRec ? 'Record' : 'Pay Back';
                 return (
                   <tr key={l.id}>
-                    <td style={{ fontWeight: 600 }}>{l.loan_number}</td>
-                    <td>{l.lender_name || '—'}</td>
-                    <td><span style={{ padding: '2px 8px', borderRadius: 20, fontSize: 10, fontWeight: 700, background: dirChip.bg, color: dirChip.color, border: `1px solid ${dirChip.border}`, whiteSpace: 'nowrap' }}>{dirChip.label}</span></td>
-                    <td>{formatDate(l.start_date)}</td>
+                    <td>
+                      <button
+                        onClick={() => openDetail(l)}
+                        style={{ background: 'none', border: 'none', padding: 0, cursor: 'pointer', fontWeight: 600, color: '#2563eb', fontSize: 14, textAlign: 'left' }}
+                      >{l.lender_name || '—'} ›</button>
+                      <div style={{ marginTop: 4 }}>
+                        <span style={{ padding: '2px 8px', borderRadius: 20, fontSize: 10, fontWeight: 700, background: dirChip.bg, color: dirChip.color, border: `1px solid ${dirChip.border}`, whiteSpace: 'nowrap' }}>{dirChip.label}</span>
+                      </div>
+                    </td>
+                    <td style={{ fontFamily: 'ui-monospace, "SF Mono", Consolas, monospace', fontSize: 12, color: '#6b7280', whiteSpace: 'nowrap' }} title={l.loan_number}>{shortLoanNo || l.loan_number}</td>
+                    <td style={{ whiteSpace: 'nowrap' }}>{formatDate(l.start_date)}</td>
                     <td style={{ textAlign: 'right', whiteSpace: 'nowrap', fontSize: 12 }}>{money3(l.disbursed_usd, l.disbursed_fra, l.disbursed_k)}</td>
-                    <td style={{ textAlign: 'right', fontWeight: 700, color: outstColor, whiteSpace: 'nowrap', fontSize: 12 }}>{money3(l.outstanding_usd, l.outstanding_fra, l.outstanding_k)}</td>
-                    <td style={{ textAlign: 'right' }}>{l.interest_rate > 0 ? `${l.interest_rate}%` : '—'}</td>
+                    <td style={{ textAlign: 'right', whiteSpace: 'nowrap', fontSize: 12, color: repaid === '—' ? '#9ca3af' : '#16a34a', fontWeight: repaid === '—' ? 400 : 600 }}>{repaid}</td>
+                    <td style={{ textAlign: 'right', fontWeight: 700, color: balColor, whiteSpace: 'nowrap', fontSize: 12 }}>{balSign}{bal}</td>
                     <td><span style={{ padding: '2px 10px', borderRadius: 20, fontSize: 11, fontWeight: 700, background: ss.bg, color: ss.color, border: `1px solid ${ss.border}` }}>{l.status}</span></td>
                     <td style={{ textAlign: 'center' }}>
-                      <button onClick={() => openDetail(l)} title="View / Record transaction" style={{ background: 'none', border: 'none', color: '#0369a1', cursor: 'pointer', padding: 4 }}><FiEye /></button>
-                      {canEdit && <button onClick={() => openEditLoan(l)} title="Edit loan" style={{ background: 'none', border: 'none', color: '#6b7280', cursor: 'pointer', padding: 4 }}><FiEdit2 /></button>}
-                      {canDelete && <button onClick={() => handleDeleteLoan(l)} title="Delete" style={{ background: 'none', border: 'none', color: '#dc2626', cursor: 'pointer', padding: 4 }}><FiTrash2 /></button>}
+                      <button
+                        onClick={() => openDetail(l)}
+                        style={{ padding: '6px 14px', background: actionColor, color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer', fontSize: 12.5, fontWeight: 700 }}
+                      >{actionLabel}</button>
                     </td>
                   </tr>
                 );
@@ -642,8 +673,8 @@ const LoanAccount = () => {
                 width AND maxWidth so the loan detail actually gets the
                 room the transaction table needs. */}
             <div className="modal" style={{ width: 1080, maxWidth: '95vw' }} onClick={e => e.stopPropagation()}>
-              <div className="modal-header">
-                <h3 style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+              <div className="modal-header" style={{ display: 'flex', alignItems: 'flex-start', gap: 12 }}>
+                <h3 style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', flex: 1, margin: 0 }}>
                   <span>{detailLoan.loan_number} — {detailLoan.lender_name || ((detailLoan.direction || 'Payable') === 'Receivable' ? 'Borrower' : 'Lender')}</span>
                   {(() => {
                     const isRec = (detailLoan.direction || 'Payable') === 'Receivable';
@@ -653,7 +684,15 @@ const LoanAccount = () => {
                     return <span style={{ padding: '2px 10px', borderRadius: 20, fontSize: 11, fontWeight: 700, background: chip.bg, color: chip.color, border: `1px solid ${chip.border}` }}>{chip.label}</span>;
                   })()}
                 </h3>
-                <button className="modal-close" onClick={() => setDetailLoan(null)}>×</button>
+                {/* v1.10.284 — Edit + Delete moved off the list row and into
+                    the detail modal header, per AP-style: the row shows one
+                    primary action (Pay Back / Record) and the housekeeping
+                    lives inside. */}
+                <div style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
+                  {canEdit && <button onClick={() => { openEditLoan(detailLoan); setDetailLoan(null); }} title="Edit loan agreement" style={{ padding: '6px 10px', background: '#f3f4f6', border: '1px solid #d1d5db', color: '#374151', borderRadius: 6, cursor: 'pointer', fontSize: 12, fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: 4 }}><FiEdit2 size={13} /> Edit</button>}
+                  {canDelete && <button onClick={() => handleDeleteLoan(detailLoan)} title="Delete loan" style={{ padding: '6px 10px', background: '#fee2e2', border: '1px solid #fca5a5', color: '#dc2626', borderRadius: 6, cursor: 'pointer', fontSize: 12, fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: 4 }}><FiTrash2 size={13} /> Delete</button>}
+                  <button className="modal-close" onClick={() => setDetailLoan(null)}>×</button>
+                </div>
               </div>
               <div className="modal-body">
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12, marginBottom: 14 }}>
