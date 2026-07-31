@@ -17,7 +17,14 @@ router.get('/', auth, readOnlyGuard, (req, res) => {
     // cross-device bug rationale). Filter by sync_id resolved from the
     // caller's local id at query time so a per-cashier view also matches
     // rows written by other devices.
-    let query = `SELECT cr.*, u.first_name || ' ' || u.last_name AS created_by_name,
+    // v1.10.286 — REWRITE cr.cashier_id to the LOCAL user id (cu.id from
+    // the sync_id JOIN) so the frontend's find(r.cashier_id === cid) at
+    // CashReport.js:306 matches rows written on other devices. The raw
+    // stored value is the writer's local id which means nothing here.
+    // Fallback to raw when no match (legacy row without cashier_sync_id).
+    let query = `SELECT cr.*,
+       COALESCE(cu.id, cr.cashier_id) AS cashier_id,
+       u.first_name || ' ' || u.last_name AS created_by_name,
        CASE WHEN cr.cashier_id = 0 THEN 'All' ELSE cu.first_name || ' ' || cu.last_name END AS cashier_name
        FROM cash_reports cr
        LEFT JOIN users u  ON cr.created_by_sync_id = u.sync_id
