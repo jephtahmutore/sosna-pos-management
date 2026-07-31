@@ -637,7 +637,11 @@ const LoanAccount = () => {
       {detailLoan && (
         <Portal>
           <div className="modal-overlay" onClick={() => setDetailLoan(null)}>
-            <div className="modal" style={{ maxWidth: 960 }} onClick={e => e.stopPropagation()}>
+            {/* v1.10.283 — .modal CSS class defaults width:500px, so
+                setting only maxWidth left the modal at 500. Override
+                width AND maxWidth so the loan detail actually gets the
+                room the transaction table needs. */}
+            <div className="modal" style={{ width: 1080, maxWidth: '95vw' }} onClick={e => e.stopPropagation()}>
               <div className="modal-header">
                 <h3 style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
                   <span>{detailLoan.loan_number} — {detailLoan.lender_name || ((detailLoan.direction || 'Payable') === 'Receivable' ? 'Borrower' : 'Lender')}</span>
