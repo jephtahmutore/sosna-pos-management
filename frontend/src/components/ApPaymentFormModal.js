@@ -9,7 +9,7 @@ import React, { useEffect, useState } from 'react';
 import Portal from '../utils/Portal';
 import { FiX } from 'react-icons/fi';
 import InvoiceAttachment from './InvoiceAttachment';
-import { createApPayment, isHqHost } from '../services/api';
+import { createApPayment, isHqHost, getCashBookStats } from '../services/api';
 import { useCurrency } from '../context/CurrencyContext';
 
 const todayStr = () => new Date().toISOString().split('T')[0];
@@ -35,6 +35,28 @@ export default function ApPaymentFormModal({ open, supplier, onClose, onSaved, d
   const [form, setForm] = useState(emptyForm);
   const [error, setError] = useState('');
   const [saving, setSaving] = useState(false);
+  // v1.10.280 — inline "Available: X" hints under each input on HQ, same
+  // as PaymentVoucherFormModal v1.10.244. Reads Cash Book /stats with
+  // slug='hq' so receiptsByCcy includes HQ's incoming deposits from
+  // branches. Silent-fail: if unreachable the hints just don't render;
+  // the backend overdraft guard is still the safety net.
+  const [balances, setBalances] = useState(null);
+  useEffect(() => {
+    if (!open || !onHq) { setBalances(null); return; }
+    getCashBookStats({ slug: 'hq' })
+      .then(r => {
+        const d = r?.data || {};
+        setBalances({
+          usd:   parseFloat(d.currentByCcy?.usd   || 0) || 0,
+          fra:   parseFloat(d.currentByCcy?.fra   || 0) || 0,
+          k:     parseFloat(d.currentByCcy?.k     || 0) || 0,
+          kCash: parseFloat(d.kSubMethods?.current?.cash || 0) || 0,
+          kBank: parseFloat(d.kSubMethods?.current?.bank || 0) || 0,
+          kMomo: parseFloat(d.kSubMethods?.current?.momo || 0) || 0,
+        });
+      })
+      .catch(() => setBalances(null));
+  }, [open, onHq]);
 
   // v1.10.111 — supplier balances can be in USD, K, or FRA (each supplier
   // has its own native currency, returned per-row by the backend as
@@ -166,20 +188,43 @@ export default function ApPaymentFormModal({ open, supplier, onClose, onSaved, d
               <label style={{ fontSize: 11, fontWeight: 700, color: '#6b7280', textTransform: 'uppercase', letterSpacing: 0.5, display: 'block', marginBottom: 8 }}>
                 {onHq ? 'Amount Paid (by currency)' : 'Amount Paid (split across methods)'}
               </label>
-              {onHq && (
+              {onHq && (() => {
+                // v1.10.280 — "Available: X" hint under each input, same
+                // shape as PaymentVoucherFormModal v1.10.244.
+                const balMap = {
+                  usd_amount:  { amt: balances?.usd,   prefix: '$', digits: 2 },
+                  fra_amount:  { amt: balances?.fra,   prefix: '',  digits: 0 },
+                  cash_amount: { amt: balances?.kCash, prefix: 'K', digits: 0 },
+                  bank_amount: { amt: balances?.kBank, prefix: 'K', digits: 0 },
+                  momo_amount: { amt: balances?.kMomo, prefix: 'K', digits: 0 },
+                };
+                const fmtAvail = (b) => `${b.prefix}${(b.amt || 0).toLocaleString(undefined, { minimumFractionDigits: b.digits, maximumFractionDigits: b.digits })}`;
+                return (
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 12 }}>
-                  {ccyFields.map((f, i) => (
+                  {ccyFields.map((f, i) => {
+                    const b = balances ? balMap[f.key] : null;
+                    const requested = parseFloat(form[f.key] || 0) || 0;
+                    const overdraft = b && b.amt != null && requested > b.amt + 0.0001;
+                    return (
                     <div key={f.key}>
                       <label style={{ fontSize: 11, color: f.color, fontWeight: 700, textTransform: 'uppercase', marginBottom: 3, display: 'block' }}>{f.label}</label>
                       <input type="number" min="0" step={f.step} autoFocus={i === 0}
                         value={form[f.key]}
                         onChange={e => setForm(prev => ({ ...prev, [f.key]: e.target.value }))}
                         placeholder={f.placeholder}
-                        style={{ width: '100%', padding: '8px 10px', border: `2px solid ${parseFloat(form[f.key] || 0) > 0 ? f.color : '#d1d5db'}`, borderRadius: 6, fontSize: 14, fontWeight: 600, color: parseFloat(form[f.key] || 0) > 0 ? f.color : '#374151', boxSizing: 'border-box' }} />
+                        style={{ width: '100%', padding: '8px 10px', border: `2px solid ${overdraft ? '#dc2626' : (parseFloat(form[f.key] || 0) > 0 ? f.color : '#d1d5db')}`, borderRadius: 6, fontSize: 14, fontWeight: 600, color: overdraft ? '#dc2626' : (parseFloat(form[f.key] || 0) > 0 ? f.color : '#374151'), boxSizing: 'border-box' }} />
+                      {b && b.amt != null && (
+                        <div style={{ fontSize: 10, marginTop: 3, fontFamily: 'ui-monospace, "SF Mono", Consolas, monospace', color: overdraft ? '#dc2626' : (b.amt < 0 ? '#dc2626' : '#64748b'), fontWeight: overdraft ? 700 : 500 }}>
+                          Available: {b.amt < 0 ? '−' : ''}{fmtAvail({ ...b, amt: Math.abs(b.amt) })}
+                          {overdraft && <span> · exceeds balance</span>}
+                        </div>
+                      )}
                     </div>
-                  ))}
+                    );
+                  })}
                 </div>
-              )}
+                );
+              })()}
               {/* v1.10.129 — K sub-method section. On HQ, K is split into
                   Cash / Bank / MoMo. On Liquor, this same row IS the primary
                   Cash / Bank / MoMo split (unchanged behaviour). */}
@@ -189,16 +234,36 @@ export default function ApPaymentFormModal({ open, supplier, onClose, onSaved, d
                 </div>
               )}
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10 }}>
-                {kSubFields.map((f, i) => (
+                {kSubFields.map((f, i) => {
+                  // v1.10.280 — reuse the same hint pattern for HQ K sub-drawer
+                  // inputs. Liquor (non-HQ) skips balances (no live drawer data
+                  // fetch there) so it renders unchanged.
+                  const balMap = onHq && balances ? {
+                    cash_amount: { amt: balances.kCash, prefix: 'K', digits: 0 },
+                    bank_amount: { amt: balances.kBank, prefix: 'K', digits: 0 },
+                    momo_amount: { amt: balances.kMomo, prefix: 'K', digits: 0 },
+                  } : null;
+                  const b = balMap ? balMap[f.key] : null;
+                  const requested = parseFloat(form[f.key] || 0) || 0;
+                  const overdraft = b && b.amt != null && requested > b.amt + 0.0001;
+                  const fmtAvail = (bb) => `${bb.prefix}${(bb.amt || 0).toLocaleString(undefined, { minimumFractionDigits: bb.digits, maximumFractionDigits: bb.digits })}`;
+                  return (
                   <div key={f.key}>
                     <label style={{ fontSize: 11, color: f.color, fontWeight: 700, textTransform: 'uppercase', marginBottom: 3, display: 'block' }}>{f.label}</label>
                     <input type="number" min="0" step={f.step} autoFocus={!onHq && i === 0}
                       value={form[f.key]}
                       onChange={e => setForm(prev => ({ ...prev, [f.key]: e.target.value }))}
                       placeholder={f.placeholder}
-                      style={{ width: '100%', padding: '8px 10px', border: `2px solid ${parseFloat(form[f.key] || 0) > 0 ? f.color : '#d1d5db'}`, borderRadius: 6, fontSize: 14, fontWeight: 600, color: parseFloat(form[f.key] || 0) > 0 ? f.color : '#374151', boxSizing: 'border-box' }} />
+                      style={{ width: '100%', padding: '8px 10px', border: `2px solid ${overdraft ? '#dc2626' : (parseFloat(form[f.key] || 0) > 0 ? f.color : '#d1d5db')}`, borderRadius: 6, fontSize: 14, fontWeight: 600, color: overdraft ? '#dc2626' : (parseFloat(form[f.key] || 0) > 0 ? f.color : '#374151'), boxSizing: 'border-box' }} />
+                    {b && b.amt != null && (
+                      <div style={{ fontSize: 10, marginTop: 3, fontFamily: 'ui-monospace, "SF Mono", Consolas, monospace', color: overdraft ? '#dc2626' : (b.amt < 0 ? '#dc2626' : '#64748b'), fontWeight: overdraft ? 700 : 500 }}>
+                        Available: {b.amt < 0 ? '−' : ''}{fmtAvail({ ...b, amt: Math.abs(b.amt) })}
+                        {overdraft && <span> · exceeds balance</span>}
+                      </div>
+                    )}
                   </div>
-                ))}
+                  );
+                })}
               </div>
             </div>
             <div>

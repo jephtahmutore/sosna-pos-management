@@ -253,6 +253,62 @@ function getCurrentByCcyForHq(db, tenantId, opts = {}) {
     } catch { /* non-fatal */ }
   }
 
+  // v1.10.280 — capital / dividend / loan flows were missing from this
+  // helper, so any HQ K loan disbursement or capital injection didn't
+  // register as a receipt and the guard thought HQ was in overdraft when
+  // it wasn't. cashBook.js /stats has always counted them (loans since
+  // v1.10.267); re-syncing here.
+  //
+  // Capital: Injection → receipt, Drawing → payment. K only via the
+  // sub-method columns (no ccy columns on this table).
+  try {
+    const capInRow = db.prepare(
+      `SELECT COALESCE(SUM(cash_amount + bank_amount + momo_amount), 0) AS t
+         FROM capital_account WHERE deleted_at IS NULL AND type='Injection'${w}`
+    ).get(...p);
+    receipts.k += num(capInRow.t);
+    const capOutRow = db.prepare(
+      `SELECT COALESCE(SUM(cash_amount + bank_amount + momo_amount), 0) AS t
+         FROM capital_account WHERE deleted_at IS NULL AND type='Drawing'${w}`
+    ).get(...p);
+    payments.k += num(capOutRow.t);
+  } catch { /* pre-migration */ }
+
+  // Dividend: always a payment (K sub-method columns only).
+  try {
+    const divRow = db.prepare(
+      `SELECT COALESCE(SUM(cash_amount + bank_amount + momo_amount), 0) AS t
+         FROM dividend_account WHERE deleted_at IS NULL${w}`
+    ).get(...p);
+    payments.k += num(divRow.t);
+  } catch { /* pre-migration */ }
+
+  // Loans: direction-aware (v1.10.270). Payable Disbursement + Receivable
+  // Principal/Interest are inflows; Payable Principal/Interest + Receivable
+  // Disbursement are outflows. Reads usd/fra/k ccy columns directly since
+  // loan_transactions carries both ccy AND K sub-method splits per v1.10.266.
+  try {
+    const loanRows = db.prepare(
+      `SELECT lt.type,
+              COALESCE(l.direction, 'Payable') AS direction,
+              COALESCE(SUM(lt.usd_amount), 0) AS usd,
+              COALESCE(SUM(lt.fra_amount), 0) AS fra,
+              COALESCE(SUM(lt.k_amount),   0) AS k
+         FROM loan_transactions lt
+         LEFT JOIN loans l ON l.sync_id = lt.loan_sync_id
+        WHERE lt.deleted_at IS NULL${tenantId ? ' AND lt.tenant_id = ?' : ''}
+        GROUP BY lt.type, COALESCE(l.direction, 'Payable')`
+    ).all(...p);
+    for (const r of loanRows) {
+      const isInflow = (r.direction === 'Payable'    && r.type === 'Disbursement')
+                     || (r.direction === 'Receivable' && (r.type === 'Principal' || r.type === 'Interest'));
+      const bucket = isInflow ? receipts : payments;
+      bucket.usd += num(r.usd);
+      bucket.fra += num(r.fra);
+      bucket.k   += num(r.k);
+    }
+  } catch { /* pre-migration */ }
+
   return {
     usd: opening.usd + receipts.usd - payments.usd,
     fra: opening.fra + receipts.fra - payments.fra,
@@ -402,14 +458,70 @@ function getCurrentKSubDrawerForHq(db, tenantId, opts = {}) {
   const kSubTrfIn  = kSubTrf('in');
   const kSubTrfOut = kSubTrf('out');
 
+  // v1.10.280 — capital / dividend / loan K sub-drawer contribution.
+  // Mirrors cashBook.js /stats kSubMethods (v1.10.268 added loans there);
+  // this helper was stuck at the pre-v1.10.268 shape and quietly gave
+  // wrong per-sub-drawer availability whenever HQ had loan / capital /
+  // dividend activity.
+  const kSubTypedSum = (table, whereExtra = '') => {
+    try {
+      const row = db.prepare(
+        `SELECT COALESCE(SUM(cash_amount), 0) AS cash,
+                COALESCE(SUM(bank_amount), 0) AS bank,
+                COALESCE(SUM(momo_amount), 0) AS momo
+           FROM ${table}
+          WHERE deleted_at IS NULL${w}${whereExtra}`
+      ).get(...p);
+      return {
+        cash: parseFloat(row.cash) || 0,
+        bank: parseFloat(row.bank) || 0,
+        momo: parseFloat(row.momo) || 0,
+      };
+    } catch { return { cash: 0, bank: 0, momo: 0 }; }
+  };
+  const kSubCapIn  = kSubTypedSum('capital_account',  " AND type='Injection'");
+  const kSubCapOut = kSubTypedSum('capital_account',  " AND type='Drawing'");
+  const kSubDivOut = kSubTypedSum('dividend_account', '');
+
+  // Loans: direction-aware, only K legs (k_amount > 0) contribute to K
+  // sub-drawer buckets. Uses the same predicates cashBook.js applies.
+  const kSubLoan = (kind) => {
+    // kind='in' → Payable Disbursement + Receivable Principal/Interest
+    // kind='out'→ Payable Principal/Interest + Receivable Disbursement
+    const pred = kind === 'in'
+      ? `((COALESCE(l.direction,'Payable')='Payable'    AND lt.type='Disbursement')
+       OR (COALESCE(l.direction,'Payable')='Receivable' AND lt.type IN ('Principal','Interest')))`
+      : `((COALESCE(l.direction,'Payable')='Payable'    AND lt.type IN ('Principal','Interest'))
+       OR (COALESCE(l.direction,'Payable')='Receivable' AND lt.type='Disbursement'))`;
+    try {
+      const row = db.prepare(
+        `SELECT COALESCE(SUM(lt.cash_amount), 0) AS cash,
+                COALESCE(SUM(lt.bank_amount), 0) AS bank,
+                COALESCE(SUM(lt.momo_amount), 0) AS momo
+           FROM loan_transactions lt
+           LEFT JOIN loans l ON l.sync_id = lt.loan_sync_id
+          WHERE lt.deleted_at IS NULL
+            AND COALESCE(lt.k_amount, 0) > 0
+            AND ${pred}${tenantId ? ' AND lt.tenant_id = ?' : ''}`
+      ).get(...p);
+      return {
+        cash: parseFloat(row.cash) || 0,
+        bank: parseFloat(row.bank) || 0,
+        momo: parseFloat(row.momo) || 0,
+      };
+    } catch { return { cash: 0, bank: 0, momo: 0 }; }
+  };
+  const kSubLoanIn  = kSubLoan('in');
+  const kSubLoanOut = kSubLoan('out');
+
   const opening = getKSubOpeningSeeds(db, tenantId);
   return {
-    cash: opening.cash + kSubIn.cash + kSubDepIn.cash + kSubExchIn.cash + kSubTrfIn.cash
-                       - kSubOutPV.cash - kSubOutAP.cash - kSubDepOut.cash - kSubExchOut.cash - kSubTrfOut.cash,
-    bank: opening.bank + kSubIn.bank + kSubDepIn.bank + kSubExchIn.bank + kSubTrfIn.bank
-                       - kSubOutPV.bank - kSubOutAP.bank - kSubDepOut.bank - kSubExchOut.bank - kSubTrfOut.bank,
-    momo: opening.momo + kSubIn.momo + kSubDepIn.momo + kSubExchIn.momo + kSubTrfIn.momo
-                       - kSubOutPV.momo - kSubOutAP.momo - kSubDepOut.momo - kSubExchOut.momo - kSubTrfOut.momo,
+    cash: opening.cash + kSubIn.cash + kSubDepIn.cash + kSubExchIn.cash + kSubTrfIn.cash + kSubCapIn.cash + kSubLoanIn.cash
+                       - kSubOutPV.cash - kSubOutAP.cash - kSubDepOut.cash - kSubExchOut.cash - kSubTrfOut.cash - kSubCapOut.cash - kSubDivOut.cash - kSubLoanOut.cash,
+    bank: opening.bank + kSubIn.bank + kSubDepIn.bank + kSubExchIn.bank + kSubTrfIn.bank + kSubCapIn.bank + kSubLoanIn.bank
+                       - kSubOutPV.bank - kSubOutAP.bank - kSubDepOut.bank - kSubExchOut.bank - kSubTrfOut.bank - kSubCapOut.bank - kSubDivOut.bank - kSubLoanOut.bank,
+    momo: opening.momo + kSubIn.momo + kSubDepIn.momo + kSubExchIn.momo + kSubTrfIn.momo + kSubCapIn.momo + kSubLoanIn.momo
+                       - kSubOutPV.momo - kSubOutAP.momo - kSubDepOut.momo - kSubExchOut.momo - kSubTrfOut.momo - kSubCapOut.momo - kSubDivOut.momo - kSubLoanOut.momo,
   };
 }
 
