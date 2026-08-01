@@ -1429,54 +1429,22 @@ function initTenantDb(db) {
       updUnits.run(JSON.stringify(arr), p.id);
     }
   } catch (e) { /* fresh DB or no products — fine */ }
-  // Backfill CR splits from payment_method
-  try {
-    db.prepare(`
-      UPDATE cash_receipts
-      SET cash_amount = CASE WHEN payment_method = 'Cash' THEN amount ELSE 0 END,
-          bank_amount = CASE WHEN payment_method IN ('Bank Transfer','Bank','Cheque') THEN amount ELSE 0 END,
-          momo_amount = CASE WHEN payment_method = 'Mobile Money' THEN amount ELSE 0 END
-      WHERE COALESCE(cash_amount,0) + COALESCE(bank_amount,0) + COALESCE(momo_amount,0) = 0
-        AND amount > 0
-        AND payment_method != 'Mixed'
-    `).run();
-    // Mixed CRs (AR payments) — pull split from the linked customer_payments row
-    db.prepare(`
-      UPDATE cash_receipts
-      SET cash_amount = (SELECT cp.cash_amount FROM customer_payments cp WHERE cp.id = cash_receipts.source_customer_payment_id),
-          bank_amount = (SELECT cp.bank_amount FROM customer_payments cp WHERE cp.id = cash_receipts.source_customer_payment_id),
-          momo_amount = (SELECT cp.momo_amount FROM customer_payments cp WHERE cp.id = cash_receipts.source_customer_payment_id)
-      WHERE payment_method = 'Mixed' AND source_customer_payment_id IS NOT NULL
-    `).run();
-    // Backfill PV splits from paid_from (best-effort heuristic)
-    db.prepare(`
-      UPDATE payment_vouchers
-      SET cash_amount = CASE WHEN paid_from LIKE '%Cash%' OR paid_from LIKE '%Drawer%' OR paid_from IS NULL THEN amount ELSE 0 END,
-          bank_amount = CASE WHEN paid_from LIKE '%Bank%' OR paid_from LIKE '%Cheque%' THEN amount ELSE 0 END,
-          momo_amount = CASE WHEN paid_from LIKE '%Mobile%' OR paid_from LIKE '%MoMo%' THEN amount ELSE 0 END
-      WHERE COALESCE(cash_amount,0) + COALESCE(bank_amount,0) + COALESCE(momo_amount,0) = 0
-        AND amount > 0
-    `).run();
-  } catch (e) { /* ignore */ }
-  // Backfill: slot the legacy single amount into the right bucket based on payment_method/paid_from.
-  try {
-    db.prepare(`
-      UPDATE customer_payments
-      SET cash_amount = CASE WHEN payment_method IN ('Cash', '') OR payment_method IS NULL THEN amount ELSE 0 END,
-          bank_amount = CASE WHEN payment_method IN ('Bank Transfer', 'Bank', 'Cheque') THEN amount ELSE 0 END,
-          momo_amount = CASE WHEN payment_method = 'Mobile Money' THEN amount ELSE 0 END
-      WHERE COALESCE(cash_amount,0) + COALESCE(bank_amount,0) + COALESCE(momo_amount,0) = 0
-        AND amount > 0
-    `).run();
-    db.prepare(`
-      UPDATE ap_payments
-      SET cash_amount = CASE WHEN paid_from LIKE '%Cashier%' OR paid_from LIKE '%Cash%' OR paid_from IS NULL THEN amount ELSE 0 END,
-          bank_amount = CASE WHEN paid_from LIKE '%Bank%' OR paid_from LIKE '%Cheque%' THEN amount ELSE 0 END,
-          momo_amount = CASE WHEN paid_from LIKE '%Mobile%' OR paid_from LIKE '%MoMo%' THEN amount ELSE 0 END
-      WHERE COALESCE(cash_amount,0) + COALESCE(bank_amount,0) + COALESCE(momo_amount,0) = 0
-        AND amount > 0
-    `).run();
-  } catch (e) { /* ignore */ }
+  // v1.10.289 — REMOVED four split-backfill UPDATEs that used to run here
+  // for cash_receipts, payment_vouchers, customer_payments, ap_payments.
+  // They were one-shot rescues for legacy rows that never got their
+  // cash/bank/momo split populated at INSERT time. The Mixed-CR variant
+  // JOIN'd customer_payments by integer id, which broke cross-device:
+  // on Electron the same integer resolves to a DIFFERENT customer_payment
+  // row (per-device auto-increment), so the migration silently overwrote
+  // correct split columns with values from the wrong AR payment. Real
+  // incident 2026-08-01 lusaka1 CR-2026-533AF7-0100 (sync_id 8c74de6f…):
+  // VPS held cash=8000/momo=40940 (correct); Electron held cash=120000/
+  // momo=0 (from a stale AR payment stamped with the same local id).
+  // Cash Book on Electron read K71,060 higher than web for Jul 28. Since
+  // the INSERT paths in customerPayments.js / cashReceipts.js /
+  // paymentVouchers.js / apPayments.js have set splits directly for
+  // months, these safety nets have nothing left to backfill — deleting
+  // them removes the corruption vector.
   // Mark CRs that originated from an AR payment so the Cash Receipt list can show
   // their source and we don't risk minting a duplicate on re-runs.
   addCol('cash_receipts',      'source_type',            'TEXT');
