@@ -30,7 +30,7 @@ const router  = express.Router();
 const jwt = require('jsonwebtoken');
 const { randomUUID } = require('crypto');
 const { listTenants, isRegistered, masterDb } = require('../config/masterDb');
-const { getTenantDb } = require('../config/tenantDb');
+const { getTenantDb, getTenantSyncIds } = require('../config/tenantDb');
 const { conversionToBase } = require('../config/unitsHelper');
 // v1.10.214 — per-device shortcode via syncConfig so Electron installs
 // running local backends don't collide on transfer_number when they
@@ -519,6 +519,11 @@ router.put('/:id/receive', hqAuth, (req, res) => {
         // Pre-v1.9.22 transfer — source bin already reflects the deduction.
         // Skip re-posting at /receive to preserve the legacy total.
       } else {
+      // v1.10.287 — source-branch sync labels for the transfer_out row.
+      // Before this the INSERT below passed null/null/null → orphan
+      // stock_movements on fromSlug's tenant DB that never synced to
+      // fresh Electron installs of that branch. See tenantDb.js header.
+      const fromIds = getTenantSyncIds(fromDb);
       fromDb.transaction(() => {
         const movStmt = fromDb.prepare(`
           INSERT INTO stock_movements (product_id, product_sync_id, location, movement_type,
@@ -545,7 +550,7 @@ router.put('/:id/receive', hqAuth, (req, res) => {
             -sentBaseQty, 'transfer', row.sync_id,
             `Transfer ${row.transfer_number} → ${row.to_name || toSlug} (confirmed)`,
             receivedBy,
-            randomUUID(), null, null, null
+            randomUUID(), fromIds.tenant_id, fromIds.branch_id, fromIds.device_id
           );
           upd.run(sentBaseQty, prod.sync_id);
         }
@@ -657,6 +662,9 @@ router.put('/:id/receive', hqAuth, (req, res) => {
     // reality instead of defaulting Received=Sent. Populated inside the loop,
     // written back onto stock_transfers.items_json after the tx.
     const enrichedItems = [];
+    // v1.10.287 — destination-branch sync labels for the transfer_in row.
+    // Same fix as fromDb above.
+    const toIds = getTenantSyncIds(toDb);
     toDb.transaction(() => {
       const movStmt = toDb.prepare(`
         INSERT INTO stock_movements (product_id, product_sync_id, location, movement_type,
@@ -748,7 +756,7 @@ router.put('/:id/receive', hqAuth, (req, res) => {
             `Transfer ${row.transfer_number} ← ${row.from_name || fromSlug}` +
               (variance > 0 ? ` · short ${variance} ${it.unit || ''} (${reason})` : ''),
             receivedBy,
-            randomUUID(), null, null, null
+            randomUUID(), toIds.tenant_id, toIds.branch_id, toIds.device_id
           );
           // v1.10.55 → v1.10.181 — WAC blend at destination in the
           // destination's WAC currency. toDestCcy returns USD for

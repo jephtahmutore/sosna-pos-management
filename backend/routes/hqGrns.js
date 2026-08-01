@@ -25,7 +25,7 @@ const router  = express.Router();
 const jwt = require('jsonwebtoken');
 const { randomUUID } = require('crypto');
 const { listTenants, isRegistered, masterDb } = require('../config/masterDb');
-const { getTenantDb } = require('../config/tenantDb');
+const { getTenantDb, getTenantSyncIds } = require('../config/tenantDb');
 const { defaultDb }   = require('../config/database');
 const { conversionToBase } = require('../config/unitsHelper');
 // v1.10.245 — HQ page perm gates. hqGrns spans two Users pages:
@@ -310,6 +310,12 @@ router.post('/:slug/:syncId/confirm', hqAuth, requirePagePerm('HqConfirmGrn'), (
 
     const items = db.prepare(`SELECT * FROM grn_items WHERE grn_sync_id = ? AND deleted_at IS NULL`).all(syncId);
     if (items.length === 0) return res.status(400).json({ error: 'GRN has no line items.' });
+    // v1.10.287 — defense-in-depth: read the branch's own sync labels
+    // rather than trusting grn.tenant_id/branch_id/device_id. Legacy
+    // branch-created GRNs usually have these set, but any GRN that came
+    // in through a broken code path would carry NULL and orphan the
+    // downstream stock_movements. Guaranteed correct via sync_config.
+    const destIds = getTenantSyncIds(db);
 
     const confirmerName = req.user.firstName || req.user.email || 'HQ';
 
@@ -397,7 +403,7 @@ router.post('/:slug/:syncId/confirm', hqAuth, requirePagePerm('HqConfirmGrn'), (
           grn.id, 'grn', grn.sync_id,
           `HQ-confirmed GRN ${grn.grn_number}${notes ? ' — ' + notes : ''}`,
           null,
-          randomUUID(), grn.tenant_id, grn.branch_id, grn.device_id,
+          randomUUID(), destIds.tenant_id, destIds.branch_id, destIds.device_id,
           movementCreatedAt
         );
 
@@ -419,7 +425,7 @@ router.post('/:slug/:syncId/confirm', hqAuth, requirePagePerm('HqConfirmGrn'), (
             grn.id, 'grn', grn.sync_id,
             `Container settlement via ${grn.grn_number}`,
             null,
-            randomUUID(), grn.tenant_id, grn.branch_id, grn.device_id,
+            randomUUID(), destIds.tenant_id, destIds.branch_id, destIds.device_id,
             movementCreatedAt
           );
         }
@@ -1499,6 +1505,14 @@ router.post('/generate', hqAuth, requirePagePerm('HqConfirmGrn'), (req, res) => 
     try {
       const branchDb = getTenantDb(branchSlug);
       const branchMovementAt = grnDate + ' ' + new Date().toTimeString().slice(0, 8);
+      // v1.10.287 — read the destination branch's OWN sync labels so the
+      // stock_movements we insert below carry the right tenant_id /
+      // branch_id / device_id. Before this, all three columns were passed
+      // as literal NULL because we're in HQ context and HQ's syncConfig
+      // refers to HQ, not the branch. Real incident 2026-08-01 on lusaka1:
+      // orphan rows unreachable by pull → fresh Electron installs missing
+      // ~200 rows → POS balances negative. See tenantDb.js helper header.
+      const destIds = getTenantSyncIds(branchDb);
       // v1.10.55 — atomic UPDATE that bumps current_stock AND blends
       // avg_cost_price in one statement. Uses the pre-update snapshot of
       // both fields (SQLite evaluates the row RHS before applying the SET).
@@ -1624,7 +1638,7 @@ router.post('/generate', hqAuth, requirePagePerm('HqConfirmGrn'), (req, res) => 
           null, 'hq_grn', grnSyncId,
           `HQ-generated GRN ${grnNumber}`,
           null,
-          randomUUID(), null, null, null,
+          randomUUID(), destIds.tenant_id, destIds.branch_id, destIds.device_id,
           branchMovementAt
         );
 
@@ -1648,7 +1662,7 @@ router.post('/generate', hqAuth, requirePagePerm('HqConfirmGrn'), (req, res) => 
             null, 'hq_grn_damage', grnSyncId,
             `Damaged in transit on HQ-generated GRN ${grnNumber} (${damagedLine} ${it.unit || prod.unit})`,
             null,
-            randomUUID(), null, null, null,
+            randomUUID(), destIds.tenant_id, destIds.branch_id, destIds.device_id,
             branchMovementAt
           );
           decStock.run(damagedBase, prod.sync_id);
@@ -1687,7 +1701,7 @@ router.post('/generate', hqAuth, requirePagePerm('HqConfirmGrn'), (req, res) => 
             null, 'credit_note', bundle.cnSyncId,
             `${bundle.reason} via ${bundle.cnNumber}`,
             null,
-            randomUUID(), null, null, null,
+            randomUUID(), destIds.tenant_id, destIds.branch_id, destIds.device_id,
             branchMovementAt
           );
         }

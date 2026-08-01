@@ -66,4 +66,35 @@ function getTenantDb(slug) {
   return db;
 }
 
-module.exports = { getTenantDb, TENANTS_DIR };
+// v1.10.287 — read a branch's own tenant_id / branch_id / device_id
+// from its sync_config. Used by HQ-context handlers that INSERT stock
+// movements INTO a branch's DB (hqGrns.js /generate, transfers.js
+// /receive). Before this helper, those handlers passed null / null /
+// null for those columns because the HQ backend's own syncConfig
+// refers to HQ, not the destination branch. The resulting orphan
+// stock_movements rows were invisible to sync pull (which filters
+// `WHERE tenant_id = ?`) — so any fresh Electron install on the
+// destination branch was missing them, POS balances went negative,
+// products vanished from the sales list. Real incident 2026-08-01
+// on lusaka1: 182 orphan rows across grn / transfer_in / damage /
+// credit-note types from Jul 3 onward, all with NULL labels.
+//
+// Returns null (not throws) if the sync_config table is missing or
+// the row isn't set — caller can decide whether to log or fall back.
+function getTenantSyncIds(db) {
+  try {
+    const rows = db.prepare(
+      `SELECT key, value FROM sync_config WHERE key IN ('tenant_id','branch_id','device_id')`
+    ).all();
+    const map = Object.fromEntries(rows.map(r => [r.key, r.value]));
+    return {
+      tenant_id: map.tenant_id || null,
+      branch_id: map.branch_id || null,
+      device_id: map.device_id || null,
+    };
+  } catch (_) {
+    return { tenant_id: null, branch_id: null, device_id: null };
+  }
+}
+
+module.exports = { getTenantDb, TENANTS_DIR, getTenantSyncIds };
