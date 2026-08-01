@@ -788,6 +788,33 @@ try {
 // ─── Sync: initialise device_id ──────────────────────────────────────────────
 syncConfig.init(db);
 
+// v1.10.288 — Auto-seed local master.db.tenants with THIS install's own
+// slug so isRegistered(slug) returns true when a route on the Electron
+// backend needs it (cash-deposits POST, transfers, etc.). Without this,
+// a fresh Electron install fails "Send Deposit to HQ" with "Unknown
+// source branch" because the tenants list on VPS is not in the master
+// sync bridge and never populates locally. Runs after syncConfig.init
+// so vps_url is readable; INSERT OR IGNORE so it's safe to re-run.
+try {
+  const { masterDb } = require('./config/masterDb');
+  const vpsUrl = syncConfig.get('vps_url');
+  if (masterDb && vpsUrl) {
+    const host = new URL(vpsUrl).hostname;      // e.g. lusaka1.sosnazm.com
+    const slug = host.split('.')[0];             // e.g. lusaka1
+    if (slug) {
+      const existing = masterDb.prepare('SELECT slug FROM tenants WHERE slug = ?').get(slug);
+      if (!existing) {
+        masterDb.prepare(
+          'INSERT INTO tenants (slug, business_name, is_active) VALUES (?, ?, 1)'
+        ).run(slug, slug);                        // placeholder name; VPS knows the real one
+        console.log(`[boot] Auto-seeded local tenants row for slug="${slug}"`);
+      }
+    }
+  }
+} catch (e) {
+  console.warn('[boot] tenants auto-seed skipped:', e.message);
+}
+
 // ─── Sync: start background sync service ─────────────────────────────────────
 const syncService = require('./services/syncService');
 syncService.start(db, syncConfig);

@@ -41,7 +41,21 @@ router.get('/', auth, readOnlyGuard, (req, res) => {
     const params = [req.user.tenantId];
     if (date)      { params.push(date);      q += ' AND pv.date = ?'; }
     if (paid_from) { params.push(paid_from); q += ' AND pv.paid_from = ?'; }
-    if (cashier_id !== undefined) { params.push(parseInt(cashier_id)); q += ' AND pv.cashier_id = ?'; }
+    // v1.10.288 — filter by cashier_sync_id (portable across devices), not
+    // raw integer cashier_id. Same cross-device bug pattern as cash_reports
+    // (fixed v1.10.286): the incoming cashier_id is THIS device's local
+    // users.id, but pv.cashier_id on the row is the WRITING device's id —
+    // usually different after sync. Symptom: on Electron the Cash Report
+    // eye-icon "Cash Drawer Expenses" modal showed "No expenses recorded"
+    // even though the CASH card correctly summed K1,026 (via a different
+    // endpoint that already uses sync_id JOIN). Real incident 2026-08-01,
+    // Nahom Lusaka. Falls back to raw cashier_id for legacy rows that
+    // predate v1.10.260's cashier_sync_id backfill.
+    if (cashier_id !== undefined) {
+      params.push(parseInt(cashier_id), parseInt(cashier_id));
+      q += ` AND (pv.cashier_sync_id = (SELECT sync_id FROM users WHERE id = ?)
+                  OR (pv.cashier_sync_id IS NULL AND pv.cashier_id = ?))`;
+    }
     // v1.10.185 — LCV filters for the Cost of Delivery page and to
     // keep the regular PV list free of LCVs. Both switches accept '1'.
     if (is_landed_cost === '1' || is_landed_cost === 1 || is_landed_cost === 'true') {
