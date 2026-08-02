@@ -39,7 +39,7 @@ const Login = () => {
     <div className="login-page">
       <div className="login-card">
         <div className="login-header">
-          <div className="login-logo">🚚</div>
+          <div className="login-logo"><img src="/sosna-logo.png" alt="Sosna" /></div>
           <h1>Sosna{hq ? ' HQ' : ''}</h1>
           <p>{hq ? 'Head Office' : 'Distribution Management'}</p>
         </div>

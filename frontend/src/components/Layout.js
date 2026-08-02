@@ -348,7 +348,7 @@ const Layout = () => {
       {/* Sidebar */}
       <div className={`sidebar ${collapsed ? 'collapsed' : ''} ${mobileOpen ? 'mobile-open' : ''}`}>
         <div className="sidebar-header">
-          <div className="sidebar-logo">🚚</div>
+          <div className="sidebar-logo"><img src="/sosna-logo.png" alt="Sosna" /></div>
           {!collapsed && (
             <div className="sidebar-brand">
               <h2>Sosna{hq ? ' HQ' : ''}</h2>

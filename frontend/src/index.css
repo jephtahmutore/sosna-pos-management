@@ -145,20 +145,18 @@ body.hq-theme .login-form .btn-primary:hover:not(:disabled) {
   background: rgba(0, 0, 0, 0.1);
 }
 
+/* v1.10.291 — swapped the white tile + truck emoji for the SGD SOSNA
+   badge image. Circle + gold ring live in the PNG so the tile shell
+   isn't needed. */
 .sidebar-logo {
-  width: 40px;
-  height: 40px;
-  background: rgba(255, 255, 255, 0.95);
-  border-radius: 12px;
+  width: 44px;
+  height: 44px;
   display: flex;
   align-items: center;
   justify-content: center;
-  color: #172554;
-  font-weight: 700;
-  font-size: 18px;
   flex-shrink: 0;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2), inset 0 -2px 4px rgba(0, 0, 0, 0.1);
 }
+.sidebar-logo img { width: 100%; height: 100%; object-fit: contain; filter: drop-shadow(0 4px 12px rgba(0, 0, 0, 0.4)); }
 
 .sidebar-brand h2 {
   font-size: 15px;
@@ -1618,24 +1616,21 @@ body.hq-theme .login-form .btn-primary:hover:not(:disabled) {
   margin-bottom: 36px;
 }
 
+/* v1.10.291 — replaced the truck emoji tile with the SGD SOSNA badge
+   image. The circular badge already carries its own background + gold
+   ring, so we drop the tile background/border/rounded-corner styling
+   and let the image speak. Kept the tilt + hover-straighten flourish. */
 .login-logo {
-  width: 84px;
-  height: 84px;
-  background: linear-gradient(135deg, #1E293B 0%, #0F172A 100%);
-  color: #F59E0B; /* amber */
-  border-radius: 22px;
+  width: 96px;
+  height: 96px;
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 40px;
   margin: 0 auto 22px;
-  box-shadow:
-    0 14px 32px rgba(15, 23, 42, 0.55),
-    inset 0 0 0 1px rgba(245, 158, 11, 0.45),
-    inset 0 -3px 8px rgba(0, 0, 0, 0.25);
   transform: rotate(-4deg);
   transition: transform 0.3s ease;
 }
+.login-logo img { width: 100%; height: 100%; object-fit: contain; filter: drop-shadow(0 14px 32px rgba(15, 23, 42, 0.55)); }
 .login-logo:hover { transform: rotate(0deg) scale(1.04); }
 
 .login-header h1 {

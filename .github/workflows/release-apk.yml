@@ -51,6 +51,19 @@ jobs:
         # density bucket. Overrides BOTH the legacy bitmap launchers and the
         # adaptive-icon foreground so Android 8+ devices use our icon instead
         # of the template placeholder.
+        #
+        # v1.10.291 — adaptive-icon FOREGROUND now scales the source image
+        # to ~66% of the canvas and pads with transparency to the full FG
+        # size. Android 8+ crops adaptive icons through a mask (circle /
+        # squircle / square depending on the user's theme); the safe zone
+        # for logo content is only the middle ~66×66 dp of the 108×108 dp
+        # canvas. The previous full-canvas stamp put the SGD SOSNA circle
+        # right against the crop mask edge, so devices with a rounded mask
+        # clipped the outer ring + "GENERAL DEALERS" text. Real report
+        # 2026-08-02: home-screen icon looked "too zoomed" — only the
+        # middle SGD letters survived the crop.
+        # Legacy ic_launcher.png / ic_launcher_round.png (Android <=7) are
+        # NOT adaptive-cropped, so they still fill the whole bitmap.
         run: |
           ICON=../assets/icon.png
           RES=app/src/main/res
@@ -60,7 +73,8 @@ jobs:
             mkdir -p "$RES/mipmap-$d"
             convert "$ICON" -resize ${LEGACY[$d]}x${LEGACY[$d]} "$RES/mipmap-$d/ic_launcher.png"
             convert "$ICON" -resize ${LEGACY[$d]}x${LEGACY[$d]} "$RES/mipmap-$d/ic_launcher_round.png"
-            convert "$ICON" -resize ${FG[$d]}x${FG[$d]}         "$RES/mipmap-$d/ic_launcher_foreground.png"
+            INNER=$(( ${FG[$d]} * 66 / 100 ))
+            convert "$ICON" -resize ${INNER}x${INNER} -background none -gravity center -extent ${FG[$d]}x${FG[$d]} "$RES/mipmap-$d/ic_launcher_foreground.png"
           done
           ls -la $RES/mipmap-xxxhdpi/
         working-directory: frontend/android
