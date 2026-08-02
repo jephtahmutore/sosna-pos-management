@@ -43,10 +43,16 @@
 
     /* Brand logo — larger, more prominent. Drop your Sosna logo image
        at frontend/electron/logo.png; splash prefers it and falls back
-       to icon.png when logo.png is absent. */
+       to icon.png when logo.png is absent.
+       v1.10.293 — squared the max-dimensions (180×180) and pinned
+       object-fit: contain so a near-square badge like SGD SOSNA fits
+       cleanly without clipping the outer ring / "GENERAL DEALERS"
+       text. Previous 180×120 cap made a 1:1 image render at ~121×120,
+       looking cramped inside the glow ring. */
     .logo {
-      max-width: 180px;
-      max-height: 120px;
+      width: 180px;
+      height: 180px;
+      object-fit: contain;
       margin-bottom: 18px;
       animation: pulse 2.4s ease-in-out infinite;
       position: relative;
