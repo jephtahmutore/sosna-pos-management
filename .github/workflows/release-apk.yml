@@ -79,6 +79,28 @@ jobs:
           ls -la $RES/mipmap-xxxhdpi/
         working-directory: frontend/android
 
+      - name: Set adaptive-icon background to slate navy
+        # Android 8+ adaptive icons composite ic_launcher_foreground.png
+        # onto a background layer. Capacitor's default background color
+        # is #FFFFFF (white), so on launchers with a rounded-square mask
+        # (MIUI, most OEM skins) the user sees the SGD SOSNA circle
+        # floating inside a white square — visible box around the logo.
+        # Overwriting ic_launcher_background.xml to the same slate navy
+        # as the sidebar/splash palette makes the mask crop to a dark
+        # navy square instead: on circle-mask launchers the badge is
+        # seamless, on squircle/rounded-square launchers it reads as
+        # a premium dark tile. Real report 2026-08-02 on MIUI: white
+        # halo around the SGD circle in the app drawer.
+        run: |
+          mkdir -p app/src/main/res/values
+          cat > app/src/main/res/values/ic_launcher_background.xml <<'XML'
+          <?xml version="1.0" encoding="utf-8"?>
+          <resources>
+              <color name="ic_launcher_background">#0F172A</color>
+          </resources>
+          XML
+        working-directory: frontend/android
+
       - name: Inject splash screen into every Android density bucket
         # Same approach as the icon — stamp splash.png into each drawable
         # folder. Capacitor's SplashScreen plugin reads @drawable/splash.
