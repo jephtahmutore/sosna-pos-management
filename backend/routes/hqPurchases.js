@@ -26,7 +26,7 @@ const { listTenants, isRegistered, masterDb } = require('../config/masterDb');
 // v1.10.245 — HQ page perm gate. Applied at router level (see below) so
 // every endpoint in this file demands HqPurchases perm.
 const { requirePagePerm, requireAnyPagePerm } = require('../middleware/auth');
-const { getTenantDb } = require('../config/tenantDb');
+const { getTenantDb, getTenantSyncIds } = require('../config/tenantDb');
 const { conversionToBase } = require('../config/unitsHelper');
 // v1.10.214 — per-device shortcode via syncConfig (Electron-safe).
 const syncConfig = require('../config/syncConfig');
@@ -541,6 +541,18 @@ router.put('/items/:itemId/confirm', hqAuth, requirePagePerm('HqPurchases'), (re
                synced         = 0
          WHERE sync_id = ?
       `).run(baseQty, cpPerBase, baseQty, cpPerBase, baseQty, prod.sync_id);
+      // v1.10.296 — was randomUUID(), null, null, null. Writing NULL
+      // scope fields created rows the sync `/pull` handler filters out
+      // (WHERE tenant_id = ?), so every branch client — including fresh
+      // Electron installs — was missing them, no matter how many Force
+      // Resyncs it ran (server-side filter, client can't bypass).
+      // Real report 2026-08-03 on lusaka1 MONARCH SMALL: an HQ-side
+      // purchase confirm wrote 2000 Bottle worth as an orphan and the
+      // branch's POS never saw it — computed sum was 45 while VPS truth
+      // was 2045. Resolves via the same destIds helper hqGrns.js already
+      // uses. See also tenantDb.js:74-83 for the original v1.10.287
+      // orphan-row incident that prompted the helper.
+      const destIds = getTenantSyncIds(toDb);
       toDb.prepare(`
         INSERT INTO stock_movements (product_id, product_sync_id, location, movement_type,
                                      quantity, reference_type, reference_sync_id,
@@ -552,7 +564,7 @@ router.put('/items/:itemId/confirm', hqAuth, requirePagePerm('HqPurchases'), (re
         baseQty, 'hq_purchase', item.sync_id,
         `HQ Purchase confirmed${confirm_notes ? ' — ' + confirm_notes : ''}`,
         branchSideCreatedBy,
-        randomUUID(), null, null, null
+        randomUUID(), destIds.tenant_id, destIds.branch_id, destIds.device_id
       );
     })();
 
