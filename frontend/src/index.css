@@ -92,12 +92,20 @@ body.hq-theme .login-page {
     radial-gradient(ellipse 55% 65% at bottom right, rgba(26, 6, 55, 0.85), transparent 55%),
     linear-gradient(135deg, #1a0637 0%, #2e1065 45%, #4c1d95 100%);
 }
+/* v1.10.295 — the SGD SOSNA badge PNG already carries its own dark
+   circular ground + gold ring. The old HQ-theme overrides wrapped it in
+   a second purple gradient square with a gold inset ring, so the login
+   card showed a dark circle floating inside a tilted purple tile — the
+   "violet square" report from 2026-08-03. Drop the container styling;
+   move the purple glow onto the image itself via drop-shadow so the
+   badge still feels planted on the purple page. Base .login-logo tilt
+   is neutralized in the shared rule below. */
 body.hq-theme .login-logo {
-  background: linear-gradient(135deg, #4c1d95 0%, #2e1065 100%);
-  box-shadow:
-    0 14px 32px rgba(46, 16, 101, 0.55),
-    inset 0 0 0 1px rgba(245, 158, 11, 0.45),
-    inset 0 -3px 8px rgba(0, 0, 0, 0.25);
+  background: none;
+  box-shadow: none;
+}
+body.hq-theme .login-logo img {
+  filter: drop-shadow(0 14px 32px rgba(46, 16, 101, 0.55));
 }
 body.hq-theme .login-form input:focus {
   border-color: #6d28d9;
@@ -1619,7 +1627,10 @@ body.hq-theme .login-form .btn-primary:hover:not(:disabled) {
 /* v1.10.291 — replaced the truck emoji tile with the SGD SOSNA badge
    image. The circular badge already carries its own background + gold
    ring, so we drop the tile background/border/rounded-corner styling
-   and let the image speak. Kept the tilt + hover-straighten flourish. */
+   and let the image speak.
+   v1.10.295 — dropped the always-on -4° tilt (was disorienting on a
+   symmetric circular badge, and the HQ theme's purple square made it
+   read as a rotated tile). Kept a subtle hover flourish for feedback. */
 .login-logo {
   width: 96px;
   height: 96px;
@@ -1627,11 +1638,10 @@ body.hq-theme .login-form .btn-primary:hover:not(:disabled) {
   align-items: center;
   justify-content: center;
   margin: 0 auto 22px;
-  transform: rotate(-4deg);
   transition: transform 0.3s ease;
 }
 .login-logo img { width: 100%; height: 100%; object-fit: contain; filter: drop-shadow(0 14px 32px rgba(15, 23, 42, 0.55)); }
-.login-logo:hover { transform: rotate(0deg) scale(1.04); }
+.login-logo:hover { transform: scale(1.04); }
 
 .login-header h1 {
   font-size: 26px;

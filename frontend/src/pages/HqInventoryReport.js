@@ -55,6 +55,20 @@ export default function HqInventoryReport() {
   const [loading, setLoading]   = useState(false);
   const [error, setError]       = useState('');
 
+  // v1.10.295 — Stock Lines are now cards. The 4 core fields (Product,
+  // On Hand, Cost, Value) show on the collapsed card; branch/category/
+  // min stock/unit sit behind an expand chevron. Same shape as the Sales
+  // Stock Levels card pattern the user already reads well. Per-branch
+  // row still — one product carried by 3 branches = 3 cards.
+  const [expandedRows, setExpandedRows] = useState(() => new Set());
+  const toggleRow = (key) => {
+    setExpandedRows(prev => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key); else next.add(key);
+      return next;
+    });
+  };
+
   useEffect(() => {
     // v1.10.154 — auto-select the first branch on load instead of showing
     // "All branches" (which mixes currencies and slows the query). User
@@ -192,92 +206,132 @@ export default function HqInventoryReport() {
             </div>
           </div>
 
-          {/* Flat row list */}
+          {/* v1.10.295 — Stock Lines as cards. Core 4 (Product / On Hand /
+              Cost / Value) always visible; Branch / Category / Min Stock /
+              Unit go behind a chevron. Matches the Sales Stock Levels
+              card pattern in SalesInventory.js (which the user reads
+              cleanly on the phone). The Totals + By Branch panels above
+              are unchanged. */}
           <div style={{ background: '#fff', border: '1px solid #e5e7eb', borderRadius: 10, padding: 14 }}>
             <h3 style={hd}>Stock Lines ({fmtInt(data.returned_rows)})</h3>
             {data.rows.length === 0 ? (
               <p style={{ color: '#94a3b8', fontSize: 13, fontStyle: 'italic' }}><FiPackage /> No products match the filters.</p>
             ) : (
-              <div style={{ overflowX: 'auto' }}>
-                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
-                  <thead style={{ background: '#f8fafc' }}>
-                    <tr>
-                      <th style={th}>Product</th>
-                      <th style={th}>Branch</th>
-                      <th style={th}>Category</th>
-                      <th style={{ ...th, textAlign: 'right' }}>On Hand</th>
-                      <th style={{ ...th, textAlign: 'right' }}>Min</th>
-                      <th style={{ ...th, textAlign: 'right' }}>Cost</th>
-                      <th style={{ ...th, textAlign: 'right' }}>Value</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {data.rows.map((r, i) => {
-                      // v1.10.149 — convert base-unit stock to Box + remainder
-                      // when the product has a multi-unit definition. Falls
-                      // back to plain "N Bottle" when there's no larger unit.
-                      const conv = convertToLargestUnit(r.current_stock, r.units_json, r.unit);
-                      const ccy = r.currency || 'USD';
-                      // v1.10.154 — Cost column follows the On Hand unit. If we
-                      // display "548 Box", show per-Box cost ($0.82 × 24 = $19.68),
-                      // not the per-Bottle base cost. Value column unchanged
-                      // (total = base_cost × base_stock).
-                      let displayCost = r.cost_price;
-                      let costUnit = '';
-                      if (conv) {
-                        // Look up the conv factor of the largest unit from units_json.
-                        try {
-                          const units = typeof r.units_json === 'string' ? JSON.parse(r.units_json) : r.units_json;
-                          const largest = (units || []).find(u => u.name === conv.primary.unit);
-                          const cf = parseFloat(largest?.conv) || 1;
-                          displayCost = (parseFloat(r.cost_price) || 0) * cf;
-                          costUnit = `/ ${conv.primary.unit}`;
-                        } catch (_) { /* keep base cost */ }
-                      }
-                      return (
-                      <tr key={`${r.branch_slug}-${r.product_id}-${i}`}
-                        style={{ borderTop: '1px solid #f1f5f9', background: r.low ? '#fffbeb' : '#fff' }}>
-                        <td style={td}>
-                          {r.name}
-                          {r.low && <span style={{ ...tag('#fef3c7', '#92400e'), marginLeft: 6 }}>LOW</span>}
-                        </td>
-                        <td style={td}><span style={tag('#e2e8f0', '#0f172a')}>{r.branch_slug}</span></td>
-                        <td style={{ ...td, color: '#64748b' }}>{r.category}</td>
-                        <td style={{ ...td, textAlign: 'right', fontWeight: 700 }}
-                            title={`${fmtQty(r.current_stock)} ${r.unit}`}>
-                          {conv ? (
-                            <>
-                              {fmtInt(conv.primary.qty)} <span style={{ fontSize: 11, color: '#94a3b8', fontWeight: 500 }}>{conv.primary.unit}</span>
-                              {conv.remainder.qty > 0 && (
-                                <>
-                                  {' + '}
-                                  {fmtInt(conv.remainder.qty)} <span style={{ fontSize: 11, color: '#94a3b8', fontWeight: 500 }}>{conv.remainder.unit}</span>
-                                </>
-                              )}
-                            </>
-                          ) : (
-                            <>
-                              {fmtQty(r.current_stock)} <span style={{ fontSize: 11, color: '#94a3b8', fontWeight: 500 }}>{r.unit}</span>
-                            </>
-                          )}
-                        </td>
-                        <td style={{ ...td, textAlign: 'right' }}>{fmtQty(r.min_stock)}</td>
-                        <td style={{ ...td, textAlign: 'right' }}
-                            title={`Base cost: ${fmtMoney(r.cost_price, ccy)} / ${r.unit || 'Bottle'}`}>
-                          {fmtMoney(displayCost, ccy)}
-                          {costUnit && <span style={{ fontSize: 11, color: '#94a3b8', fontWeight: 500 }}> {costUnit}</span>}
-                        </td>
-                        <td style={{ ...td, textAlign: 'right', fontWeight: 700 }}>{fmtMoney(r.value, ccy)}</td>
-                      </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 10 }}>
+                {data.rows.map((r, i) => {
+                  const key = `${r.branch_slug}-${r.product_id}-${i}`;
+                  return (
+                    <StockCard
+                      key={key}
+                      row={r}
+                      expanded={expandedRows.has(key)}
+                      onToggle={() => toggleRow(key)}
+                    />
+                  );
+                })}
               </div>
             )}
           </div>
         </>
       )}
+    </div>
+  );
+}
+
+// v1.10.295 — StockCard: card presentation for one (product × branch)
+// row. Reuses the same conv / displayCost logic that was inline in the
+// old table row so multi-unit rendering ("548 Box + 12 Bottle") + Cost-
+// follows-primary-unit ("$19.68 / Box") behave identically. Extracted
+// into its own component so the expand/collapse state works cleanly and
+// the map loop stays readable.
+function StockCard({ row: r, expanded, onToggle }) {
+  const conv = convertToLargestUnit(r.current_stock, r.units_json, r.unit);
+  const ccy  = r.currency || 'USD';
+  let displayCost = r.cost_price;
+  let costUnit = '';
+  if (conv) {
+    try {
+      const units = typeof r.units_json === 'string' ? JSON.parse(r.units_json) : r.units_json;
+      const largest = (units || []).find(u => u.name === conv.primary.unit);
+      const cf = parseFloat(largest?.conv) || 1;
+      displayCost = (parseFloat(r.cost_price) || 0) * cf;
+      costUnit = `/ ${conv.primary.unit}`;
+    } catch (_) { /* keep base cost */ }
+  }
+
+  return (
+    <div style={{
+      background: r.low ? '#fffbeb' : '#fff',
+      border: `1px solid ${expanded ? '#0ea5e9' : (r.low ? '#fde68a' : '#e2e8f0')}`,
+      borderRadius: 8,
+      padding: 12,
+      display: 'flex',
+      flexDirection: 'column',
+    }}>
+      {/* Header — clickable to expand */}
+      <button
+        type="button"
+        onClick={onToggle}
+        style={{ all: 'unset', cursor: 'pointer', display: 'block', width: '100%', marginBottom: 8 }}
+      >
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', flex: 1 }}>
+            <div style={{ fontSize: 13, fontWeight: 700, color: '#0f172a', lineHeight: 1.25 }}>{r.name}</div>
+            {r.low && <span style={tag('#fef3c7', '#92400e')}>LOW</span>}
+          </div>
+          <div style={{ fontSize: 16, color: '#94a3b8', flexShrink: 0 }}>{expanded ? '▲' : '▼'}</div>
+        </div>
+      </button>
+
+      {/* Core 4 fields — always visible */}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+        <CardRow label="On Hand" title={`${fmtQty(r.current_stock)} ${r.unit}`}>
+          {conv ? (
+            <>
+              <strong>{fmtInt(conv.primary.qty)}</strong>
+              <span style={{ fontSize: 11, color: '#94a3b8', fontWeight: 500 }}> {conv.primary.unit}</span>
+              {conv.remainder.qty > 0 && (
+                <>
+                  <span style={{ color: '#64748b' }}> + </span>
+                  <strong>{fmtInt(conv.remainder.qty)}</strong>
+                  <span style={{ fontSize: 11, color: '#94a3b8', fontWeight: 500 }}> {conv.remainder.unit}</span>
+                </>
+              )}
+            </>
+          ) : (
+            <>
+              <strong>{fmtQty(r.current_stock)}</strong>
+              <span style={{ fontSize: 11, color: '#94a3b8', fontWeight: 500 }}> {r.unit}</span>
+            </>
+          )}
+        </CardRow>
+        <CardRow label="Cost" title={`Base cost: ${fmtMoney(r.cost_price, ccy)} / ${r.unit || 'Bottle'}`}>
+          <strong>{fmtMoney(displayCost, ccy)}</strong>
+          {costUnit && <span style={{ fontSize: 11, color: '#94a3b8', fontWeight: 500 }}> {costUnit}</span>}
+        </CardRow>
+        <CardRow label="Value">
+          <strong style={{ fontSize: 14 }}>{fmtMoney(r.value, ccy)}</strong>
+        </CardRow>
+      </div>
+
+      {/* Expandable — the rest */}
+      {expanded && (
+        <div style={{ marginTop: 10, paddingTop: 8, borderTop: '1px solid #f1f5f9', display: 'flex', flexDirection: 'column', gap: 4 }}>
+          <CardRow label="Branch"><span style={tag('#e2e8f0', '#0f172a')}>{r.branch_slug}</span></CardRow>
+          <CardRow label="Category"><span style={{ color: '#64748b' }}>{r.category || '—'}</span></CardRow>
+          <CardRow label="Min Stock"><strong>{fmtQty(r.min_stock)}</strong> <span style={{ fontSize: 11, color: '#94a3b8', fontWeight: 500 }}>{r.unit}</span></CardRow>
+          <CardRow label="Unit"><span>{r.unit || '—'}</span></CardRow>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function CardRow({ label, children, title }) {
+  return (
+    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', fontSize: 12, gap: 8 }} title={title || undefined}>
+      <span style={{ color: '#64748b' }}>{label}</span>
+      <span style={{ color: '#0f172a', textAlign: 'right' }}>{children}</span>
     </div>
   );
 }

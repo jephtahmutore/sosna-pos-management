@@ -28,6 +28,21 @@ export default function HqSalesReport() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
+  // v1.10.295 — Orders block sub-tabs: 'orders' (default) shows the flat
+  // order card list; 'items' shows product-aggregated cards from the new
+  // items_by_ccy backend field. Top branch filter drives both. Mixed
+  // currencies render as separate K + $ rows (same axis as HQ Inventory's
+  // stock_value_by_currency — never sum K + USD).
+  const [ordersSubTab, setOrdersSubTab] = useState('orders');
+  const [expandedItems, setExpandedItems] = useState(() => new Set());
+  const toggleItem = (key) => {
+    setExpandedItems(prev => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key); else next.add(key);
+      return next;
+    });
+  };
+
   useEffect(() => {
     getHqBranches().then(r => setBranches(r.data?.branches || [])).catch(() => {});
   }, []);
@@ -60,6 +75,17 @@ export default function HqSalesReport() {
     return ['USD', 'K']
       .map(c => ({ ccy: c, revenue: parseFloat(rev[c] || 0), received: parseFloat(rec[c] || 0) }))
       .filter(r => r.revenue !== 0 || r.received !== 0);
+  }, [data]);
+
+  // v1.10.295 — By Item sub-tab: currency-bucketed list of product rows
+  // for the visible date range. Server pre-sorts by revenue desc within
+  // each currency. USD first (top of the file), then K. Only non-empty
+  // buckets render.
+  const itemsByCcyList = useMemo(() => {
+    const map = data?.items_by_ccy || {};
+    return ['USD', 'K']
+      .map(c => ({ ccy: c, items: map[c] || [] }))
+      .filter(r => r.items.length > 0);
   }, [data]);
 
   // v1.10.279 — openInBranch removed with the per-row "Open" buttons.
@@ -141,53 +167,155 @@ export default function HqSalesReport() {
             </div>
           </div>
 
-          {/* ── Order list ─────────────────────────────────────────── */}
+          {/* ── Orders block: [Orders | By Item] sub-tabs ────────────
+               v1.10.295 — By Branch (the panel above) stays as a list —
+               that block reads fine as rows. The change is here: the
+               order list becomes cards + gains a sibling "By Item" tab
+               that aggregates the same date range by product. Both tabs
+               are cards so nothing scrolls sideways on a phone. */}
           <div style={{ background: '#fff', border: '1px solid #e5e7eb', borderRadius: 10, padding: 14 }}>
-            <h3 style={hd}>Orders ({fmtInt(data.returned_rows)})</h3>
-            {data.orders.length === 0 ? (
-              <p style={{ color: '#94a3b8', fontSize: 13, fontStyle: 'italic' }}>No orders match the filters.</p>
-            ) : (
-              <div style={{ overflowX: 'auto' }}>
-                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
-                  <thead style={{ background: '#f8fafc' }}>
-                    <tr>
-                      <th style={th}>Date</th>
-                      <th style={th}>Order #</th>
-                      <th style={th}>Branch</th>
-                      <th style={th}>Customer</th>
-                      <th style={{ ...th, textAlign: 'right' }}>Total</th>
-                      <th style={{ ...th, textAlign: 'right' }}>Received</th>
-                      <th style={th}>Status</th>
-                      <th style={th}>By</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {data.orders.map(o => {
-                      const when = o.paid_at || o.created_at || '';
-                      return (
-                        <tr key={`${o.branch_slug}-${o.id}`} style={{ borderTop: '1px solid #f1f5f9' }}>
-                          <td style={td}>{when ? new Date(when).toLocaleString() : '—'}</td>
-                          <td style={{ ...td, fontFamily: 'monospace', fontSize: 12 }}>{o.order_number}</td>
-                          <td style={td}>
-                            <span style={tag('#e2e8f0', '#0f172a')}>{o.branch_slug}</span>
-                          </td>
-                          <td style={td}>{o.customer_name || 'Walk-in'}</td>
-                          <td style={{ ...td, textAlign: 'right', fontWeight: 700 }}>{fmtMoneyCcy(o.total_amount, o.branch_currency || o.currency)}</td>
-                          <td style={{ ...td, textAlign: 'right' }}>{fmtMoneyCcy(o.amount_received, o.branch_currency || o.currency)}</td>
-                          <td style={td}>{statusBadge(o.status)}</td>
-                          <td style={td}>{o.created_by_name || '—'}</td>
-                          {/* v1.10.279 — per-row "Open" branch button
-                              removed (same rationale as v1.10.274-276);
-                              sidebar dropdown is the sole branch switch. */}
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8, marginBottom: 12 }}>
+              <h3 style={{ ...hd, margin: 0 }}>
+                {ordersSubTab === 'orders'
+                  ? `Orders (${fmtInt(data.returned_rows)})`
+                  : `By Item (${itemsByCcyList.reduce((a, r) => a + r.items.length, 0)})`}
+              </h3>
+              <div style={subTabStrip}>
+                <button
+                  type="button"
+                  onClick={() => setOrdersSubTab('orders')}
+                  style={subTab(ordersSubTab === 'orders')}
+                >Orders</button>
+                <button
+                  type="button"
+                  onClick={() => setOrdersSubTab('items')}
+                  style={subTab(ordersSubTab === 'items')}
+                >By Item</button>
               </div>
+            </div>
+
+            {ordersSubTab === 'orders' && (
+              data.orders.length === 0 ? (
+                <p style={{ color: '#94a3b8', fontSize: 13, fontStyle: 'italic' }}>No orders match the filters.</p>
+              ) : (
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 10 }}>
+                  {data.orders.map(o => (
+                    <OrderCard key={`${o.branch_slug}-${o.id}`} o={o} />
+                  ))}
+                </div>
+              )
+            )}
+
+            {ordersSubTab === 'items' && (
+              itemsByCcyList.length === 0 ? (
+                <p style={{ color: '#94a3b8', fontSize: 13, fontStyle: 'italic' }}>No line items in this range.</p>
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
+                  {itemsByCcyList.map(bucket => (
+                    <div key={bucket.ccy}>
+                      <div style={{ fontSize: 12, fontWeight: 700, color: '#64748b', letterSpacing: 0.6, textTransform: 'uppercase', marginBottom: 8 }}>
+                        {bucket.ccy === 'USD' ? 'USD sales' : 'K sales'} · {bucket.items.length} product{bucket.items.length === 1 ? '' : 's'}
+                      </div>
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 10 }}>
+                        {bucket.items.map(it => {
+                          const key = `${bucket.ccy}-${it.product_id || 'x'}-${it.product_name}`;
+                          return (
+                            <ItemCard
+                              key={key}
+                              item={it}
+                              ccy={bucket.ccy}
+                              expanded={expandedItems.has(key)}
+                              onToggle={() => toggleItem(key)}
+                            />
+                          );
+                        })}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )
             )}
           </div>
         </>
+      )}
+    </div>
+  );
+}
+
+// v1.10.295 — Order card. Replaces the wide table row; carries the same
+// data (date, order#, branch, customer, total, received, status, by) but
+// stacks vertically so it reads on a phone without sideways scroll.
+function OrderCard({ o }) {
+  const when = o.paid_at || o.created_at || '';
+  const ccy  = o.branch_currency || o.currency;
+  return (
+    <div style={cardShell}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8, marginBottom: 6 }}>
+        <div style={{ fontFamily: 'monospace', fontSize: 12, color: '#0f172a', fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{o.order_number}</div>
+        <div style={{ fontSize: 15, fontWeight: 800, color: '#0f172a', whiteSpace: 'nowrap' }}>{fmtMoneyCcy(o.total_amount, ccy)}</div>
+      </div>
+      <div style={{ fontSize: 11, color: '#64748b', marginBottom: 6 }}>
+        {when ? new Date(when).toLocaleString() : '—'}
+      </div>
+      <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap', marginBottom: 6 }}>
+        <span style={tag('#e2e8f0', '#0f172a')}>{o.branch_slug}</span>
+        <span style={{ fontSize: 12, color: '#0f172a' }}>{o.customer_name || 'Walk-in'}</span>
+      </div>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: 11, color: '#475569', borderTop: '1px solid #f1f5f9', paddingTop: 6 }}>
+        <div>Received <strong style={{ color: '#0f172a' }}>{fmtMoneyCcy(o.amount_received, ccy)}</strong></div>
+        <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
+          {statusBadge(o.status)}
+        </div>
+      </div>
+      <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 4 }}>
+        by {o.created_by_name || '—'}
+      </div>
+    </div>
+  );
+}
+
+// v1.10.295 — By Item card. Compact header with product name + qty +
+// revenue; chevron expands to show the per-branch breakdown fed by the
+// backend's items_by_ccy[ccy][n].branches map. Never mixes currencies —
+// USD products live in one bucket, K products in another.
+function ItemCard({ item, ccy, expanded, onToggle }) {
+  const branchEntries = Object.entries(item.branches || {});
+  return (
+    <div style={{ ...cardShell, borderColor: expanded ? '#0ea5e9' : '#e2e8f0' }}>
+      <button
+        type="button"
+        onClick={onToggle}
+        style={{ all: 'unset', cursor: 'pointer', display: 'block', width: '100%' }}
+      >
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8, marginBottom: 6 }}>
+          <div style={{ fontSize: 13, fontWeight: 700, color: '#0f172a', lineHeight: 1.25 }}>{item.product_name}</div>
+          <div style={{ fontSize: 16, color: '#94a3b8', flexShrink: 0 }}>{expanded ? '▲' : '▼'}</div>
+        </div>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 8 }}>
+          <div style={{ fontSize: 11, color: '#64748b' }}>Sold <strong style={{ color: '#0f172a' }}>{fmtNum(item.qty)}</strong></div>
+          <div style={{ fontSize: 15, fontWeight: 800, color: '#0f172a', whiteSpace: 'nowrap' }}>{fmtMoneyCcy(item.revenue, ccy)}</div>
+        </div>
+        {branchEntries.length > 0 && (
+          <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', marginTop: 6 }}>
+            {branchEntries.map(([slug]) => (
+              <span key={slug} style={tag('#e2e8f0', '#0f172a')}>{slug}</span>
+            ))}
+          </div>
+        )}
+      </button>
+      {expanded && (
+        <div style={{ marginTop: 10, paddingTop: 8, borderTop: '1px solid #f1f5f9', display: 'flex', flexDirection: 'column', gap: 4 }}>
+          {branchEntries.map(([slug, b]) => (
+            <div key={slug} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12 }}>
+              <div style={{ color: '#64748b' }}>{b.name || slug}</div>
+              <div style={{ color: '#0f172a', fontWeight: 600 }}>{fmtNum(b.qty)} · {fmtMoneyCcy(b.revenue, ccy)}</div>
+            </div>
+          ))}
+          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, marginTop: 4, borderTop: '1px dashed #e2e8f0', paddingTop: 4 }}>
+            <div style={{ color: '#64748b' }}>Orders</div>
+            <div style={{ color: '#0f172a', fontWeight: 600 }}>{fmtInt(item.orders_count)}</div>
+          </div>
+        </div>
       )}
     </div>
   );
@@ -226,3 +354,25 @@ const td  = { padding: '8px 12px', color: '#0f172a' };
 const thS = { padding: '6px 8px', fontSize: 11, color: '#64748b', fontWeight: 700, textAlign: 'left' };
 const tdS = { padding: '6px 8px', color: '#0f172a' };
 const tag = (bg, fg) => ({ background: bg, color: fg, fontSize: 11, fontWeight: 700, padding: '2px 8px', borderRadius: 10, textTransform: 'uppercase', letterSpacing: 0.4 });
+
+// v1.10.295 — sub-tab strip + card shells for the new Orders block.
+const subTabStrip = { display: 'inline-flex', gap: 4, padding: 3, background: '#f1f5f9', borderRadius: 8 };
+const subTab = (active) => ({
+  padding: '6px 14px',
+  fontSize: 12,
+  fontWeight: 600,
+  color: active ? '#0f172a' : '#64748b',
+  background: active ? '#fff' : 'transparent',
+  border: 'none',
+  borderRadius: 6,
+  cursor: 'pointer',
+  boxShadow: active ? '0 1px 2px rgba(15,23,42,0.06)' : 'none',
+});
+const cardShell = {
+  background: '#fff',
+  border: '1px solid #e2e8f0',
+  borderRadius: 8,
+  padding: 12,
+  display: 'flex',
+  flexDirection: 'column',
+};

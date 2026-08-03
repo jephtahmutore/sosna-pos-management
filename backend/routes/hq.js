@@ -229,6 +229,12 @@ router.get('/sales-report', hqAuth, requirePagePerm('HqSalesReport'), (req, res)
     // '2026-06-19 23:59:30' falls under to='2026-06-19'.
     const tenants = listTenants().filter(t => branch === 'all' || t.slug === branch);
     const rows = [];
+    // v1.10.295 — collect per-tenant item aggregates alongside orders so
+    // the frontend's new "By Item" sub-tab has a product roll-up without
+    // a second network round-trip. One row per (product × branch); the
+    // final merge across branches happens after the tenant loop, keyed by
+    // product_id + currency so mixed-currency ranges never sum K + USD.
+    const tenantItems = [];
 
     // Per-branch currency map so we can tag every order + bucket with the
     // right symbol on the client. Branch's business_settings.currency_mode
@@ -272,6 +278,39 @@ router.get('/sales-report', hqAuth, requirePagePerm('HqSalesReport'), (req, res)
             branch_currency: ccy,
           });
         }
+
+        // v1.10.295 — pull item-level aggregates in the same date window.
+        // Excludes reversed items so partial returns don't inflate the
+        // qty/revenue. Line-level filter, not order-level, since a paid
+        // order can have some lines reversed via Sales Return.
+        const items = db.prepare(`
+          SELECT oi.product_id,
+                 oi.product_name,
+                 SUM(oi.quantity)    AS qty_sold,
+                 SUM(oi.total_price) AS revenue,
+                 COUNT(DISTINCT oi.order_id) AS orders_count
+            FROM order_items oi
+            JOIN orders o ON o.id = oi.order_id
+           WHERE o.deleted_at IS NULL
+             AND substr(COALESCE(o.paid_at, o.created_at), 1, 10) >= ?
+             AND substr(COALESCE(o.paid_at, o.created_at), 1, 10) <= ?
+             AND (o.status IS NULL OR o.status != 'Reversed')
+             AND (oi.reversed IS NULL OR oi.reversed = 0)
+           GROUP BY oi.product_id, oi.product_name
+        `).all(from, to);
+
+        for (const it of items) {
+          tenantItems.push({
+            product_id:   it.product_id,
+            product_name: it.product_name,
+            qty:          parseFloat(it.qty_sold)     || 0,
+            revenue:      parseFloat(it.revenue)      || 0,
+            orders_count: parseInt(it.orders_count, 10) || 0,
+            branch_slug:  t.slug,
+            branch_name:  branchName,
+            currency:     ccy,
+          });
+        }
       } catch (e) {
         // Skip branches that error out — they'll show up missing rather
         // than failing the whole report.
@@ -305,6 +344,41 @@ router.get('/sales-report', hqAuth, requirePagePerm('HqSalesReport'), (req, res)
       return acc;
     }, { orders: 0, revenue_by_ccy: {}, received_by_ccy: {}, by_branch: {} });
 
+    // v1.10.295 — merge per-tenant item rows across branches, keyed by
+    // (product_id or product_name) + currency so a product sold in both
+    // K and USD branches appears twice (once per bucket), never summed.
+    // Sorted by revenue desc within each currency so the top sellers land
+    // at the top of the By Item sub-tab.
+    const itemsByCcyMap = {};
+    for (const it of tenantItems) {
+      const ccy = it.currency;
+      if (!itemsByCcyMap[ccy]) itemsByCcyMap[ccy] = new Map();
+      const key = `${it.product_id || 'null'}::${it.product_name}`;
+      const existing = itemsByCcyMap[ccy].get(key) || {
+        product_id: it.product_id,
+        product_name: it.product_name,
+        currency: ccy,
+        qty: 0,
+        revenue: 0,
+        orders_count: 0,
+        branches: {},
+      };
+      existing.qty          += it.qty;
+      existing.revenue      += it.revenue;
+      existing.orders_count += it.orders_count;
+      existing.branches[it.branch_slug] = existing.branches[it.branch_slug] || {
+        name: it.branch_name, qty: 0, revenue: 0,
+      };
+      existing.branches[it.branch_slug].qty     += it.qty;
+      existing.branches[it.branch_slug].revenue += it.revenue;
+      itemsByCcyMap[ccy].set(key, existing);
+    }
+    const items_by_ccy = {};
+    for (const [ccy, map] of Object.entries(itemsByCcyMap)) {
+      items_by_ccy[ccy] = Array.from(map.values())
+        .sort((a, b) => b.revenue - a.revenue);
+    }
+
     res.json({
       from, to, branch,
       total_rows: rows.length,
@@ -312,6 +386,7 @@ router.get('/sales-report', hqAuth, requirePagePerm('HqSalesReport'), (req, res)
       truncated: rows.length > capped.length,
       totals,
       orders: capped,
+      items_by_ccy,
     });
   } catch (error) {
     res.status(500).json({ error: error.message });
