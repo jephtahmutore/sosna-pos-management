@@ -10,7 +10,12 @@
   html, body {
     margin: 0; padding: 0; height: 100%;
     font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-    background: linear-gradient(135deg, #1e40af 0%, #172554 100%);
+    /* v1.10.294 — slate-navy gradient matches the Electron splash
+       (splash.html body) and the in-app sidebar (index.css .sidebar)
+       so mobile boot → tenant URL reads as one visual system. Was
+       linear-gradient(135deg, #1e40af, #172554) — a foreign royal
+       blue that clashed with the rest of the app palette. */
+    background: linear-gradient(180deg, #1E293B 0%, #0F172A 50%, #020617 100%);
     color: #fff;
     -webkit-font-smoothing: antialiased;
   }
@@ -187,6 +192,16 @@
     let pendingSite = null;
     function onBranchPicked(site) {
       pendingSite = site;
+      // v1.10.294 — HQ has no per-device license concept. The web
+      // login on sosnazm.com is what authenticates. Skip Step 2 for HQ
+      // only; branches still get the license field as a lightweight
+      // device identifier.
+      if (site.id === 'hq') {
+        setSaved(KEY_SITE, site);
+        setSaved(KEY_LICENSE, { key: 'HQ-NO-LICENSE', siteId: site.id });
+        loadSite(site);
+        return;
+      }
       document.getElementById('branch-name').textContent = site.label;
       document.getElementById('branch-host').textContent = site.host;
       document.getElementById('license-input').value = '';

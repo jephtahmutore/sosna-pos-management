@@ -120,7 +120,11 @@
       line-height: 1.9;
       text-align: center;
       letter-spacing: 0.3px;
-      margin-bottom: 22px;
+      /* v1.10.294 — trimmed from 22px so the loader bar + status text
+         sit ~15px above the version footer inside the 440px window.
+         Paired with the main.js splash window height bump; see
+         createSplashWindow() there. */
+      margin-bottom: 12px;
     }
 
     .loader-track {

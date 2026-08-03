@@ -135,7 +135,14 @@ function waitForBackend(retries = 30) {
 function createSplashWindow() {
   splashWindow = new BrowserWindow({
     width: 420,
-    height: 380,
+    // v1.10.294 — was 380; grew to 440 because v1.10.293 enlarged the
+    // splash logo to 180×180 which pushed the loader bar + status text
+    // ("Checking for updates…") past the bottom of the window, hiding
+    // them entirely (only the absolute-positioned version footer stayed
+    // visible). 440 restores comfortable clearance above the version
+    // line for both loader + status. Paired with a small dev-info
+    // margin trim in splash.html — see comment there.
+    height: 440,
     frame: false,
     transparent: false,
     resizable: false,
