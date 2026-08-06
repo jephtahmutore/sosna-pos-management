@@ -231,8 +231,14 @@ const AccountReceivables = () => {
     setTimeout(() => { w.print(); w.close(); }, 300);
   };
 
-  // Receivables tab — only customers with a balance (or who have ever transacted)
-  const receivablesRows = rows.filter(r => r._sold > 0 || r._paid > 0)
+  // v1.10.300 — was filtering to only customers with sold > 0 OR paid > 0,
+  // which hid every zero-activity customer even when the user searched for
+  // them by name. Real report 2026-08-06 on lusaka1: "Rashida" (Regular /
+  // Cash only / K0 outstanding) existed in Customers but never appeared in
+  // AR search results because she'd never transacted. Now: show all
+  // customers, sort by outstanding first (biggest debtor at top), zero-
+  // activity rows fall to the bottom with a "No Sales" status badge.
+  const receivablesRows = rows
     .filter(r => matchTokens(search, r.name, r.phone, r.email))
     // Most negative balance first — biggest debtor at top under the flipped convention.
     .sort((a, b) => a._balance - b._balance);

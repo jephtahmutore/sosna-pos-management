@@ -1220,7 +1220,11 @@ const SalesReport = () => {
                   const credit = Math.max(0, parseFloat(o.total_amount || 0) - parseFloat(o.amount_received || 0));
                   return (
                     <tr key={o.id}>
-                      <td style={{ padding: '8px 12px' }}>{(o.date || '').slice(0,10)}</td>
+                      {/* v1.10.300 — was o.date (undefined field, cell rendered
+                          empty). Orders carry paid_at / sales_at / created_at;
+                          fall back through them in the same order the backend
+                          uses for ORDER BY. */}
+                      <td style={{ padding: '8px 12px' }}>{(o.paid_at || o.sales_at || o.created_at || '').slice(0,10)}</td>
                       <td style={{ padding: '8px 12px', fontFamily: 'monospace' }}>{o.order_number}</td>
                       <td style={{ padding: '8px 12px' }}>{o.customer_name || 'Walk-in'}</td>
                       <td style={{ padding: '8px 12px', textAlign: 'right', fontWeight: 600 }}>{fmtK(o.total_amount)}</td>
