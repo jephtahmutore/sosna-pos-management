@@ -304,6 +304,50 @@ router.get('/incoming', hqAuth, requireAnyPagePerm(['HqPurchases', 'IncomingStoc
   }
 });
 
+// GET /api/hq/purchases/incoming-history?slug=&from=&to=
+// v1.10.299 — Branch-facing history for the IncomingStock page. Returns
+// every line whose destination_slug matches AND has already been finalized
+// (CONFIRMED / CANCELLED / BRANCH_REJECTED). Optional date range filters
+// on the line's most-relevant timestamp (confirmed_at / cancelled_at /
+// received_at fall back to the parent PO date). Same page-perm shape as
+// /incoming so any user who can see the pending queue can also see the
+// history for their branch.
+router.get('/incoming-history', hqAuth, requireAnyPagePerm(['HqPurchases', 'IncomingStock', 'Stock']), (req, res) => {
+  try {
+    const slug = String(req.query.slug || '').toLowerCase();
+    if (!slug) return res.status(400).json({ error: 'slug is required' });
+    const from = String(req.query.from || '').slice(0, 10);   // YYYY-MM-DD, optional
+    const to   = String(req.query.to   || '').slice(0, 10);   // YYYY-MM-DD, optional
+
+    // Prefer the finalization timestamp when filtering by date; fall back
+    // to received_at, then the parent PO date so old rows without those
+    // fields still bucket somewhere reasonable.
+    const dateExpr = `COALESCE(i.confirmed_at, i.cancelled_at, i.received_at, p.date)`;
+    const clauses = [
+      `i.destination_slug = ?`,
+      `i.status IN ('CONFIRMED', 'CANCELLED', 'BRANCH_REJECTED')`,
+    ];
+    const params = [slug];
+    if (from) { clauses.push(`substr(${dateExpr}, 1, 10) >= ?`); params.push(from); }
+    if (to)   { clauses.push(`substr(${dateExpr}, 1, 10) <= ?`); params.push(to); }
+
+    const rows = masterDb.prepare(`
+      SELECT i.*,
+             p.purchase_number, p.supplier_name, p.supplier_id, p.invoice_number,
+             p.date AS purchase_date, p.notes AS purchase_notes,
+             p.created_by_name AS hq_user
+        FROM hq_purchase_items i
+        JOIN hq_purchases p ON p.id = i.purchase_id
+       WHERE ${clauses.join(' AND ')}
+       ORDER BY ${dateExpr} DESC, i.id DESC
+       LIMIT 500
+    `).all(...params);
+    res.json({ items: rows });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // GET /api/hq/purchases/awaiting-confirmation
 // HQ-facing — every line that branches have submitted GRNs for and
 // HQ hasn't confirmed yet. Drives the "Confirm GRN" page + the HQ

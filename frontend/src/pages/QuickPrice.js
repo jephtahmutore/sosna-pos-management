@@ -120,7 +120,16 @@ const QuickPrice = () => {
     const conv = parseFloat(unit.conv) || 1;
     const dfltName = defaultUnitName(product);
     const isDefault = (unit.name || '').trim() === dfltName;
-    if (isDefault) {
+    // v1.10.299 — treat "base unit edited" the same as "default unit edited".
+    // Backend's bulk-update-prices refuses to store overrides on the base unit
+    // (products.js:897 short-circuits on !unit.is_base), so if we routed a
+    // base-unit edit through the override branch, the typed value was silently
+    // dropped and the row reverted to base_price × 1 on next load.
+    // Real report 2026-08-06 on mansa1: 4TH STREET RED 750ML Bottle
+    // (base=Bottle, default=Box) edited from 110 → 105 saved OK per the toast
+    // but reloaded as 110 every time. Cascade path already does exactly the
+    // right thing here — for a base unit conv=1, safe/conv = safe.
+    if (isDefault || unit.is_base) {
       setBasePrices(prev => ({ ...prev, [product.id]: safe / conv }));
       setUnitPrices(prev => {
         if (!prev[product.id]) return prev;

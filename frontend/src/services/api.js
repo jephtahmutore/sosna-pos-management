@@ -310,6 +310,9 @@ export const getHqPurchases = (params) => api.get('/hq/purchases', { params });
 export const getHqPurchase = (id) => api.get(`/hq/purchases/${id}`);
 export const createHqPurchase = (data) => api.post('/hq/purchases', data);
 export const getHqPurchaseIncoming = (slug) => api.get('/hq/purchases/incoming', { params: { slug } });
+// v1.10.299 — History tab on IncomingStock. Finalized lines (CONFIRMED /
+// CANCELLED / BRANCH_REJECTED) for the given branch, optionally date-filtered.
+export const getHqPurchaseIncomingHistory = (slug, from, to) => api.get('/hq/purchases/incoming-history', { params: { slug, from, to } });
 // v1.3.0 split: branch SUBMITS a GRN (status → GRN_SUBMITTED, no stock yet);
 // HQ then CONFIRMS (stock + AP land) or REJECTS (back to AWAITING_GRN).
 export const submitHqPurchaseGrn   = (itemId, data) => api.put(`/hq/purchases/items/${itemId}/submit-grn`, data);
