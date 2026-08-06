@@ -396,7 +396,11 @@ const Layout = () => {
               live inside it instead of as a flat top-level entry. The
               existing branch-only children stay gated with !hq; the HQ
               Sales Report child is gated with hq. */}
-          {(hq || hasPageAccess('POS', 'Cashier', 'Dispatch', 'SalesReport', 'SalesInventory', 'CashReport', 'SalesBinCard')) && (collapsed ? (
+          {/* v1.10.298 — Sales gate widened to include SalesStockCard
+              (added to Users.js PAGE_GROUPS in v1.10.245 but never
+              propagated to this parent gate). A user with only
+              SalesStockCard:View saw no Sales section at all. */}
+          {(hq || hasPageAccess('POS', 'Cashier', 'Dispatch', 'SalesReport', 'SalesInventory', 'CashReport', 'SalesBinCard', 'SalesStockCard')) && (collapsed ? (
             <div className={`nav-item ${isGroupActive(['/pos', '/hq/sales-report']) ? 'active' : ''}`} onClick={() => navigate(hq ? '/hq/sales-report' : '/pos')}>
               <FiShoppingCart className="nav-icon" />
             </div>
@@ -469,7 +473,21 @@ const Layout = () => {
           ))}
 
           {/* Stock Group */}
-          {!collapsed && hasPageAccess('Items', 'GRN', 'SIV', 'SalesReturns', 'Inventory', 'BinCard', 'StockAdjustment', 'Categories', 'ExpiryReport', 'StockCount') && (
+          {/* v1.10.298 — Store gate widened to include the branch keys added
+              in v1.10.245 (QuickPrice, StockReconciliation, IncomingStock,
+              StockTransfers) plus every HQ page rendered as a child below.
+              Real report 2026-08-06: user edron sianongo on mansa1 had
+              IncomingStock + StockTransfers ticked but the whole Store
+              dropdown was hidden — no key in his perms matched this list.
+              Every child still has its own hasPageAccess() guard so widening
+              the parent can't leak anything. */}
+          {!collapsed && hasPageAccess(
+            'Items', 'GRN', 'SIV', 'SalesReturns', 'Inventory', 'BinCard',
+            'StockAdjustment', 'Categories', 'ExpiryReport', 'StockCount',
+            'QuickPrice', 'StockReconciliation', 'IncomingStock', 'StockTransfers',
+            'HqInventoryReport', 'HqPurchases', 'HqCostOfDelivery',
+            'HqConfirmGrn', 'HqGrnArchive', 'HqVariances', 'HqConfirmDamages'
+          ) && (
             <>
               <div className={`nav-group-header ${isGroupActive(['/stock']) ? 'active' : ''}`} onClick={() => toggleGroup('stock')}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
@@ -646,7 +664,19 @@ const Layout = () => {
               group renders on HQ too. Per-item visibility flags below keep
               HQ from seeing branch-only entries (Cash Receipt / PV /
               Receivables / Profit Report). */}
-          {!collapsed && hasPageAccess('CashReceipt', 'PaymentVoucher', 'CashBook', 'FxRates', 'AccountPayables', 'AccountReceivables', 'ProfitReport') && (
+          {/* v1.10.298 — Accounting gate widened to include the 8 HQ-side keys
+              (PvTypes, HQDeposits, CapitalAccount, DividendAccount,
+              Shareholders, LoanAccount, HqCashPosition, HqConsolidatedProfit)
+              that render as children below. Was gated on only 7 keys → a
+              user with just LoanAccount:View (or Shareholders, or HQ Deposits)
+              saw no Accounting section at all. Same pattern as the Store
+              gate fix in this bump. */}
+          {!collapsed && hasPageAccess(
+            'CashReceipt', 'PaymentVoucher', 'PvTypes', 'CashBook', 'HQDeposits',
+            'FxRates', 'AccountPayables', 'AccountReceivables', 'ProfitReport',
+            'CapitalAccount', 'DividendAccount', 'Shareholders', 'LoanAccount',
+            'HqCashPosition', 'HqConsolidatedProfit'
+          ) && (
             <>
               <div className={`nav-group-header ${isGroupActive(['/accounting']) ? 'active' : ''}`} onClick={() => toggleGroup('accounting')}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
