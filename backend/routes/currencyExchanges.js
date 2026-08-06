@@ -221,6 +221,22 @@ router.post('/', auth, (req, res) => {
     // Drawer scope (per-cashier till) is unaffected — it has its own daily
     // Cash Report reconciliation and shouldn't false-reject legitimate mid-
     // day exchanges made from a positive till that hasn't been booked yet.
+    // v1.10.135 — only accept from_method/to_method for the corresponding K
+    // side. Any value passed for a non-K side is discarded so a stray client
+    // never poisons the sub-drawer attribution.
+    // v1.10.297 — moved ABOVE the HQ overdraft block. The v1.10.240 K
+    // sub-drawer check inside that block reads fromMethodClean, so leaving
+    // the const declaration below the check triggered a Temporal Dead Zone
+    // ("Cannot access 'fromMethodClean' before initialization") on every
+    // HQ Cash Book exchange where K was the FROM side (real report
+    // 2026-08-06 on sosnazm.com/accounting/cash-book, K → USD save).
+    // Pure reorder — no logic change.
+    const VALID_METHODS = new Set(['Cash', 'Bank', 'Mobile Money']);
+    const fromMethodClean = (from_currency === 'K' && VALID_METHODS.has(String(from_method)))
+      ? String(from_method) : null;
+    const toMethodClean = (to_currency === 'K' && VALID_METHODS.has(String(to_method)))
+      ? String(to_method) : null;
+
     if (scope === 'book') {
       const host = String(req.hostname || req.headers?.host || '').toLowerCase();
       if (HQ_HOSTS_CX.has(host)) {
@@ -266,14 +282,6 @@ router.post('/', auth, (req, res) => {
         }
       }
     }
-    // v1.10.135 — only accept from_method/to_method for the corresponding K
-    // side. Any value passed for a non-K side is discarded so a stray client
-    // never poisons the sub-drawer attribution.
-    const VALID_METHODS = new Set(['Cash', 'Bank', 'Mobile Money']);
-    const fromMethodClean = (from_currency === 'K' && VALID_METHODS.has(String(from_method)))
-      ? String(from_method) : null;
-    const toMethodClean = (to_currency === 'K' && VALID_METHODS.has(String(to_method)))
-      ? String(to_method) : null;
     // v1.10.180 — wrap the ledger INSERT and pool-counter update in one
     // transaction. If either fails, both roll back so the pool never
     // drifts from the exchange ledger. Only 'book' scope touches the HQ
