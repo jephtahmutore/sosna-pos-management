@@ -112,6 +112,12 @@ export default function FxRates() {
         label: date.slice(5), // MM-DD
         sell: manual ? parseFloat(manual.sell_rate) : null,
         buy:  manual ? parseFloat(manual.buy_rate)  : null,
+        // v1.10.301 — K sell/buy series. Null when the manual row for that
+        // day has no K rate set (older rows before Sosna added K fields).
+        sellK: manual && manual.sell_rate_k != null && manual.sell_rate_k !== ''
+          ? parseFloat(manual.sell_rate_k) : null,
+        buyK:  manual && manual.buy_rate_k  != null && manual.buy_rate_k  !== ''
+          ? parseFloat(manual.buy_rate_k)  : null,
         live: rate || null,
       };
     });
@@ -317,25 +323,45 @@ export default function FxRates() {
               <LineChart data={chartData} margin={{ top: 10, right: 20, left: 0, bottom: 0 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
                 <XAxis dataKey="label" tick={{ fontSize: 11, fill: '#64748b' }} />
-                <YAxis tick={{ fontSize: 11, fill: '#64748b' }}
+                {/* v1.10.301 — LEFT axis: FRA/USD + Live BCC (both ~2,000-3,000
+                    range). RIGHT axis: K/USD (~20-30 range). Sharing one axis
+                    would flatten K to near-zero because 25 next to 2,900 is
+                    a rounding error. yAxisId ties each Line to the right
+                    scale. hasK gates whether the right axis + K lines render
+                    (branches that don't use K skip them entirely). */}
+                <YAxis yAxisId="left" tick={{ fontSize: 11, fill: '#64748b' }}
                   tickFormatter={(v) => v ? v.toLocaleString(undefined, { maximumFractionDigits: 0 }) : ''}
                   domain={['auto', 'auto']} />
+                {hasK && (
+                  <YAxis yAxisId="right" orientation="right"
+                    tick={{ fontSize: 11, fill: '#a855f7' }}
+                    tickFormatter={(v) => v ? v.toLocaleString(undefined, { maximumFractionDigits: 1 }) : ''}
+                    domain={['auto', 'auto']} />
+                )}
                 <Tooltip
                   formatter={(v) => v == null ? '—' : Number(v).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                   labelStyle={{ fontWeight: 700 }} />
                 <Legend wrapperStyle={{ fontSize: 12 }} />
-                <Line type="monotone" dataKey="sell" name="Manual Sell"
+                <Line yAxisId="left" type="monotone" dataKey="sell" name="Manual Sell (FRA)"
                   stroke="#16a34a" strokeWidth={2} dot={{ r: 3 }} connectNulls={false} />
-                <Line type="monotone" dataKey="buy" name="Manual Buy"
+                <Line yAxisId="left" type="monotone" dataKey="buy" name="Manual Buy (FRA)"
                   stroke="#0ea5e9" strokeWidth={2} dot={{ r: 3 }} connectNulls={false} />
-                <Line type="monotone" dataKey="live" name="Live BCC"
+                <Line yAxisId="left" type="monotone" dataKey="live" name="Live BCC"
                   stroke="#f59e0b" strokeWidth={2} strokeDasharray="4 3" dot={{ r: 3 }} connectNulls={false} />
+                {hasK && (
+                  <Line yAxisId="right" type="monotone" dataKey="sellK" name="Manual Sell (K)"
+                    stroke="#a855f7" strokeWidth={2} dot={{ r: 3 }} connectNulls={false} />
+                )}
+                {hasK && (
+                  <Line yAxisId="right" type="monotone" dataKey="buyK" name="Manual Buy (K)"
+                    stroke="#c026d3" strokeWidth={2} strokeDasharray="2 2" dot={{ r: 3 }} connectNulls={false} />
+                )}
               </LineChart>
             </ResponsiveContainer>
           </div>
         )}
         <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 8, fontStyle: 'italic' }}>
-          Manual lines snap to the last saved rate on or before each day (so an unchanged rate shows as a flat line). Live BCC is the central-bank official snapshot for that date.
+          Manual lines snap to the last saved rate on or before each day (so an unchanged rate shows as a flat line). Live BCC is the central-bank official snapshot for that date.{hasK && ' Left axis: FRA/USD + Live BCC. Right axis: K/USD (different scale).'}
         </div>
       </div>
 
