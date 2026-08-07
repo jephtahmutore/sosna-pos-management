@@ -25,7 +25,12 @@ const { randomUUID } = require('crypto');
 const LIVE_TTL_MS = 30 * 60 * 1000;
 let liveCache = null; // { fetchedAt, payload }
 
-function fetchLiveUsdCdf() {
+// v1.10.302 — was fetchLiveUsdCdf (CDF-only). Now returns BOTH CDF (FRA)
+// and ZMW (K) rates in the same payload so the frontend can render Live
+// Market Rate for both currencies + a Live BCC (K) reference line on the
+// chart. Same single HTTP call (open.er-api.com returns all rates in one
+// response) — no extra bandwidth or upstream load.
+function fetchLiveUsdRates() {
   return new Promise((resolve, reject) => {
     const req = https.get('https://open.er-api.com/v6/latest/USD', {
       timeout: 6000,
@@ -44,6 +49,11 @@ function fetchLiveUsdCdf() {
             base: 'USD',
             quote: 'CDF',
             rate: parseFloat(j.rates.CDF),
+            // v1.10.302 — ZMW = Zambian Kwacha = "K" in Sosna. null when
+            // the API happens to omit ZMW for a day (never seen in practice,
+            // but the frontend already handles nulls with a broken line).
+            quoteK: 'ZMW',
+            rateK: j.rates.ZMW != null ? parseFloat(j.rates.ZMW) : null,
             time_last_update: j.time_last_update_utc || null,
             time_next_update: j.time_next_update_utc || null,
           });
@@ -62,7 +72,12 @@ function fetchLiveUsdCdf() {
 const historyCache = new Map(); // 'YYYY-MM-DD' -> { rate, fetchedAt }
 const HISTORY_TODAY_TTL_MS = 30 * 60 * 1000;
 
-function fetchUsdCdfOnDate(date) {
+// v1.10.302 — was fetchUsdCdfOnDate. Now resolves to { rate, rateK }
+// with both CDF (FRA) and ZMW (K) for the given date. Same single HTTP
+// call (fawazahmed0's usd.json returns every currency in one payload).
+// ZMW returned as null if missing that day; the chart handles null with
+// a broken line, same behavior as CDF.
+function fetchUsdRatesOnDate(date) {
   return new Promise((resolve, reject) => {
     const url = `https://cdn.jsdelivr.net/npm/@fawazahmed0/currency-api@${date}/v1/currencies/usd.json`;
     const tryGet = (u, hopsLeft) => {
@@ -81,9 +96,10 @@ function fetchUsdCdfOnDate(date) {
         res.on('end', () => {
           try {
             const j = JSON.parse(body);
-            const r = j?.usd?.cdf;
-            if (typeof r !== 'number') return reject(new Error(`No CDF for ${date}`));
-            resolve(r);
+            const rate  = j?.usd?.cdf;
+            const rateK = j?.usd?.zmw;
+            if (typeof rate !== 'number') return reject(new Error(`No CDF for ${date}`));
+            resolve({ rate, rateK: typeof rateK === 'number' ? rateK : null });
           } catch (e) { reject(e); }
         });
       });
@@ -242,10 +258,12 @@ router.get('/live', auth, readOnlyGuard, async (req, res) => {
   try {
     const fresh = liveCache && (Date.now() - liveCache.fetchedAt) < LIVE_TTL_MS;
     if (!fresh) {
-      const payload = await fetchLiveUsdCdf();
+      const payload = await fetchLiveUsdRates();
       liveCache = { fetchedAt: Date.now(), payload };
       const todayStr = new Date().toISOString().slice(0, 10);
-      historyCache.set(todayStr, { rate: payload.rate, fetchedAt: Date.now() });
+      // v1.10.302 — cache BOTH rates for today so the chart's most-recent
+      // point on both scales agrees with the live cards exactly.
+      historyCache.set(todayStr, { rate: payload.rate, rateK: payload.rateK, fetchedAt: Date.now() });
     }
     res.json({
       ...liveCache.payload,
@@ -275,32 +293,43 @@ router.get('/live-history', auth, readOnlyGuard, async (req, res) => {
     const series = await Promise.all(dates.map(async (date) => {
       const cached = historyCache.get(date);
       const isToday = date === todayStr;
+      // v1.10.302 — cached rows may pre-date the K-rate change; if rateK
+      // is missing on a cached row we refresh it (only for today) to
+      // pick up the K value on next call.
       if (cached && (!isToday || (Date.now() - cached.fetchedAt) < HISTORY_TODAY_TTL_MS)) {
-        return { date, rate: cached.rate };
+        return { date, rate: cached.rate, rateK: cached.rateK ?? null };
       }
       try {
         // TODAY uses the same upstream as the Live Market Rate card
         // (open.er-api.com) so the card and the chart's last point agree
         // exactly. Past days come from fawazahmed0 because open.er-api.com
         // doesn't expose a historical endpoint.
-        let rate;
+        let rate, rateK;
         if (isToday) {
-          const payload = await fetchLiveUsdCdf();
-          rate = payload.rate;
+          const payload = await fetchLiveUsdRates();
+          rate  = payload.rate;
+          rateK = payload.rateK;
           liveCache = { fetchedAt: Date.now(), payload };
         } else {
-          rate = await fetchUsdCdfOnDate(date);
+          const both = await fetchUsdRatesOnDate(date);
+          rate  = both.rate;
+          rateK = both.rateK;
         }
-        historyCache.set(date, { rate, fetchedAt: Date.now() });
-        return { date, rate };
+        historyCache.set(date, { rate, rateK, fetchedAt: Date.now() });
+        return { date, rate, rateK };
       } catch {
-        return { date, rate: null };
+        return { date, rate: null, rateK: null };
       }
     }));
     res.json({
       source: 'open.er-api.com (today) + fawazahmed0/currency-api (past days)',
       base: 'USD',
+      // v1.10.302 — TWO quote currencies now returned per row: CDF as
+      // `rate` (backward-compat with pre-v1.10.302 clients) and ZMW as
+      // `rateK`. Callers should read the one they need; ignoring the
+      // extra field is safe.
       quote: 'CDF',
+      quoteK: 'ZMW',
       days,
       series,
     });

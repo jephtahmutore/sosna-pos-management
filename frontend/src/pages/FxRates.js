@@ -105,7 +105,8 @@ export default function FxRates() {
   const chartData = useMemo(() => {
     const rowsAsc = [...rows].sort((a, b) =>
       (a.effective_date < b.effective_date ? -1 : a.effective_date > b.effective_date ? 1 : a.id - b.id));
-    return liveHistory.map(({ date, rate }) => {
+    return liveHistory.map((point) => {
+      const { date, rate, rateK } = point;
       const manual = [...rowsAsc].reverse().find(r => r.effective_date <= date);
       return {
         date,
@@ -118,7 +119,11 @@ export default function FxRates() {
           ? parseFloat(manual.sell_rate_k) : null,
         buyK:  manual && manual.buy_rate_k  != null && manual.buy_rate_k  !== ''
           ? parseFloat(manual.buy_rate_k)  : null,
-        live: rate || null,
+        live:  rate  || null,
+        // v1.10.302 — Live BCC (K) reference line. Backend returns rateK
+        // (ZMW) alongside rate (CDF); null for days the historical API
+        // didn't have ZMW, same broken-line behavior as FRA nulls.
+        liveK: rateK || null,
       };
     });
   }, [rows, liveHistory]);
@@ -202,7 +207,7 @@ export default function FxRates() {
       <div className="page-header">
         <div>
           <h1>Currency Rates</h1>
-          <p>USD ↔ FRA — set here, read by POS &amp; Cashier</p>
+          <p>{hasK ? 'USD ↔ FRA + USD ↔ K' : 'USD ↔ FRA'} — set here, read by POS &amp; Cashier</p>
         </div>
         <button onClick={refresh}
           style={{ padding: '8px 14px', background: '#0ea5e9', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 6 }}>
@@ -219,68 +224,94 @@ export default function FxRates() {
       {/* Current effective rate banner. When no manual rate has been saved
           the cards show "—" so the manager isn't misled into thinking a
           fallback number is "the" rate. POS/Cashier still fall back
-          internally (separate concern) until an actual row is added. */}
-      <div style={{ background: '#fff', border: '1px solid #e5e7eb', borderRadius: 12, padding: 16, marginBottom: 18, display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-        <div>
-          <div style={{ color: '#64748b', fontSize: 11, fontWeight: 600, letterSpacing: 0.4, textTransform: 'uppercase' }}>
-            Current Sell Rate
+          internally (separate concern) until an actual row is added.
+          v1.10.302 — split into FRA block + K block so both currencies
+          get equal representation. hasK gates the K block; branches that
+          don't use K still see just the FRA pair (no visual change). */}
+      <div style={{ background: '#fff', border: '1px solid #e5e7eb', borderRadius: 12, padding: 16, marginBottom: 18 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: hasK ? '1fr 1fr' : '1fr', gap: 20 }}>
+          {/* FRA block */}
+          <div>
+            <div style={{ fontSize: 11, fontWeight: 700, color: '#475569', letterSpacing: 0.6, textTransform: 'uppercase', marginBottom: 10, paddingBottom: 6, borderBottom: '1px solid #e2e8f0' }}>
+              FRA / USD
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+              <RateCard label="Current Sell Rate" value={isFallback ? '—' : fmtRate(savedCurrent.sell_rate)} unit="FRA / USD" />
+              <RateCard label="Current Buy Rate"  value={isFallback ? '—' : fmtRate(savedCurrent.buy_rate)}  unit="FRA / USD" />
+            </div>
+            {isFallback && (
+              <div style={{ marginTop: 8, fontSize: 12, color: '#64748b' }}>
+                No manual FRA rate set yet. Add a row below to start.
+              </div>
+            )}
           </div>
-          <div style={{ fontSize: 26, fontWeight: 800, color: '#0f172a', display: 'flex', alignItems: 'baseline', gap: 6 }}>
-            {isFallback ? '—' : fmtRate(savedCurrent.sell_rate)}
-            <span style={{ fontSize: 12, color: '#64748b', fontWeight: 500 }}>FRA / USD</span>
-          </div>
-        </div>
-        <div>
-          <div style={{ color: '#64748b', fontSize: 11, fontWeight: 600, letterSpacing: 0.4, textTransform: 'uppercase' }}>
-            Current Buy Rate
-          </div>
-          <div style={{ fontSize: 26, fontWeight: 800, color: '#0f172a', display: 'flex', alignItems: 'baseline', gap: 6 }}>
-            {isFallback ? '—' : fmtRate(savedCurrent.buy_rate)}
-            <span style={{ fontSize: 12, color: '#64748b', fontWeight: 500 }}>FRA / USD</span>
-          </div>
+          {/* K block */}
+          {hasK && (
+            <div>
+              <div style={{ fontSize: 11, fontWeight: 700, color: '#7c3aed', letterSpacing: 0.6, textTransform: 'uppercase', marginBottom: 10, paddingBottom: 6, borderBottom: '1px solid #e9d5ff' }}>
+                K / USD
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+                <RateCard label="Current Sell Rate" value={isFallback || !savedCurrent?.sell_rate_k ? '—' : fmtRate(savedCurrent.sell_rate_k)} unit="K / USD" />
+                <RateCard label="Current Buy Rate"  value={isFallback || !savedCurrent?.buy_rate_k  ? '—' : fmtRate(savedCurrent.buy_rate_k)}  unit="K / USD" />
+              </div>
+              {(isFallback || !savedCurrent?.sell_rate_k) && (
+                <div style={{ marginTop: 8, fontSize: 12, color: '#64748b' }}>
+                  No manual K rate set yet. Add a row below to start.
+                </div>
+              )}
+            </div>
+          )}
         </div>
         {!isFallback && (
-          <div style={{ gridColumn: '1 / -1', fontSize: 11, color: '#94a3b8' }}>
+          <div style={{ marginTop: 12, paddingTop: 10, borderTop: '1px dashed #e2e8f0', fontSize: 11, color: '#94a3b8' }}>
             In effect since {savedCurrent.effective_date}{savedCurrent.set_by_name ? ` · set by ${savedCurrent.set_by_name}` : ''}{savedCurrent.notes ? ` · ${savedCurrent.notes}` : ''}
-          </div>
-        )}
-        {isFallback && (
-          <div style={{ gridColumn: '1 / -1', fontSize: 12, color: '#64748b' }}>
-            No manual rate set yet. Add a row below to start.
           </div>
         )}
       </div>
 
-      {/* Live BCC reference rate (read-only, not used by POS/Cashier) */}
+      {/* Live BCC reference rate (read-only, not used by POS/Cashier)
+          v1.10.302 — split into FRA (CDF) + K (ZMW) cards side-by-side.
+          Backend fetches both currencies from open.er-api.com in the same
+          request, so no extra latency. hasK gates the K card. */}
       <div style={{ background: '#eff6ff', border: '1px solid #bfdbfe', borderRadius: 12, padding: 16, marginBottom: 18 }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12, flexWrap: 'wrap' }}>
-          <div style={{ flex: 1, minWidth: 200 }}>
-            <div style={{ color: '#1e40af', fontSize: 11, fontWeight: 700, letterSpacing: 0.4, textTransform: 'uppercase', display: 'flex', alignItems: 'center', gap: 6 }}>
-              <FiGlobe size={12} /> Live Market Rate (BCC official)
-            </div>
-            {live?.error ? (
-              <div style={{ fontSize: 13, color: '#b91c1c', marginTop: 6 }}>{live.error}</div>
-            ) : live?.rate ? (
-              <>
-                <div style={{ fontSize: 22, fontWeight: 800, color: '#0f172a', marginTop: 4, display: 'flex', alignItems: 'baseline', gap: 6 }}>
-                  {fmtRate(live.rate)}
-                  <span style={{ fontSize: 12, color: '#475569', fontWeight: 500 }}>CDF / USD</span>
-                </div>
-                <div style={{ fontSize: 11, color: '#475569', marginTop: 4 }}>
-                  Source: {live.source}{live.time_last_update ? ` · ${new Date(live.time_last_update).toLocaleString()}` : ''}
-                </div>
-              </>
-            ) : (
-              <div style={{ fontSize: 13, color: '#475569', marginTop: 6 }}>{liveLoading ? 'Fetching…' : '—'}</div>
-            )}
-            <div style={{ fontSize: 11, color: '#64748b', marginTop: 6, fontStyle: 'italic' }}>
-              Reference only — this is the central-bank official rate. Street/parallel rate is typically higher. POS &amp; Cashier always use the manual rate above.
-            </div>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 10, gap: 12 }}>
+          <div style={{ color: '#1e40af', fontSize: 11, fontWeight: 700, letterSpacing: 0.4, textTransform: 'uppercase', display: 'flex', alignItems: 'center', gap: 6 }}>
+            <FiGlobe size={12} /> Live Market Rate (BCC official)
           </div>
           <button onClick={refreshLive} disabled={liveLoading}
             style={{ padding: '6px 12px', background: '#1e40af', color: '#fff', border: 'none', borderRadius: 6, cursor: liveLoading ? 'wait' : 'pointer', display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 12, fontWeight: 600 }}>
             <FiRefreshCw size={12} /> {liveLoading ? '…' : 'Refresh'}
           </button>
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: hasK ? '1fr 1fr' : '1fr', gap: 16 }}>
+          <LiveRateCard
+            label="FRA / USD"
+            rate={live?.rate}
+            quote="CDF / USD"
+            error={live?.error}
+            loading={liveLoading}
+            fmtRate={fmtRate}
+          />
+          {hasK && (
+            <LiveRateCard
+              label="K / USD"
+              rate={live?.rateK}
+              quote="ZMW / USD"
+              error={live?.error}
+              loading={liveLoading}
+              fmtRate={fmtRate}
+              accent="#7c3aed"
+            />
+          )}
+        </div>
+        {live?.source && (
+          <div style={{ fontSize: 11, color: '#475569', marginTop: 10 }}>
+            Source: {live.source}{live.time_last_update ? ` · ${new Date(live.time_last_update).toLocaleString()}` : ''}
+          </div>
+        )}
+        <div style={{ fontSize: 11, color: '#64748b', marginTop: 6, fontStyle: 'italic' }}>
+          Reference only — this is the central-bank official rate. Street/parallel rate is typically higher. POS &amp; Cashier always use the manual rate above.
         </div>
       </div>
 
@@ -355,6 +386,13 @@ export default function FxRates() {
                 {hasK && (
                   <Line yAxisId="right" type="monotone" dataKey="buyK" name="Manual Buy (K)"
                     stroke="#c026d3" strokeWidth={2} strokeDasharray="2 2" dot={{ r: 3 }} connectNulls={false} />
+                )}
+                {/* v1.10.302 — Live BCC K reference on the right axis, mirroring
+                    the FRA "Live BCC" dashed line on the left. Same source
+                    (open.er-api.com today + fawazahmed0 for past days). */}
+                {hasK && (
+                  <Line yAxisId="right" type="monotone" dataKey="liveK" name="Live BCC (K)"
+                    stroke="#d97706" strokeWidth={2} strokeDasharray="4 3" dot={{ r: 3 }} connectNulls={false} />
                 )}
               </LineChart>
             </ResponsiveContainer>
@@ -503,3 +541,42 @@ const lblStyle = { display: 'block', fontSize: 11, fontWeight: 600, color: '#475
 const inputStyle = { width: '100%', padding: '8px 10px', border: '1px solid #cbd5e1', borderRadius: 6, fontSize: 14, boxSizing: 'border-box' };
 const thStyle = { textAlign: 'left', padding: '10px 14px', fontWeight: 700 };
 const tdStyle = { padding: '10px 14px', color: '#0f172a' };
+
+// v1.10.302 — small presentational components extracted so the FRA/K
+// current-rate cards and FRA/K live-rate cards share one shape. Both
+// take a big value + secondary unit label. Kept in this file (not a
+// separate module) because they aren't reused anywhere else.
+function RateCard({ label, value, unit }) {
+  return (
+    <div>
+      <div style={{ color: '#64748b', fontSize: 11, fontWeight: 600, letterSpacing: 0.4, textTransform: 'uppercase' }}>
+        {label}
+      </div>
+      <div style={{ fontSize: 24, fontWeight: 800, color: '#0f172a', display: 'flex', alignItems: 'baseline', gap: 6, marginTop: 2 }}>
+        {value}
+        <span style={{ fontSize: 11, color: '#64748b', fontWeight: 500 }}>{unit}</span>
+      </div>
+    </div>
+  );
+}
+
+function LiveRateCard({ label, rate, quote, error, loading, fmtRate, accent }) {
+  const color = accent || '#1e40af';
+  return (
+    <div style={{ borderLeft: `3px solid ${color}`, paddingLeft: 12 }}>
+      <div style={{ color, fontSize: 10, fontWeight: 700, letterSpacing: 0.5, textTransform: 'uppercase' }}>
+        {label}
+      </div>
+      {error ? (
+        <div style={{ fontSize: 13, color: '#b91c1c', marginTop: 4 }}>{error}</div>
+      ) : rate != null ? (
+        <div style={{ fontSize: 22, fontWeight: 800, color: '#0f172a', marginTop: 4, display: 'flex', alignItems: 'baseline', gap: 6 }}>
+          {fmtRate(rate)}
+          <span style={{ fontSize: 11, color: '#475569', fontWeight: 500 }}>{quote}</span>
+        </div>
+      ) : (
+        <div style={{ fontSize: 13, color: '#475569', marginTop: 4 }}>{loading ? 'Fetching…' : '—'}</div>
+      )}
+    </div>
+  );
+}
