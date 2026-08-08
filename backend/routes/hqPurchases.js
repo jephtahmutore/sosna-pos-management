@@ -320,9 +320,14 @@ router.get('/incoming-history', hqAuth, requireAnyPagePerm(['HqPurchases', 'Inco
     const to   = String(req.query.to   || '').slice(0, 10);   // YYYY-MM-DD, optional
 
     // Prefer the finalization timestamp when filtering by date; fall back
-    // to received_at, then the parent PO date so old rows without those
-    // fields still bucket somewhere reasonable.
-    const dateExpr = `COALESCE(i.confirmed_at, i.cancelled_at, i.received_at, p.date)`;
+    // to received_at, then updated_at (stamped when the row was set to
+    // CANCELLED), then the parent PO date. v1.10.303 — was referencing
+    // i.cancelled_at which doesn't exist on hq_purchase_items (schema has
+    // confirmed_at + branch_rejected_at + received_at, no cancelled_at).
+    // The bogus column made every /incoming-history request throw
+    // "no such column: i.cancelled_at" on any branch that opened the
+    // History tab. Real report 2026-08-08 on kassumbalesa1.
+    const dateExpr = `COALESCE(i.confirmed_at, i.branch_rejected_at, i.received_at, i.updated_at, p.date)`;
     const clauses = [
       `i.destination_slug = ?`,
       `i.status IN ('CONFIRMED', 'CANCELLED', 'BRANCH_REJECTED')`,

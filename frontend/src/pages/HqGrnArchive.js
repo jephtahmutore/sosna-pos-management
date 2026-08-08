@@ -310,6 +310,15 @@ function DetailsModal({ state, onClose, onVoided }) {
   const previewFinalPayable = editing
     ? previewItemsSubtotal - (parseFloat(grn.cn_total) || 0)
     : (parseFloat(grn.final_payable) || (previewItemsSubtotal - (parseFloat(grn.cn_total) || 0)));
+  // v1.10.303 — was calling the legacy fmtMoney() everywhere inside this
+  // modal, which hardcodes '$'. GRNs from K-only branches (Lusaka1, Mansa1)
+  // showed K amounts prefixed with $, misleading the reader. Real report
+  // 2026-08-08 on GRN GRN-2026-93730763 (Sosna Lusaka 1 branch, K-only).
+  // fmtC uses the GRN's own cost_currency (already stored per v1.10.118);
+  // fallback 'K' matches the majority Sosna case for legacy rows that
+  // pre-date the column.
+  const grnCcy = grn.cost_currency || 'K';
+  const fmtC = (n) => fmtMoneyCcy(n, grnCcy);
   return (
     <div style={overlay} onClick={onClose}>
       <div onClick={e => e.stopPropagation()}
@@ -390,7 +399,9 @@ function DetailsModal({ state, onClose, onVoided }) {
                           renders '—' when no damage recorded for this product. */}
                       <th style={{ ...th, textAlign: 'right', color: '#b91c1c' }}>Damaged</th>
                       <th style={{ ...th, textAlign: 'right' }}>Cost</th>
-                      <th style={{ ...th, textAlign: 'right' }}>Line $</th>
+                      {/* v1.10.303 — was hardcoded "Line $"; now shows the
+                          GRN's actual currency so K rows don't misread as $. */}
+                      <th style={{ ...th, textAlign: 'right' }}>Line {grnCcy}</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -422,9 +433,9 @@ function DetailsModal({ state, onClose, onVoided }) {
                                 onChange={(e) => setEditUnitPrices(prev => ({ ...prev, [it.sync_id]: e.target.value }))}
                                 onClick={(e) => e.stopPropagation()}
                                 style={{ width: 100, padding: '4px 6px', border: '1px solid #d1d5db', borderRadius: 4, fontSize: 13, textAlign: 'right', boxSizing: 'border-box' }} />
-                            ) : fmtMoney(it.unit_price)}
+                            ) : fmtC(it.unit_price)}
                           </td>
-                          <td style={{ ...td, textAlign: 'right', fontWeight: 600, color: editing ? '#0369a1' : '#111827' }}>{fmtMoney(qtyLine * linePx)}</td>
+                          <td style={{ ...td, textAlign: 'right', fontWeight: 600, color: editing ? '#0369a1' : '#111827' }}>{fmtC(qtyLine * linePx)}</td>
                         </tr>
                       );
                     })}
@@ -432,7 +443,7 @@ function DetailsModal({ state, onClose, onVoided }) {
                   <tfoot>
                     <tr style={{ borderTop: '2px solid #e5e7eb', fontWeight: 700 }}>
                       <td colSpan={5} style={td}>Items subtotal</td>
-                      <td style={{ ...td, textAlign: 'right', color: editing ? '#0369a1' : '#111827' }}>{fmtMoney(previewItemsSubtotal || grn.items_subtotal)}</td>
+                      <td style={{ ...td, textAlign: 'right', color: editing ? '#0369a1' : '#111827' }}>{fmtC(previewItemsSubtotal || grn.items_subtotal)}</td>
                     </tr>
                   </tfoot>
                 </table>
@@ -454,7 +465,7 @@ function DetailsModal({ state, onClose, onVoided }) {
                         <tr key={c.id} style={{ borderTop: '1px solid #f1f5f9' }}>
                           <td style={td}><strong>{c.reason}</strong></td>
                           <td style={{ ...td, color: '#64748b' }}>{c.notes || '—'}</td>
-                          <td style={{ ...td, textAlign: 'right', color: '#dc2626', fontWeight: 700 }}>−{fmtMoney(c.amount)}</td>
+                          <td style={{ ...td, textAlign: 'right', color: '#dc2626', fontWeight: 700 }}>−{fmtC(c.amount)}</td>
                         </tr>
                       ))}
                     </tbody>
@@ -463,11 +474,11 @@ function DetailsModal({ state, onClose, onVoided }) {
               )}
 
               <div style={{ marginTop: 18, padding: 14, background: '#f8fafc', border: '1px solid #e5e7eb', borderRadius: 8 }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', padding: '4px 0' }}><span>Items subtotal</span><strong style={{ color: editing ? '#0369a1' : '#111827' }}>{fmtMoney(previewItemsSubtotal || grn.items_subtotal)}</strong></div>
-                <div style={{ display: 'flex', justifyContent: 'space-between', padding: '4px 0', color: grn.cn_total > 0 ? '#dc2626' : '#9ca3af' }}><span>Credit Notes</span><strong>{grn.cn_total > 0 ? '−' : ''}{fmtMoney(grn.cn_total)}</strong></div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', padding: '4px 0' }}><span>Items subtotal</span><strong style={{ color: editing ? '#0369a1' : '#111827' }}>{fmtC(previewItemsSubtotal || grn.items_subtotal)}</strong></div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', padding: '4px 0', color: grn.cn_total > 0 ? '#dc2626' : '#9ca3af' }}><span>Credit Notes</span><strong>{grn.cn_total > 0 ? '−' : ''}{fmtC(grn.cn_total)}</strong></div>
                 <div style={{ display: 'flex', justifyContent: 'space-between', padding: '10px 0 0', marginTop: 6, borderTop: '2px solid #e5e7eb', fontWeight: 700, fontSize: 15 }}>
                   <span>Final Payable</span>
-                  <span style={{ color: '#16a34a' }}>{fmtMoney(previewFinalPayable)}</span>
+                  <span style={{ color: '#16a34a' }}>{fmtC(previewFinalPayable)}</span>
                 </div>
               </div>
 

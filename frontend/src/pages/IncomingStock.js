@@ -385,7 +385,13 @@ export default function IncomingStock() {
                       const isConfirmed = it.status === 'CONFIRMED';
                       const isCancelled = it.status === 'CANCELLED';
                       const isRejected  = it.status === 'BRANCH_REJECTED';
-                      const finalizedAt = it.confirmed_at || it.cancelled_at || it.received_at || g.purchase_date;
+                      // v1.10.303 — was reading it.cancelled_at (column
+                      // doesn't exist on hq_purchase_items). Real schema
+                      // has confirmed_at (CONFIRMED), branch_rejected_at
+                      // (BRANCH_REJECTED), received_at (any), updated_at
+                      // (any status change incl. CANCELLED). Cascade so
+                      // every finalization state shows a real timestamp.
+                      const finalizedAt = it.confirmed_at || it.branch_rejected_at || it.received_at || it.updated_at || g.purchase_date;
                       return (
                         <tr key={it.id} style={{ borderTop: '1px solid #f1f5f9' }}>
                           <td style={{ ...td, textAlign: 'right', color: '#94a3b8', fontSize: 12 }}>{idx + 1}</td>
