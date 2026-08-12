@@ -1773,7 +1773,12 @@ const CashReport = () => {
                                single consolidated Difference + Status at end).
                 Sosna style  → per-currency columns (unchanged). */}
             <tr>
-              <th>Date</th><th>Cashier</th>
+              {/* v1.10.304 — Saved By column added right after Cashier so
+                  duplicates from different devices (offline save + online
+                  save on the same day for the same cashier) are visible at
+                  a glance. Backend already returns created_by_name via the
+                  users JOIN on created_by_sync_id (cashReport.js:27). */}
+              <th>Date</th><th>Cashier</th><th>Saved By</th>
               {isLiquorStyle ? (
                 <>
                   <th style={{ color: '#2563eb' }}>Bank ({curSym})</th>
@@ -1803,7 +1808,8 @@ const CashReport = () => {
           </thead>
           <tbody>
             {filteredReports.length === 0 ? (
-              <tr><td colSpan={isLiquorStyle ? 12 : 13} style={{ textAlign: 'center', color: '#9ca3af', padding: 40 }}>No reports found for the selected period.</td></tr>
+              {/* v1.10.304 — +1 to each colSpan for the new Saved By column. */}
+              <tr><td colSpan={isLiquorStyle ? 13 : 14} style={{ textAlign: 'center', color: '#9ca3af', padding: 40 }}>No reports found for the selected period.</td></tr>
             ) : filteredReports.map(r => {
               const usdR = parseFloat(r.usd_received || r.cash || 0);
               const fraR = parseFloat(r.fra_received || r.mobile_money || 0);
@@ -1850,6 +1856,13 @@ const CashReport = () => {
                 <tr key={r.id} style={{ cursor: 'pointer' }} onClick={() => { const cid = r.cashier_id ? String(r.cashier_id) : ''; setSelectedCashier(cid); loadDate(r.date.split('T')[0], cid); }}>
                   <td style={{ fontWeight: 500 }}>{formatDate(r.date)}</td>
                   <td style={{ fontSize: 12, color: '#6b7280' }}>{r.cashier_name || '—'}</td>
+                  {/* v1.10.304 — Saved By: the user who clicked Save Report
+                      (created_by), distinct from the Cashier the report is
+                      FOR. When duplicates appear (offline device saves the
+                      same report that the online device already saved),
+                      this column shows the two saves came from different
+                      devices/users. */}
+                  <td style={{ fontSize: 12, color: '#6b7280' }}>{r.created_by_name || '—'}</td>
                   {isLiquorStyle ? (
                     <>
                       <td>{fmtK(kR)}</td>
