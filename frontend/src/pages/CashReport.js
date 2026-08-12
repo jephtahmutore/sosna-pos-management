@@ -1807,8 +1807,16 @@ const CashReport = () => {
             </tr>
           </thead>
           <tbody>
+            {/* v1.10.305 — comment moved OUT of the ternary. In v1.10.304 I
+                placed a {/* ... */} JSX comment *inside* the ( ... ) truthy
+                branch of the ternary alongside the <tr>, which JSX rejects
+                as "adjacent JSX elements" — the build failed, the
+                frontend/build directory got wiped, and nginx started
+                returning 403 for sosnazm.com. Comment now sits at the
+                statement level (a normal JS comment) so the ternary sees
+                exactly one JSX element as expected. Colspan value
+                (isLiquorStyle ? 13 : 14) is unchanged from v1.10.304. */}
             {filteredReports.length === 0 ? (
-              {/* v1.10.304 — +1 to each colSpan for the new Saved By column. */}
               <tr><td colSpan={isLiquorStyle ? 13 : 14} style={{ textAlign: 'center', color: '#9ca3af', padding: 40 }}>No reports found for the selected period.</td></tr>
             ) : filteredReports.map(r => {
               const usdR = parseFloat(r.usd_received || r.cash || 0);
