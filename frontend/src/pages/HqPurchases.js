@@ -572,7 +572,47 @@ function CreatePurchaseModal({ branches, onClose, onCreated, onError }) {
                           </div>
                         )}
                       </td>
-                      <td style={tdS}><input type="text" value={it.unit} onChange={e => updateItem(i, 'unit', e.target.value)} style={cellInp} /></td>
+                      <td style={tdS}>
+                        {/* v1.10.307 — Unit was a free-text input, letting operators
+                            type "crates" on a product whose units_json only had
+                            {Bottle, Box}. Confirm-side conversionToBase("crates")
+                            fell back to conv=1 → 50 crates stored as 50 bottles →
+                            Sales Bin Card showed 4.17 Box instead of 50 Box (Lusaka1
+                            BLACK LABEL 750 ML case, HQP-2026-C0AB98-0064).
+                            Now it's a <select> populated from the picked product's
+                            base unit + units_json entries. Nothing outside the
+                            product's actual packaging is selectable. */}
+                        {(() => {
+                          const picked = hqProducts.find(p => p.sync_id === it.product_sync_id);
+                          const opts = [];
+                          if (picked) {
+                            const seen = new Set();
+                            const add = (name) => { const k = String(name || '').trim(); if (k && !seen.has(k.toLowerCase())) { seen.add(k.toLowerCase()); opts.push(k); } };
+                            add(picked.unit || 'pcs');
+                            try {
+                              const arr = picked.units_json ? JSON.parse(picked.units_json) : [];
+                              if (Array.isArray(arr)) arr.forEach(u => add(u?.name));
+                            } catch { /* invalid JSON — fall back to base unit only */ }
+                          }
+                          // Legacy rows may hold a unit not in the current
+                          // packaging list; keep it selectable so old drafts
+                          // don't break, tagged so operator sees it's odd.
+                          if (it.unit && !opts.some(o => o.toLowerCase() === it.unit.toLowerCase())) {
+                            opts.push(it.unit);
+                          }
+                          if (opts.length === 0) opts.push('pcs');
+                          return (
+                            <select
+                              value={it.unit || opts[0]}
+                              onChange={e => updateItem(i, 'unit', e.target.value)}
+                              disabled={!picked}
+                              style={cellInp}
+                            >
+                              {opts.map(u => <option key={u} value={u}>{u}</option>)}
+                            </select>
+                          );
+                        })()}
+                      </td>
                       <td style={tdS}><input type="number" min="0" step="any" value={it.dispatched_qty} onChange={e => updateItem(i, 'dispatched_qty', e.target.value)} style={{ ...cellInp, textAlign: 'right' }} /></td>
                       <td style={tdS}><input type="number" min="0" step="any" value={it.cost_price} onChange={e => updateItem(i, 'cost_price', e.target.value)} style={{ ...cellInp, textAlign: 'right' }} /></td>
                       <td style={{ ...tdS, textAlign: 'right', fontWeight: 700 }}>{fmtMoneyCcy(lineTotal, costCurrency)}</td>
