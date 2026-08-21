@@ -725,9 +725,16 @@ function DetailModal({ data, onClose, onChanged, flash }) {
             )}
             {/* v1.10.308 — Destination summary chip. One badge when all lines
                 target the same branch; a "Mixed (N)" chip listing distinct
-                slugs otherwise so HQ knows at a glance where the stock went. */}
+                slugs otherwise so HQ knows at a glance where the stock went.
+                v1.10.309 — always append the slug in parens because all 3
+                Sosna branches share the business_name "SOSNA GENERAL DEALERS
+                LTD" (matches the HQ Sales Report display pattern). */}
             {(() => {
-              const dests = Array.from(new Set(items.map(i => i.destination_name || i.destination_slug).filter(Boolean)));
+              const dests = Array.from(new Set(items.map(i => {
+                const nm = i.destination_name || i.destination_slug;
+                const sl = i.destination_slug;
+                return sl && nm && nm.toLowerCase() !== sl.toLowerCase() ? `${nm} (${sl})` : nm;
+              }).filter(Boolean)));
               if (dests.length === 0) return null;
               return (
                 <Pill
@@ -759,7 +766,15 @@ function DetailModal({ data, onClose, onChanged, flash }) {
                 return (
                   <tr key={it.id} style={{ borderTop: '1px solid #f1f5f9', background: variance ? '#fffbeb' : it.status === 'CANCELLED' ? '#fafafa' : '#fff', opacity: it.status === 'CANCELLED' ? 0.6 : 1 }}>
                     <td style={td}>{it.product_name} <span style={{ color: '#94a3b8', fontSize: 11 }}>{it.unit}</span></td>
-                    <td style={td}>{it.destination_name || it.destination_slug}</td>
+                    {/* v1.10.309 — append slug so kassumbalesa1 / lusaka1 /
+                        mansa1 are distinguishable (they all share the same
+                        business_name "SOSNA GENERAL DEALERS LTD"). */}
+                    <td style={td}>
+                      {it.destination_name || it.destination_slug}
+                      {it.destination_slug && it.destination_name && it.destination_name.toLowerCase() !== it.destination_slug.toLowerCase() && (
+                        <span style={{ color: '#94a3b8', fontSize: 11, marginLeft: 4 }}>({it.destination_slug})</span>
+                      )}
+                    </td>
                     <td style={{ ...td, textAlign: 'right' }}>{parseFloat(it.dispatched_qty).toFixed(2)}</td>
                     <td style={{ ...td, textAlign: 'right', color: variance ? '#b91c1c' : '#0f172a', fontWeight: variance ? 700 : 400 }}>
                       {it.received_qty == null ? '—' : parseFloat(it.received_qty).toFixed(2)}
