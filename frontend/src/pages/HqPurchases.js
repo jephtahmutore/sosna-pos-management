@@ -709,11 +709,35 @@ function DetailModal({ data, onClose, onChanged, flash }) {
           </div>
         </div>
         <div style={{ padding: 16, overflowY: 'auto', flex: 1 }}>
-          <div style={{ display: 'flex', gap: 12, marginBottom: 12 }}>
+          <div style={{ display: 'flex', gap: 12, marginBottom: 12, flexWrap: 'wrap' }}>
             <Pill label="Status" value={statusBadge(data.status)} />
             <Pill label="Total" value={<strong>{fmtMoneyCcy(data.total_amount, data.cost_currency)}</strong>} />
             <Pill label="Lines" value={`${fmtInt(items.length)}`} />
             <Pill label="By" value={data.created_by_name || '—'} />
+            {/* v1.10.308 — FX rate captured at entry time (only render when
+                actually stored; not every purchase needs FX conversion —
+                K-only destinations skip it). */}
+            {parseFloat(data.fx_rate_used) > 0 && (
+              <Pill
+                label="💱 Rate"
+                value={<strong style={{ color: '#0369a1' }}>{data.cost_currency}{parseFloat(data.fx_rate_used).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 4 })} / $1</strong>}
+              />
+            )}
+            {/* v1.10.308 — Destination summary chip. One badge when all lines
+                target the same branch; a "Mixed (N)" chip listing distinct
+                slugs otherwise so HQ knows at a glance where the stock went. */}
+            {(() => {
+              const dests = Array.from(new Set(items.map(i => i.destination_name || i.destination_slug).filter(Boolean)));
+              if (dests.length === 0) return null;
+              return (
+                <Pill
+                  label="📍 Destination"
+                  value={dests.length === 1
+                    ? <strong>{dests[0]}</strong>
+                    : <strong title={dests.join(', ')}>Mixed ({dests.length})</strong>}
+                />
+              );
+            })()}
           </div>
           {data.notes && <p style={{ background: '#f8fafc', padding: 10, borderRadius: 6, fontSize: 13, color: '#475569' }}>{data.notes}</p>}
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13, marginTop: 8 }}>
