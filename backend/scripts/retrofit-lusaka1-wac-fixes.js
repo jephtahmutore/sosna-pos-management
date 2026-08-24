@@ -1,26 +1,39 @@
 /**
- * retrofit-lusaka1-wac-fixes.js — clean up two WAC data corruptions on
+ * retrofit-lusaka1-wac-fixes.js — clean up WAC data corruptions on
  * lusaka1 discovered after the BLACK LABEL 750 ML crate-unit retrofit.
  *
- * ── Issue 1: BLACK LABEL 375ML — cost typo on HQP-2026-C0AB98-0035
- *    Cost typed K3,200 per crate instead of K320 (extra zero). Aug 6 GRN
- *    alone dumped K320,000 into WAC. Two neighbouring purchases at K320
- *    were correct. Fix: correct the one bad line on master.db
- *    (hq_purchase_items + hq_grn_items), then rebuild WAC by walking
- *    stock_movements.
+ * ── Issue 1: BLACK LABEL 375ML — HQ-mirror edit didn't cascade
+ *    Sequence: user typed K3,200 per crate (should be K320) on
+ *    HQP-2026-C0AB98-0035. HQ generated GRN-2026-03518198 with the bad
+ *    cost → master.hq_grns + hq_grn_items + hq_purchase_items all
+ *    stored K320,000. Then someone EDITED the GRN on HQ tenant DB
+ *    (backend/sosna.db.grn), which correctly soft-deleted the old
+ *    grn_items row and inserted a fresh one at K32,000 — but the edit
+ *    did NOT cascade to master.db or to the lusaka1 stock/WAC. So:
+ *      - backend/sosna.db.grn.total_amount = 32,000  ✓ correct
+ *      - master.hq_grns.items_subtotal      = 320,000 ⚠ stale
+ *      - master.hq_grn_items.total_price    = 320,000 ⚠ stale
+ *      - master.hq_purchase_items.line_total= 320,000 ⚠ stale
+ *      - lusaka1.products.avg_cost_price    = K56.90/Bottle ⚠ blended
+ *        from the K320k cost input
+ *    Fix direction: bring master.db + lusaka1 DOWN to match the K32,000
+ *    correction that already lives on HQ mirror. Then rebuild lusaka1
+ *    WAC by walking stock_movements against the corrected
+ *    master.hq_grn_items.total_price.
  *
- * ── Issue 2: CRONIER — WAC stored at K800/pcs (should be K133.33/pcs)
- *    Data on hq_purchase_items IS correct: 54 Box × K800/Box. Stock
- *    movement is correctly +324 pcs (54 × 6 conv). Yet
- *    products.avg_cost_price landed at K800 instead of K133.33. The
- *    current code (hqGrns.js /generate line 1619-1635) correctly divides
- *    by conversionToBase — so this looks like a residue from an older
- *    version (pre-v1.10.66 shipped the raw-qty bug). Fix: rebuild WAC.
+ * ── Issue 2: CRONIER — WAC K800/pcs (should be K133.33/pcs)
+ *    Data everywhere IS correct: 54 Box × K800/Box, stock movement +324
+ *    pcs base (54 × 6 conv). All 5 avg_cost_price write paths audited —
+ *    each correctly divides by conversionToBase. The K800/pcs residue
+ *    is either a pre-v1.10.66 buggy version or a manual touch. Fix:
+ *    rebuild WAC (43,200 ÷ 324 = K133.33/pcs).
  *
  * Both fixes done in one transaction per DB, with dry-run + assertions.
  *
- * Money totals (line_total, total_price for CRONIER) are left alone —
- * they already match the invoice.
+ * SEPARATE CODE BUG SURFACED (not fixed here): the HQ-mirror GRN edit
+ * flow doesn't cascade to master.db or destination branch stock/WAC.
+ * That's how BL375ML ended up with three divergent copies. Worth a
+ * dedicated code review after the data retrofit.
  *
  * Usage on VPS (backup first):
  *   cp /var/www/sosna-pos-tenant/master.db /var/www/sosna-pos-tenant/master.db.bak-$(date +%Y%m%d-%H%M)
@@ -133,6 +146,18 @@ const BL375_GRN_ITEM = master.prepare(`
   LIMIT 1
 `).get(BAD_PO_NUM, BL375_BAD_LINE.product_sync_id);
 
+// hq_grns header row for the same GRN — items_subtotal + final_payable
+// need to come down alongside the item cost.
+const BL375_GRN_HDR = BL375_GRN_ITEM ? master.prepare(`
+  SELECT id, grn_number, items_subtotal, cn_total, final_payable
+  FROM hq_grns WHERE sync_id = ?
+`).get(BL375_GRN_ITEM.grn_sync_id) : null;
+// Delta the header by exactly the item's total_price delta (K320,000 → K32,000
+// = −K288,000). If the GRN carries any Credit Note nets we keep those intact.
+const BL375_HDR_DELTA = BL375_GRN_ITEM ? (BL375_GRN_ITEM.total_price - BL375_NEW_TOTAL) : 0;
+const BL375_NEW_SUBTOTAL = BL375_GRN_HDR ? (BL375_GRN_HDR.items_subtotal - BL375_HDR_DELTA) : null;
+const BL375_NEW_FINAL    = BL375_GRN_HDR ? (BL375_GRN_HDR.final_payable  - BL375_HDR_DELTA) : null;
+
 // ─────────────────────────────────────────────────────────────────────
 // Issue 2: CRONIER WAC rebuild
 // ─────────────────────────────────────────────────────────────────────
@@ -152,6 +177,12 @@ if (BL375_GRN_ITEM) {
   console.log(`        total_price  ${BL375_GRN_ITEM.total_price} → ${BL375_NEW_TOTAL}`);
 } else {
   console.log(`    (no linked hq_grn_items row found — GRN maybe not generated yet or void)`);
+}
+if (BL375_GRN_HDR) {
+  console.log(`    hq_grns(${BL375_GRN_HDR.grn_number}):`);
+  console.log(`        items_subtotal ${BL375_GRN_HDR.items_subtotal} → ${BL375_NEW_SUBTOTAL}`);
+  console.log(`        final_payable  ${BL375_GRN_HDR.final_payable}  → ${BL375_NEW_FINAL}`);
+  console.log(`    (backend/sosna.db.grn.total_amount is already correct at K32,000 — HQ mirror edit landed there)`);
 }
 
 // Simulate BL375 WAC AFTER the master.db fix by patching in-memory
@@ -206,6 +237,14 @@ master.transaction(() => {
   } else {
     console.log(`  [A2] skipped (already fixed or no linked GRN)`);
   }
+  if (BL375_GRN_HDR && BL375_HDR_DELTA !== 0) {
+    master.prepare(`
+      UPDATE hq_grns SET items_subtotal = ?, final_payable = ?, updated_at = datetime('now'), synced = 0 WHERE id = ?
+    `).run(BL375_NEW_SUBTOTAL, BL375_NEW_FINAL, BL375_GRN_HDR.id);
+    console.log(`  [A3] hq_grns header items_subtotal + final_payable adjusted by -${BL375_HDR_DELTA}`);
+  } else {
+    console.log(`  [A3] hq_grns header already balanced`);
+  }
 })();
 
 branch.transaction(() => {
@@ -213,9 +252,9 @@ branch.transaction(() => {
   branch.prepare(`
     UPDATE products SET avg_cost_price = ?, updated_at = datetime('now'), synced = 0 WHERE sync_id = ?
   `).run(bl375Final.finalAvg, BL375_SYNC);
-  console.log(`  [A3] BL375ML avg_cost_price → ${bl375Final.finalAvg.toFixed(4)}/Bottle`);
+  console.log(`  [A4] BL375ML avg_cost_price → ${bl375Final.finalAvg.toFixed(4)}/Bottle`);
   const bl375Dcs = reStampDcs(BL375_SYNC, bl375Final.finalAvg, '2026-08-06');
-  console.log(`  [A4] BL375ML daily_cost_snapshot re-stamped (${bl375Dcs} rows on/after 2026-08-06)`);
+  console.log(`  [A5] BL375ML daily_cost_snapshot re-stamped (${bl375Dcs} rows on/after 2026-08-06)`);
 
   const cronierFinal = rebuildWac(CRONIER_SYNC.sync_id);
   branch.prepare(`
