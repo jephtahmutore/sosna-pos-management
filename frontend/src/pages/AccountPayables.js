@@ -163,123 +163,185 @@ const AccountPayables = () => {
 
   const handleBreakdownPrint = () => {
     if (!breakdown) return;
-    const fmt = (v) => parseFloat(v || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
     const printedAt = new Date().toLocaleString('en-US', { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
     const biz = businessInfo.business_name || 'Business Name';
     const addr = [businessInfo.business_address, businessInfo.business_phone].filter(Boolean).join('  |  ');
     const supplierName = breakdown.supplier?.supplier_name || breakdown.supplier?.name || '';
     const printedBy = [authUser?.first_name, authUser?.last_name].filter(Boolean).join(' ') || '—';
 
-    const totalPurchases = breakdown.grns?.reduce((s, g) => s + parseFloat(g.total_amount), 0) || 0;
-    const totalPaid = breakdown.payments?.reduce((s, p) => s + parseFloat(p.amount), 0) || 0;
-    const totalCredits = breakdown.credits?.reduce((s, c) => s + parseFloat(c.amount), 0) || 0;
-    // Display convention: positive = we paid more than we owed (advance to supplier),
-    // negative = we still owe. Same formula as the AP supplier list.
-    const balance = totalPaid + totalCredits - totalPurchases;
+    // v1.10.312 — print mirrors the on-screen STATEMENT view (single
+    // chronological table with Debit / Credit / signed Balance).
+    // Uses supplier's own currency (matches on-screen fmtSup helper).
+    const supCcy    = String(breakdown.supplier?.currency || '').toUpperCase();
+    const supSym    = supCcy === 'K' ? 'K' : supCcy === 'FRA' ? '' : supCcy === 'USD' ? '$' : (curSym || 'K');
+    const supSuffix = supCcy === 'FRA' ? ' FRA' : '';
+    const supDigits = supCcy === 'K' || supCcy === 'FRA' ? 0 : 2;
+    const fmtSup    = (v) => `${supSym}${Math.abs(v).toLocaleString(undefined, { minimumFractionDigits: supDigits, maximumFractionDigits: supDigits })}${supSuffix}`;
 
-    const cnRows = (breakdown.credits || []).map((c, i) => `
-      <tr style="border-bottom:1px solid #ddd;background:${i % 2 === 1 ? '#f9f9f9' : '#fff'}">
-        <td style="padding:8px 12px">${c.credit_note_number}</td>
-        <td style="padding:8px 12px">${formatDate(c.date)}</td>
-        <td style="padding:8px 12px">${c.reason}</td>
-        <td style="padding:8px 12px">${c.reference || '—'}</td>
-        <td style="padding:8px 12px;text-align:right;font-weight:600">K${fmt(c.amount)}</td>
-      </tr>`).join('');
+    // Build merged event list, apply the same modal window filter if set
+    const allEvs = [
+      ...(breakdown.grns || []).map(g => ({
+        kind: 'INV', doc: g.grn_number, date: g.date,
+        reference: g.notes || '', debit: parseFloat(g.total_amount) || 0, credit: 0,
+        sortKey: g.date + ' 0',
+      })),
+      ...(breakdown.payments || []).map(p => ({
+        kind: 'PAY', doc: p.payment_number, date: p.date,
+        reference: p.description || '', debit: 0, credit: -(parseFloat(p.amount) || 0),
+        sortKey: p.date + ' 1',
+      })),
+      ...(breakdown.credits || []).map(cn => ({
+        kind: 'CN', doc: cn.credit_note_number, date: cn.date,
+        reference: `${cn.reason}${cn.reference ? ' · ' + cn.reference : ''}`,
+        debit: 0, credit: -(parseFloat(cn.amount) || 0),
+        sortKey: cn.date + ' 2',
+      })),
+    ].sort((a, b) => String(a.sortKey).localeCompare(String(b.sortKey)));
 
-    const grnRows = (breakdown.grns || []).map((g, i) => `
-      <tr style="border-bottom:1px solid #ddd;background:${i % 2 === 1 ? '#f9f9f9' : '#fff'}">
-        <td style="padding:8px 12px">${g.grn_number}</td>
-        <td style="padding:8px 12px">${formatDate(g.date)}</td>
-        <td style="padding:8px 12px;text-align:right;font-weight:600">K${fmt(g.total_amount)}</td>
-      </tr>`).join('');
+    const inRange = (d) => (!modalFrom || d >= modalFrom) && (!modalTo || d <= modalTo);
+    const preWindow = allEvs.filter(e => modalFrom && e.date < modalFrom);
+    const evs = allEvs.filter(e => inRange(e.date));
+    const openingBalance = preWindow.reduce((s, e) => s + e.debit + e.credit, 0);
+    let running = openingBalance;
+    const rows = evs.map(ev => { running += ev.debit + ev.credit; return { ...ev, balance: running }; });
+    const totalDebit  = evs.reduce((s, e) => s + e.debit, 0);
+    const totalCredit = evs.reduce((s, e) => s + e.credit, 0);
+    const finalBal    = openingBalance + totalDebit + totalCredit;
 
-    const pmtRows = (breakdown.payments || []).map((p, i) => `
-      <tr style="border-bottom:1px solid #ddd;background:${i % 2 === 1 ? '#f9f9f9' : '#fff'}">
-        <td style="padding:8px 12px">${p.payment_number}</td>
-        <td style="padding:8px 12px">${formatDate(p.date)}</td>
-        <td style="padding:8px 12px">${p.description || '—'}</td>
-        <td style="padding:8px 12px;text-align:right;font-weight:600">K${fmt(p.amount)}</td>
-      </tr>`).join('');
+    // Age analysis on outstanding (positive-balance invoices only)
+    const today = new Date();
+    const daysBetween = (d) => Math.floor((today - new Date(d)) / 86400000);
+    let ageBuckets = { current: 0, b31_60: 0, b61_90: 0, b91_120: 0, b120plus: 0 };
+    if (finalBal > 0.01) {
+      const invQ = (breakdown.grns || []).map(g => ({ date: g.date, remain: parseFloat(g.total_amount) || 0 }));
+      let pool = -totalCredit + Math.max(0, -openingBalance);
+      invQ.sort((a, b) => a.date.localeCompare(b.date));
+      for (const inv of invQ) {
+        if (pool <= 0) break;
+        const take = Math.min(pool, inv.remain);
+        inv.remain -= take; pool -= take;
+      }
+      for (const inv of invQ) {
+        if (inv.remain < 0.01) continue;
+        const d = daysBetween(inv.date);
+        if (d <= 30)       ageBuckets.current += inv.remain;
+        else if (d <= 60)  ageBuckets.b31_60 += inv.remain;
+        else if (d <= 90)  ageBuckets.b61_90 += inv.remain;
+        else if (d <= 120) ageBuckets.b91_120 += inv.remain;
+        else               ageBuckets.b120plus += inv.remain;
+      }
+    }
 
-    const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>AP Breakdown — ${supplierName}</title>
-      <style>@page{size:A4 portrait;margin:14mm}*{box-sizing:border-box;margin:0;padding:0}
-      body{font-family:"Segoe UI",Arial,sans-serif;font-size:12px;color:#000}
+    const windowLabel = modalFrom || modalTo ? `${modalFrom || '—'} to ${modalTo || '—'}` : 'All time';
+
+    const pillStyle = (kind) => {
+      const bg = kind === 'INV' ? '#fee2e2' : kind === 'PAY' ? '#dcfce7' : '#dbeafe';
+      const fg = kind === 'INV' ? '#991b1b' : kind === 'PAY' ? '#166534' : '#1d4ed8';
+      return `background:${bg};color:${fg};padding:1px 6px;border-radius:3px;font-size:9px;font-weight:700`;
+    };
+
+    const openingRow = (modalFrom || modalTo) && Math.abs(openingBalance) > 0.001 ? `
+      <tr style="background:#fefce8;border-bottom:1px solid #fde68a">
+        <td colspan="4" style="padding:6px 10px;font-style:italic;color:#a16207">Opening balance (carried over from before ${modalFrom || 'start'})</td>
+        <td></td><td></td>
+        <td style="padding:6px 10px;text-align:right;font-weight:700;color:${openingBalance > 0.01 ? '#dc2626' : openingBalance < -0.01 ? '#16a34a' : '#000'}">${openingBalance < 0 ? '−' : ''}${fmtSup(openingBalance)}</td>
+      </tr>` : '';
+
+    const bodyRows = rows.length === 0
+      ? `<tr><td colspan="7" style="padding:20px;text-align:center;color:#9ca3af">No transactions in this window.</td></tr>`
+      : rows.map(r => `
+        <tr style="border-bottom:1px solid #eee">
+          <td style="padding:5px 9px;color:#374151;white-space:nowrap">${formatDate(r.date)}</td>
+          <td style="padding:5px 9px;color:#6b7280;font-family:monospace;font-size:9.5px">${r.doc}</td>
+          <td style="padding:5px 9px"><span style="${pillStyle(r.kind)}">${r.kind}</span></td>
+          <td style="padding:5px 9px;color:#6b7280">${r.reference || '—'}</td>
+          <td style="padding:5px 9px;text-align:right;font-family:monospace;color:${r.debit > 0 ? '#dc2626' : '#d1d5db'}">${r.debit > 0 ? `+${fmtSup(r.debit)}` : ''}</td>
+          <td style="padding:5px 9px;text-align:right;font-family:monospace;color:${r.credit === 0 ? '#d1d5db' : r.kind === 'PAY' ? '#16a34a' : '#0369a1'}">${r.credit < 0 ? `−${fmtSup(r.credit)}` : ''}</td>
+          <td style="padding:5px 9px;text-align:right;font-family:monospace;font-weight:600;color:${r.balance > 0.01 ? '#dc2626' : r.balance < -0.01 ? '#16a34a' : '#000'}">${r.balance < 0 ? '−' : ''}${fmtSup(r.balance)}</td>
+        </tr>`).join('');
+
+    const ageHtml = finalBal > 0.01 ? `
+      <div style="margin-top:16px;padding:10px 14px;border:1.5px solid #000">
+        <div style="font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px">Age analysis (as of today)</div>
+        <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:6px;font-size:10px;text-align:center">
+          ${[['Current',ageBuckets.current],['31-60',ageBuckets.b31_60],['61-90',ageBuckets.b61_90],['91-120',ageBuckets.b91_120],['120+',ageBuckets.b120plus]].map(([l,v]) => `
+            <div style="border:1px solid #ddd;padding:6px;background:${v > 0.01 ? '#fef2f2' : '#fff'}">
+              <div style="font-size:9px;color:#6b7280;font-weight:600">${l}</div>
+              <div style="font-size:11px;font-weight:700;color:${v > 0.01 ? '#dc2626' : '#9ca3af'};font-family:monospace">${fmtSup(v)}</div>
+            </div>`).join('')}
+        </div>
+      </div>` : '';
+
+    const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Statement — ${supplierName}</title>
+      <style>@page{size:A4 landscape;margin:12mm}*{box-sizing:border-box;margin:0;padding:0}
+      body{font-family:"Segoe UI",Arial,sans-serif;font-size:11px;color:#000}
       table{width:100%;border-collapse:collapse}
-      th{padding:8px 12px;font-weight:700;color:#000;border-bottom:1.5px solid #000;font-size:10.5px;background:#f0f0f0;text-align:left}
-      tfoot td{padding:9px 12px;font-weight:700;background:#f0f0f0;border-top:2px solid #000}
+      th{padding:6px 10px;font-weight:700;color:#000;border-bottom:2px solid #000;font-size:10px;background:#f0f0f0;text-align:left}
+      tfoot td{padding:7px 10px;font-weight:700;background:#f0f0f0;border-top:2px solid #000}
       </style></head><body>
-      <div style="border-bottom:3px solid #000;padding-bottom:12px;margin-bottom:14px;display:flex;justify-content:space-between;align-items:flex-start">
+      <div style="border-bottom:3px solid #000;padding-bottom:10px;margin-bottom:12px;display:flex;justify-content:space-between;align-items:flex-start">
         <div>
-          <div style="font-size:8px;letter-spacing:3px;text-transform:uppercase;margin-bottom:6px">Account Payables</div>
-          <div style="font-size:21px;font-weight:800;letter-spacing:0.3px;margin-bottom:4px">${biz}</div>
-          <div style="font-size:10px">${addr}</div>
+          <div style="font-size:8px;letter-spacing:2px;text-transform:uppercase;margin-bottom:4px">Statement</div>
+          <div style="font-size:18px;font-weight:800;margin-bottom:3px">${biz}</div>
+          <div style="font-size:9.5px">${addr}</div>
         </div>
         <div style="text-align:right">
-          <div style="font-size:9px;letter-spacing:2px;text-transform:uppercase;margin-bottom:4px">Supplier Breakdown</div>
-          <div style="font-size:15px;font-weight:700">${supplierName}</div>
-          <div style="font-size:9px;margin-top:3px">Printed: ${printedAt}</div>
+          <div style="font-size:8px;letter-spacing:2px;text-transform:uppercase;margin-bottom:4px">Supplier</div>
+          <div style="font-size:14px;font-weight:700">${supplierName}</div>
+          ${breakdown.supplier?.phone ? `<div style="font-size:9px;margin-top:2px">${breakdown.supplier.phone}</div>` : ''}
+          <div style="font-size:9px;margin-top:2px">Statement Date: ${formatDate(new Date().toISOString().slice(0,10))}</div>
+          <div style="font-size:9px">Window: ${windowLabel}</div>
         </div>
       </div>
 
-      <h3 style="font-size:11px;font-weight:700;margin-bottom:8px;text-transform:uppercase;letter-spacing:0.5px;border-bottom:1.5px solid #000;padding-bottom:4px">Purchases (GRN)</h3>
-      ${breakdown.grns?.length === 0 ? '<p style="font-size:12px;margin-bottom:16px">No purchases yet.</p>' : `
-      <div style="border:1.5px solid #000;margin-bottom:20px">
-        <table style="font-size:11.5px">
-          <thead><tr><th>GRN #</th><th>Date</th><th style="text-align:right">Amount</th></tr></thead>
-          <tbody>${grnRows}</tbody>
-          <tfoot><tr>
-            <td colspan="2" style="text-align:right">Total Purchases:</td>
-            <td style="text-align:right">K${fmt(totalPurchases)}</td>
-          </tr></tfoot>
-        </table>
-      </div>`}
-
-      <h3 style="font-size:11px;font-weight:700;margin-bottom:8px;text-transform:uppercase;letter-spacing:0.5px;border-bottom:1.5px solid #000;padding-bottom:4px">Payments Made (AP)</h3>
-      ${breakdown.payments?.length === 0 ? '<p style="font-size:12px;margin-bottom:16px">No payments yet.</p>' : `
-      <div style="border:1.5px solid #000;margin-bottom:20px">
-        <table style="font-size:11.5px">
-          <thead><tr><th>Ref #</th><th>Date</th><th>Description</th><th style="text-align:right">Amount</th></tr></thead>
-          <tbody>${pmtRows}</tbody>
-          <tfoot><tr>
-            <td colspan="3" style="text-align:right">Total Paid:</td>
-            <td style="text-align:right">K${fmt(totalPaid)}</td>
-          </tr></tfoot>
-        </table>
-      </div>`}
-
-      ${breakdown.credits?.length > 0 ? `
-      <h3 style="font-size:11px;font-weight:700;margin-bottom:8px;text-transform:uppercase;letter-spacing:0.5px;border-bottom:1.5px solid #000;padding-bottom:4px">Credit Notes</h3>
-      <div style="border:1.5px solid #000;margin-bottom:20px">
-        <table style="font-size:11.5px">
-          <thead><tr><th>CN #</th><th>Date</th><th>Reason</th><th>Reference</th><th style="text-align:right">Amount</th></tr></thead>
-          <tbody>${cnRows}</tbody>
-          <tfoot><tr>
-            <td colspan="4" style="text-align:right">Total Credits:</td>
-            <td style="text-align:right">K${fmt(totalCredits)}</td>
-          </tr></tfoot>
-        </table>
-      </div>` : ''}
-
-      <div style="border:2px solid #000;padding:12px 16px;display:flex;justify-content:space-between;align-items:center;margin-bottom:24px">
-        <div>
-          <span style="font-weight:700;font-size:14px">${balance > 0.01 ? 'Over Paid:' : balance < -0.01 ? 'Outstanding:' : 'Outstanding Balance:'}</span>
-          ${totalCredits > 0.01 ? `<div style="font-size:9.5px;margin-top:3px;color:#444">Purchases ${curSym}${fmt(totalPurchases)} − Paid ${curSym}${fmt(totalPaid)} − Credits ${curSym}${fmt(totalCredits)}</div>` : ''}
-        </div>
-        <span style="font-weight:800;font-size:18px;color:${balance > 0.01 ? '#16a34a' : balance < -0.01 ? '#dc2626' : '#000'}">${balance < 0 ? '−' : ''}${curSym}${fmt(Math.abs(balance))}</span>
+      <div style="font-size:9px;color:#6b7280;margin-bottom:10px">
+        Convention: invoices in Debit (+), payments + CNs in Credit (−). Balance is signed: positive = you owe supplier, negative = supplier owes you.
       </div>
 
-      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:24px;margin-top:32px;margin-bottom:16px">
+      <div style="border:1.5px solid #000;margin-bottom:14px">
+        <table>
+          <thead>
+            <tr>
+              <th>Date</th><th>Doc #</th><th>Type</th><th>Reference</th>
+              <th style="text-align:right;color:#dc2626">Debit (+)</th>
+              <th style="text-align:right;color:#0369a1">Credit (−)</th>
+              <th style="text-align:right">Balance</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${openingRow}
+            ${bodyRows}
+          </tbody>
+          <tfoot>
+            <tr>
+              <td colspan="4" style="text-align:right">Totals</td>
+              <td style="text-align:right;color:#dc2626">+${fmtSup(totalDebit)}</td>
+              <td style="text-align:right;color:#0369a1">−${fmtSup(totalCredit)}</td>
+              <td style="text-align:right;color:${finalBal > 0.01 ? '#dc2626' : finalBal < -0.01 ? '#16a34a' : '#000'}">${finalBal < 0 ? '−' : ''}${fmtSup(finalBal)}</td>
+            </tr>
+          </tfoot>
+        </table>
+      </div>
+
+      <div style="border:2px solid #000;padding:10px 14px;display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
+        <span style="font-weight:700;font-size:13px">${finalBal > 0.01 ? 'You owe supplier:' : finalBal < -0.01 ? 'Supplier owes you (credit balance):' : 'Account is square:'}</span>
+        <span style="font-weight:800;font-size:17px;color:${finalBal > 0.01 ? '#dc2626' : finalBal < -0.01 ? '#16a34a' : '#000'}">${fmtSup(finalBal)}</span>
+      </div>
+
+      ${ageHtml}
+
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:20px;margin-top:26px;margin-bottom:14px">
         ${[['Prepared By',''],['Checked By',''],['Printed By',printedBy]].map(([label,name])=>`
           <div>
-            <div style="font-size:9px;letter-spacing:0.8px;text-transform:uppercase;font-weight:700;margin-bottom:6px">${label}</div>
-            <div style="font-size:11px;font-weight:600;min-height:18px;margin-bottom:6px">${name}</div>
-            <div style="height:32px;border-bottom:1.5px solid #000;margin-bottom:4px"></div>
-            <div style="font-size:9px;text-align:center">Name / Signature / Date</div>
+            <div style="font-size:9px;letter-spacing:0.8px;text-transform:uppercase;font-weight:700;margin-bottom:5px">${label}</div>
+            <div style="font-size:10px;font-weight:600;min-height:16px;margin-bottom:5px">${name}</div>
+            <div style="height:28px;border-bottom:1.5px solid #000;margin-bottom:3px"></div>
+            <div style="font-size:8px;text-align:center">Name / Signature / Date</div>
           </div>`).join('')}
       </div>
-      <div style="border-top:1px solid #bbb;padding-top:8px;display:flex;justify-content:space-between">
-        <span style="font-size:9px">${biz} — Confidential</span>
-        <span style="font-size:9px">Printed: ${printedAt}</span>
+      <div style="border-top:1px solid #bbb;padding-top:6px;display:flex;justify-content:space-between">
+        <span style="font-size:8px">${biz} — Confidential</span>
+        <span style="font-size:8px">Printed: ${printedAt}</span>
       </div>
     </body></html>`;
 
@@ -634,7 +696,7 @@ const AccountPayables = () => {
       {breakdown && (
         <Portal>
         <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}>
-          <div style={{ background: '#fff', borderRadius: 12, width: '100%', maxWidth: 640, maxHeight: '85vh', overflowY: 'auto', boxShadow: '0 20px 60px rgba(0,0,0,0.3)' }}>
+          <div style={{ background: '#fff', borderRadius: 12, width: '100%', maxWidth: 1200, maxHeight: '90vh', overflowY: 'auto', boxShadow: '0 20px 60px rgba(0,0,0,0.3)' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '18px 24px', borderBottom: '1px solid #e5e7eb', position: 'sticky', top: 0, background: '#fff', zIndex: 1 }}>
               <div>
                 <h2 style={{ margin: 0, fontSize: 17, fontWeight: 700 }}>{breakdown.supplier?.supplier_name || breakdown.supplier?.name}</h2>
@@ -838,7 +900,18 @@ const AccountPayables = () => {
                                   <td style={{ padding: '6px 10px', textAlign: 'right', fontFamily: 'monospace', color: r.debit > 0 ? '#dc2626' : '#d1d5db' }}>
                                     {r.debit > 0 ? `+${fmtSup(r.debit)}` : ''}
                                   </td>
-                                  <td style={{ padding: '6px 10px', textAlign: 'right', fontFamily: 'monospace', color: r.credit < 0 ? '#0369a1' : '#d1d5db' }}>
+                                  {/* v1.10.312 — colour Credit amount by kind:
+                                      PAY = green (money out to supplier),
+                                      CN  = blue  (supplier credit note).
+                                      Matches the pill colours so the two
+                                      are visually distinct in one column. */}
+                                  <td style={{
+                                    padding: '6px 10px', textAlign: 'right', fontFamily: 'monospace',
+                                    color: r.credit === 0 ? '#d1d5db'
+                                         : r.kind === 'PAY' ? '#16a34a'
+                                         : r.kind === 'CN'  ? '#0369a1'
+                                         : '#0369a1'
+                                  }}>
                                     {r.credit < 0 ? `−${fmtSup(r.credit)}` : ''}
                                   </td>
                                   <td style={{ padding: '6px 10px', textAlign: 'right', fontFamily: 'monospace', fontWeight: 600, color: r.balance > 0.01 ? '#dc2626' : r.balance < -0.01 ? '#16a34a' : '#374151' }}>
