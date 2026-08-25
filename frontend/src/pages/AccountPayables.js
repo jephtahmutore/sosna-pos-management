@@ -47,6 +47,15 @@ const AccountPayables = () => {
   // via the date pickers or the "This Month" button.
   const [filterFrom, setFilterFrom] = useState('');
   const [filterTo, setFilterTo] = useState('');
+  // v1.10.310 — supplier-name search (client-side, case-insensitive contains).
+  // Applies to both Payables + Payments lists. Empty string = show all.
+  const [supplierSearch, setSupplierSearch] = useState('');
+  // v1.10.310 — per-modal date filter (independent from the page-level filter
+  // that scopes which suppliers appear). Empty = show all transactions.
+  // Opening balance is derived from all activity BEFORE modalFrom so the
+  // running balance stays truthful when the window is narrowed.
+  const [modalFrom, setModalFrom] = useState('');
+  const [modalTo,   setModalTo]   = useState('');
 
   const { hasPermission, user: authUser } = useAuth();
 
@@ -83,6 +92,10 @@ const AccountPayables = () => {
   const openBreakdown = async (supplier) => {
     setLoadingBreakdown(true);
     setBreakdown({ supplier, grns: [], payments: [] });
+    // v1.10.310 — clear the per-modal date filter on open so we start
+    // wide. User can narrow via the modal's date inputs.
+    setModalFrom('');
+    setModalTo('');
     try {
       const res = await getSupplierBreakdown(supplier.id);
       setBreakdown(res.data);
@@ -449,6 +462,25 @@ const AccountPayables = () => {
           style={{ padding: '5px 12px', borderRadius: 7, border: '1px solid #e5e7eb', fontSize: 12, background: '#fff', color: '#6b7280', cursor: 'pointer' }}>
           {t('allTime')}
         </button>
+        {/* v1.10.310 — supplier search. Filters the Payables + Payments
+            lists client-side; doesn't refetch. Clears the box shows all. */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginLeft: 12 }}>
+          <span style={{ fontSize: 12, color: '#9ca3af' }}>🔍</span>
+          <input
+            type="text"
+            value={supplierSearch}
+            onChange={e => setSupplierSearch(e.target.value)}
+            placeholder="Search supplier..."
+            style={{ padding: '6px 10px', borderRadius: 7, border: '1px solid #d1d5db', fontSize: 13, background: '#fff', color: '#374151', minWidth: 200 }}
+          />
+          {supplierSearch && (
+            <button onClick={() => setSupplierSearch('')}
+              title="Clear search"
+              style={{ padding: '2px 8px', borderRadius: 6, border: '1px solid #e5e7eb', background: '#f9fafb', color: '#6b7280', cursor: 'pointer', fontSize: 11 }}>
+              ×
+            </button>
+          )}
+        </div>
         <span style={{ marginLeft: 'auto', fontSize: 11, color: '#9ca3af' }}>
           {filterFrom || filterTo
             ? `${filterFrom || '—'} ${t('to')} ${filterTo || '—'}`
@@ -485,9 +517,19 @@ const AccountPayables = () => {
             </tr>
           </thead>
           <tbody>
-            {payables.length === 0 ? (
-              <tr><td colSpan="10" style={{ textAlign: 'center', color: '#9ca3af', padding: 40 }}>{t('noSuppliersInLedger')}</td></tr>
-            ) : payables.map(p => (
+            {(() => {
+              // v1.10.310 — client-side search filter (case-insensitive contains on supplier_name).
+              const q = supplierSearch.trim().toLowerCase();
+              const filtered = q
+                ? payables.filter(p => String(p.supplier_name || '').toLowerCase().includes(q))
+                : payables;
+              if (payables.length === 0) {
+                return <tr><td colSpan="10" style={{ textAlign: 'center', color: '#9ca3af', padding: 40 }}>{t('noSuppliersInLedger')}</td></tr>;
+              }
+              if (filtered.length === 0) {
+                return <tr><td colSpan="10" style={{ textAlign: 'center', color: '#9ca3af', padding: 40 }}>No supplier matches "{supplierSearch}".</td></tr>;
+              }
+              return filtered.map(p => (
               <tr key={p.id}>
                 <td>
                   <button onClick={() => openBreakdown(p)} style={{ background: 'none', border: 'none', padding: 0, cursor: 'pointer', fontWeight: 600, color: '#2563eb', fontSize: 14, display: 'inline-flex', alignItems: 'center', gap: 3 }}>
@@ -531,7 +573,8 @@ const AccountPayables = () => {
                   </button>
                 </td>
               </tr>
-            ))}
+              ));
+            })()}
           </tbody>
         </table>
       </div>
@@ -610,7 +653,242 @@ const AccountPayables = () => {
                 <div style={{ textAlign: 'center', color: '#6b7280', padding: 32 }}>Loading...</div>
               ) : (
                 <>
-                  {/* GRNs */}
+                  {/* v1.10.310 — Statement view: single chronological table
+                      with Debit(+) / Credit(−) / signed running Balance.
+                      Matches the supplier's paper statement (SVSPRO / Sage /
+                      etc.): invoices land in Debit column as positive,
+                      payments + CNs land in Credit column as negative,
+                      Balance is a running cumulative that shows who owes who
+                      at every row. */}
+                  {(() => {
+                    // Build merged event list (grn + payment + credit_note)
+                    const allEvs = [
+                      ...(breakdown.grns || []).map(g => ({
+                        kind: 'INV', doc: g.grn_number, date: g.date,
+                        reference: g.notes || '', debit: parseFloat(g.total_amount) || 0, credit: 0,
+                        sortKey: g.date + ' 0',
+                      })),
+                      ...(breakdown.payments || []).map(p => ({
+                        kind: 'PAY', doc: p.payment_number, date: p.date,
+                        reference: p.description || '', debit: 0,
+                        credit: -(parseFloat(p.amount) || 0),
+                        sortKey: p.date + ' 1', raw: p,
+                      })),
+                      ...(breakdown.credits || []).map(cn => ({
+                        kind: 'CN', doc: cn.credit_note_number, date: cn.date,
+                        reference: `${cn.reason}${cn.reference ? ' · ' + cn.reference : ''}`,
+                        debit: 0, credit: -(parseFloat(cn.amount) || 0),
+                        sortKey: cn.date + ' 2',
+                      })),
+                    ].sort((a, b) => String(a.sortKey).localeCompare(String(b.sortKey)));
+
+                    // v1.10.310 — apply per-modal date filter. Everything BEFORE
+                    // modalFrom becomes the opening balance for the window; only
+                    // rows within [modalFrom, modalTo] appear in the table.
+                    const inRange = (d) => (!modalFrom || d >= modalFrom) && (!modalTo || d <= modalTo);
+                    const preWindow = allEvs.filter(e => modalFrom && e.date < modalFrom);
+                    const evs = allEvs.filter(e => inRange(e.date));
+                    const openingBalance = preWindow.reduce((s, e) => s + e.debit + e.credit, 0);
+
+                    // Walk with running balance starting from opening
+                    let running = openingBalance;
+                    const rows = evs.map(ev => {
+                      running += ev.debit + ev.credit;
+                      return { ...ev, balance: running };
+                    });
+
+                    const totalDebit  = evs.reduce((s, e) => s + e.debit, 0);
+                    const totalCredit = evs.reduce((s, e) => s + e.credit, 0);
+                    const finalBal    = openingBalance + totalDebit + totalCredit;
+
+                    // Age buckets on OUTSTANDING (positive-balance invoices only)
+                    // Simple: sum invoice remainders using FIFO against credits.
+                    // For statement view, show buckets from final balance if > 0.
+                    const today = new Date();
+                    const daysBetween = (d) => Math.floor((today - new Date(d)) / 86400000);
+                    let ageBuckets = { current: 0, b31_60: 0, b61_90: 0, b91_120: 0, b120plus: 0 };
+                    if (finalBal > 0.01) {
+                      // Age the outstanding by walking invoices FIFO-net-of-credits
+                      const invQ = (breakdown.grns || []).map(g => ({ date: g.date, remain: parseFloat(g.total_amount) || 0 }));
+                      let pool = -totalCredit; // positive pool of unallocated credits
+                      // Apply pool to oldest invoices first
+                      invQ.sort((a, b) => a.date.localeCompare(b.date));
+                      for (const inv of invQ) {
+                        if (pool <= 0) break;
+                        const take = Math.min(pool, inv.remain);
+                        inv.remain -= take; pool -= take;
+                      }
+                      for (const inv of invQ) {
+                        if (inv.remain < 0.01) continue;
+                        const d = daysBetween(inv.date);
+                        if (d <= 30)       ageBuckets.current += inv.remain;
+                        else if (d <= 60)  ageBuckets.b31_60 += inv.remain;
+                        else if (d <= 90)  ageBuckets.b61_90 += inv.remain;
+                        else if (d <= 120) ageBuckets.b91_120 += inv.remain;
+                        else               ageBuckets.b120plus += inv.remain;
+                      }
+                    }
+
+                    // Quick-preset date range helpers (renamed to todayIso to
+                    // avoid shadowing the age-analysis `today` above).
+                    const todayIso = new Date().toISOString().slice(0, 10);
+                    const som      = todayIso.slice(0, 8) + '01';   // first of current month
+                    const dOfPrev  = new Date(); dOfPrev.setMonth(dOfPrev.getMonth() - 1);
+                    const prevSom  = dOfPrev.toISOString().slice(0, 8) + '01';
+                    const prevEom  = new Date(new Date().getFullYear(), new Date().getMonth(), 0).toISOString().slice(0, 10);
+
+                    return (
+                      <>
+                        {/* Statement header block */}
+                        <div style={{ background: '#f8fafc', border: '1px solid #e5e7eb', borderRadius: 8, padding: '14px 16px', marginBottom: 12, fontSize: 12 }}>
+                          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+                            <div>
+                              <div><strong>Statement Date:</strong> {formatDate(new Date().toISOString().slice(0,10))}</div>
+                              <div><strong>Supplier:</strong> {breakdown.supplier?.supplier_name || breakdown.supplier?.name}</div>
+                              {breakdown.supplier?.phone && <div><strong>Phone:</strong> {breakdown.supplier.phone}</div>}
+                              {breakdown.supplier?.email && <div><strong>Email:</strong> {breakdown.supplier.email}</div>}
+                            </div>
+                            <div>
+                              <div style={{ color: '#6b7280' }}>Convention: invoices in Debit (+), payments + CNs in Credit (−).</div>
+                              <div style={{ color: '#6b7280' }}>Balance is signed: positive = you owe supplier, negative = supplier owes you.</div>
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* v1.10.310 — per-modal date filter. Everything before
+                            'From' folds into an Opening Balance row so the
+                            running balance stays truthful across window
+                            narrowing. Empty inputs = All Time. */}
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12, padding: '8px 12px', background: '#fff', border: '1px solid #e5e7eb', borderRadius: 8, flexWrap: 'wrap' }}>
+                          <span style={{ fontSize: 11, fontWeight: 600, color: '#6b7280' }}>Statement window:</span>
+                          <span style={{ fontSize: 11, color: '#9ca3af' }}>From</span>
+                          <input type="date" value={modalFrom} max={modalTo || todayIso}
+                            onChange={e => setModalFrom(e.target.value)}
+                            style={{ padding: '4px 8px', borderRadius: 6, border: '1px solid #d1d5db', fontSize: 12 }} />
+                          <span style={{ fontSize: 11, color: '#9ca3af' }}>To</span>
+                          <input type="date" value={modalTo} min={modalFrom || undefined} max={todayIso}
+                            onChange={e => setModalTo(e.target.value)}
+                            style={{ padding: '4px 8px', borderRadius: 6, border: '1px solid #d1d5db', fontSize: 12 }} />
+                          <button onClick={() => { setModalFrom(som); setModalTo(todayIso); }}
+                            style={{ padding: '4px 10px', borderRadius: 6, border: '1px solid #bfdbfe', fontSize: 11, background: '#eff6ff', color: '#1d4ed8', cursor: 'pointer', fontWeight: 600 }}>This Month</button>
+                          <button onClick={() => { setModalFrom(prevSom); setModalTo(prevEom); }}
+                            style={{ padding: '4px 10px', borderRadius: 6, border: '1px solid #bfdbfe', fontSize: 11, background: '#eff6ff', color: '#1d4ed8', cursor: 'pointer', fontWeight: 600 }}>Last Month</button>
+                          <button onClick={() => { setModalFrom(''); setModalTo(''); }}
+                            style={{ padding: '4px 10px', borderRadius: 6, border: '1px solid #e5e7eb', fontSize: 11, background: '#fff', color: '#6b7280', cursor: 'pointer' }}>All Time</button>
+                          <span style={{ marginLeft: 'auto', fontSize: 11, color: '#9ca3af' }}>
+                            {modalFrom || modalTo ? `${modalFrom || '—'} to ${modalTo || '—'}` : 'Showing all time'}
+                          </span>
+                        </div>
+
+                        {/* Single chronological table */}
+                        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12.5, marginBottom: 14 }}>
+                          <thead>
+                            <tr style={{ background: '#f9fafb', borderBottom: '2px solid #cbd5e1' }}>
+                              <th style={{ textAlign: 'left', padding: '8px 10px', fontWeight: 700 }}>Date</th>
+                              <th style={{ textAlign: 'left', padding: '8px 10px', fontWeight: 700 }}>Doc #</th>
+                              <th style={{ textAlign: 'left', padding: '8px 10px', fontWeight: 700 }}>Type</th>
+                              <th style={{ textAlign: 'left', padding: '8px 10px', fontWeight: 700 }}>Reference</th>
+                              <th style={{ textAlign: 'right', padding: '8px 10px', fontWeight: 700, color: '#dc2626' }}>Debit (+)</th>
+                              <th style={{ textAlign: 'right', padding: '8px 10px', fontWeight: 700, color: '#0369a1' }}>Credit (−)</th>
+                              <th style={{ textAlign: 'right', padding: '8px 10px', fontWeight: 700 }}>Balance</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {/* v1.10.310 — Opening Balance row shows carried-over
+                                position from BEFORE the window. Only rendered when
+                                the user has narrowed the range. */}
+                            {(modalFrom || modalTo) && Math.abs(openingBalance) > 0.001 && (
+                              <tr style={{ background: '#fefce8', borderBottom: '1px solid #fde68a' }}>
+                                <td colSpan={4} style={{ padding: '6px 10px', fontStyle: 'italic', color: '#a16207' }}>
+                                  Opening balance (carried over from before {modalFrom || 'start'})
+                                </td>
+                                <td colSpan={2} style={{ padding: '6px 10px' }}></td>
+                                <td style={{ padding: '6px 10px', textAlign: 'right', fontFamily: 'monospace', fontWeight: 700, color: openingBalance > 0.01 ? '#dc2626' : openingBalance < -0.01 ? '#16a34a' : '#374151' }}>
+                                  {openingBalance < 0 ? '−' : ''}{curSym}{Math.abs(openingBalance).toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                                </td>
+                              </tr>
+                            )}
+                            {rows.length === 0 && (
+                              <tr><td colSpan={7} style={{ textAlign: 'center', padding: 24, color: '#9ca3af' }}>No transactions in this window.</td></tr>
+                            )}
+                            {rows.map((r, i) => {
+                              const pillBg = r.kind === 'INV' ? '#fee2e2' : r.kind === 'PAY' ? '#dcfce7' : '#dbeafe';
+                              const pillFg = r.kind === 'INV' ? '#991b1b' : r.kind === 'PAY' ? '#166534' : '#1d4ed8';
+                              return (
+                                <tr key={r.kind + r.doc + i} style={{ borderBottom: '1px solid #f1f5f9' }}>
+                                  <td style={{ padding: '6px 10px', color: '#374151', whiteSpace: 'nowrap' }}>{formatDate(r.date)}</td>
+                                  <td style={{ padding: '6px 10px', color: '#6b7280', fontFamily: 'monospace', fontSize: 11 }}>{r.doc}</td>
+                                  <td style={{ padding: '6px 10px' }}>
+                                    <span style={{ background: pillBg, color: pillFg, padding: '1px 7px', borderRadius: 3, fontSize: 10, fontWeight: 700 }}>{r.kind}</span>
+                                  </td>
+                                  <td style={{ padding: '6px 10px', color: '#6b7280' }}>{r.reference || '—'}</td>
+                                  <td style={{ padding: '6px 10px', textAlign: 'right', fontFamily: 'monospace', color: r.debit > 0 ? '#dc2626' : '#d1d5db' }}>
+                                    {r.debit > 0 ? `+${curSym}${r.debit.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : ''}
+                                  </td>
+                                  <td style={{ padding: '6px 10px', textAlign: 'right', fontFamily: 'monospace', color: r.credit < 0 ? '#0369a1' : '#d1d5db' }}>
+                                    {r.credit < 0 ? `−${curSym}${Math.abs(r.credit).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : ''}
+                                  </td>
+                                  <td style={{ padding: '6px 10px', textAlign: 'right', fontFamily: 'monospace', fontWeight: 600, color: r.balance > 0.01 ? '#dc2626' : r.balance < -0.01 ? '#16a34a' : '#374151' }}>
+                                    {r.balance < 0 ? '−' : ''}{curSym}{Math.abs(r.balance).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                          <tfoot>
+                            <tr style={{ background: '#f9fafb', borderTop: '2px solid #cbd5e1', fontWeight: 700 }}>
+                              <td colSpan={4} style={{ padding: '8px 10px', textAlign: 'right' }}>Totals</td>
+                              <td style={{ padding: '8px 10px', textAlign: 'right', fontFamily: 'monospace', color: '#dc2626' }}>+{curSym}{totalDebit.toLocaleString(undefined, { minimumFractionDigits: 2 })}</td>
+                              <td style={{ padding: '8px 10px', textAlign: 'right', fontFamily: 'monospace', color: '#0369a1' }}>−{curSym}{Math.abs(totalCredit).toLocaleString(undefined, { minimumFractionDigits: 2 })}</td>
+                              <td style={{ padding: '8px 10px', textAlign: 'right', fontFamily: 'monospace', color: finalBal > 0.01 ? '#dc2626' : finalBal < -0.01 ? '#16a34a' : '#374151' }}>
+                                {finalBal < 0 ? '−' : ''}{curSym}{Math.abs(finalBal).toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                              </td>
+                            </tr>
+                          </tfoot>
+                        </table>
+
+                        {/* Final balance banner */}
+                        <div style={{ background: finalBal > 0.01 ? '#fef2f2' : finalBal < -0.01 ? '#f0fdf4' : '#f9fafb',
+                                      border: `1px solid ${finalBal > 0.01 ? '#fecaca' : finalBal < -0.01 ? '#bbf7d0' : '#e5e7eb'}`,
+                                      borderRadius: 8, padding: '12px 16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+                          <span style={{ fontWeight: 700, fontSize: 14 }}>
+                            {finalBal > 0.01 ? 'You owe supplier:' : finalBal < -0.01 ? 'Supplier owes you (credit balance):' : 'Account is square'}
+                          </span>
+                          <span style={{ fontWeight: 800, fontSize: 18, color: finalBal > 0.01 ? '#dc2626' : finalBal < -0.01 ? '#16a34a' : '#374151' }}>
+                            {curSym}{Math.abs(finalBal).toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                          </span>
+                        </div>
+
+                        {/* Age analysis — only when balance > 0 (you owe them) */}
+                        {finalBal > 0.01 && (
+                          <div style={{ background: '#f8fafc', border: '1px solid #e5e7eb', borderRadius: 8, padding: '12px 14px', marginBottom: 12 }}>
+                            <div style={{ fontSize: 11, fontWeight: 700, color: '#6b7280', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 6 }}>Age analysis (as of today)</div>
+                            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 8, fontSize: 12 }}>
+                              {[
+                                ['Current',  ageBuckets.current],
+                                ['31-60',    ageBuckets.b31_60],
+                                ['61-90',    ageBuckets.b61_90],
+                                ['91-120',   ageBuckets.b91_120],
+                                ['120+',     ageBuckets.b120plus],
+                              ].map(([label, val]) => (
+                                <div key={label} style={{ border: '1px solid #e5e7eb', borderRadius: 6, padding: '8px 10px', textAlign: 'center', background: val > 0.01 ? '#fef2f2' : '#fff' }}>
+                                  <div style={{ fontSize: 10, color: '#6b7280', fontWeight: 600 }}>{label}</div>
+                                  <div style={{ fontSize: 13, fontWeight: 700, color: val > 0.01 ? '#dc2626' : '#9ca3af', fontFamily: 'monospace' }}>
+                                    {curSym}{val.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                      </>
+                    );
+                  })()}
+
+                  {/* v1.10.310 — Legacy 3-table sections below are hidden by
+                      default. Left in the tree for now in case someone needs
+                      them back; can delete after a stable run. */}
+                  <div style={{ display: 'none' }}>
                   <h3 style={{ fontSize: 14, fontWeight: 700, color: '#374151', marginBottom: 10 }}>Purchases (GRN)</h3>
                   {breakdown.grns?.length === 0 ? (
                     <p style={{ fontSize: 13, color: '#9ca3af', marginBottom: 18 }}>No purchases yet.</p>
@@ -783,6 +1061,7 @@ const AccountPayables = () => {
                       </div>
                     );
                   })()}
+                  </div>{/* /v1.10.310 hidden legacy 3-table block */}
                 </>
               )}
             </div>
