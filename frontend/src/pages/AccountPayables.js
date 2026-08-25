@@ -661,6 +661,19 @@ const AccountPayables = () => {
                       Balance is a running cumulative that shows who owes who
                       at every row. */}
                   {(() => {
+                    // v1.10.311 — read the supplier's currency (K/USD/FRA)
+                    // from breakdown.supplier so the statement renders in
+                    // THEIR currency, matching the AP list column and the
+                    // paper statement they'd expect. HQ's `curSym` defaults
+                    // to '$' when the tenant's currency context isn't set,
+                    // which is why the modal was showing '$' for Kwacha
+                    // suppliers.
+                    const supCcy    = String(breakdown.supplier?.currency || '').toUpperCase();
+                    const supSym    = supCcy === 'K' ? 'K' : supCcy === 'FRA' ? '' : supCcy === 'USD' ? '$' : (curSym || 'K');
+                    const supSuffix = supCcy === 'FRA' ? ' FRA' : '';
+                    const supDigits = supCcy === 'K' || supCcy === 'FRA' ? 0 : 2;
+                    const fmtSup    = (v) => `${supSym}${Math.abs(v).toLocaleString(undefined, { minimumFractionDigits: supDigits, maximumFractionDigits: supDigits })}${supSuffix}`;
+
                     // Build merged event list (grn + payment + credit_note)
                     const allEvs = [
                       ...(breakdown.grns || []).map(g => ({
@@ -804,7 +817,7 @@ const AccountPayables = () => {
                                 </td>
                                 <td colSpan={2} style={{ padding: '6px 10px' }}></td>
                                 <td style={{ padding: '6px 10px', textAlign: 'right', fontFamily: 'monospace', fontWeight: 700, color: openingBalance > 0.01 ? '#dc2626' : openingBalance < -0.01 ? '#16a34a' : '#374151' }}>
-                                  {openingBalance < 0 ? '−' : ''}{curSym}{Math.abs(openingBalance).toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                                  {openingBalance < 0 ? '−' : ''}{fmtSup(openingBalance)}
                                 </td>
                               </tr>
                             )}
@@ -823,13 +836,13 @@ const AccountPayables = () => {
                                   </td>
                                   <td style={{ padding: '6px 10px', color: '#6b7280' }}>{r.reference || '—'}</td>
                                   <td style={{ padding: '6px 10px', textAlign: 'right', fontFamily: 'monospace', color: r.debit > 0 ? '#dc2626' : '#d1d5db' }}>
-                                    {r.debit > 0 ? `+${curSym}${r.debit.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : ''}
+                                    {r.debit > 0 ? `+${fmtSup(r.debit)}` : ''}
                                   </td>
                                   <td style={{ padding: '6px 10px', textAlign: 'right', fontFamily: 'monospace', color: r.credit < 0 ? '#0369a1' : '#d1d5db' }}>
-                                    {r.credit < 0 ? `−${curSym}${Math.abs(r.credit).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : ''}
+                                    {r.credit < 0 ? `−${fmtSup(r.credit)}` : ''}
                                   </td>
                                   <td style={{ padding: '6px 10px', textAlign: 'right', fontFamily: 'monospace', fontWeight: 600, color: r.balance > 0.01 ? '#dc2626' : r.balance < -0.01 ? '#16a34a' : '#374151' }}>
-                                    {r.balance < 0 ? '−' : ''}{curSym}{Math.abs(r.balance).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                                    {r.balance < 0 ? '−' : ''}{fmtSup(r.balance)}
                                   </td>
                                 </tr>
                               );
@@ -838,10 +851,10 @@ const AccountPayables = () => {
                           <tfoot>
                             <tr style={{ background: '#f9fafb', borderTop: '2px solid #cbd5e1', fontWeight: 700 }}>
                               <td colSpan={4} style={{ padding: '8px 10px', textAlign: 'right' }}>Totals</td>
-                              <td style={{ padding: '8px 10px', textAlign: 'right', fontFamily: 'monospace', color: '#dc2626' }}>+{curSym}{totalDebit.toLocaleString(undefined, { minimumFractionDigits: 2 })}</td>
-                              <td style={{ padding: '8px 10px', textAlign: 'right', fontFamily: 'monospace', color: '#0369a1' }}>−{curSym}{Math.abs(totalCredit).toLocaleString(undefined, { minimumFractionDigits: 2 })}</td>
+                              <td style={{ padding: '8px 10px', textAlign: 'right', fontFamily: 'monospace', color: '#dc2626' }}>+{fmtSup(totalDebit)}</td>
+                              <td style={{ padding: '8px 10px', textAlign: 'right', fontFamily: 'monospace', color: '#0369a1' }}>−{fmtSup(totalCredit)}</td>
                               <td style={{ padding: '8px 10px', textAlign: 'right', fontFamily: 'monospace', color: finalBal > 0.01 ? '#dc2626' : finalBal < -0.01 ? '#16a34a' : '#374151' }}>
-                                {finalBal < 0 ? '−' : ''}{curSym}{Math.abs(finalBal).toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                                {finalBal < 0 ? '−' : ''}{fmtSup(finalBal)}
                               </td>
                             </tr>
                           </tfoot>
@@ -855,7 +868,7 @@ const AccountPayables = () => {
                             {finalBal > 0.01 ? 'You owe supplier:' : finalBal < -0.01 ? 'Supplier owes you (credit balance):' : 'Account is square'}
                           </span>
                           <span style={{ fontWeight: 800, fontSize: 18, color: finalBal > 0.01 ? '#dc2626' : finalBal < -0.01 ? '#16a34a' : '#374151' }}>
-                            {curSym}{Math.abs(finalBal).toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                            {fmtSup(finalBal)}
                           </span>
                         </div>
 
@@ -874,7 +887,7 @@ const AccountPayables = () => {
                                 <div key={label} style={{ border: '1px solid #e5e7eb', borderRadius: 6, padding: '8px 10px', textAlign: 'center', background: val > 0.01 ? '#fef2f2' : '#fff' }}>
                                   <div style={{ fontSize: 10, color: '#6b7280', fontWeight: 600 }}>{label}</div>
                                   <div style={{ fontSize: 13, fontWeight: 700, color: val > 0.01 ? '#dc2626' : '#9ca3af', fontFamily: 'monospace' }}>
-                                    {curSym}{val.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}
+                                    {fmtSup(val)}
                                   </div>
                                 </div>
                               ))}
