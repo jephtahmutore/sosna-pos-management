@@ -98,7 +98,18 @@ const AccountPayables = () => {
     setModalTo('');
     try {
       const res = await getSupplierBreakdown(supplier.id);
-      setBreakdown(res.data);
+      // v1.10.313 — backend /breakdown returns raw suppliers row which
+      // has no `currency` column on Sosna. Inherit the list row's
+      // aggregated `p.currency` (K/USD/FRA), so the statement modal
+      // formats amounts in the supplier's currency instead of falling
+      // back to the tenant's default '$' on HQ. Same fix reason as
+      // v1.10.311, but the derivation is on the client because the
+      // /breakdown endpoint doesn't compute it.
+      const data = res.data || {};
+      if (data.supplier && supplier.currency && !data.supplier.currency) {
+        data.supplier = { ...data.supplier, currency: supplier.currency };
+      }
+      setBreakdown(data);
     } catch (e) { /* keep empty */ }
     setLoadingBreakdown(false);
   };
