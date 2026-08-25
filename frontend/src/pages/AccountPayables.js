@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { getAccountPayables, getAccountPayableStats, getSupplierBreakdown, updateApPayment, deleteApPayment, getSettings, getApPayments } from '../services/api';
 import ApPaymentFormModal from '../components/ApPaymentFormModal';
 import { FiDollarSign, FiAlertCircle, FiUsers, FiTrendingDown, FiX, FiChevronRight, FiPrinter, FiEdit2, FiSave, FiTrash2 } from 'react-icons/fi';
@@ -19,6 +20,7 @@ const getStatusBadge = (status) => {
 const AccountPayables = () => {
   const { symbol: curSym } = useCurrency();
   const { t } = useLanguage();
+  const navigate = useNavigate();
   const [stats, setStats] = useState({ totalPurchases: 0, totalPaid: 0, outstanding: 0, suppliers: 0, unpaidCount: 0 });
   const [payables, setPayables] = useState([]);
   const [businessInfo, setBusinessInfo] = useState({});
@@ -903,7 +905,27 @@ const AccountPayables = () => {
                               return (
                                 <tr key={r.kind + r.doc + i} style={{ borderBottom: '1px solid #f1f5f9' }}>
                                   <td style={{ padding: '6px 10px', color: '#374151', whiteSpace: 'nowrap' }}>{formatDate(r.date)}</td>
-                                  <td style={{ padding: '6px 10px', color: '#6b7280', fontFamily: 'monospace', fontSize: 11 }}>{r.doc}</td>
+                                  {/* v1.10.313 — Doc # is clickable for INV
+                                      rows (deep-links to GRN.js which
+                                      handles ?ref=GRN-... by auto-opening
+                                      the View modal, same pattern the Sales
+                                      Bin Card uses). PAY + CN stay plain
+                                      text until we wire similar deep-links
+                                      on those pages. */}
+                                  <td style={{ padding: '6px 10px', fontFamily: 'monospace', fontSize: 11 }}>
+                                    {r.kind === 'INV' ? (
+                                      <button
+                                        onClick={() => {
+                                          setBreakdown(null);
+                                          navigate(`/store/grn?ref=${encodeURIComponent(r.doc)}`);
+                                        }}
+                                        title="Open GRN details"
+                                        style={{ background: 'none', border: 'none', padding: 0, cursor: 'pointer', color: '#2563eb', textDecoration: 'underline', fontFamily: 'monospace', fontSize: 11 }}
+                                      >{r.doc}</button>
+                                    ) : (
+                                      <span style={{ color: '#6b7280' }}>{r.doc}</span>
+                                    )}
+                                  </td>
                                   <td style={{ padding: '6px 10px' }}>
                                     <span style={{ background: pillBg, color: pillFg, padding: '1px 7px', borderRadius: 3, fontSize: 10, fontWeight: 700 }}>{r.kind}</span>
                                   </td>
