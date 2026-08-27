@@ -1,6 +1,11 @@
 const router = require('express').Router();
 const db = require('../config/database');
 const { auth, readOnlyGuard } = require('../middleware/auth');
+// v1.10.316 — masterDb has hq_grns.supplier_invoice_number populated at
+// HQ Generate GRN time. The branch mirror (backend/sosna.db.grn) doesn't
+// carry that field so /breakdown had to reach into master to surface it.
+let masterDb;
+try { masterDb = require('../config/masterDb').masterDb; } catch (_) { masterDb = null; }
 
 // Supplier ledger — derived from GRN (owed) and AP Payments (paid).
 // Optional from/to params restrict the GRN + payment activity to a date range so
@@ -168,15 +173,36 @@ router.get('/breakdown/:supplierId', auth, readOnlyGuard, (req, res) => {
     let grns;
     try {
       grns = db.prepare(`
-        SELECT id, grn_number, date, total_amount, notes,
+        SELECT id, grn_number, sync_id, date, total_amount, notes,
                invoice_number, supplier_invoice_number
         FROM grn WHERE supplier_sync_id = ? AND deleted_at IS NULL AND tenant_id = ? ORDER BY date ASC
       `).all(supplier.sync_id, req.user.tenantId);
     } catch (_) {
       grns = db.prepare(`
-        SELECT id, grn_number, date, total_amount, notes
+        SELECT id, grn_number, sync_id, date, total_amount, notes
         FROM grn WHERE supplier_sync_id = ? AND deleted_at IS NULL AND tenant_id = ? ORDER BY date ASC
       `).all(supplier.sync_id, req.user.tenantId);
+    }
+    // v1.10.316 — Sosna's HQ-generated GRNs write supplier_invoice_number
+    // to master.hq_grns but NOT to the branch mirror (backend/sosna.db.grn),
+    // so the branch-side select above returns nothing for that field.
+    // Look each GRN up in masterDb by sync_id and merge the invoice
+    // number in when present. Silent-skip if masterDb isn't wired
+    // (Electron / older deploy).
+    if (masterDb && grns.length > 0) {
+      try {
+        const syncIds = grns.map(g => g.sync_id).filter(Boolean);
+        if (syncIds.length > 0) {
+          const placeholders = syncIds.map(() => '?').join(',');
+          const rows = masterDb.prepare(
+            `SELECT sync_id, supplier_invoice_number FROM hq_grns WHERE sync_id IN (${placeholders})`
+          ).all(...syncIds);
+          const bySync = Object.fromEntries(rows.map(r => [r.sync_id, r.supplier_invoice_number]));
+          for (const g of grns) {
+            if (!g.supplier_invoice_number && bySync[g.sync_id]) g.supplier_invoice_number = bySync[g.sync_id];
+          }
+        }
+      } catch (_) { /* master lookup optional */ }
     }
 
     const payments = db.prepare(`

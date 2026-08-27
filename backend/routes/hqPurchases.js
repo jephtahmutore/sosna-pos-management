@@ -340,16 +340,20 @@ router.get('/incoming-history', hqAuth, requireAnyPagePerm(['HqPurchases', 'Inco
     // supplier_invoice_number the branch typed at Confirm GRN time
     // (falls back to the PO's own invoice_number when the branch
     // hasn't confirmed yet). Also expose the linked branch GRN number.
+    // v1.10.316 — fall back to matching hq_grns.po_sync_id when the
+    // per-line linked_grn_sync_id was never populated (older data +
+    // multi-line POs where only one line kept the link).
     const rows = masterDb.prepare(`
       SELECT i.*,
              p.purchase_number, p.supplier_name, p.supplier_id, p.invoice_number,
              p.date AS purchase_date, p.notes AS purchase_notes,
              p.created_by_name AS hq_user,
-             g.supplier_invoice_number AS grn_supplier_invoice_number,
-             g.grn_number              AS linked_grn_number
+             COALESCE(g.supplier_invoice_number, g2.supplier_invoice_number) AS grn_supplier_invoice_number,
+             COALESCE(g.grn_number, g2.grn_number)                           AS linked_grn_number
         FROM hq_purchase_items i
         JOIN hq_purchases p ON p.id = i.purchase_id
-        LEFT JOIN hq_grns g ON g.sync_id = i.linked_grn_sync_id AND g.deleted_at IS NULL
+        LEFT JOIN hq_grns g  ON g.sync_id  = i.linked_grn_sync_id AND g.deleted_at IS NULL
+        LEFT JOIN hq_grns g2 ON g2.po_sync_id = p.sync_id AND g2.deleted_at IS NULL
        WHERE ${clauses.join(' AND ')}
        ORDER BY ${dateExpr} DESC, i.id DESC
        LIMIT 500
