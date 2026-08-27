@@ -887,17 +887,36 @@ router.get('/sales-bin-card', auth, readOnlyGuard, (req, res) => {
           .filter(Boolean))];
 
         const hqNumBy = {};
-        const hqSupBy = {};
+        const hqSupSyncBy = {};
         if (hqSyncIds.length > 0) {
           try {
             const ph = hqSyncIds.map(() => '?').join(',');
+            // v1.10.322 — masterDb has no `suppliers` table (that lives
+            // on the tenant DB), so the earlier JOIN silently threw and
+            // hqNumBy came back empty on every branch. Read the raw
+            // supplier_sync_id from master and resolve to a name via
+            // the tenant `suppliers` table below.
             const hg = masterDb.prepare(
-              `SELECT g.sync_id, g.grn_number, s.name AS supplier_name
-                 FROM hq_grns g LEFT JOIN suppliers s ON s.sync_id = g.supplier_sync_id
-                WHERE g.sync_id IN (${ph})`
+              `SELECT sync_id, grn_number, supplier_sync_id
+                 FROM hq_grns WHERE sync_id IN (${ph})`
             ).all(...hqSyncIds);
-            for (const h of hg) { hqNumBy[h.sync_id] = h.grn_number; hqSupBy[h.sync_id] = h.supplier_name; }
-          } catch (_) { /* master hq_grns lookup optional */ }
+            for (const h of hg) { hqNumBy[h.sync_id] = h.grn_number; if (h.supplier_sync_id) hqSupSyncBy[h.sync_id] = h.supplier_sync_id; }
+          } catch (e) { console.warn('[sales-bin-card] master hq_grns lookup failed:', e.message); }
+        }
+        // Second hop: resolve supplier_sync_id → name via tenant suppliers.
+        const hqSupBy = {};
+        const supIds = [...new Set(Object.values(hqSupSyncBy))];
+        if (supIds.length > 0) {
+          try {
+            const ph = supIds.map(() => '?').join(',');
+            const sup = db.prepare(
+              `SELECT sync_id, name FROM suppliers WHERE sync_id IN (${ph})`
+            ).all(...supIds);
+            const nameBy = Object.fromEntries(sup.map(s => [s.sync_id, s.name]));
+            for (const [gSync, supSync] of Object.entries(hqSupSyncBy)) {
+              if (nameBy[supSync]) hqSupBy[gSync] = nameBy[supSync];
+            }
+          } catch (_) { /* suppliers table missing on branch — non-fatal */ }
         }
         const trNumBy = {};
         if (trSyncIds.length > 0) {
