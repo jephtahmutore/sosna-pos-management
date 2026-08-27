@@ -6,6 +6,22 @@ const { randomUUID } = require('crypto');
 const { recalculateDailyProfit } = require('../config/profitHelper');
 const { baseQtyExpr } = require('../config/unitsHelper');
 
+// v1.10.319 — check whether an optional table exists on the CURRENT
+// tenant DB so we can conditionally splice its LEFT JOIN into the
+// bin-card queries. Sosna keeps stock_transfers on master.db only, so
+// the join was fatal on branch DBs (v1.10.318 shipped that regression).
+// Not cached because the `db` proxy routes to the current tenant at
+// call time; a cache keyed by DB path would work, but a fresh check
+// per request is cheap enough (one indexed sqlite_master lookup).
+function tableExists(name) {
+  try {
+    const r = db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(name);
+    return !!r;
+  } catch (_) {
+    return false;
+  }
+}
+
 // Shared balance query — accepts tenantId for filtering
 const balanceSQL = (tenantId) => ({
   text: `
@@ -639,9 +655,14 @@ router.get('/bin-card', auth, readOnlyGuard, (req, res) => {
 
     // Main bin-card query: exclude opening movements (already in opening balance)
     const namedParams = { product_sync_id: pidSync };
-    // v1.10.318 — same reference-resolution improvements as the sales
-    // bin card: cover transfers + credit notes + sales_returns (damages),
-    // drop the reference_type='grn' gate so HQ-generated GRNs match too.
+    // v1.10.318/319 — reference-resolution joins. Optional tables
+    // (stock_transfers, supplier_credit_notes, sales_returns) are
+    // spliced in only when they exist on this branch DB; a missing
+    // one no longer breaks the whole endpoint (v1.10.318 shipped a
+    // "no such table: stock_transfers" regression on Kassumbalesa).
+    const hasStockTransfers = tableExists('stock_transfers');
+    const hasSupplierCns    = tableExists('supplier_credit_notes');
+    const hasSalesReturns   = tableExists('sales_returns');
     let sql = `
       SELECT
         sm.id,
@@ -652,9 +673,9 @@ router.get('/bin-card', auth, readOnlyGuard, (req, res) => {
           g.grn_number,
           sv.siv_number,
           pr.production_number,
-          sr.return_number,
-          scn.credit_note_number,
-          st.transfer_number,
+          ${hasSalesReturns ? 'sr.return_number,' : ''}
+          ${hasSupplierCns ? 'scn.credit_note_number,' : ''}
+          ${hasStockTransfers ? 'st.transfer_number,' : ''}
           sm.movement_type
         ) AS reference,
         sm.quantity,
@@ -666,13 +687,9 @@ router.get('/bin-card', auth, readOnlyGuard, (req, res) => {
       LEFT JOIN grn g        ON g.sync_id  = sm.reference_sync_id
       LEFT JOIN siv sv       ON sv.sync_id = sm.reference_sync_id AND sm.reference_type = 'siv'
       LEFT JOIN production pr ON pr.sync_id = sm.reference_sync_id AND sm.reference_type = 'production'
-      LEFT JOIN sales_returns sr
-                             ON sr.sync_id = sm.reference_sync_id AND sm.reference_type = 'sales_return'
-      LEFT JOIN supplier_credit_notes scn
-                             ON scn.sync_id = sm.reference_sync_id AND sm.reference_type = 'credit_note'
-      LEFT JOIN stock_transfers st
-                             ON st.sync_id  = sm.reference_sync_id
-                            AND (sm.reference_type = 'transfer' OR sm.reference_type = 'stock_transfer')
+      ${hasSalesReturns ? "LEFT JOIN sales_returns sr ON sr.sync_id = sm.reference_sync_id AND sm.reference_type = 'sales_return'" : ''}
+      ${hasSupplierCns ? "LEFT JOIN supplier_credit_notes scn ON scn.sync_id = sm.reference_sync_id AND sm.reference_type = 'credit_note'" : ''}
+      ${hasStockTransfers ? "LEFT JOIN stock_transfers st ON st.sync_id = sm.reference_sync_id AND (sm.reference_type = 'transfer' OR sm.reference_type = 'stock_transfer')" : ''}
       WHERE sm.product_sync_id = @product_sync_id AND sm.location = 'store'
         AND sm.deleted_at IS NULL AND sm.movement_type != 'opening'
     `;
@@ -722,15 +739,13 @@ router.get('/sales-bin-card', auth, readOnlyGuard, (req, res) => {
     const openingBalance = parseFloat(obRow.opening_balance);
 
     const namedParams = { product_sync_id: pidSync };
-    // v1.10.318 — resolve reference for EVERY movement_type via joins on
-    // the appropriate source table (orders / siv / grn / sales_returns /
-    // supplier_credit_notes / stock_transfers). Previously any type not
-    // in the list fell through to the literal movement_type string,
-    // which is why direct 'grn' and 'transfer'/'credit_note' rows showed
-    // as bare words. Also the old grn join was gated on
-    // reference_type='grn' — HQ-generated GRNs use reference_type='hq_grn'
-    // so they missed the join. Drop the gate; the sync_id match is
-    // unique enough.
+    // v1.10.318/319 — resolve reference for EVERY movement_type by
+    // joining the appropriate source table; splice optional joins only
+    // when the table exists on this branch DB (v1.10.318 broke
+    // Kassumbalesa which has no stock_transfers table locally).
+    const hasStockTransfers2 = tableExists('stock_transfers');
+    const hasSupplierCns2    = tableExists('supplier_credit_notes');
+    const hasSalesReturns2   = tableExists('sales_returns');
     let sql = `
       SELECT
         sm.id,
@@ -740,11 +755,11 @@ router.get('/sales-bin-card', auth, readOnlyGuard, (req, res) => {
         COALESCE(
           o.order_number,
           sv.siv_number,
-          sr.return_number,
+          ${hasSalesReturns2 ? 'sr.return_number,' : ''}
           g.grn_number,
           sv_grn.grn_number,
-          scn.credit_note_number,
-          st.transfer_number,
+          ${hasSupplierCns2 ? 'scn.credit_note_number,' : ''}
+          ${hasStockTransfers2 ? 'st.transfer_number,' : ''}
           sm.movement_type
         ) AS reference,
         sv_grn.grn_number AS source_grn_number,
@@ -759,12 +774,9 @@ router.get('/sales-bin-card', auth, readOnlyGuard, (req, res) => {
       LEFT JOIN siv sv           ON sv.sync_id = sm.reference_sync_id AND sm.reference_type = 'siv'
       LEFT JOIN grn sv_grn       ON sv_grn.sync_id = sv.source_grn_sync_id
       LEFT JOIN grn g            ON g.sync_id  = sm.reference_sync_id
-      LEFT JOIN sales_returns sr ON sr.sync_id = sm.reference_sync_id AND sm.reference_type = 'sales_return'
-      LEFT JOIN supplier_credit_notes scn
-                                 ON scn.sync_id = sm.reference_sync_id AND sm.reference_type = 'credit_note'
-      LEFT JOIN stock_transfers st
-                                 ON st.sync_id  = sm.reference_sync_id
-                                AND (sm.reference_type = 'transfer' OR sm.reference_type = 'stock_transfer')
+      ${hasSalesReturns2 ? "LEFT JOIN sales_returns sr ON sr.sync_id = sm.reference_sync_id AND sm.reference_type = 'sales_return'" : ''}
+      ${hasSupplierCns2 ? "LEFT JOIN supplier_credit_notes scn ON scn.sync_id = sm.reference_sync_id AND sm.reference_type = 'credit_note'" : ''}
+      ${hasStockTransfers2 ? "LEFT JOIN stock_transfers st ON st.sync_id = sm.reference_sync_id AND (sm.reference_type = 'transfer' OR sm.reference_type = 'stock_transfer')" : ''}
       LEFT JOIN suppliers s_direct ON s_direct.sync_id = g.supplier_sync_id
       LEFT JOIN suppliers s_siv    ON s_siv.sync_id    = sv_grn.supplier_sync_id
       WHERE sm.product_sync_id = @product_sync_id AND sm.location = 'sales'
