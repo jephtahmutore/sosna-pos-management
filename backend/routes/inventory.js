@@ -2,6 +2,13 @@ const router = require('express').Router();
 const db = require('../config/database');
 const { auth, readOnlyGuard } = require('../middleware/auth');
 const syncConfig = require('../config/syncConfig');
+// v1.10.320 — HQ-generated GRNs on Sosna write to master.hq_grns; the
+// branch mirror often stores the movement without a matching branch.grn
+// row, so the bin-card join misses and 'grn' falls through as the raw
+// movement_type. Post-process any row still showing the movement_type
+// verbatim by looking up its reference_sync_id in master.hq_grns.
+let masterDb;
+try { masterDb = require('../config/masterDb').masterDb; } catch (_) { masterDb = null; }
 const { randomUUID } = require('crypto');
 const { recalculateDailyProfit } = require('../config/profitHelper');
 const { baseQtyExpr } = require('../config/unitsHelper');
@@ -699,6 +706,63 @@ router.get('/bin-card', auth, readOnlyGuard, (req, res) => {
 
     // Add opening balance offset to each row's balance in JS (not SQL) to avoid window function param binding issues
     const rawRows = db.prepare(sql).all(namedParams);
+
+    // v1.10.320 — Cross-DB reference resolution (same rationale as
+    // /sales-bin-card): resolve hq_grn and transfer refs from master.db
+    // when the branch join misses.
+    if (masterDb) {
+      const missing = rawRows.filter(r => r.reference === r.movement_type);
+      if (missing.length > 0) {
+        const ids = missing.map(r => r.id);
+        const placeholders = ids.map(() => '?').join(',');
+        let smRows = [];
+        try {
+          smRows = db.prepare(
+            `SELECT id, reference_type, reference_sync_id FROM stock_movements WHERE id IN (${placeholders})`
+          ).all(...ids);
+        } catch (_) { smRows = []; }
+        const smBy = Object.fromEntries(smRows.map(r => [r.id, r]));
+
+        const hqSyncIds = [...new Set(smRows
+          .filter(r => r.reference_type === 'hq_grn')
+          .map(r => r.reference_sync_id).filter(Boolean))];
+        const trSyncIds = [...new Set(smRows
+          .filter(r => r.reference_type === 'transfer' || r.reference_type === 'stock_transfer')
+          .map(r => r.reference_sync_id).filter(Boolean))];
+
+        const hqNumBy = {};
+        if (hqSyncIds.length > 0) {
+          try {
+            const ph = hqSyncIds.map(() => '?').join(',');
+            const hg = masterDb.prepare(
+              `SELECT sync_id, grn_number FROM hq_grns WHERE sync_id IN (${ph})`
+            ).all(...hqSyncIds);
+            for (const h of hg) hqNumBy[h.sync_id] = h.grn_number;
+          } catch (_) { /* optional */ }
+        }
+        const trNumBy = {};
+        if (trSyncIds.length > 0) {
+          try {
+            const ph = trSyncIds.map(() => '?').join(',');
+            const tr = masterDb.prepare(
+              `SELECT sync_id, transfer_number FROM stock_transfers WHERE sync_id IN (${ph})`
+            ).all(...trSyncIds);
+            for (const t of tr) trNumBy[t.sync_id] = t.transfer_number;
+          } catch (_) { /* optional */ }
+        }
+
+        for (const r of missing) {
+          const sm = smBy[r.id];
+          if (!sm) continue;
+          if (sm.reference_type === 'hq_grn' && hqNumBy[sm.reference_sync_id]) {
+            r.reference = hqNumBy[sm.reference_sync_id];
+          } else if ((sm.reference_type === 'transfer' || sm.reference_type === 'stock_transfer') && trNumBy[sm.reference_sync_id]) {
+            r.reference = trNumBy[sm.reference_sync_id];
+          }
+        }
+      }
+    }
+
     const rows = rawRows.map(row => ({ ...row, balance: openingBalance + row.running_total }));
     res.json({ rows, opening_balance: openingBalance });
   } catch (error) {
@@ -787,6 +851,74 @@ router.get('/sales-bin-card', auth, readOnlyGuard, (req, res) => {
     sql += ` ORDER BY (${effectiveDate}) ASC, sm.id ASC`;
 
     const rawRows = db.prepare(sql).all(namedParams);
+
+    // v1.10.320 — Cross-DB reference resolution for HQ-generated GRNs and
+    // for stock transfers on branches that don't carry stock_transfers
+    // locally (e.g. Kassumbalesa). When the branch join misses, the SQL
+    // COALESCE falls back to sm.movement_type verbatim ("grn",
+    // "transfer_in", ...). Look those up in master.hq_grns and
+    // master.stock_transfers so the UI shows real document numbers.
+    if (masterDb) {
+      const missing = rawRows.filter(r => r.reference === r.movement_type);
+      if (missing.length > 0) {
+        // Need the raw reference_sync_id per row (not selected above), so
+        // re-select once for the missing set.
+        const ids = missing.map(r => r.id);
+        const placeholders = ids.map(() => '?').join(',');
+        let smRows = [];
+        try {
+          smRows = db.prepare(
+            `SELECT id, reference_type, reference_sync_id FROM stock_movements WHERE id IN (${placeholders})`
+          ).all(...ids);
+        } catch (_) { smRows = []; }
+        const smBy = Object.fromEntries(smRows.map(r => [r.id, r]));
+
+        const hqSyncIds = [...new Set(smRows
+          .filter(r => r.reference_type === 'hq_grn')
+          .map(r => r.reference_sync_id)
+          .filter(Boolean))];
+        const trSyncIds = [...new Set(smRows
+          .filter(r => r.reference_type === 'transfer' || r.reference_type === 'stock_transfer')
+          .map(r => r.reference_sync_id)
+          .filter(Boolean))];
+
+        const hqNumBy = {};
+        const hqSupBy = {};
+        if (hqSyncIds.length > 0) {
+          try {
+            const ph = hqSyncIds.map(() => '?').join(',');
+            const hg = masterDb.prepare(
+              `SELECT g.sync_id, g.grn_number, s.name AS supplier_name
+                 FROM hq_grns g LEFT JOIN suppliers s ON s.sync_id = g.supplier_sync_id
+                WHERE g.sync_id IN (${ph})`
+            ).all(...hqSyncIds);
+            for (const h of hg) { hqNumBy[h.sync_id] = h.grn_number; hqSupBy[h.sync_id] = h.supplier_name; }
+          } catch (_) { /* master hq_grns lookup optional */ }
+        }
+        const trNumBy = {};
+        if (trSyncIds.length > 0) {
+          try {
+            const ph = trSyncIds.map(() => '?').join(',');
+            const tr = masterDb.prepare(
+              `SELECT sync_id, transfer_number FROM stock_transfers WHERE sync_id IN (${ph})`
+            ).all(...trSyncIds);
+            for (const t of tr) trNumBy[t.sync_id] = t.transfer_number;
+          } catch (_) { /* master stock_transfers lookup optional */ }
+        }
+
+        for (const r of missing) {
+          const sm = smBy[r.id];
+          if (!sm) continue;
+          if (sm.reference_type === 'hq_grn' && hqNumBy[sm.reference_sync_id]) {
+            r.reference = hqNumBy[sm.reference_sync_id];
+            if (!r.supplier_name && hqSupBy[sm.reference_sync_id]) r.supplier_name = hqSupBy[sm.reference_sync_id];
+          } else if ((sm.reference_type === 'transfer' || sm.reference_type === 'stock_transfer') && trNumBy[sm.reference_sync_id]) {
+            r.reference = trNumBy[sm.reference_sync_id];
+          }
+        }
+      }
+    }
+
     const rows = rawRows.map(row => ({ ...row, balance: openingBalance + row.running_total }));
     res.json({ rows, opening_balance: openingBalance });
   } catch (error) {
