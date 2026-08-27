@@ -267,7 +267,7 @@ const AccountPayables = () => {
           <td style="padding:5px 9px;color:#374151;white-space:nowrap">${formatDate(r.date)}</td>
           <td style="padding:5px 9px;color:#6b7280;font-family:monospace;font-size:9.5px">${r.doc}</td>
           <td style="padding:5px 9px"><span style="${pillStyle(r.kind)}">${r.kind}</span></td>
-          <td style="padding:5px 9px;color:#6b7280">${r.reference || '—'}</td>
+          <td style="padding:5px 9px;color:${r.kind === 'INV' ? '#000' : '#6b7280'};font-weight:${r.kind === 'INV' ? '700' : '400'}">${r.reference || '—'}</td>
           <td style="padding:5px 9px;text-align:right;font-family:monospace;color:${r.debit > 0 ? '#dc2626' : '#d1d5db'}">${r.debit > 0 ? `+${fmtSup(r.debit)}` : ''}</td>
           <td style="padding:5px 9px;text-align:right;font-family:monospace;color:${r.credit === 0 ? '#d1d5db' : r.kind === 'PAY' ? '#16a34a' : '#0369a1'}">${r.credit < 0 ? `−${fmtSup(r.credit)}` : ''}</td>
           <td style="padding:5px 9px;text-align:right;font-family:monospace;font-weight:600;color:${r.balance > 0.01 ? '#dc2626' : r.balance < -0.01 ? '#16a34a' : '#000'}">${r.balance < 0 ? '−' : ''}${fmtSup(r.balance)}</td>
@@ -929,7 +929,10 @@ const AccountPayables = () => {
                                   <td style={{ padding: '6px 10px' }}>
                                     <span style={{ background: pillBg, color: pillFg, padding: '1px 7px', borderRadius: 3, fontSize: 10, fontWeight: 700 }}>{r.kind}</span>
                                   </td>
-                                  <td style={{ padding: '6px 10px', color: '#6b7280' }}>{r.reference || '—'}</td>
+                                  {/* v1.10.317 — bold Reference for INV rows so
+                                      the supplier's invoice number stands out
+                                      in the ledger. PAY/CN keep the regular weight. */}
+                                  <td style={{ padding: '6px 10px', color: r.kind === 'INV' ? '#111827' : '#6b7280', fontWeight: r.kind === 'INV' ? 700 : 400 }}>{r.reference || '—'}</td>
                                   <td style={{ padding: '6px 10px', textAlign: 'right', fontFamily: 'monospace', color: r.debit > 0 ? '#dc2626' : '#d1d5db' }}>
                                     {r.debit > 0 ? `+${fmtSup(r.debit)}` : ''}
                                   </td>
