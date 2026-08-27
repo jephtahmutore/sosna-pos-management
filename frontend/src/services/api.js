@@ -467,6 +467,7 @@ export const saveSalesActualBalance = (data) => api.post('/inventory/sales/actua
 export const getInventoryStats = () => api.get('/inventory/stats');
 export const getBinCard = (params) => api.get('/inventory/bin-card', { params });
 export const getSalesBinCard = (params) => api.get('/inventory/sales-bin-card', { params });
+export const getHqGrnDetail = (syncId) => api.get(`/inventory/hq-grn/${encodeURIComponent(syncId)}`);
 
 // SIV
 export const getSIVs = () => api.get('/siv');

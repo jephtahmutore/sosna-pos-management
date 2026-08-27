@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { getProducts, getSalesBinCard, getSettings } from '../services/api';
-import { FiSearch, FiPrinter, FiShoppingCart, FiArrowDown, FiArrowUp, FiActivity } from 'react-icons/fi';
+import { getProducts, getSalesBinCard, getSettings, getHqGrnDetail } from '../services/api';
+import { FiSearch, FiPrinter, FiShoppingCart, FiArrowDown, FiArrowUp, FiActivity, FiX, FiFileText, FiUser, FiCalendar, FiTruck, FiHash } from 'react-icons/fi';
 import { pickDisplayUnit } from '../utils/productUnits';
 import Portal from '../utils/Portal';
 import useModalScrollLock from '../utils/useModalScrollLock';
@@ -86,8 +86,33 @@ const SalesBinCard = () => {
   // period-wide; balance column keeps true cumulative value so bank-
   // style filtering doesn't rewrite history.
   const [rowFilter, setRowFilter]         = useState('all');
+  // v1.10.323 — HQ GRN read-only modal. Sosna procurement is HQ-owned,
+  // so GRN references on the branch bin-card don't exist in the branch
+  // grn table — clicking them used to land on an empty branch page.
+  // Now they open this modal, populated from master.hq_grns via the
+  // new /api/inventory/hq-grn/:syncId endpoint.
+  const [hqGrn, setHqGrn]                 = useState(null); // { grn, items, purchase }
+  const [hqGrnLoading, setHqGrnLoading]   = useState(false);
+  const [hqGrnError, setHqGrnError]       = useState('');
 
   useModalScrollLock(showPrint);
+  useModalScrollLock(!!hqGrn || hqGrnLoading);
+
+  const openHqGrn = async (syncId) => {
+    if (!syncId) return;
+    setHqGrnError('');
+    setHqGrn(null);
+    setHqGrnLoading(true);
+    try {
+      const res = await getHqGrnDetail(syncId);
+      setHqGrn(res.data);
+    } catch (err) {
+      setHqGrnError(err.response?.data?.error || 'Failed to load HQ GRN.');
+    } finally {
+      setHqGrnLoading(false);
+    }
+  };
+  const closeHqGrn = () => { setHqGrn(null); setHqGrnError(''); };
 
   useEffect(() => {
     // v1.6.3: hide inactive items from the product picker.
@@ -300,7 +325,19 @@ const SalesBinCard = () => {
                         <td style={{ padding: '10px 14px', color: '#374151', whiteSpace: 'nowrap' }}>{formatDate(row.date)}</td>
                         <td style={{ padding: '10px 14px', color: '#111827', fontWeight: 600 }}>
                           {(() => {
+                            // v1.10.323 — GRN references open an HQ read-only
+                            // modal (HQ owns all procurement, so the branch
+                            // GRN page is empty). SIV refs still navigate to
+                            // the tenant SIV page — those are branch-owned.
                             const t = refTarget(row.reference);
+                            const isGrn = /^GRN-/i.test(String(row.reference || ''));
+                            if (isGrn && row.reference_sync_id) {
+                              return <button type="button"
+                                onClick={() => openHqGrn(row.reference_sync_id)}
+                                style={{ background: 'none', border: 'none', padding: 0, color: '#1d4ed8', fontWeight: 600, cursor: 'pointer', textDecoration: 'underline', textDecorationStyle: 'dotted', textUnderlineOffset: 3, fontSize: 'inherit', fontFamily: 'inherit' }}>
+                                {row.reference}
+                              </button>;
+                            }
                             return t
                               ? <button type="button"
                                   onClick={() => navigate(`${t.path}?ref=${encodeURIComponent(t.ref)}`)}
@@ -310,7 +347,19 @@ const SalesBinCard = () => {
                               : (row.reference || '—');
                           })()}
                           {row.source_grn_number && (() => {
+                            // Source GRN of an SIV is always the HQ GRN that
+                            // originally delivered the goods → also HQ modal.
                             const g = refTarget(row.source_grn_number);
+                            const isGrn = /^GRN-/i.test(String(row.source_grn_number));
+                            if (isGrn) {
+                              return <span style={{ marginLeft: 6, fontSize: 11, fontWeight: 500, color: '#6b7280' }}>
+                                (from <button type="button"
+                                  onClick={() => openHqGrn(row.source_grn_sync_id || row.source_grn_number)}
+                                  style={{ background: 'none', border: 'none', padding: 0, color: '#1d4ed8', cursor: 'pointer', textDecoration: 'underline', textDecorationStyle: 'dotted', textUnderlineOffset: 3, fontSize: 'inherit', fontFamily: 'inherit', fontWeight: 500 }}>
+                                  {row.source_grn_number}
+                                </button>)
+                              </span>;
+                            }
                             return g
                               ? <span style={{ marginLeft: 6, fontSize: 11, fontWeight: 500, color: '#6b7280' }}>
                                   (from <button type="button"
@@ -475,6 +524,173 @@ const SalesBinCard = () => {
             </div>
           </div>
         </div>
+        </Portal>
+      )}
+
+      {(hqGrn || hqGrnLoading || hqGrnError) && (
+        <Portal>
+          <div onClick={closeHqGrn}
+            style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,0.55)', zIndex: 9999,
+                     display: 'flex', alignItems: 'flex-start', justifyContent: 'center',
+                     padding: '4vh 24px', overflowY: 'auto' }}>
+            <div onClick={(e) => e.stopPropagation()}
+              style={{ background: '#fff', borderRadius: 14, width: 'min(1080px, 96vw)',
+                       boxShadow: '0 24px 60px rgba(0,0,0,0.28)', overflow: 'hidden',
+                       fontFamily: 'inherit' }}>
+              {/* Header — same red accent as the page */}
+              <div style={{ background: `linear-gradient(135deg,${ACCENT_DARK},${ACCENT})`,
+                            padding: '18px 26px', color: '#fff',
+                            display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
+                  <div style={{ width: 44, height: 44, borderRadius: 12, background: 'rgba(255,255,255,0.15)',
+                                display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                    <FiFileText size={22} />
+                  </div>
+                  <div>
+                    <div style={{ fontSize: 11, letterSpacing: 1.2, textTransform: 'uppercase', opacity: 0.85 }}>HQ Goods Received Note</div>
+                    <div style={{ fontSize: 20, fontWeight: 800, marginTop: 2, fontFamily: 'monospace' }}>
+                      {hqGrn?.grn?.grn_number || (hqGrnLoading ? 'Loading…' : '—')}
+                    </div>
+                  </div>
+                </div>
+                <button onClick={closeHqGrn}
+                  style={{ background: 'rgba(255,255,255,0.15)', border: 'none', color: '#fff',
+                           width: 36, height: 36, borderRadius: 10, cursor: 'pointer',
+                           display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                  <FiX size={18} />
+                </button>
+              </div>
+
+              {/* Body */}
+              <div style={{ padding: '22px 26px', background: '#f8fafc' }}>
+                {hqGrnLoading && (
+                  <div style={{ padding: '40px 0', textAlign: 'center', color: '#6b7280', fontSize: 13 }}>
+                    Loading GRN…
+                  </div>
+                )}
+                {hqGrnError && !hqGrnLoading && (
+                  <div style={{ padding: 16, background: '#fee2e2', border: '1px solid #fecaca',
+                                color: '#991b1b', borderRadius: 8, fontSize: 13 }}>
+                    {hqGrnError}
+                  </div>
+                )}
+                {hqGrn?.grn && !hqGrnLoading && (
+                  <>
+                    {/* Meta grid: 4 cols on wide, 2 on narrow */}
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))',
+                                  gap: 12, marginBottom: 18 }}>
+                      {[
+                        { icon: <FiCalendar size={13} />, label: 'GRN Date',        value: formatDate(hqGrn.grn.date) },
+                        { icon: <FiTruck size={13} />,    label: 'Branch',          value: hqGrn.grn.branch_name || hqGrn.grn.branch_slug || '—' },
+                        { icon: <FiUser size={13} />,     label: 'Supplier',        value: hqGrn.grn.supplier_name || '—' },
+                        { icon: <FiHash size={13} />,     label: 'Supplier Inv #',  value: hqGrn.grn.supplier_invoice_number || '—', mono: true },
+                        { icon: <FiHash size={13} />,     label: 'PO Number',       value: hqGrn.purchase?.purchase_number || hqGrn.grn.po_number || '—', mono: true },
+                        { icon: <FiCalendar size={13} />, label: 'PO Date',         value: hqGrn.purchase?.date ? formatDate(hqGrn.purchase.date) : '—' },
+                        { icon: <FiUser size={13} />,     label: 'Initiated by (HQ)',    value: hqGrn.purchase?.created_by_name || '—', sub: hqGrn.purchase?.created_at ? new Date(hqGrn.purchase.created_at).toLocaleString('en-GB') : '' },
+                        { icon: <FiUser size={13} />,     label: 'Generated by (HQ)',    value: hqGrn.grn.generated_by_hq_name || '—', sub: hqGrn.grn.generated_at ? new Date(hqGrn.grn.generated_at).toLocaleString('en-GB') : '' },
+                        { icon: <FiUser size={13} />,     label: 'Confirmed by (Branch)', value: hqGrn.grn.confirmed_by_branch_name || '—', sub: hqGrn.grn.confirmed_at_branch ? new Date(hqGrn.grn.confirmed_at_branch).toLocaleString('en-GB') : '' },
+                      ].map((f, i) => (
+                        <div key={i} style={{ background: '#fff', borderRadius: 10, border: '1px solid #e5e7eb', padding: '10px 14px' }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 6, color: '#6b7280', fontSize: 10, textTransform: 'uppercase', letterSpacing: 0.5, fontWeight: 700 }}>
+                            {f.icon}<span>{f.label}</span>
+                          </div>
+                          <div style={{ marginTop: 4, color: '#111827', fontSize: 14, fontWeight: 700,
+                                        fontFamily: f.mono ? 'monospace' : 'inherit' }}>
+                            {f.value}
+                          </div>
+                          {f.sub && (
+                            <div style={{ marginTop: 2, color: '#9ca3af', fontSize: 11 }}>{f.sub}</div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+
+                    {/* Items table */}
+                    <div style={{ background: '#fff', borderRadius: 10, border: '1px solid #e5e7eb', overflow: 'hidden' }}>
+                      <div style={{ padding: '10px 14px', background: '#f9fafb', borderBottom: '1px solid #e5e7eb',
+                                    fontSize: 11, fontWeight: 800, color: '#374151', textTransform: 'uppercase', letterSpacing: 0.5 }}>
+                        Line Items ({hqGrn.items?.length || 0})
+                      </div>
+                      <div style={{ overflowX: 'auto' }}>
+                        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+                          <thead>
+                            <tr style={{ background: '#fef2f2', color: ACCENT }}>
+                              <th style={{ padding: '10px 14px', textAlign: 'left', fontWeight: 700, fontSize: 11, textTransform: 'uppercase', letterSpacing: 0.5 }}>Product</th>
+                              <th style={{ padding: '10px 14px', textAlign: 'left', fontWeight: 700, fontSize: 11, textTransform: 'uppercase', letterSpacing: 0.5 }}>Unit</th>
+                              <th style={{ padding: '10px 14px', textAlign: 'right', fontWeight: 700, fontSize: 11, textTransform: 'uppercase', letterSpacing: 0.5 }}>Qty</th>
+                              <th style={{ padding: '10px 14px', textAlign: 'right', fontWeight: 700, fontSize: 11, textTransform: 'uppercase', letterSpacing: 0.5 }}>Unit Price</th>
+                              <th style={{ padding: '10px 14px', textAlign: 'right', fontWeight: 700, fontSize: 11, textTransform: 'uppercase', letterSpacing: 0.5 }}>Total</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {(hqGrn.items || []).map((it, i) => (
+                              <tr key={it.id || i} style={{ borderBottom: '1px solid #f3f4f6', background: i % 2 === 0 ? '#fff' : '#fafafa' }}>
+                                <td style={{ padding: '9px 14px', color: '#111827', fontWeight: 600 }}>
+                                  {it.product_name}
+                                  {it.is_extra ? <span style={{ marginLeft: 6, fontSize: 10, padding: '1px 6px', borderRadius: 6, background: '#fef3c7', color: '#92400e', fontWeight: 700 }}>EXTRA</span> : null}
+                                </td>
+                                <td style={{ padding: '9px 14px', color: '#6b7280' }}>{it.unit || '—'}</td>
+                                <td style={{ padding: '9px 14px', textAlign: 'right', fontFamily: 'monospace', color: '#111827' }}>
+                                  {(parseFloat(it.quantity) || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                                </td>
+                                <td style={{ padding: '9px 14px', textAlign: 'right', fontFamily: 'monospace', color: '#374151' }}>
+                                  {(parseFloat(it.unit_price) || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                                </td>
+                                <td style={{ padding: '9px 14px', textAlign: 'right', fontFamily: 'monospace', color: '#111827', fontWeight: 700 }}>
+                                  {(parseFloat(it.total_price) || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                          <tfoot>
+                            <tr style={{ borderTop: `2px solid ${ACCENT}`, background: ACCENT_LIGHT }}>
+                              <td colSpan={4} style={{ padding: '10px 14px', textAlign: 'right', fontWeight: 700, color: ACCENT, fontSize: 12, textTransform: 'uppercase', letterSpacing: 0.5 }}>Items Subtotal</td>
+                              <td style={{ padding: '10px 14px', textAlign: 'right', fontWeight: 800, color: ACCENT, fontFamily: 'monospace' }}>
+                                {(parseFloat(hqGrn.grn.items_subtotal) || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                              </td>
+                            </tr>
+                            {(parseFloat(hqGrn.grn.cn_total) || 0) > 0 && (
+                              <tr style={{ background: '#fefce8' }}>
+                                <td colSpan={4} style={{ padding: '8px 14px', textAlign: 'right', fontWeight: 700, color: '#92400e', fontSize: 12 }}>less: Credit Notes</td>
+                                <td style={{ padding: '8px 14px', textAlign: 'right', fontWeight: 700, color: '#92400e', fontFamily: 'monospace' }}>
+                                  ({(parseFloat(hqGrn.grn.cn_total) || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })})
+                                </td>
+                              </tr>
+                            )}
+                            <tr style={{ background: '#111827', color: '#fff' }}>
+                              <td colSpan={4} style={{ padding: '11px 14px', textAlign: 'right', fontWeight: 800, fontSize: 12, textTransform: 'uppercase', letterSpacing: 0.5 }}>Final Payable</td>
+                              <td style={{ padding: '11px 14px', textAlign: 'right', fontWeight: 800, fontFamily: 'monospace', fontSize: 14 }}>
+                                {(parseFloat(hqGrn.grn.final_payable) || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                              </td>
+                            </tr>
+                          </tfoot>
+                        </table>
+                      </div>
+                    </div>
+
+                    {hqGrn.grn.notes && (
+                      <div style={{ marginTop: 14, padding: '12px 14px', background: '#fff',
+                                    border: '1px solid #e5e7eb', borderRadius: 10 }}>
+                        <div style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: 0.5, color: '#6b7280', fontWeight: 700, marginBottom: 4 }}>Notes</div>
+                        <div style={{ fontSize: 13, color: '#374151', whiteSpace: 'pre-wrap' }}>{hqGrn.grn.notes}</div>
+                      </div>
+                    )}
+                  </>
+                )}
+              </div>
+
+              {/* Footer */}
+              <div style={{ background: '#f9fafb', padding: '10px 26px', borderTop: '1px solid #e5e7eb',
+                            display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <span style={{ fontSize: 11, color: '#9ca3af' }}>Read-only view · HQ archive</span>
+                <button onClick={closeHqGrn}
+                  style={{ background: ACCENT, color: '#fff', border: 'none', padding: '8px 18px',
+                           borderRadius: 8, cursor: 'pointer', fontSize: 13, fontWeight: 700 }}>
+                  Close
+                </button>
+              </div>
+            </div>
+          </div>
         </Portal>
       )}
 

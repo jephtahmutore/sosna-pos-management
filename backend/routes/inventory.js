@@ -676,6 +676,7 @@ router.get('/bin-card', auth, readOnlyGuard, (req, res) => {
         date(sm.created_at)   AS date,
         sm.movement_type,
         sm.reference_type,
+        sm.reference_sync_id,
         COALESCE(
           g.grn_number,
           sv.siv_number,
@@ -820,6 +821,7 @@ router.get('/sales-bin-card', auth, readOnlyGuard, (req, res) => {
         (${effectiveDate}) AS date,
         sm.movement_type,
         sm.reference_type,
+        sm.reference_sync_id,
         COALESCE(
           o.order_number,
           sv.siv_number,
@@ -831,6 +833,7 @@ router.get('/sales-bin-card', auth, readOnlyGuard, (req, res) => {
           sm.movement_type
         ) AS reference,
         sv_grn.grn_number AS source_grn_number,
+        sv_grn.sync_id    AS source_grn_sync_id,
         COALESCE(s_direct.name, s_siv.name) AS supplier_name,
         sm.quantity,
         SUM(sm.quantity) OVER (
@@ -944,6 +947,67 @@ router.get('/sales-bin-card', auth, readOnlyGuard, (req, res) => {
 
     const rows = rawRows.map(row => ({ ...row, balance: openingBalance + row.running_total }));
     res.json({ rows, opening_balance: openingBalance });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// v1.10.323 — GET /api/inventory/hq-grn/:syncId
+// Read-only HQ GRN lookup for branch users. Sosna procurement is
+// HQ-owned, so branch bin-card GRN references (GRN-2026-...) don't
+// exist in the branch `grn` table. Frontend calls this to render a
+// read-only modal instead of navigating to an empty branch GRN page.
+// Pulls header + items from master.hq_grns, PO date + initiator from
+// master.hq_purchases, and supplier name from the tenant suppliers.
+router.get('/hq-grn/:syncId', auth, readOnlyGuard, (req, res) => {
+  try {
+    if (!masterDb) return res.status(503).json({ error: 'HQ archive unavailable on this device.' });
+    const { syncId } = req.params;
+    const grn = masterDb.prepare(
+      `SELECT * FROM hq_grns WHERE sync_id = ? AND (deleted_at IS NULL OR deleted_at = '')`
+    ).get(syncId);
+    if (!grn) return res.status(404).json({ error: 'HQ GRN not found.' });
+
+    const items = masterDb.prepare(
+      `SELECT * FROM hq_grn_items WHERE grn_sync_id = ? ORDER BY id ASC`
+    ).all(syncId);
+
+    let purchase = null;
+    if (grn.po_sync_id) {
+      try {
+        purchase = masterDb.prepare(
+          `SELECT purchase_number, date, created_by_name, created_at, notes
+             FROM hq_purchases WHERE sync_id = ?`
+        ).get(grn.po_sync_id) || null;
+      } catch (_) { /* legacy PO — non-fatal */ }
+    }
+
+    // Resolve supplier name from the tenant `suppliers` table (masterDb
+    // doesn't carry supplier names — the JOIN that silently threw in
+    // v1.10.320 was the whole reason references stayed as raw 'grn').
+    let supplier_name = grn.supplier_name || null;
+    if (!supplier_name && grn.supplier_sync_id) {
+      try {
+        const s = db.prepare(`SELECT name FROM suppliers WHERE sync_id = ?`).get(grn.supplier_sync_id);
+        supplier_name = s?.name || null;
+      } catch (_) { /* pre-migration branch — non-fatal */ }
+    }
+
+    res.json({
+      grn: {
+        ...grn,
+        supplier_name,
+        // Explicit passthrough of the audit-trail fields the modal renders,
+        // so a schema rename shows up as a lint hit rather than a silent
+        // undefined in the UI.
+        confirmed_by_branch_name: grn.confirmed_by_branch_name || null,
+        confirmed_at_branch:      grn.confirmed_at_branch || null,
+        generated_by_hq_name:     grn.generated_by_hq_name || null,
+        generated_at:             grn.generated_at || null,
+      },
+      items,
+      purchase, // { purchase_number, date, created_by_name, created_at, notes } or null
+    });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
