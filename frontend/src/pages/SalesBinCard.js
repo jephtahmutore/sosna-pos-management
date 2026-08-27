@@ -62,6 +62,10 @@ const SalesBinCard = () => {
   const [searched, setSearched]           = useState(false);
   const [businessInfo, setBusinessInfo]   = useState({});
   const [showPrint, setShowPrint]         = useState(false);
+  // v1.10.315 — IN/OUT/ALL row filter. Client-side; totals bar stays
+  // period-wide; balance column keeps true cumulative value so bank-
+  // style filtering doesn't rewrite history.
+  const [rowFilter, setRowFilter]         = useState('all');
 
   useModalScrollLock(showPrint);
 
@@ -199,6 +203,38 @@ const SalesBinCard = () => {
             </div>
           </div>
 
+          {/* v1.10.315 — IN / OUT / ALL filter pills with counts */}
+          {rows.length > 0 && (() => {
+            const inCount  = rows.filter(r => parseFloat(r.quantity) > 0).length;
+            const outCount = rows.filter(r => parseFloat(r.quantity) < 0).length;
+            const pill = (key, label, count, activeBg, activeFg) => {
+              const active = rowFilter === key;
+              return (
+                <button
+                  key={key}
+                  onClick={() => setRowFilter(key)}
+                  style={{
+                    padding: '6px 14px', borderRadius: 20, border: `1px solid ${active ? activeBg : '#e5e7eb'}`,
+                    background: active ? activeBg : '#fff',
+                    color: active ? activeFg : '#374151',
+                    fontSize: 12, fontWeight: 700, cursor: 'pointer',
+                    display: 'inline-flex', alignItems: 'center', gap: 6,
+                  }}
+                >
+                  {label}
+                  <span style={{ background: active ? activeFg : '#f3f4f6', color: active ? activeBg : '#6b7280', borderRadius: 10, padding: '1px 7px', fontSize: 11 }}>{count}</span>
+                </button>
+              );
+            };
+            return (
+              <div style={{ padding: '10px 20px', borderBottom: '1px solid #e5e7eb', display: 'flex', gap: 8, alignItems: 'center', background: '#fff' }}>
+                {pill('all', 'All',  rows.length, '#1d4ed8', '#fff')}
+                {pill('in',  'IN',   inCount,     '#166534', '#fff')}
+                {pill('out', 'OUT',  outCount,    '#b45309', '#fff')}
+              </div>
+            );
+          })()}
+
           {rows.length === 0 && openBal === 0 ? (
             <div style={{ padding: 48, textAlign: 'center', color: '#9ca3af', fontSize: 14 }}>
               No sales movements found for this product in the selected period.
@@ -208,8 +244,8 @@ const SalesBinCard = () => {
               <table className="data-table" style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
                 <thead style={{ position: 'sticky', top: 0, zIndex: 2 }}>
                   <tr style={{ background: ACCENT, color: '#fff' }}>
-                    {['#', 'Date', 'Reference', 'Type', 'In', 'Out', 'Balance'].map((h, i) => (
-                      <th key={i} style={{ padding: '11px 14px', textAlign: i >= 4 ? 'right' : 'left', fontWeight: 700, fontSize: 12, textTransform: 'uppercase', letterSpacing: 0.4, whiteSpace: 'nowrap', background: ACCENT }}>{h}</th>
+                    {['#', 'Date', 'Reference', 'Type', 'Supplier', 'In', 'Out', 'Balance'].map((h, i) => (
+                      <th key={i} style={{ padding: '11px 14px', textAlign: i >= 5 ? 'right' : 'left', fontWeight: 700, fontSize: 12, textTransform: 'uppercase', letterSpacing: 0.4, whiteSpace: 'nowrap', background: ACCENT }}>{h}</th>
                     ))}
                   </tr>
                 </thead>
@@ -221,11 +257,19 @@ const SalesBinCard = () => {
                     <td style={{ padding: '10px 14px' }}>
                       <span style={{ display: 'inline-block', padding: '2px 10px', borderRadius: 20, fontSize: 11, fontWeight: 700, background: '#dbeafe', color: '#1d4ed8' }}>Opening Balance</span>
                     </td>
+                    <td style={{ padding: '10px 14px', color: '#9ca3af' }}>—</td>
                     <td style={{ padding: '10px 14px', textAlign: 'right', color: '#166534', fontWeight: 700, fontFamily: 'monospace' }}>{openBal > 0 ? openBal.toFixed(2) : '—'}</td>
                     <td style={{ padding: '10px 14px', textAlign: 'right', color: '#dc2626', fontWeight: 700, fontFamily: 'monospace' }}>—</td>
                     <td style={{ padding: '10px 14px', textAlign: 'right', color: '#1d4ed8', fontWeight: 800, fontFamily: 'monospace' }}>{(parseFloat(openBal)||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</td>
                   </tr>
-                  {rows.map((row, idx) => {
+                  {rows.filter(row => {
+                    // v1.10.315 — apply IN/OUT filter (keep original row index
+                    // for #; balance stays truthful because it came from the
+                    // backend's cumulative running_total).
+                    if (rowFilter === 'in')  return parseFloat(row.quantity) > 0;
+                    if (rowFilter === 'out') return parseFloat(row.quantity) < 0;
+                    return true;
+                  }).map((row, idx) => {
                     const qty   = parseFloat(row.quantity);
                     const isIn  = qty > 0;
                     const isOut = qty < 0;
@@ -263,6 +307,12 @@ const SalesBinCard = () => {
                             {movementLabel(row.movement_type)}
                           </span>
                         </td>
+                        {/* v1.10.315 — Supplier column: pulled from the linked
+                            GRN's supplier_sync_id server-side. Only populated
+                            for grn/siv rows; sales/damages/transfers show —. */}
+                        <td style={{ padding: '10px 14px', color: row.supplier_name ? '#374151' : '#9ca3af', fontSize: 12 }}>
+                          {row.supplier_name || '—'}
+                        </td>
                         <td style={{ padding: '10px 14px', textAlign: 'right', color: '#166534', fontWeight: 700, fontFamily: 'monospace' }}>{isIn ? toDisp(qty).toFixed(2) : '—'}</td>
                         <td style={{ padding: '10px 14px', textAlign: 'right', color: '#dc2626', fontWeight: 700, fontFamily: 'monospace' }}>{isOut ? toDisp(Math.abs(qty)).toFixed(2) : '—'}</td>
                         <td style={{ padding: '10px 14px', textAlign: 'right', color: '#111827', fontWeight: 800, fontFamily: 'monospace' }}>{(parseFloat(toDisp(parseFloat(row.balance)))||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</td>
@@ -272,7 +322,7 @@ const SalesBinCard = () => {
                 </tbody>
                 <tfoot>
                   <tr style={{ borderTop: `2px solid ${ACCENT}`, background: ACCENT_LIGHT }}>
-                    <td colSpan={4} style={{ padding: '11px 14px', fontWeight: 700, color: ACCENT, fontSize: 12, textTransform: 'uppercase' }}>Totals</td>
+                    <td colSpan={5} style={{ padding: '11px 14px', fontWeight: 700, color: ACCENT, fontSize: 12, textTransform: 'uppercase' }}>Totals</td>
                     <td style={{ padding: '11px 14px', textAlign: 'right', fontWeight: 800, color: '#166534', fontFamily: 'monospace' }}>{(parseFloat(totalIn)||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</td>
                     <td style={{ padding: '11px 14px', textAlign: 'right', fontWeight: 800, color: '#dc2626', fontFamily: 'monospace' }}>{(parseFloat(totalOut)||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</td>
                     <td style={{ padding: '11px 14px', textAlign: 'right', fontWeight: 800, color: '#111827', fontFamily: 'monospace' }}>{(parseFloat(closeBal)||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</td>
@@ -342,8 +392,8 @@ const SalesBinCard = () => {
                 <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
                   <thead>
                     <tr style={{ background: ACCENT, color: '#fff' }}>
-                      {['#', 'Date', 'Reference', 'Type', 'In', 'Out', 'Balance'].map((h, i) => (
-                        <th key={i} style={{ padding: '9px 10px', textAlign: i >= 4 ? 'right' : 'left', fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5 }}>{h}</th>
+                      {['#', 'Date', 'Reference', 'Type', 'Supplier', 'In', 'Out', 'Balance'].map((h, i) => (
+                        <th key={i} style={{ padding: '9px 10px', textAlign: i >= 5 ? 'right' : 'left', fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5 }}>{h}</th>
                       ))}
                     </tr>
                   </thead>
@@ -353,11 +403,16 @@ const SalesBinCard = () => {
                       <td style={{ padding: '8px 10px', color: '#374151' }}>{formatDate(from)}</td>
                       <td style={{ padding: '8px 10px', color: '#6b7280' }}>—</td>
                       <td style={{ padding: '8px 10px', color: '#1d4ed8', fontWeight: 700 }}>Opening Balance</td>
+                      <td style={{ padding: '8px 10px', color: '#9ca3af' }}>—</td>
                       <td style={{ padding: '8px 10px', textAlign: 'right', color: '#166534', fontWeight: 700 }}>{openBal > 0 ? openBal.toFixed(2) : ''}</td>
                       <td style={{ padding: '8px 10px', textAlign: 'right' }}>—</td>
                       <td style={{ padding: '8px 10px', textAlign: 'right', fontWeight: 800, color: '#1d4ed8' }}>{(parseFloat(openBal)||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</td>
                     </tr>
-                    {rows.map((row, idx) => {
+                    {rows.filter(row => {
+                      if (rowFilter === 'in')  return parseFloat(row.quantity) > 0;
+                      if (rowFilter === 'out') return parseFloat(row.quantity) < 0;
+                      return true;
+                    }).map((row, idx) => {
                       const qty = parseFloat(row.quantity);
                       const isIn  = qty > 0;
                       const isOut = qty < 0;
@@ -367,6 +422,7 @@ const SalesBinCard = () => {
                           <td style={{ padding: '8px 10px', color: '#374151' }}>{formatDate(row.date)}</td>
                           <td style={{ padding: '8px 10px', fontWeight: 600 }}>{row.reference || '—'}</td>
                           <td style={{ padding: '8px 10px', color: '#6b7280' }}>{movementLabel(row.movement_type)}</td>
+                          <td style={{ padding: '8px 10px', color: row.supplier_name ? '#374151' : '#9ca3af' }}>{row.supplier_name || '—'}</td>
                           <td style={{ padding: '8px 10px', textAlign: 'right', color: '#166534', fontWeight: 700 }}>{isIn ? toDisp(qty).toFixed(2) : ''}</td>
                           <td style={{ padding: '8px 10px', textAlign: 'right', color: '#dc2626', fontWeight: 700 }}>{isOut ? toDisp(Math.abs(qty)).toFixed(2) : ''}</td>
                           <td style={{ padding: '8px 10px', textAlign: 'right', fontWeight: 800 }}>{(parseFloat(toDisp(parseFloat(row.balance)))||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</td>
@@ -376,7 +432,7 @@ const SalesBinCard = () => {
                   </tbody>
                   <tfoot>
                     <tr style={{ background: ACCENT_LIGHT, borderTop: `2px solid ${ACCENT}` }}>
-                      <td colSpan={4} style={{ padding: '9px 10px', fontWeight: 700, color: ACCENT, fontSize: 11, textTransform: 'uppercase' }}>Totals</td>
+                      <td colSpan={5} style={{ padding: '9px 10px', fontWeight: 700, color: ACCENT, fontSize: 11, textTransform: 'uppercase' }}>Totals ({rowFilter === 'all' ? 'All' : rowFilter === 'in' ? 'IN only' : 'OUT only'})</td>
                       <td style={{ padding: '9px 10px', textAlign: 'right', fontWeight: 800, color: '#166534' }}>{(parseFloat(totalIn)||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</td>
                       <td style={{ padding: '9px 10px', textAlign: 'right', fontWeight: 800, color: '#dc2626' }}>{(parseFloat(totalOut)||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</td>
                       <td style={{ padding: '9px 10px', textAlign: 'right', fontWeight: 800 }}>{(parseFloat(closeBal)||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</td>

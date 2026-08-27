@@ -50,6 +50,11 @@ export default function IncomingStock() {
   const [historyLoading, setHistoryLoading] = useState(false);
   const [histFrom, setHistFrom] = useState(daysAgoISO(30));
   const [histTo,   setHistTo]   = useState(todayISO());
+  // v1.10.315 — client-side filters on the loaded history rows.
+  // search matches invoice #, supplier name, HQP #, or linked GRN #.
+  // status chip narrows by finalization state.
+  const [histSearch, setHistSearch] = useState('');
+  const [histStatus, setHistStatus] = useState('all'); // 'all' | 'CONFIRMED' | 'CANCELLED' | 'BRANCH_REJECTED'
 
   useEffect(() => {
     getProducts().then(r => setProducts(r.data || [])).catch(() => {});
@@ -332,15 +337,68 @@ export default function IncomingStock() {
           </button>
         </div>
 
+        {/* v1.10.315 — search + status chips (client-side on already-loaded rows) */}
+        <div style={{ background: '#fff', border: '1px solid #e5e7eb', borderRadius: 10, padding: 12, marginBottom: 14, display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
+          <span style={{ fontSize: 12, color: '#94a3b8' }}>🔍</span>
+          <input
+            type="text"
+            value={histSearch}
+            onChange={e => setHistSearch(e.target.value)}
+            placeholder="Search invoice # or supplier name or HQP…"
+            style={{ flex: '1 1 260px', minWidth: 220, padding: '8px 10px', border: '1px solid #d1d5db', borderRadius: 6, fontSize: 13 }}
+          />
+          {histSearch && (
+            <button onClick={() => setHistSearch('')}
+              style={{ padding: '4px 10px', borderRadius: 6, border: '1px solid #e5e7eb', background: '#f9fafb', color: '#6b7280', cursor: 'pointer', fontSize: 12 }}>
+              × Clear
+            </button>
+          )}
+          <span style={{ fontSize: 11, fontWeight: 600, color: '#6b7280', marginLeft: 4 }}>Status:</span>
+          {[
+            { key: 'all',              label: 'All',       bg: '#1d4ed8' },
+            { key: 'CONFIRMED',        label: 'Confirmed', bg: '#16a34a' },
+            { key: 'BRANCH_REJECTED',  label: 'Rejected',  bg: '#dc2626' },
+            { key: 'CANCELLED',        label: 'Cancelled', bg: '#6b7280' },
+          ].map(chip => {
+            const active = histStatus === chip.key;
+            return (
+              <button key={chip.key}
+                onClick={() => setHistStatus(chip.key)}
+                style={{
+                  padding: '5px 12px', borderRadius: 20, border: `1px solid ${active ? chip.bg : '#e5e7eb'}`,
+                  background: active ? chip.bg : '#fff',
+                  color: active ? '#fff' : '#374151',
+                  fontSize: 11.5, fontWeight: 700, cursor: 'pointer',
+                }}>
+                {chip.label}
+              </button>
+            );
+          })}
+        </div>
+
         {historyLoading && historyItems.length === 0 ? (
           <p style={{ color: '#64748b' }}>Loading…</p>
         ) : historyItems.length === 0 ? (
           <p style={{ color: '#94a3b8', fontStyle: 'italic' }}><FiArchive /> No finalized incoming stock in this date range.</p>
         ) : (
           (() => {
+            // v1.10.315 — apply status chip + search filter before grouping
+            const q = histSearch.trim().toLowerCase();
+            const filtered = historyItems.filter(it => {
+              if (histStatus !== 'all' && it.status !== histStatus) return false;
+              if (!q) return true;
+              const hay = [
+                it.purchase_number,
+                it.supplier_name,
+                it.invoice_number,
+                it.grn_supplier_invoice_number,
+                it.linked_grn_number,
+              ].filter(Boolean).join(' ').toLowerCase();
+              return hay.includes(q);
+            });
             const groups = [];
             const byPo = new Map();
-            for (const it of historyItems) {
+            for (const it of filtered) {
               const key = it.purchase_sync_id || it.purchase_number || `i${it.id}`;
               if (!byPo.has(key)) {
                 const g = {
@@ -348,12 +406,16 @@ export default function IncomingStock() {
                   purchase_number: it.purchase_number,
                   purchase_date:   it.purchase_date,
                   supplier_name:   it.supplier_name,
+                  invoice_number:  it.grn_supplier_invoice_number || it.invoice_number,
                   items: [],
                 };
                 byPo.set(key, g);
                 groups.push(g);
               }
               byPo.get(key).items.push(it);
+            }
+            if (groups.length === 0) {
+              return <p style={{ color: '#94a3b8', fontStyle: 'italic' }}>No results match your filter.</p>;
             }
             return groups.map(g => (
               <div key={g.key} style={{ background: '#fff', border: '1px solid #e5e7eb', borderRadius: 10, padding: 0, marginBottom: 14, overflow: 'hidden' }}>
@@ -364,6 +426,17 @@ export default function IncomingStock() {
                     <span style={{ fontSize: 14, fontWeight: 600, color: '#0f172a' }}>{g.supplier_name || '—'}</span>
                     <span style={{ color: '#cbd5e1' }}>·</span>
                     <span style={{ fontSize: 12, color: '#64748b' }}>{g.purchase_date}</span>
+                    {/* v1.10.315 — invoice # pill: shows the supplier invoice
+                        the branch typed at Confirm GRN, or the PO's own
+                        invoice_number as fallback. */}
+                    {g.invoice_number && (
+                      <>
+                        <span style={{ color: '#cbd5e1' }}>·</span>
+                        <span style={{ fontSize: 11, fontWeight: 700, padding: '2px 10px', borderRadius: 12, background: '#eff6ff', color: '#1d4ed8', fontFamily: 'monospace' }}>
+                          INV# {g.invoice_number}
+                        </span>
+                      </>
+                    )}
                   </div>
                   <div style={{ marginTop: 4, fontSize: 11, color: '#64748b' }}>
                     {g.items.length} item{g.items.length === 1 ? '' : 's'}

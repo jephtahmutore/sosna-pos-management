@@ -713,10 +713,15 @@ router.get('/sales-bin-card', auth, readOnlyGuard, (req, res) => {
         -- v1.9.24 — include grn.grn_number so a GRN posted directly to
         -- sales (Sosna's drop-ship flow) shows "GRN-…" in the reference
         -- column instead of the raw movement_type "grn".
-        COALESCE(o.order_number, sv.siv_number, sr.return_number, g.grn_number, sm.movement_type) AS reference,
+        -- v1.10.315 — also fall through to the linked-SIV's source GRN
+        -- number so 'siv'/'grn' movements never render as bare movement type.
+        COALESCE(o.order_number, sv.siv_number, sr.return_number, g.grn_number, sv_grn.grn_number, sm.movement_type) AS reference,
         -- When the SIV was auto-generated from a GRN (single-location mode), surface the GRN
         -- number so the bin card row reads "SIV-…0010 (from GRN-…0009)".
         sv_grn.grn_number AS source_grn_number,
+        -- v1.10.315 — supplier name for GRN-backed rows (direct GRN or SIV-from-GRN).
+        -- Pulled from the grn row's supplier_sync_id → suppliers.name.
+        COALESCE(s_direct.name, s_siv.name) AS supplier_name,
         sm.quantity,
         SUM(sm.quantity) OVER (
           ORDER BY (${effectiveDate}) ASC, sm.id ASC
@@ -728,6 +733,8 @@ router.get('/sales-bin-card', auth, readOnlyGuard, (req, res) => {
       LEFT JOIN grn sv_grn       ON sv_grn.sync_id = sv.source_grn_sync_id
       LEFT JOIN grn g            ON g.sync_id  = sm.reference_sync_id AND sm.reference_type = 'grn'
       LEFT JOIN sales_returns sr ON sr.sync_id = sm.reference_sync_id AND sm.reference_type = 'sales_return'
+      LEFT JOIN suppliers s_direct ON s_direct.sync_id = g.supplier_sync_id
+      LEFT JOIN suppliers s_siv    ON s_siv.sync_id    = sv_grn.supplier_sync_id
       WHERE sm.product_sync_id = @product_sync_id AND sm.location = 'sales'
         AND sm.deleted_at IS NULL
     `;

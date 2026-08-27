@@ -336,13 +336,20 @@ router.get('/incoming-history', hqAuth, requireAnyPagePerm(['HqPurchases', 'Inco
     if (from) { clauses.push(`substr(${dateExpr}, 1, 10) >= ?`); params.push(from); }
     if (to)   { clauses.push(`substr(${dateExpr}, 1, 10) <= ?`); params.push(to); }
 
+    // v1.10.315 — join hq_grns so the History card can surface the
+    // supplier_invoice_number the branch typed at Confirm GRN time
+    // (falls back to the PO's own invoice_number when the branch
+    // hasn't confirmed yet). Also expose the linked branch GRN number.
     const rows = masterDb.prepare(`
       SELECT i.*,
              p.purchase_number, p.supplier_name, p.supplier_id, p.invoice_number,
              p.date AS purchase_date, p.notes AS purchase_notes,
-             p.created_by_name AS hq_user
+             p.created_by_name AS hq_user,
+             g.supplier_invoice_number AS grn_supplier_invoice_number,
+             g.grn_number              AS linked_grn_number
         FROM hq_purchase_items i
         JOIN hq_purchases p ON p.id = i.purchase_id
+        LEFT JOIN hq_grns g ON g.sync_id = i.linked_grn_sync_id AND g.deleted_at IS NULL
        WHERE ${clauses.join(' AND ')}
        ORDER BY ${dateExpr} DESC, i.id DESC
        LIMIT 500

@@ -161,10 +161,23 @@ router.get('/breakdown/:supplierId', auth, readOnlyGuard, (req, res) => {
     const supplier = db.prepare('SELECT * FROM suppliers WHERE id = ? AND tenant_id = ?').get(supplierId, req.user.tenantId);
     if (!supplier) return res.status(404).json({ error: 'Supplier not found' });
 
-    const grns = db.prepare(`
-      SELECT id, grn_number, date, total_amount, notes
-      FROM grn WHERE supplier_sync_id = ? AND deleted_at IS NULL AND tenant_id = ? ORDER BY date ASC
-    `).all(supplier.sync_id, req.user.tenantId);
+    // v1.10.315 — also return invoice_number + supplier_invoice_number
+    // when the columns exist so the AP statement Reference column can
+    // display "INV#…" for each GRN. Wrapped in try so older tenants
+    // without the columns don't 500.
+    let grns;
+    try {
+      grns = db.prepare(`
+        SELECT id, grn_number, date, total_amount, notes,
+               invoice_number, supplier_invoice_number
+        FROM grn WHERE supplier_sync_id = ? AND deleted_at IS NULL AND tenant_id = ? ORDER BY date ASC
+      `).all(supplier.sync_id, req.user.tenantId);
+    } catch (_) {
+      grns = db.prepare(`
+        SELECT id, grn_number, date, total_amount, notes
+        FROM grn WHERE supplier_sync_id = ? AND deleted_at IS NULL AND tenant_id = ? ORDER BY date ASC
+      `).all(supplier.sync_id, req.user.tenantId);
+    }
 
     const payments = db.prepare(`
       SELECT id, payment_number, date, amount, description, paid_from

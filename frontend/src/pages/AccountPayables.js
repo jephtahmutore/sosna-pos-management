@@ -195,7 +195,7 @@ const AccountPayables = () => {
     const allEvs = [
       ...(breakdown.grns || []).map(g => ({
         kind: 'INV', doc: g.grn_number, date: g.date,
-        reference: g.notes || '', debit: parseFloat(g.total_amount) || 0, credit: 0,
+        reference: (g.supplier_invoice_number || g.invoice_number || g.notes) ? `INV# ${g.supplier_invoice_number || g.invoice_number || g.notes}` : '', debit: parseFloat(g.total_amount) || 0, credit: 0,
         sortKey: g.date + ' 0',
       })),
       ...(breakdown.payments || []).map(p => ({
@@ -753,7 +753,7 @@ const AccountPayables = () => {
                     const allEvs = [
                       ...(breakdown.grns || []).map(g => ({
                         kind: 'INV', doc: g.grn_number, date: g.date,
-                        reference: g.notes || '', debit: parseFloat(g.total_amount) || 0, credit: 0,
+                        reference: (g.supplier_invoice_number || g.invoice_number || g.notes) ? `INV# ${g.supplier_invoice_number || g.invoice_number || g.notes}` : '', debit: parseFloat(g.total_amount) || 0, credit: 0,
                         sortKey: g.date + ' 0',
                       })),
                       ...(breakdown.payments || []).map(p => ({
