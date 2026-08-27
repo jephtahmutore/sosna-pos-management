@@ -723,8 +723,12 @@ router.get('/bin-card', auth, readOnlyGuard, (req, res) => {
         } catch (_) { smRows = []; }
         const smBy = Object.fromEntries(smRows.map(r => [r.id, r]));
 
+        // v1.10.321 — HQ generation inserts branch stock_movements with
+        // reference_type='grn' (not 'hq_grn'). The reference_sync_id
+        // still equals master.hq_grns.sync_id, so look up ANY 'grn' or
+        // 'hq_grn' row whose branch.grn join missed.
         const hqSyncIds = [...new Set(smRows
-          .filter(r => r.reference_type === 'hq_grn')
+          .filter(r => r.reference_type === 'grn' || r.reference_type === 'hq_grn')
           .map(r => r.reference_sync_id).filter(Boolean))];
         const trSyncIds = [...new Set(smRows
           .filter(r => r.reference_type === 'transfer' || r.reference_type === 'stock_transfer')
@@ -754,7 +758,7 @@ router.get('/bin-card', auth, readOnlyGuard, (req, res) => {
         for (const r of missing) {
           const sm = smBy[r.id];
           if (!sm) continue;
-          if (sm.reference_type === 'hq_grn' && hqNumBy[sm.reference_sync_id]) {
+          if ((sm.reference_type === 'grn' || sm.reference_type === 'hq_grn') && hqNumBy[sm.reference_sync_id]) {
             r.reference = hqNumBy[sm.reference_sync_id];
           } else if ((sm.reference_type === 'transfer' || sm.reference_type === 'stock_transfer') && trNumBy[sm.reference_sync_id]) {
             r.reference = trNumBy[sm.reference_sync_id];
@@ -909,7 +913,7 @@ router.get('/sales-bin-card', auth, readOnlyGuard, (req, res) => {
         for (const r of missing) {
           const sm = smBy[r.id];
           if (!sm) continue;
-          if (sm.reference_type === 'hq_grn' && hqNumBy[sm.reference_sync_id]) {
+          if ((sm.reference_type === 'grn' || sm.reference_type === 'hq_grn') && hqNumBy[sm.reference_sync_id]) {
             r.reference = hqNumBy[sm.reference_sync_id];
             if (!r.supplier_name && hqSupBy[sm.reference_sync_id]) r.supplier_name = hqSupBy[sm.reference_sync_id];
           } else if ((sm.reference_type === 'transfer' || sm.reference_type === 'stock_transfer') && trNumBy[sm.reference_sync_id]) {
