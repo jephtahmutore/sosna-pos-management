@@ -639,22 +639,40 @@ router.get('/bin-card', auth, readOnlyGuard, (req, res) => {
 
     // Main bin-card query: exclude opening movements (already in opening balance)
     const namedParams = { product_sync_id: pidSync };
+    // v1.10.318 — same reference-resolution improvements as the sales
+    // bin card: cover transfers + credit notes + sales_returns (damages),
+    // drop the reference_type='grn' gate so HQ-generated GRNs match too.
     let sql = `
       SELECT
         sm.id,
         date(sm.created_at)   AS date,
         sm.movement_type,
         sm.reference_type,
-        COALESCE(g.grn_number, sv.siv_number, pr.production_number, sm.movement_type) AS reference,
+        COALESCE(
+          g.grn_number,
+          sv.siv_number,
+          pr.production_number,
+          sr.return_number,
+          scn.credit_note_number,
+          st.transfer_number,
+          sm.movement_type
+        ) AS reference,
         sm.quantity,
         SUM(sm.quantity) OVER (
           ORDER BY sm.created_at ASC, sm.id ASC
           ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
         ) AS running_total
       FROM stock_movements sm
-      LEFT JOIN grn g        ON g.sync_id  = sm.reference_sync_id AND sm.reference_type = 'grn'
+      LEFT JOIN grn g        ON g.sync_id  = sm.reference_sync_id
       LEFT JOIN siv sv       ON sv.sync_id = sm.reference_sync_id AND sm.reference_type = 'siv'
       LEFT JOIN production pr ON pr.sync_id = sm.reference_sync_id AND sm.reference_type = 'production'
+      LEFT JOIN sales_returns sr
+                             ON sr.sync_id = sm.reference_sync_id AND sm.reference_type = 'sales_return'
+      LEFT JOIN supplier_credit_notes scn
+                             ON scn.sync_id = sm.reference_sync_id AND sm.reference_type = 'credit_note'
+      LEFT JOIN stock_transfers st
+                             ON st.sync_id  = sm.reference_sync_id
+                            AND (sm.reference_type = 'transfer' OR sm.reference_type = 'stock_transfer')
       WHERE sm.product_sync_id = @product_sync_id AND sm.location = 'store'
         AND sm.deleted_at IS NULL AND sm.movement_type != 'opening'
     `;
@@ -704,23 +722,32 @@ router.get('/sales-bin-card', auth, readOnlyGuard, (req, res) => {
     const openingBalance = parseFloat(obRow.opening_balance);
 
     const namedParams = { product_sync_id: pidSync };
+    // v1.10.318 — resolve reference for EVERY movement_type via joins on
+    // the appropriate source table (orders / siv / grn / sales_returns /
+    // supplier_credit_notes / stock_transfers). Previously any type not
+    // in the list fell through to the literal movement_type string,
+    // which is why direct 'grn' and 'transfer'/'credit_note' rows showed
+    // as bare words. Also the old grn join was gated on
+    // reference_type='grn' — HQ-generated GRNs use reference_type='hq_grn'
+    // so they missed the join. Drop the gate; the sync_id match is
+    // unique enough.
     let sql = `
       SELECT
         sm.id,
         (${effectiveDate}) AS date,
         sm.movement_type,
         sm.reference_type,
-        -- v1.9.24 — include grn.grn_number so a GRN posted directly to
-        -- sales (Sosna's drop-ship flow) shows "GRN-…" in the reference
-        -- column instead of the raw movement_type "grn".
-        -- v1.10.315 — also fall through to the linked-SIV's source GRN
-        -- number so 'siv'/'grn' movements never render as bare movement type.
-        COALESCE(o.order_number, sv.siv_number, sr.return_number, g.grn_number, sv_grn.grn_number, sm.movement_type) AS reference,
-        -- When the SIV was auto-generated from a GRN (single-location mode), surface the GRN
-        -- number so the bin card row reads "SIV-…0010 (from GRN-…0009)".
+        COALESCE(
+          o.order_number,
+          sv.siv_number,
+          sr.return_number,
+          g.grn_number,
+          sv_grn.grn_number,
+          scn.credit_note_number,
+          st.transfer_number,
+          sm.movement_type
+        ) AS reference,
         sv_grn.grn_number AS source_grn_number,
-        -- v1.10.315 — supplier name for GRN-backed rows (direct GRN or SIV-from-GRN).
-        -- Pulled from the grn row's supplier_sync_id → suppliers.name.
         COALESCE(s_direct.name, s_siv.name) AS supplier_name,
         sm.quantity,
         SUM(sm.quantity) OVER (
@@ -731,8 +758,13 @@ router.get('/sales-bin-card', auth, readOnlyGuard, (req, res) => {
       LEFT JOIN orders o         ON o.sync_id  = sm.reference_sync_id AND sm.reference_type = 'order'
       LEFT JOIN siv sv           ON sv.sync_id = sm.reference_sync_id AND sm.reference_type = 'siv'
       LEFT JOIN grn sv_grn       ON sv_grn.sync_id = sv.source_grn_sync_id
-      LEFT JOIN grn g            ON g.sync_id  = sm.reference_sync_id AND sm.reference_type = 'grn'
+      LEFT JOIN grn g            ON g.sync_id  = sm.reference_sync_id
       LEFT JOIN sales_returns sr ON sr.sync_id = sm.reference_sync_id AND sm.reference_type = 'sales_return'
+      LEFT JOIN supplier_credit_notes scn
+                                 ON scn.sync_id = sm.reference_sync_id AND sm.reference_type = 'credit_note'
+      LEFT JOIN stock_transfers st
+                                 ON st.sync_id  = sm.reference_sync_id
+                                AND (sm.reference_type = 'transfer' OR sm.reference_type = 'stock_transfer')
       LEFT JOIN suppliers s_direct ON s_direct.sync_id = g.supplier_sync_id
       LEFT JOIN suppliers s_siv    ON s_siv.sync_id    = sv_grn.supplier_sync_id
       WHERE sm.product_sync_id = @product_sync_id AND sm.location = 'sales'

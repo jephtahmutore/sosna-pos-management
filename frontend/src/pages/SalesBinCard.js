@@ -25,22 +25,42 @@ const formatDate = (d) => {
   return new Date(d).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
 };
 
-const movementLabel = (type) => {
-  if (type === 'siv')           return 'SIV In';
-  if (type === 'sale')          return 'Sale';
-  if (type === 'reverse')       return 'Reversal';
-  if (type === 'sales_return')  return 'Return';
+// v1.10.318 — labels cover every movement_type the sales bin card can
+// surface (grn, transfer in/out, credit note, production, etc.) and
+// direction is honoured via the qty sign on the caller side. Falls back
+// to a title-cased version of the raw type when a new one shows up.
+const movementLabel = (type, qty) => {
+  if (type === 'siv')            return 'SIV In';
+  if (type === 'sale')           return 'Sale';
+  if (type === 'sale_reverse')   return 'Sale Reversal';
+  if (type === 'reverse')        return 'Reversal';
+  if (type === 'sales_return')   return 'Damage';
   if (type === 'reconciliation') return 'Reconciliation';
-  if (type === 'adjustment')    return 'Adjustment';
-  return type;
+  if (type === 'adjustment')     return 'Adjustment';
+  if (type === 'grn')            return 'GRN In';
+  if (type === 'hq_grn')         return 'HQ GRN In';
+  if (type === 'credit_note')    return 'Credit Note Out';
+  if (type === 'transfer')       return parseFloat(qty) > 0 ? 'Transfer In' : 'Transfer Out';
+  if (type === 'transfer_in')    return 'Transfer In';
+  if (type === 'transfer_out')   return 'Transfer Out';
+  if (type === 'production')     return 'Production';
+  if (type === 'opening')        return 'Opening';
+  // Title-case anything unknown so the pill reads cleanly.
+  return String(type || '').replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
 };
 
 const typeStyle = (type) => {
-  if (type === 'siv')           return { background: '#dcfce7', color: '#166534' };
-  if (type === 'sale')          return { background: '#fee2e2', color: '#dc2626' };
-  if (type === 'reverse')       return { background: '#dbeafe', color: '#1d4ed8' };
-  if (type === 'sales_return')  return { background: '#fef9c3', color: '#854d0e' };
+  if (type === 'siv')            return { background: '#dcfce7', color: '#166534' };   // green — IN
+  if (type === 'grn' || type === 'hq_grn') return { background: '#dcfce7', color: '#166534' }; // green — IN
+  if (type === 'sale')           return { background: '#fee2e2', color: '#dc2626' };   // red — OUT
+  if (type === 'credit_note')    return { background: '#fee2e2', color: '#dc2626' };   // red — OUT
+  if (type === 'reverse' || type === 'sale_reverse') return { background: '#dbeafe', color: '#1d4ed8' };
+  if (type === 'sales_return')   return { background: '#fef9c3', color: '#854d0e' };   // amber — damage
+  if (type === 'transfer' || type === 'transfer_in' || type === 'transfer_out')
+                                 return { background: '#e0e7ff', color: '#4338ca' };   // indigo — transfer
+  if (type === 'production')     return { background: '#f3e8ff', color: '#7c3aed' };   // purple
   if (type === 'reconciliation') return { background: '#ede9fe', color: '#7c3aed' };
+  if (type === 'opening')        return { background: '#dbeafe', color: '#1d4ed8' };
   return { background: '#f3f4f6', color: '#374151' };
 };
 
@@ -304,7 +324,7 @@ const SalesBinCard = () => {
                         </td>
                         <td style={{ padding: '10px 14px' }}>
                           <span style={{ display: 'inline-block', padding: '2px 10px', borderRadius: 20, fontSize: 11, fontWeight: 700, ...ts }}>
-                            {movementLabel(row.movement_type)}
+                            {movementLabel(row.movement_type, row.quantity)}
                           </span>
                         </td>
                         {/* v1.10.315 — Supplier column: pulled from the linked
@@ -421,7 +441,7 @@ const SalesBinCard = () => {
                           <td style={{ padding: '8px 10px', color: '#9ca3af' }}>{idx + 1}</td>
                           <td style={{ padding: '8px 10px', color: '#374151' }}>{formatDate(row.date)}</td>
                           <td style={{ padding: '8px 10px', fontWeight: 600 }}>{row.reference || '—'}</td>
-                          <td style={{ padding: '8px 10px', color: '#6b7280' }}>{movementLabel(row.movement_type)}</td>
+                          <td style={{ padding: '8px 10px', color: '#6b7280' }}>{movementLabel(row.movement_type, row.quantity)}</td>
                           <td style={{ padding: '8px 10px', color: row.supplier_name ? '#374151' : '#9ca3af' }}>{row.supplier_name || '—'}</td>
                           <td style={{ padding: '8px 10px', textAlign: 'right', color: '#166534', fontWeight: 700 }}>{isIn ? toDisp(qty).toFixed(2) : ''}</td>
                           <td style={{ padding: '8px 10px', textAlign: 'right', color: '#dc2626', fontWeight: 700 }}>{isOut ? toDisp(Math.abs(qty)).toFixed(2) : ''}</td>
