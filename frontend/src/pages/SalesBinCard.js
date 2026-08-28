@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { getProducts, getSalesBinCard, getSettings, getHqGrnDetail } from '../services/api';
+import { getProducts, getSalesBinCard, getSettings, getHqGrnForBranch } from '../services/api';
 import { FiSearch, FiPrinter, FiShoppingCart, FiArrowDown, FiArrowUp, FiActivity, FiX, FiFileText, FiUser, FiCalendar, FiTruck, FiHash } from 'react-icons/fi';
 import { pickDisplayUnit } from '../utils/productUnits';
 import Portal from '../utils/Portal';
@@ -104,7 +104,7 @@ const SalesBinCard = () => {
     setHqGrn(null);
     setHqGrnLoading(true);
     try {
-      const res = await getHqGrnDetail(syncId);
+      const res = await getHqGrnForBranch(syncId);
       setHqGrn(res.data);
     } catch (err) {
       setHqGrnError(err.response?.data?.error || 'Failed to load HQ GRN.');
