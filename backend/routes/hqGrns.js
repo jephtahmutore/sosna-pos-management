@@ -1215,8 +1215,9 @@ router.post('/generate', hqAuth, requirePagePerm('HqConfirmGrn'), (req, res) => 
            supplier_invoice_number, invoice_attachment,
            items_subtotal, cn_total, final_payable, notes,
            confirmed_by_branch, confirmed_by_branch_name, confirmed_at_branch,
-           generated_by_hq, generated_by_hq_name)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+           generated_by_hq, generated_by_hq_name,
+           cost_currency, fx_rate_used)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
       `).run(
         grnNumber, grnSyncId, grnDate, branchSlug, branchName,
         purchase.supplier_id || null, purchase.supplier_name || null,
@@ -1224,7 +1225,8 @@ router.post('/generate', hqAuth, requirePagePerm('HqConfirmGrn'), (req, res) => 
         purchase.supplier_invoice_number, purchase.invoice_attachment || null,
         itemsSubtotal, cnTotal, finalPayable, notes || null,
         purchase.confirmed_by_branch, purchase.confirmed_by_branch_name, purchase.confirmed_at_branch,
-        generatorId, generatorName
+        generatorId, generatorName,
+        purchase.cost_currency || null, purchase.fx_rate_used || null
       );
       const grnId = info.lastInsertRowid;
 
