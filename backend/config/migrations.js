@@ -817,6 +817,10 @@ function initTenantDb(db) {
     'capital_account', 'dividend_account',
     'shareholders', 'loans', 'loan_transactions',
     'discount_requests',
+    // v1.10.328 — Quotations (added v1.10.326). Missing here meant CREATE
+    // TABLE built the row without sync_id/tenant_id/etc, and every INSERT
+    // from routes/quotations.js failed with "no such column: sync_id".
+    'quotations', 'quotation_items',
   ];
 
   const hasUpdatedAt = new Set([
