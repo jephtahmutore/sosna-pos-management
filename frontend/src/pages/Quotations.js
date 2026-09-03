@@ -1,9 +1,9 @@
-// Quotations — v1.10.326
+// Quotations — v1.10.327
 // Draft price offers before they become real orders. Zero stock impact.
 import React, { useEffect, useMemo, useState } from 'react';
 import {
   FiPlus, FiX, FiTrash2, FiSend, FiCheck, FiSlash, FiRefreshCw, FiEdit2,
-  FiFileText, FiChevronRight, FiRotateCw,
+  FiFileText, FiChevronRight, FiRotateCw, FiClock, FiCheckCircle, FiFile,
 } from 'react-icons/fi';
 import {
   getQuotations, getQuotationStats, getQuotation, createQuotation,
@@ -31,8 +31,8 @@ const STATUS_STYLE = {
   Draft:    { bg: '#f1f5f9', fg: '#475569' },
   Sent:     { bg: '#dbeafe', fg: '#1d4ed8' },
   Accepted: { bg: '#dcfce7', fg: '#15803d' },
-  Declined: { bg: '#fbeeed', fg: '#b8271f' },
-  Expired:  { bg: '#f1f5f9', fg: '#94a3b8' },
+  Declined: { bg: '#fee2e2', fg: '#b91c1c' },
+  Expired:  { bg: '#f3f4f6', fg: '#94a3b8' },
   Ordered:  { bg: '#fef3c7', fg: '#b45309' },
   Voided:   { bg: '#f3f4f6', fg: '#6b7280' },
 };
@@ -198,39 +198,38 @@ export default function Quotations() {
           <p>Draft prices for customers before turning them into orders</p>
         </div>
         <div style={{ display: 'flex', gap: 10 }}>
-          <button onClick={load} style={btnGhost}><FiRefreshCw size={14} /> Refresh</button>
-          <button onClick={openCreate} style={btnPrimary}><FiPlus /> New Quotation</button>
+          <button onClick={load} className="btn" style={btnGhost}><FiRefreshCw size={14} /> Refresh</button>
+          <button onClick={openCreate} className="btn btn-primary"><FiPlus /> New Quotation</button>
         </div>
       </div>
 
-      {/* Stats */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginBottom: 16 }}>
-        {[
-          { label: 'Active', val: stats.active, color: '#b8271f' },
-          { label: 'Awaiting Reply', val: stats.waiting, color: '#b45309' },
-          { label: 'Accepted (30d)', val: stats.accepted, color: '#15803d' },
-          { label: 'Expired', val: stats.expired, color: '#94a3b8' },
-        ].map(k => (
-          <div key={k.label} style={{ background: '#fff', border: '1px solid #e5e7eb', borderRadius: 10, padding: '14px 16px' }}>
-            <div style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: 0.8, color: '#6b7280', fontWeight: 700 }}>{k.label}</div>
-            <div style={{ fontSize: 22, fontWeight: 700, color: k.color, marginTop: 4 }}>{k.val ?? 0}</div>
-          </div>
-        ))}
+      {/* Stat tiles — Sosna gradient style */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 14, marginBottom: 18 }}>
+        <StatTile label="Active"          value={stats.active   ?? 0} icon={<FiFileText size={22} />}    bg="linear-gradient(135deg,#3b82f6,#1d4ed8)" />
+        <StatTile label="Awaiting Reply"  value={stats.waiting  ?? 0} icon={<FiClock size={22} />}       bg="linear-gradient(135deg,#f59e0b,#b45309)" />
+        <StatTile label="Accepted (30d)"  value={stats.accepted ?? 0} icon={<FiCheckCircle size={22} />} bg="linear-gradient(135deg,#22c55e,#15803d)" />
+        <StatTile label="Expired"         value={stats.expired  ?? 0} icon={<FiFile size={22} />}        bg="linear-gradient(135deg,#94a3b8,#475569)" />
       </div>
 
-      {/* Filter tabs + search */}
-      <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 12, flexWrap: 'wrap' }}>
+      {/* Filter bar */}
+      <div style={{
+        display: 'flex', alignItems: 'center', gap: 12, marginBottom: 16,
+        padding: '12px 16px', background: '#f8fafc',
+        border: '1px solid #e5e7eb', borderRadius: 10, flexWrap: 'wrap',
+      }}>
+        <span style={{ fontSize: 12, fontWeight: 600, color: '#6b7280' }}>Filter:</span>
         <div style={{ display: 'inline-flex', gap: 2, padding: 3, background: '#fff', border: '1px solid #e5e7eb', borderRadius: 8 }}>
           {['All', 'Draft', 'Sent', 'Accepted', 'Declined', 'Expired', 'Ordered'].map(t => (
             <button key={t} onClick={() => setTab(t)} style={{
-              padding: '6px 12px', background: tab === t ? '#111827' : 'transparent',
-              color: tab === t ? '#fff' : '#6b7280', border: 0, borderRadius: 6,
+              padding: '6px 12px', background: tab === t ? '#1d4ed8' : 'transparent',
+              color: tab === t ? '#fff' : '#475569', border: 0, borderRadius: 6,
               cursor: 'pointer', fontSize: 12, fontWeight: 600,
             }}>{t}</button>
           ))}
         </div>
         <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search #, customer…"
-          style={{ padding: '7px 12px', border: '1px solid #e5e7eb', borderRadius: 8, fontSize: 13, minWidth: 220 }} />
+          style={{ padding: '6px 12px', border: '1px solid #d1d5db', borderRadius: 7, fontSize: 13, minWidth: 200, background: '#fff' }} />
+        <span style={{ marginLeft: 'auto', fontSize: 12, color: '#9ca3af' }}>{filteredRows.length} quote{filteredRows.length !== 1 ? 's' : ''}</span>
       </div>
 
       {/* Table */}
@@ -252,7 +251,7 @@ export default function Quotations() {
               const expired = r.status === 'Sent' && r.valid_until && r.valid_until.slice(0,10) < todayISO();
               return (
                 <tr key={r.id}>
-                  <td style={{ fontFamily: 'monospace', color: '#b8271f', fontWeight: 700 }}>{r.quote_number}</td>
+                  <td style={{ fontFamily: 'monospace', color: '#1d4ed8', fontWeight: 700 }}>{r.quote_number}</td>
                   <td>{r.date}</td>
                   <td>{r.customer_name || <span style={{ color: '#9ca3af' }}>—</span>}</td>
                   <td style={{ color: expired ? '#dc2626' : '#111827' }}>{r.valid_until}</td>
@@ -275,7 +274,7 @@ export default function Quotations() {
                         </>
                       )}
                       {['Accepted','Sent'].includes(r.status) && (
-                        <button onClick={() => doAction(r.id, convertQuotation, 'Order created')} style={{ ...btnRow, color: '#b45309', borderColor: '#fde68a', background: '#fffbeb' }}>
+                        <button onClick={() => doAction(r.id, convertQuotation, 'Order created')} style={{ ...btnRow, color: '#15803d', borderColor: '#bbf7d0', background: '#f0fdf4' }}>
                           <FiChevronRight size={12} /> Convert
                         </button>
                       )}
@@ -304,19 +303,22 @@ export default function Quotations() {
         <Portal>
           <div style={overlay}>
             <div style={{ ...modalBox, maxWidth: 780 }}>
-              <div style={{ ...modalHead, background: 'linear-gradient(135deg, #b8271f 0%, #7a1a15 100%)' }}>
+              <div style={{ ...modalHead, background: 'linear-gradient(135deg, #1e3a5f 0%, #1d4ed8 100%)' }}>
                 <div>
-                  <h3 style={{ margin: 0, fontSize: 16, color: '#fff' }}>{modal === 'edit' ? 'Edit Quotation' : 'New Quotation'}</h3>
-                  <p style={{ margin: '2px 0 0', fontSize: 11, color: 'rgba(255,255,255,0.85)' }}>Draft a price offer · not counted as a sale until Converted</p>
+                  <div style={{ fontSize: 10, letterSpacing: 1.5, textTransform: 'uppercase', color: 'rgba(255,255,255,0.7)', fontWeight: 700, marginBottom: 3 }}>
+                    {modal === 'edit' ? 'Edit' : 'New'} Quotation
+                  </div>
+                  <h3 style={{ margin: 0, fontSize: 17, color: '#fff' }}>Draft a price offer</h3>
+                  <p style={{ margin: '2px 0 0', fontSize: 11, color: 'rgba(255,255,255,0.75)' }}>Not counted as a sale until Converted</p>
                 </div>
                 <button onClick={closeModal} style={closeBtn}><FiX size={16} /></button>
               </div>
-              <div style={{ padding: 18, maxHeight: '75vh', overflowY: 'auto' }}>
+              <div style={{ padding: 20, maxHeight: '75vh', overflowY: 'auto' }}>
                 <div style={grid2}>
                   <Field label="Date"><input type="date" value={current.date} onChange={e => setField('date', e.target.value)} style={inp}/></Field>
                   <Field label="Valid Until *"><input type="date" value={current.valid_until} onChange={e => setField('valid_until', e.target.value)} style={inp}/></Field>
                 </div>
-                <div style={{ ...grid2, marginTop: 10 }}>
+                <div style={{ ...grid2, marginTop: 12 }}>
                   <Field label="Customer">
                     <input list="q-cust" value={current.customer_name} onChange={e => {
                       const val = e.target.value;
@@ -335,15 +337,18 @@ export default function Quotations() {
                   </Field>
                 </div>
 
-                <div style={{ marginTop: 14 }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
-                    <div style={{ fontSize: 13, fontWeight: 700, color: '#b8271f' }}>Line Items</div>
-                    <button onClick={addItem} style={btnRow}><FiPlus size={12} /> Add row</button>
+                <div style={{ marginTop: 18 }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
+                    <div>
+                      <div style={{ fontSize: 14, fontWeight: 700, color: '#1d4ed8' }}>Line Items</div>
+                      <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 2 }}>Products the customer is quoting for</div>
+                    </div>
+                    <button onClick={addItem} style={{ ...btnRow, background: '#eff6ff', color: '#1d4ed8', borderColor: '#bfdbfe' }}><FiPlus size={12} /> Add Item</button>
                   </div>
-                  <div style={{ border: '1px solid #fde3e1', borderRadius: 8, overflow: 'hidden', background: '#fbeeed' }}>
+                  <div style={{ background: '#f0f9ff', borderRadius: 10, border: '1px solid #bae6fd', overflow: 'hidden' }}>
                     <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
                       <thead>
-                        <tr style={{ background: '#f8dcda' }}>
+                        <tr style={{ background: '#e0f2fe' }}>
                           <th style={mth}>Product</th><th style={mth}>Qty</th><th style={mth}>Unit</th>
                           <th style={mth}>Unit Price</th><th style={{ ...mth, textAlign: 'right' }}>Line</th><th style={{ ...mth, width: 30 }}></th>
                         </tr>
@@ -354,14 +359,14 @@ export default function Quotations() {
                           const p = parseFloat(it.unit_price) || 0;
                           const line = q * p;
                           return (
-                            <tr key={i} style={{ borderTop: '1px solid #f8dcda' }}>
+                            <tr key={i} style={{ borderTop: '1px solid #bae6fd' }}>
                               <td style={mtd}>
                                 <input list={`q-prod-${i}`} value={it.product_name} onChange={e => {
                                   const v = e.target.value;
                                   const prod = products.find(x => x.name === v);
                                   if (prod) pickProduct(i, prod);
                                   else       setItem(i, 'product_name', v);
-                                }} placeholder="Search…" style={{ ...inp, padding: '5px 8px' }}/>
+                                }} placeholder="Search…" style={{ ...inp, padding: '5px 8px', minWidth: 180 }}/>
                                 <datalist id={`q-prod-${i}`}>
                                   {products.map(pr => <option key={pr.id} value={pr.name} />)}
                                 </datalist>
@@ -369,8 +374,8 @@ export default function Quotations() {
                               <td style={mtd}><input type="number" step="0.01" value={it.quantity} onChange={e => setItem(i, 'quantity', e.target.value)} style={{ ...inp, padding: '5px 8px', width: 70 }}/></td>
                               <td style={mtd}><input value={it.unit} onChange={e => setItem(i, 'unit', e.target.value)} style={{ ...inp, padding: '5px 8px', width: 70 }}/></td>
                               <td style={mtd}><input type="number" step="0.01" value={it.unit_price} onChange={e => setItem(i, 'unit_price', e.target.value)} style={{ ...inp, padding: '5px 8px', width: 90 }}/></td>
-                              <td style={{ ...mtd, textAlign: 'right', fontVariantNumeric: 'tabular-nums', fontWeight: 700 }}>{fmtCcy(line, current.currency)}</td>
-                              <td style={mtd}>{current.items.length > 1 && <button onClick={() => removeItem(i)} style={{ ...btnRow, color: '#b91c1c', padding: '3px 6px' }}><FiX size={11}/></button>}</td>
+                              <td style={{ ...mtd, textAlign: 'right', fontVariantNumeric: 'tabular-nums', fontWeight: 700, color: '#0284c7' }}>{fmtCcy(line, current.currency)}</td>
+                              <td style={mtd}>{current.items.length > 1 && <button onClick={() => removeItem(i)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#dc2626', padding: 4 }}><FiX size={12}/></button>}</td>
                             </tr>
                           );
                         })}
@@ -379,18 +384,18 @@ export default function Quotations() {
                   </div>
                 </div>
 
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: 8, marginTop: 12, fontSize: 13, alignItems: 'center' }}>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: 8, marginTop: 14, fontSize: 13, alignItems: 'center' }}>
                   <div style={{ textAlign: 'right', color: '#6b7280' }}>Subtotal</div>
                   <div style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums', fontWeight: 600 }}>{fmtCcy(subtotal, current.currency)}</div>
                   <div style={{ textAlign: 'right', color: '#6b7280' }}>Discount</div>
-                  <div style={{ textAlign: 'right' }}><input type="number" step="0.01" value={current.discount} onChange={e => setField('discount', e.target.value)} style={{ ...inp, padding: '4px 8px', width: 100, textAlign: 'right' }}/></div>
+                  <div style={{ textAlign: 'right' }}><input type="number" step="0.01" value={current.discount} onChange={e => setField('discount', e.target.value)} style={{ ...inp, padding: '4px 8px', width: 110, textAlign: 'right' }}/></div>
                   <div style={{ textAlign: 'right', color: '#6b7280' }}>Tax</div>
-                  <div style={{ textAlign: 'right' }}><input type="number" step="0.01" value={current.tax} onChange={e => setField('tax', e.target.value)} style={{ ...inp, padding: '4px 8px', width: 100, textAlign: 'right' }}/></div>
-                  <div style={{ textAlign: 'right', fontWeight: 800, fontSize: 15, color: '#b8271f', borderTop: '1px dashed #e5e7eb', paddingTop: 6 }}>Grand Total</div>
-                  <div style={{ textAlign: 'right', fontWeight: 800, fontSize: 15, color: '#b8271f', borderTop: '1px dashed #e5e7eb', paddingTop: 6, fontVariantNumeric: 'tabular-nums' }}>{fmtCcy(total, current.currency)}</div>
+                  <div style={{ textAlign: 'right' }}><input type="number" step="0.01" value={current.tax} onChange={e => setField('tax', e.target.value)} style={{ ...inp, padding: '4px 8px', width: 110, textAlign: 'right' }}/></div>
+                  <div style={{ textAlign: 'right', fontWeight: 800, fontSize: 15, color: '#1d4ed8', borderTop: '1px dashed #e5e7eb', paddingTop: 6 }}>Grand Total</div>
+                  <div style={{ textAlign: 'right', fontWeight: 800, fontSize: 15, color: '#1d4ed8', borderTop: '1px dashed #e5e7eb', paddingTop: 6, fontVariantNumeric: 'tabular-nums' }}>{fmtCcy(total, current.currency)}</div>
                 </div>
 
-                <div style={{ marginTop: 12 }}>
+                <div style={{ marginTop: 14 }}>
                   <Field label="Notes / Terms">
                     <textarea value={current.notes || ''} onChange={e => setField('notes', e.target.value)} rows={2} style={{ ...inp, resize: 'vertical' }}
                       placeholder="e.g. Valid 14 days · Prices exclude delivery"/>
@@ -399,7 +404,7 @@ export default function Quotations() {
               </div>
               <div style={{ padding: 14, borderTop: '1px solid #f1f5f9', display: 'flex', justifyContent: 'flex-end', gap: 10 }}>
                 <button onClick={closeModal} style={btnGhost}>Cancel</button>
-                <button onClick={save} disabled={saving} style={{ ...btnPrimary, opacity: saving ? 0.6 : 1 }}>
+                <button onClick={save} disabled={saving} className="btn btn-primary" style={{ opacity: saving ? 0.6 : 1 }}>
                   {saving ? 'Saving…' : (modal === 'edit' ? 'Update Quotation' : 'Save Quotation')}
                 </button>
               </div>
@@ -413,7 +418,7 @@ export default function Quotations() {
         <Portal>
           <div style={overlay}>
             <div style={{ ...modalBox, maxWidth: 640 }}>
-              <div style={{ ...modalHead, background: 'linear-gradient(135deg, #b8271f 0%, #7a1a15 100%)' }}>
+              <div style={{ ...modalHead, background: 'linear-gradient(135deg, #1e3a5f 0%, #1d4ed8 100%)' }}>
                 <div>
                   <div style={{ fontSize: 11, letterSpacing: 1.5, textTransform: 'uppercase', color: 'rgba(255,255,255,0.7)', fontWeight: 700, marginBottom: 3 }}>Quotation</div>
                   <h3 style={{ margin: 0, fontSize: 17, color: '#fff', fontFamily: 'monospace' }}>{current.quote_number}</h3>
@@ -449,8 +454,8 @@ export default function Quotations() {
                   <div style={{ textAlign: 'right' }}>{fmtCcy(current.discount, current.currency)}</div>
                   <div style={{ textAlign: 'right', color: '#6b7280' }}>Tax</div>
                   <div style={{ textAlign: 'right' }}>{fmtCcy(current.tax, current.currency)}</div>
-                  <div style={{ textAlign: 'right', fontWeight: 800, color: '#b8271f', fontSize: 15 }}>Grand Total</div>
-                  <div style={{ textAlign: 'right', fontWeight: 800, color: '#b8271f', fontSize: 15 }}>{fmtCcy(current.total, current.currency)}</div>
+                  <div style={{ textAlign: 'right', fontWeight: 800, color: '#1d4ed8', fontSize: 15 }}>Grand Total</div>
+                  <div style={{ textAlign: 'right', fontWeight: 800, color: '#1d4ed8', fontSize: 15 }}>{fmtCcy(current.total, current.currency)}</div>
                 </div>
                 {current.notes && (
                   <div style={{ marginTop: 12, padding: 10, background: '#f8fafc', borderRadius: 6, fontSize: 12, color: '#374151' }}>
@@ -471,6 +476,23 @@ export default function Quotations() {
   );
 }
 
+function StatTile({ label, value, icon, bg }) {
+  return (
+    <div style={{
+      borderRadius: 14, padding: '14px 18px', background: bg, color: '#fff',
+      boxShadow: '0 4px 16px rgba(0,0,0,0.1)', position: 'relative', overflow: 'hidden',
+      display: 'flex', alignItems: 'center', gap: 14,
+    }}>
+      <div style={{ position: 'absolute', right: -10, top: -10, width: 60, height: 60, borderRadius: '50%', background: 'rgba(255,255,255,0.1)' }} />
+      {icon}
+      <div>
+        <div style={{ fontSize: 11, fontWeight: 700, opacity: 0.9, textTransform: 'uppercase', letterSpacing: 0.5 }}>{label}</div>
+        <div style={{ fontSize: 28, fontWeight: 800 }}>{value}</div>
+      </div>
+    </div>
+  );
+}
+
 function Field({ label, children }) {
   return (
     <div>
@@ -480,14 +502,13 @@ function Field({ label, children }) {
   );
 }
 
-const inp        = { width: '100%', padding: '8px 10px', border: '1px solid #e5e7eb', borderRadius: 6, fontSize: 13, outline: 'none', boxSizing: 'border-box' };
-const btnPrimary = { padding: '8px 14px', background: '#b8271f', color: '#fff', border: 0, borderRadius: 8, cursor: 'pointer', fontSize: 13, fontWeight: 700, display: 'inline-flex', alignItems: 'center', gap: 6 };
+const inp        = { width: '100%', padding: '8px 10px', border: '1px solid #e5e7eb', borderRadius: 7, fontSize: 13, outline: 'none', boxSizing: 'border-box' };
 const btnGhost   = { padding: '8px 14px', background: '#fff', color: '#374151', border: '1px solid #e5e7eb', borderRadius: 8, cursor: 'pointer', fontSize: 13, display: 'inline-flex', alignItems: 'center', gap: 6 };
-const btnRow     = { padding: '4px 8px', background: '#fff', color: '#374151', border: '1px solid #e5e7eb', borderRadius: 6, cursor: 'pointer', fontSize: 11, fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: 4 };
-const grid2      = { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 };
+const btnRow     = { padding: '5px 10px', background: '#fff', color: '#374151', border: '1px solid #e5e7eb', borderRadius: 6, cursor: 'pointer', fontSize: 11, fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: 4 };
+const grid2      = { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 };
 const overlay    = { position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.55)', zIndex: 2000, display: 'flex', alignItems: 'flex-start', justifyContent: 'center', padding: '20px 16px', overflowY: 'auto' };
 const modalBox   = { background: '#fff', borderRadius: 14, width: '100%', boxShadow: '0 20px 60px rgba(0,0,0,0.25)' };
-const modalHead  = { padding: '14px 18px', color: '#fff', display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', borderRadius: '14px 14px 0 0' };
-const closeBtn   = { background: 'rgba(255,255,255,0.15)', border: '1px solid rgba(255,255,255,0.25)', borderRadius: 8, cursor: 'pointer', color: '#fff', width: 30, height: 30, display: 'flex', alignItems: 'center', justifyContent: 'center' };
-const mth        = { padding: '6px 10px', fontSize: 10, textTransform: 'uppercase', letterSpacing: 0.5, color: '#6b7280', fontWeight: 700, textAlign: 'left' };
-const mtd        = { padding: '5px 10px', fontSize: 12, color: '#111827' };
+const modalHead  = { padding: '18px 22px', color: '#fff', display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', borderRadius: '14px 14px 0 0' };
+const closeBtn   = { background: 'rgba(255,255,255,0.15)', border: '1px solid rgba(255,255,255,0.25)', borderRadius: 8, cursor: 'pointer', color: '#fff', width: 32, height: 32, display: 'flex', alignItems: 'center', justifyContent: 'center' };
+const mth        = { padding: '8px 10px', fontSize: 11, textTransform: 'uppercase', letterSpacing: 0.5, color: '#0369a1', fontWeight: 700, textAlign: 'left' };
+const mtd        = { padding: '6px 10px', fontSize: 12, color: '#111827' };
