@@ -172,6 +172,19 @@ export const importCategories = (file) => {
   return api.post('/categories/import', form, { headers: { 'Content-Type': 'multipart/form-data' } });
 };
 
+// Quotations (v1.10.326)
+export const getQuotations       = (params) => api.get('/quotations', { params });
+export const getQuotationStats   = ()        => api.get('/quotations/stats');
+export const getQuotation        = (id)      => api.get(`/quotations/${id}`);
+export const createQuotation     = (data)    => api.post('/quotations', data);
+export const updateQuotation     = (id, d)   => api.put(`/quotations/${id}`, d);
+export const sendQuotation       = (id)      => api.post(`/quotations/${id}/send`);
+export const acceptQuotation     = (id)      => api.post(`/quotations/${id}/accept`);
+export const declineQuotation    = (id)      => api.post(`/quotations/${id}/decline`);
+export const voidQuotation       = (id, reason) => api.post(`/quotations/${id}/void`, { reason });
+export const convertQuotation    = (id)      => api.post(`/quotations/${id}/convert`);
+export const deleteQuotation     = (id)      => api.delete(`/quotations/${id}`);
+
 // Orders
 export const getOrders = () => api.get('/orders');
 export const createOrder = (data) => api.post('/orders', data);

@@ -47,6 +47,7 @@ app.use('/api/categories',       require('./routes/categories'));
 app.use('/api/main-categories',  require('./routes/mainCategories'));
 app.use('/api/units',            require('./routes/units'));
 app.use('/api/orders',           require('./routes/orders'));
+app.use('/api/quotations',       require('./routes/quotations'));
 app.use('/api/grn',              require('./routes/grn'));
 app.use('/api/empty-returns',    require('./routes/emptyReturns'));
 app.use('/api/credit-notes',     require('./routes/supplierCreditNotes'));

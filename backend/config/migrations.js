@@ -729,6 +729,52 @@ function initTenantDb(db) {
       created_at         TEXT NOT NULL DEFAULT (datetime('now')),
       updated_at         TEXT NOT NULL DEFAULT (datetime('now'))
     );
+
+    -- ── Quotations (v1.10.326) ─────────────────────────────────────────────
+    -- Customer price offers, drafted before becoming a real order. Zero stock
+    -- impact — only Convert-to-Order moves inventory / touches revenue.
+    CREATE TABLE IF NOT EXISTS quotations (
+      id                       INTEGER PRIMARY KEY AUTOINCREMENT,
+      quote_number             TEXT UNIQUE NOT NULL,
+      date                     TEXT NOT NULL,
+      valid_until              TEXT NOT NULL,
+      customer_id              INTEGER,
+      customer_name            TEXT,
+      currency                 TEXT NOT NULL DEFAULT 'K',
+      fx_rate_used             REAL DEFAULT 1,
+      subtotal                 REAL NOT NULL DEFAULT 0,
+      discount                 REAL NOT NULL DEFAULT 0,
+      tax                      REAL NOT NULL DEFAULT 0,
+      total                    REAL NOT NULL DEFAULT 0,
+      notes                    TEXT,
+      status                   TEXT NOT NULL DEFAULT 'Draft',
+      -- Draft | Sent | Accepted | Declined | Expired | Ordered | Voided
+      converted_order_id       INTEGER,
+      converted_order_sync_id  TEXT,
+      converted_at             TEXT,
+      sent_at                  TEXT,
+      accepted_at              TEXT,
+      declined_at              TEXT,
+      void_reason              TEXT,
+      created_by               INTEGER REFERENCES users(id),
+      created_by_name          TEXT,
+      created_at               TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at               TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS quotation_items (
+      id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+      quote_id            INTEGER NOT NULL REFERENCES quotations(id),
+      product_id          INTEGER,
+      product_name        TEXT NOT NULL,
+      unit                TEXT,
+      quantity            REAL NOT NULL DEFAULT 0,
+      unit_price          REAL NOT NULL DEFAULT 0,
+      discount_amount     REAL NOT NULL DEFAULT 0,
+      line_total          REAL NOT NULL DEFAULT 0,
+      created_at          TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at          TEXT NOT NULL DEFAULT (datetime('now'))
+    );
   `);
 
   // ── Add sync columns to all tables ────────────────────────────────────────

@@ -428,6 +428,11 @@ const Layout = () => {
                       <FiShoppingCart className="nav-icon" /> <span>{t('pos')}</span>
                     </div>
                   )}
+                  {!hq && hasPageAccess('POS', 'Quotations') && (
+                    <div className={`nav-item ${isActive('/pos/quotations') ? 'active' : ''}`} onClick={() => navigate('/pos/quotations')}>
+                      <FiFileText className="nav-icon" /> <span>Quotations</span>
+                    </div>
+                  )}
                   {/* v1.9.25 — all the branch-side Sales children gate on
                       !hq so HQ only sees HQ Sales Report above. */}
                   {!hq && (workflowMode === 'three_station' || workflowMode === 'two_station') && hasPageAccess('Cashier') && (

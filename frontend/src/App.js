@@ -22,6 +22,7 @@ import Setup from './pages/Setup';
 import LicenseBanner from './components/LicenseBanner';
 import Dashboard from './pages/Dashboard';
 import POS from './pages/POS';
+import Quotations from './pages/Quotations';
 import Cashier from './pages/Cashier';
 import Dispatch from './pages/Dispatch';
 import HqOverview from './pages/HqOverview';
@@ -279,6 +280,7 @@ function AppRoutes() {
         <Route index element={<DefaultRedirect />} />
         <Route path="dashboard" element={<PermRoute allAccessOnly><Dashboard /></PermRoute>} />
         <Route path="pos" element={<PermRoute perms={['POS','Sales','POS:View','POS:Add','POS:Edit','POS:Delete']}><POS /></PermRoute>} />
+        <Route path="pos/quotations" element={<PermRoute perms={['POS','Sales','Quotations','Quotations:View','Quotations:Add']}><Quotations /></PermRoute>} />
         <Route path="pos/cashier"  element={<PermRoute perms={['Cashier','Cashier:View','Cashier:Add','Cashier:Edit','Cashier:Delete']}><Cashier /></PermRoute>} />
         <Route path="pos/dispatch" element={<PermRoute perms={['Dispatch','Dispatch:View','Dispatch:Add','Dispatch:Edit','Dispatch:Delete']}><Dispatch /></PermRoute>} />
         <Route path="hq/overview"         element={<HqRoute><HqOverview /></HqRoute>} />
