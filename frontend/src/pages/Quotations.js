@@ -87,8 +87,10 @@ export default function Quotations() {
     getSettings().then(r => setBusinessInfo(r.data?.business || {})).catch(() => {});
   }, []);
 
-  // Print a single quotation — mirrors CashReceipt.printSingleCR template
-  // (v1.10.327 alignment). Blue palette since Quotations page runs blue.
+  // Print a single quotation — Cash Book report template (CashBook.js:634).
+  // Same navy-underline header, bordered stat chips, bordered table, thin
+  // grey footer — no rainbow bar, no coloured hero. Reads as a sibling of
+  // the Cash Book Report rather than a stand-alone receipt.
   const printQuotation = async (row) => {
     let q = row;
     if (!q.items) {
@@ -96,22 +98,104 @@ export default function Quotations() {
       catch (e) { showToast(e.response?.data?.error || 'Failed to load quote', 'error'); return; }
     }
     const biz = businessInfo;
-    const printed = new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+    const bizName = biz.business_name || 'Business Name';
+    const bizSub  = [biz.business_address, biz.business_phone, biz.business_email].filter(Boolean).join(' · ');
+    const printedAt = new Date().toLocaleString('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: '2-digit', minute: '2-digit' });
     const fmt = (n) => fmtCcy(n, q.currency);
-    const cards = [
-      { label: 'Customer',    value: q.customer_name || 'Walk-in',    bg: '#eff6ff', border: '#bfdbfe', color: '#1d4ed8' },
-      { label: 'Currency',    value: q.currency,                       bg: '#f0fdf4', border: '#86efac', color: '#15803d' },
-      { label: 'Quote Date',  value: q.date,                           bg: '#fff7ed', border: '#fed7aa', color: '#c2410c' },
-      { label: 'Valid Until', value: q.valid_until,                    bg: '#fef2f2', border: '#fecaca', color: '#b91c1c' },
-    ].map(c => `<div style="padding:14px 18px;border-radius:10px;background:${c.bg};border:1.5px solid ${c.border}"><div style="font-size:9px;letter-spacing:0.8px;text-transform:uppercase;color:#64748b;font-weight:600;margin-bottom:6px">${c.label}</div><div style="font-size:15px;font-weight:700;color:${c.color}">${(c.value || '').toString().replace(/</g,'&lt;')}</div></div>`).join('');
-    const itemRows = (q.items || []).map((it, i) => `<tr style="border-top:1px solid #e5e7eb;background:${i % 2 === 1 ? '#f8fafc' : '#fff'}"><td style="padding:8px 12px;color:#111827">${(it.product_name || '').toString().replace(/</g,'&lt;')}${it.unit ? ` <span style="color:#9ca3af;font-size:10.5px">(${it.unit})</span>` : ''}</td><td style="padding:8px 12px;text-align:right;font-family:monospace">${parseFloat(it.quantity).toLocaleString()}</td><td style="padding:8px 12px;text-align:right;font-family:monospace">${fmt(it.unit_price)}</td><td style="padding:8px 12px;text-align:right;font-family:monospace;font-weight:700;color:#1d4ed8">${fmt(it.line_total)}</td></tr>`).join('');
-    const notesHtml = q.notes ? `<div style="padding:12px 16px;background:#fffbeb;border:1px solid #fde68a;border-radius:8px;font-size:11.5px;color:#78350f;margin-bottom:24px"><span style="font-weight:700;text-transform:uppercase;font-size:9.5px;letter-spacing:0.8px;margin-right:8px;color:#92400e">Notes / Terms</span>${q.notes.toString().replace(/</g,'&lt;')}</div>` : '';
-    const sigs = ['Prepared By', 'Customer Signature'].map(label => `<div style="text-align:center"><div style="height:36px;border-bottom:1.5px solid #cbd5e1;margin-bottom:6px"></div><div style="font-size:9.5px;font-weight:700;letter-spacing:0.5px;text-transform:uppercase;color:#6b7280">${label}</div><div style="font-size:9px;color:#9ca3af;margin-top:2px">Name / Signature / Date</div></div>`).join('');
-    const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Quotation ${q.quote_number}</title><style>*{margin:0;padding:0;box-sizing:border-box}body{font-family:"Segoe UI",Arial,sans-serif;font-size:12px;color:#1a1a2e}@media print{body{-webkit-print-color-adjust:exact;print-color-adjust:exact}}</style></head><body><div style="width:794px;margin:0 auto;background:#fff"><div style="background:linear-gradient(135deg,#1e3a5f 0%,#1d4ed8 50%,#3b82f6 100%);padding:28px 40px 22px;color:#fff;display:flex;justify-content:space-between;align-items:flex-start"><div><div style="font-size:8px;letter-spacing:3px;text-transform:uppercase;opacity:0.6;margin-bottom:8px">Quotation — Not a Tax Invoice</div><div style="font-size:20px;font-weight:800;letter-spacing:0.3px;margin-bottom:5px">${biz.business_name || 'Business Name'}</div><div style="font-size:10px;opacity:0.7;line-height:1.8">${[biz.business_address, biz.business_phone, biz.business_email].filter(Boolean).join('  ·  ')}</div></div><div style="text-align:right"><div style="font-size:9px;letter-spacing:2px;text-transform:uppercase;opacity:0.55;margin-bottom:8px">Quote No.</div><div style="font-size:20px;font-weight:900;letter-spacing:1px;font-family:monospace">${q.quote_number}</div><div style="margin-top:8px;font-size:11px;opacity:0.8">${q.date}</div></div></div><div style="height:4px;background:linear-gradient(90deg,#f59e0b,#22c55e,#2563eb,#a855f7)"></div><div style="padding:28px 40px 36px"><div style="display:grid;grid-template-columns:repeat(2,1fr);gap:14px;margin-bottom:26px">${cards}</div><div style="border:1px solid #e2e8f0;border-radius:10px;overflow:hidden;margin-bottom:20px"><table style="width:100%;border-collapse:collapse;font-size:11.5px"><thead><tr style="background:#eff6ff"><th style="padding:10px 12px;text-align:left;font-weight:600;color:#1d4ed8;border-bottom:1px solid #bfdbfe;font-size:10.5px">Product</th><th style="padding:10px 12px;text-align:right;font-weight:600;color:#1d4ed8;border-bottom:1px solid #bfdbfe;font-size:10.5px">Qty</th><th style="padding:10px 12px;text-align:right;font-weight:600;color:#1d4ed8;border-bottom:1px solid #bfdbfe;font-size:10.5px">Unit Price</th><th style="padding:10px 12px;text-align:right;font-weight:600;color:#1d4ed8;border-bottom:1px solid #bfdbfe;font-size:10.5px">Line</th></tr></thead><tbody>${itemRows || '<tr><td colspan="4" style="padding:12px;text-align:center;color:#9ca3af">No items</td></tr>'}</tbody></table></div><div style="border:2px solid #bfdbfe;border-radius:12px;padding:18px 24px;background:#eff6ff;margin-bottom:22px"><table style="width:100%;border-collapse:collapse;font-size:12px"><tr><td style="padding:4px 0;color:#6b7280">Subtotal</td><td style="padding:4px 0;text-align:right;font-family:monospace">${fmt(q.subtotal)}</td></tr><tr><td style="padding:4px 0;color:#6b7280">Discount</td><td style="padding:4px 0;text-align:right;font-family:monospace">${fmt(q.discount)}</td></tr><tr><td style="padding:4px 0;color:#6b7280">Tax</td><td style="padding:4px 0;text-align:right;font-family:monospace">${fmt(q.tax)}</td></tr><tr style="border-top:1.5px solid #bfdbfe"><td style="padding:8px 0 0;font-weight:800;text-transform:uppercase;letter-spacing:1px;color:#1d4ed8;font-size:11px">Grand Total</td><td style="padding:8px 0 0;text-align:right;font-family:monospace;font-weight:900;color:#1d4ed8;font-size:18px">${fmt(q.total)}</td></tr></table></div>${notesHtml}<div style="display:grid;grid-template-columns:1fr 1fr;gap:32px;margin-top:40px">${sigs}</div></div><div style="background:#f8fafc;border-top:1px solid #e2e8f0;padding:10px 40px;display:flex;justify-content:space-between;align-items:center"><span style="font-size:9px;color:#94a3b8">${biz.business_name || 'Business'} — Quotation, not a Tax Invoice</span><span style="font-size:9px;color:#94a3b8">Printed: ${printed}</span></div></div></body></html>`;
+    const esc = (s) => String(s == null ? '' : s).replace(/</g, '&lt;');
+    const items = q.items || [];
+    const itemsCount = items.length;
+    const itemRows = items.length ? items.map((it, i) => `
+      <tr>
+        <td>${i + 1}</td>
+        <td>${esc(it.product_name)}</td>
+        <td style="text-align:center">${esc(it.unit || '—')}</td>
+        <td style="text-align:right">${parseFloat(it.quantity).toLocaleString()}</td>
+        <td style="text-align:right">${fmt(it.unit_price)}</td>
+        <td style="text-align:right;font-weight:600">${fmt(it.line_total)}</td>
+      </tr>`).join('') : `<tr><td colspan="6" style="text-align:center;color:#9ca3af">No items</td></tr>`;
+    const notesHtml = q.notes
+      ? `<div class="notes"><div class="notes-lbl">Notes / Terms</div><div>${esc(q.notes)}</div></div>`
+      : '';
+    const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Quotation ${esc(q.quote_number)}</title><style>
+      @page{size:A4 portrait;margin:15mm}*{box-sizing:border-box;margin:0;padding:0}
+      body{font-family:Arial,sans-serif;font-size:11px;color:#1f2937}
+      .hdr{display:flex;justify-content:space-between;align-items:flex-start;padding-bottom:12px;border-bottom:3px solid #1e3a5f;margin-bottom:16px}
+      .hdr-left .biz{font-size:20px;font-weight:900;color:#1e3a5f;letter-spacing:0.3px}
+      .hdr-left .sub{font-size:10px;color:#6b7280;margin-top:4px}
+      .hdr-right{text-align:right}
+      .hdr-right .title{font-size:9px;letter-spacing:2px;text-transform:uppercase;color:#6b7280;margin-bottom:4px}
+      .hdr-right .qno{font-size:15px;font-weight:800;color:#1e3a5f;font-family:monospace;letter-spacing:0.5px}
+      .hdr-right .dates{font-size:11px;color:#374151;margin-top:3px;font-weight:600}
+      .hdr-right .printed{font-size:9px;color:#9ca3af;margin-top:3px}
+      .stats{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-bottom:16px}
+      .stat{border:1.5px solid #d1d5db;border-radius:6px;padding:8px 12px}
+      .stat-lbl{font-size:9px;text-transform:uppercase;letter-spacing:1px;color:#6b7280;margin-bottom:3px}
+      .stat-val{font-size:13px;font-weight:800}
+      table{width:100%;border-collapse:collapse;font-size:10.5px}
+      th{border:1px solid #d1d5db;padding:7px 9px;text-align:left;font-weight:700;font-size:10px;text-transform:uppercase;letter-spacing:0.5px;background:#f3f4f6;color:#1e3a5f}
+      td{border:1px solid #e5e7eb;padding:6px 9px}
+      .tot-row td{font-weight:700;border-top:2px solid #1e3a5f}
+      .grand-row td{font-size:13px;font-weight:900;color:#1e3a5f;background:#eff6ff}
+      .notes{margin-top:14px;padding:10px 14px;border:1px solid #fde68a;background:#fffbeb;border-radius:6px;font-size:10.5px;color:#78350f}
+      .notes-lbl{font-size:9px;text-transform:uppercase;letter-spacing:1px;color:#92400e;font-weight:700;margin-bottom:4px}
+      .sigs{display:grid;grid-template-columns:1fr 1fr;gap:40px;margin-top:36px}
+      .sig{text-align:center}
+      .sig-line{height:32px;border-bottom:1.5px solid #cbd5e1;margin-bottom:6px}
+      .sig-lbl{font-size:9.5px;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;color:#6b7280}
+      .sig-hint{font-size:8.5px;color:#9ca3af;margin-top:2px}
+      .ft{margin-top:16px;display:flex;justify-content:space-between;font-size:9px;color:#9ca3af;padding-top:8px;border-top:1px solid #e5e7eb}
+    </style></head><body>
+      <div class="hdr">
+        <div class="hdr-left">
+          <div class="biz">${esc(bizName)}</div>
+          <div class="sub">${esc(bizSub)}</div>
+          <div class="sub" style="margin-top:6px;color:#1e3a5f;font-weight:700">Quotation — Not a Tax Invoice</div>
+        </div>
+        <div class="hdr-right">
+          <div class="title">Quote No.</div>
+          <div class="qno">${esc(q.quote_number)}</div>
+          <div class="dates">${esc(q.date)}</div>
+          <div class="printed">Printed: ${printedAt}</div>
+        </div>
+      </div>
+      <div class="stats">
+        <div class="stat"><div class="stat-lbl">Customer</div><div class="stat-val" style="color:#1e3a5f">${esc(q.customer_name || 'Walk-in')}</div></div>
+        <div class="stat"><div class="stat-lbl">Currency</div><div class="stat-val" style="color:#1e3a5f">${esc(q.currency)}</div></div>
+        <div class="stat"><div class="stat-lbl">Quote Date</div><div class="stat-val" style="color:#1e3a5f">${esc(q.date)}</div></div>
+        <div class="stat"><div class="stat-lbl">Valid Until</div><div class="stat-val" style="color:${q.valid_until < todayISO() ? '#dc2626' : '#1e3a5f'}">${esc(q.valid_until)}</div></div>
+        <div class="stat"><div class="stat-lbl">Line Items</div><div class="stat-val">${itemsCount}</div></div>
+        <div class="stat"><div class="stat-lbl">Grand Total</div><div class="stat-val" style="color:#16a34a">${fmt(q.total)}</div></div>
+      </div>
+      <table>
+        <thead>
+          <tr>
+            <th style="width:32px">#</th>
+            <th>Product</th>
+            <th style="text-align:center;width:60px">Unit</th>
+            <th style="text-align:right;width:70px">Qty</th>
+            <th style="text-align:right;width:110px">Unit Price</th>
+            <th style="text-align:right;width:120px">Line Total</th>
+          </tr>
+        </thead>
+        <tbody>${itemRows}</tbody>
+        <tfoot>
+          <tr class="tot-row"><td colspan="5" style="text-align:right">Subtotal</td><td style="text-align:right">${fmt(q.subtotal)}</td></tr>
+          <tr class="tot-row"><td colspan="5" style="text-align:right">Discount</td><td style="text-align:right;color:#dc2626">${parseFloat(q.discount) > 0 ? '−' : ''}${fmt(q.discount)}</td></tr>
+          <tr class="tot-row"><td colspan="5" style="text-align:right">Tax</td><td style="text-align:right">${fmt(q.tax)}</td></tr>
+          <tr class="tot-row grand-row"><td colspan="5" style="text-align:right">GRAND TOTAL</td><td style="text-align:right">${fmt(q.total)}</td></tr>
+        </tfoot>
+      </table>
+      ${notesHtml}
+      <div class="sigs">
+        <div class="sig"><div class="sig-line"></div><div class="sig-lbl">Prepared By</div><div class="sig-hint">Name / Signature / Date</div></div>
+        <div class="sig"><div class="sig-line"></div><div class="sig-lbl">Customer Signature</div><div class="sig-hint">Name / Signature / Date</div></div>
+      </div>
+      <div class="ft"><span>${esc(bizName)} — Confidential</span><span>Printed: ${printedAt}</span></div>
+    </body></html>`;
     const w = window.open('', '_blank');
     if (!w) { showToast('Popup blocked — allow popups for this site to print.', 'error'); return; }
-    w.document.write(html);
-    w.document.close();
+    w.document.write(html); w.document.close(); w.focus();
     setTimeout(() => { w.print(); w.close(); }, 300);
   };
 
