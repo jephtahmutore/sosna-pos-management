@@ -4,11 +4,13 @@ import React, { useEffect, useMemo, useState } from 'react';
 import {
   FiPlus, FiX, FiTrash2, FiSend, FiCheck, FiSlash, FiRefreshCw, FiEdit2,
   FiFileText, FiChevronRight, FiRotateCw, FiClock, FiCheckCircle, FiFile,
+  FiPrinter,
 } from 'react-icons/fi';
 import {
   getQuotations, getQuotationStats, getQuotation, createQuotation,
   updateQuotation, sendQuotation, acceptQuotation, declineQuotation,
   voidQuotation, convertQuotation, deleteQuotation, getProducts, getCustomers,
+  getSettings,
 } from '../services/api';
 import Portal from '../utils/Portal';
 import useModalScrollLock from '../utils/useModalScrollLock';
@@ -51,6 +53,7 @@ export default function Quotations() {
   const [current, setCurrent]     = useState(null);
   const [toast, setToast]         = useState(null);
   const [saving, setSaving]       = useState(false);
+  const [businessInfo, setBusinessInfo] = useState({});
   useModalScrollLock(!!modal);
 
   const showToast = (msg, type = 'success') => {
@@ -81,7 +84,36 @@ export default function Quotations() {
         setCustomers(c.data || []);
       } catch (_) {}
     })();
+    getSettings().then(r => setBusinessInfo(r.data?.business || {})).catch(() => {});
   }, []);
+
+  // Print a single quotation — mirrors CashReceipt.printSingleCR template
+  // (v1.10.327 alignment). Blue palette since Quotations page runs blue.
+  const printQuotation = async (row) => {
+    let q = row;
+    if (!q.items) {
+      try { const res = await getQuotation(row.id); q = res.data; }
+      catch (e) { showToast(e.response?.data?.error || 'Failed to load quote', 'error'); return; }
+    }
+    const biz = businessInfo;
+    const printed = new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+    const fmt = (n) => fmtCcy(n, q.currency);
+    const cards = [
+      { label: 'Customer',    value: q.customer_name || 'Walk-in',    bg: '#eff6ff', border: '#bfdbfe', color: '#1d4ed8' },
+      { label: 'Currency',    value: q.currency,                       bg: '#f0fdf4', border: '#86efac', color: '#15803d' },
+      { label: 'Quote Date',  value: q.date,                           bg: '#fff7ed', border: '#fed7aa', color: '#c2410c' },
+      { label: 'Valid Until', value: q.valid_until,                    bg: '#fef2f2', border: '#fecaca', color: '#b91c1c' },
+    ].map(c => `<div style="padding:14px 18px;border-radius:10px;background:${c.bg};border:1.5px solid ${c.border}"><div style="font-size:9px;letter-spacing:0.8px;text-transform:uppercase;color:#64748b;font-weight:600;margin-bottom:6px">${c.label}</div><div style="font-size:15px;font-weight:700;color:${c.color}">${(c.value || '').toString().replace(/</g,'&lt;')}</div></div>`).join('');
+    const itemRows = (q.items || []).map((it, i) => `<tr style="border-top:1px solid #e5e7eb;background:${i % 2 === 1 ? '#f8fafc' : '#fff'}"><td style="padding:8px 12px;color:#111827">${(it.product_name || '').toString().replace(/</g,'&lt;')}${it.unit ? ` <span style="color:#9ca3af;font-size:10.5px">(${it.unit})</span>` : ''}</td><td style="padding:8px 12px;text-align:right;font-family:monospace">${parseFloat(it.quantity).toLocaleString()}</td><td style="padding:8px 12px;text-align:right;font-family:monospace">${fmt(it.unit_price)}</td><td style="padding:8px 12px;text-align:right;font-family:monospace;font-weight:700;color:#1d4ed8">${fmt(it.line_total)}</td></tr>`).join('');
+    const notesHtml = q.notes ? `<div style="padding:12px 16px;background:#fffbeb;border:1px solid #fde68a;border-radius:8px;font-size:11.5px;color:#78350f;margin-bottom:24px"><span style="font-weight:700;text-transform:uppercase;font-size:9.5px;letter-spacing:0.8px;margin-right:8px;color:#92400e">Notes / Terms</span>${q.notes.toString().replace(/</g,'&lt;')}</div>` : '';
+    const sigs = ['Prepared By', 'Customer Signature'].map(label => `<div style="text-align:center"><div style="height:36px;border-bottom:1.5px solid #cbd5e1;margin-bottom:6px"></div><div style="font-size:9.5px;font-weight:700;letter-spacing:0.5px;text-transform:uppercase;color:#6b7280">${label}</div><div style="font-size:9px;color:#9ca3af;margin-top:2px">Name / Signature / Date</div></div>`).join('');
+    const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Quotation ${q.quote_number}</title><style>*{margin:0;padding:0;box-sizing:border-box}body{font-family:"Segoe UI",Arial,sans-serif;font-size:12px;color:#1a1a2e}@media print{body{-webkit-print-color-adjust:exact;print-color-adjust:exact}}</style></head><body><div style="width:794px;margin:0 auto;background:#fff"><div style="background:linear-gradient(135deg,#1e3a5f 0%,#1d4ed8 50%,#3b82f6 100%);padding:28px 40px 22px;color:#fff;display:flex;justify-content:space-between;align-items:flex-start"><div><div style="font-size:8px;letter-spacing:3px;text-transform:uppercase;opacity:0.6;margin-bottom:8px">Quotation — Not a Tax Invoice</div><div style="font-size:20px;font-weight:800;letter-spacing:0.3px;margin-bottom:5px">${biz.business_name || 'Business Name'}</div><div style="font-size:10px;opacity:0.7;line-height:1.8">${[biz.business_address, biz.business_phone, biz.business_email].filter(Boolean).join('  ·  ')}</div></div><div style="text-align:right"><div style="font-size:9px;letter-spacing:2px;text-transform:uppercase;opacity:0.55;margin-bottom:8px">Quote No.</div><div style="font-size:20px;font-weight:900;letter-spacing:1px;font-family:monospace">${q.quote_number}</div><div style="margin-top:8px;font-size:11px;opacity:0.8">${q.date}</div></div></div><div style="height:4px;background:linear-gradient(90deg,#f59e0b,#22c55e,#2563eb,#a855f7)"></div><div style="padding:28px 40px 36px"><div style="display:grid;grid-template-columns:repeat(2,1fr);gap:14px;margin-bottom:26px">${cards}</div><div style="border:1px solid #e2e8f0;border-radius:10px;overflow:hidden;margin-bottom:20px"><table style="width:100%;border-collapse:collapse;font-size:11.5px"><thead><tr style="background:#eff6ff"><th style="padding:10px 12px;text-align:left;font-weight:600;color:#1d4ed8;border-bottom:1px solid #bfdbfe;font-size:10.5px">Product</th><th style="padding:10px 12px;text-align:right;font-weight:600;color:#1d4ed8;border-bottom:1px solid #bfdbfe;font-size:10.5px">Qty</th><th style="padding:10px 12px;text-align:right;font-weight:600;color:#1d4ed8;border-bottom:1px solid #bfdbfe;font-size:10.5px">Unit Price</th><th style="padding:10px 12px;text-align:right;font-weight:600;color:#1d4ed8;border-bottom:1px solid #bfdbfe;font-size:10.5px">Line</th></tr></thead><tbody>${itemRows || '<tr><td colspan="4" style="padding:12px;text-align:center;color:#9ca3af">No items</td></tr>'}</tbody></table></div><div style="border:2px solid #bfdbfe;border-radius:12px;padding:18px 24px;background:#eff6ff;margin-bottom:22px"><table style="width:100%;border-collapse:collapse;font-size:12px"><tr><td style="padding:4px 0;color:#6b7280">Subtotal</td><td style="padding:4px 0;text-align:right;font-family:monospace">${fmt(q.subtotal)}</td></tr><tr><td style="padding:4px 0;color:#6b7280">Discount</td><td style="padding:4px 0;text-align:right;font-family:monospace">${fmt(q.discount)}</td></tr><tr><td style="padding:4px 0;color:#6b7280">Tax</td><td style="padding:4px 0;text-align:right;font-family:monospace">${fmt(q.tax)}</td></tr><tr style="border-top:1.5px solid #bfdbfe"><td style="padding:8px 0 0;font-weight:800;text-transform:uppercase;letter-spacing:1px;color:#1d4ed8;font-size:11px">Grand Total</td><td style="padding:8px 0 0;text-align:right;font-family:monospace;font-weight:900;color:#1d4ed8;font-size:18px">${fmt(q.total)}</td></tr></table></div>${notesHtml}<div style="display:grid;grid-template-columns:1fr 1fr;gap:32px;margin-top:40px">${sigs}</div></div><div style="background:#f8fafc;border-top:1px solid #e2e8f0;padding:10px 40px;display:flex;justify-content:space-between;align-items:center"><span style="font-size:9px;color:#94a3b8">${biz.business_name || 'Business'} — Quotation, not a Tax Invoice</span><span style="font-size:9px;color:#94a3b8">Printed: ${printed}</span></div></div></body></html>`;
+    const w = window.open('', '_blank');
+    if (!w) { showToast('Popup blocked — allow popups for this site to print.', 'error'); return; }
+    w.document.write(html);
+    w.document.close();
+    setTimeout(() => { w.print(); w.close(); }, 300);
+  };
 
   const openCreate = () => {
     setCurrent({
@@ -260,6 +292,7 @@ export default function Quotations() {
                   <td>
                     <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
                       <button onClick={() => openView(r)} style={btnRow}><FiFileText size={12} /> View</button>
+                      <button onClick={() => printQuotation(r)} style={btnRow}><FiPrinter size={12} /> Print</button>
                       {r.status === 'Draft' && (
                         <>
                           <button onClick={() => openEdit(r)} style={btnRow}><FiEdit2 size={12} /> Edit</button>
@@ -463,8 +496,9 @@ export default function Quotations() {
                   </div>
                 )}
               </div>
-              <div style={{ padding: 14, borderTop: '1px solid #f1f5f9', display: 'flex', justifyContent: 'flex-end' }}>
+              <div style={{ padding: 14, borderTop: '1px solid #f1f5f9', display: 'flex', justifyContent: 'flex-end', gap: 10 }}>
                 <button onClick={closeModal} style={btnGhost}>Close</button>
+                <button onClick={() => printQuotation(current)} className="btn btn-primary"><FiPrinter size={14} /> Print</button>
               </div>
             </div>
           </div>
