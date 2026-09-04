@@ -15,6 +15,7 @@ import {
 import Portal from '../utils/Portal';
 import useModalScrollLock from '../utils/useModalScrollLock';
 import Toast from '../components/Toast';
+import { unitsForProduct, pickDisplayUnit } from '../utils/productUnits';
 
 const todayISO = () => new Date().toISOString().slice(0, 10);
 const addDays  = (iso, n) => {
@@ -251,12 +252,33 @@ export default function Quotations() {
     ...prev, items: prev.items.filter((_, idx) => idx !== i),
   }));
   const pickProduct = (i, product) => {
+    // Default to the product's "display unit" (default_unit if set, else the
+    // largest packaging — same rule used across POS / GRN / SIV). Unit price
+    // auto-fills to that specific unit's price so quoting per Box vs per pcs
+    // works out of the box.
+    const chosen = pickDisplayUnit(product);
     setCurrent(prev => ({
       ...prev, items: prev.items.map((row, idx) => idx === i ? {
         ...row, product_id: product.id, product_name: product.name,
-        unit: product.unit || '',
-        unit_price: String(product.selling_price || product.price || 0),
+        unit: chosen.name || product.unit || 'pcs',
+        unit_price: String(chosen.price || product.selling_price || 0),
       } : row),
+    }));
+  };
+  // When the user swaps the unit dropdown, refresh unit_price to that unit's price.
+  const pickUnit = (i, unitName) => {
+    setCurrent(prev => ({
+      ...prev, items: prev.items.map((row, idx) => {
+        if (idx !== i) return row;
+        const prod = products.find(p => p.id === row.product_id);
+        const units = prod ? unitsForProduct(prod) : [];
+        const chosen = units.find(u => u.name === unitName);
+        return {
+          ...row,
+          unit: unitName,
+          unit_price: chosen ? String(chosen.price || 0) : row.unit_price,
+        };
+      }),
     }));
   };
 
@@ -489,8 +511,20 @@ export default function Quotations() {
                                 </datalist>
                               </td>
                               <td style={mtd}><input type="number" step="0.01" value={it.quantity} onChange={e => setItem(i, 'quantity', e.target.value)} style={{ ...inp, padding: '5px 8px', width: 70 }}/></td>
-                              <td style={mtd}><input value={it.unit} onChange={e => setItem(i, 'unit', e.target.value)} style={{ ...inp, padding: '5px 8px', width: 70 }}/></td>
-                              <td style={mtd}><input type="number" step="0.01" value={it.unit_price} onChange={e => setItem(i, 'unit_price', e.target.value)} style={{ ...inp, padding: '5px 8px', width: 90 }}/></td>
+                              <td style={mtd}>{(() => {
+                                const prod = products.find(p => p.id === it.product_id);
+                                const units = prod ? unitsForProduct(prod) : [];
+                                if (units.length > 1) {
+                                  return (
+                                    <select value={it.unit || ''} onChange={e => pickUnit(i, e.target.value)}
+                                      style={{ ...inp, padding: '5px 8px', width: 90 }}>
+                                      {units.map(u => <option key={u.name} value={u.name}>{u.name}{u.is_base ? '' : ` (×${u.conv})`}</option>)}
+                                    </select>
+                                  );
+                                }
+                                return <input value={it.unit || ''} onChange={e => setItem(i, 'unit', e.target.value)} placeholder={prod?.unit || 'pcs'} style={{ ...inp, padding: '5px 8px', width: 70 }}/>;
+                              })()}</td>
+                              <td style={mtd}><input type="number" step="0.01" value={it.unit_price} onChange={e => setItem(i, 'unit_price', e.target.value)} style={{ ...inp, padding: '5px 8px', width: 90 }} title="Price per selected unit"/></td>
                               <td style={{ ...mtd, textAlign: 'right', fontVariantNumeric: 'tabular-nums', fontWeight: 700, color: '#0284c7' }}>{fmtCcy(line, current.currency)}</td>
                               <td style={mtd}>{current.items.length > 1 && <button onClick={() => removeItem(i)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#dc2626', padding: 4 }}><FiX size={12}/></button>}</td>
                             </tr>
