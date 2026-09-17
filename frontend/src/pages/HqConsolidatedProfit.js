@@ -8,7 +8,7 @@
 //
 // v1.10.233 — new page.
 import React, { useEffect, useMemo, useState } from 'react';
-import { FiRefreshCw, FiChevronRight, FiChevronDown, FiAlertTriangle } from 'react-icons/fi';
+import { FiRefreshCw, FiAlertTriangle } from 'react-icons/fi';
 import { getHqConsolidatedProfit } from '../services/api';
 
 const fmtUsd  = (n) => `$${parseFloat(n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
@@ -26,7 +26,6 @@ export default function HqConsolidatedProfit() {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error,   setError]   = useState('');
-  const [expanded, setExpanded] = useState({}); // slug → bool
 
   const load = async () => {
     setLoading(true); setError('');
@@ -46,9 +45,6 @@ export default function HqConsolidatedProfit() {
     return data.branches.reduce((s, b) => s + parseFloat(b.totals.net_usd || 0), 0);
   }, [data]);
 
-  const toggle = (slug) => setExpanded(e => ({ ...e, [slug]: !e[slug] }));
-
-  const localFmt = (n, ccy) => ccy === 'USD' ? fmtUsd(n) : fmtK(n);
   const groupNet = parseFloat(data?.group_net_usd || 0);
 
   return (
@@ -180,111 +176,50 @@ export default function HqConsolidatedProfit() {
             </div>
           )}
 
-          {/* Main table */}
-          <div style={{ background: '#fff', border: '1px solid #e5e7eb', borderRadius: 10, overflow: 'hidden' }}>
-            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
-              <thead style={{ background: '#f9fafb' }}>
-                <tr>
-                  <th style={{ ...th, width: 32 }} />
-                  <th style={th}>Branch</th>
-                  <th style={{ ...th, textAlign: 'right' }}>Revenue</th>
-                  <th style={{ ...th, textAlign: 'right' }}>COGS</th>
-                  <th style={{ ...th, textAlign: 'right' }}>Gross Profit</th>
-                  <th style={{ ...th, textAlign: 'right' }} title="− Damaged + Stock Variance + Cash Variance">Variance</th>
-                  <th style={{ ...th, textAlign: 'right' }}>Expenses (PV)</th>
-                  <th style={{ ...th, textAlign: 'right' }}>Net (local)</th>
-                  <th style={{ ...th, textAlign: 'right' }}>Net (USD)</th>
-                </tr>
-              </thead>
-              <tbody>
-                {data.branches.map(b => {
-                  const isOpen = !!expanded[b.slug];
-                  const tint = b.currency === 'USD' ? '#ecfdf5' : '#fef3c7';
-                  const tintFg = b.currency === 'USD' ? '#065f46' : '#92400e';
-                  return (
-                    <React.Fragment key={b.slug}>
-                      <tr
-                        style={{ borderBottom: '1px solid #f3f4f6', cursor: 'pointer' }}
-                        onClick={() => toggle(b.slug)}
-                      >
-                        <td style={{ ...td, textAlign: 'center', color: '#0ea5e9' }}>
-                          {isOpen ? <FiChevronDown /> : <FiChevronRight />}
-                        </td>
-                        <td style={{ ...td, fontWeight: 700 }}>
-                          {b.name}
-                          <span style={{ marginLeft: 8, background: tint, color: tintFg, fontSize: 10, fontWeight: 700, padding: '2px 6px', borderRadius: 4, letterSpacing: 0.4 }}>{b.currency}</span>
-                        </td>
-                        <td style={numTd}>{localFmt(b.totals.revenue, b.currency)}</td>
-                        <td style={numTd}>{localFmt(b.totals.cogs, b.currency)}</td>
-                        <td style={{ ...numTd, color: parseFloat(b.totals.gross) >= 0 ? '#047857' : '#b91c1c' }}>{localFmt(b.totals.gross, b.currency)}</td>
-                        <td style={{ ...numTd, color: parseFloat(b.totals.variance) >= 0 ? '#047857' : '#b91c1c' }}>{localFmt(b.totals.variance, b.currency)}</td>
-                        <td style={{ ...numTd, color: '#b45309' }}>{localFmt(b.totals.pv, b.currency)}</td>
-                        <td style={{ ...numTd, fontWeight: 700 }}>{localFmt(b.totals.net_local, b.currency)}</td>
-                        <td style={{ ...numTd, fontWeight: 700, color: b.totals.net_usd >= 0 ? '#047857' : '#b91c1c' }}>{fmtSign(b.totals.net_usd)}{fmtUsd(Math.abs(b.totals.net_usd))}</td>
-                      </tr>
-                      {isOpen && b.daily
-                        .filter(d => (d.revenue || d.cogs || d.gross || d.variance || d.pv || d.net_local))
-                        .map(d => (
-                        <tr key={`${b.slug}-${d.date}`} style={{ background: '#fafafa', borderBottom: '1px solid #f3f4f6' }}>
-                          <td />
-                          <td style={{ ...td, paddingLeft: 32, color: '#6b7280', fontFamily: 'monospace', fontSize: 12 }}>{d.date}</td>
-                          <td style={{ ...numTd, color: '#6b7280' }}>{localFmt(d.revenue, b.currency)}</td>
-                          <td style={{ ...numTd, color: '#6b7280' }}>{localFmt(d.cogs, b.currency)}</td>
-                          <td style={{ ...numTd, color: parseFloat(d.gross) >= 0 ? '#047857' : '#b91c1c' }}>{localFmt(d.gross, b.currency)}</td>
-                          <td style={{ ...numTd, color: parseFloat(d.variance) >= 0 ? '#047857' : '#b91c1c' }}>{localFmt(d.variance, b.currency)}</td>
-                          <td style={{ ...numTd, color: '#b45309' }}>{localFmt(d.pv, b.currency)}</td>
-                          <td style={{ ...numTd, color: '#374151' }}>{localFmt(d.net_local, b.currency)}</td>
-                          <td style={{ ...numTd, color: '#374151' }}>
-                            {fmtSign(d.net_usd)}{fmtUsd(Math.abs(d.net_usd))}
-                            {b.currency !== 'USD' && d.fx_rate && (
-                              <span style={{ marginLeft: 6, fontSize: 10, color: '#9ca3af', fontFamily: 'monospace' }}>
-                                @ K{parseFloat(d.fx_rate).toFixed(2)}
-                              </span>
-                            )}
-                          </td>
-                        </tr>
-                      ))}
-                    </React.Fragment>
-                  );
-                })}
-                {/* Sub-totals row */}
-                <tr style={{ background: '#f9fafb', borderTop: '2px solid #e5e7eb' }}>
-                  <td />
-                  <td style={{ ...td, fontWeight: 700, color: '#0f172a' }}>Branch Net Total</td>
-                  <td colSpan={6} />
-                  <td style={{ ...numTd, fontWeight: 800, color: '#047857' }}>{fmtSign(branchNetUsdTotal)}{fmtUsd(Math.abs(branchNetUsdTotal))}</td>
-                </tr>
-                {/* HQ overhead row — mixed currency, expand to see split */}
-                <tr style={{ borderTop: '1px solid #e5e7eb' }}>
-                  <td />
-                  <td style={{ ...td, color: '#b91c1c', fontWeight: 700 }}>
-                    HQ Overhead <span style={{ fontWeight: 400, fontSize: 11, color: '#6b7280' }}>(PVs − LCVs)</span>
-                  </td>
-                  <td colSpan={5} />
-                  <td style={{ ...numTd, color: '#b91c1c', fontSize: 11.5, lineHeight: 1.7 }}>
-                    {parseFloat(data.hq_overhead?.total_usd_amount || 0) > 0 && (<div>−{fmtUsd(data.hq_overhead.total_usd_amount)} <span style={{ fontSize: 9, color: '#9ca3af' }}>USD</span></div>)}
-                    {parseFloat(data.hq_overhead?.total_fra_amount || 0) > 0 && (<div>−{parseFloat(data.hq_overhead.total_fra_amount).toLocaleString(undefined,{maximumFractionDigits:0})} <span style={{ fontSize: 9, color: '#9ca3af' }}>FRA</span></div>)}
-                    {parseFloat(data.hq_overhead?.total_k_amount || 0) > 0 && (<div>−{fmtK(data.hq_overhead.total_k_amount)}</div>)}
-                    {(!parseFloat(data.hq_overhead?.total_usd_amount || 0) && !parseFloat(data.hq_overhead?.total_fra_amount || 0) && !parseFloat(data.hq_overhead?.total_k_amount || 0)) && <div style={{ color: '#9ca3af' }}>—</div>}
-                  </td>
-                  <td style={{ ...numTd, color: '#b91c1c', fontWeight: 700 }}>−{fmtUsd(data.hq_overhead?.total_usd)}</td>
-                </tr>
-              </tbody>
-              <tfoot>
-                <tr style={{ background: '#ecfdf5', borderTop: '2px solid #059669' }}>
-                  <td />
-                  <td style={{ ...td, fontWeight: 800, fontSize: 15, color: '#065f46' }}>Group Net Profit</td>
-                  <td colSpan={6} />
-                  <td style={{ ...numTd, fontWeight: 800, fontSize: 16, color: groupNet >= 0 ? '#065f46' : '#b91c1c' }}>
-                    {fmtSign(groupNet)}{fmtUsd(Math.abs(groupNet))}
-                  </td>
-                </tr>
-              </tfoot>
-            </table>
+          {/* Per-branch stat blocks — each branch gets the same KPI cards +
+              Breakdown layout as the group section above, in its own local
+              currency. Same visual language as the per-branch Profit Report
+              page, so the customer sees one style everywhere. */}
+          <div style={{ fontSize: 11, fontWeight: 700, color: '#6b7280', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 10 }}>
+            Per-Branch Detail
+          </div>
+          {data.branches.map(b => <BranchProfitBlock key={b.slug} branch={b} />)}
+
+          {/* HQ Overhead + Group Net Profit summary — kept as a compact
+              two-row summary at the bottom in the reporting currency. */}
+          <div style={{ background: '#fff', border: '1px solid #e5e7eb', borderRadius: 12, padding: 16 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', paddingBottom: 10, borderBottom: '1px solid #f3f4f6' }}>
+              <div style={{ fontSize: 13, fontWeight: 700, color: '#0f172a' }}>Branch Net Total</div>
+              <div style={{ fontSize: 14, fontWeight: 800, color: branchNetUsdTotal >= 0 ? '#047857' : '#b91c1c', fontFamily: 'ui-monospace, "SF Mono", Consolas, monospace' }}>
+                {fmtSign(branchNetUsdTotal)}{fmtUsd(Math.abs(branchNetUsdTotal))}
+              </div>
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', paddingTop: 10, paddingBottom: 10, borderBottom: '1px solid #f3f4f6' }}>
+              <div>
+                <div style={{ fontSize: 13, fontWeight: 700, color: '#b91c1c' }}>
+                  HQ Overhead <span style={{ fontWeight: 400, fontSize: 11, color: '#6b7280' }}>(PVs − LCVs)</span>
+                </div>
+                <div style={{ fontSize: 11, color: '#b91c1c', lineHeight: 1.7, marginTop: 2, fontFamily: 'ui-monospace, "SF Mono", Consolas, monospace' }}>
+                  {parseFloat(data.hq_overhead?.total_usd_amount || 0) > 0 && (<div>−{fmtUsd(data.hq_overhead.total_usd_amount)} <span style={{ fontSize: 9, color: '#9ca3af' }}>USD</span></div>)}
+                  {parseFloat(data.hq_overhead?.total_fra_amount || 0) > 0 && (<div>−{parseFloat(data.hq_overhead.total_fra_amount).toLocaleString(undefined,{maximumFractionDigits:0})} <span style={{ fontSize: 9, color: '#9ca3af' }}>FRA</span></div>)}
+                  {parseFloat(data.hq_overhead?.total_k_amount || 0) > 0 && (<div>−{fmtK(data.hq_overhead.total_k_amount)}</div>)}
+                  {(!parseFloat(data.hq_overhead?.total_usd_amount || 0) && !parseFloat(data.hq_overhead?.total_fra_amount || 0) && !parseFloat(data.hq_overhead?.total_k_amount || 0)) && <div style={{ color: '#9ca3af' }}>—</div>}
+                </div>
+              </div>
+              <div style={{ fontSize: 14, fontWeight: 800, color: '#b91c1c', fontFamily: 'ui-monospace, "SF Mono", Consolas, monospace' }}>
+                −{fmtUsd(data.hq_overhead?.total_usd)}
+              </div>
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', paddingTop: 12, background: '#ecfdf5', margin: '10px -16px -16px', padding: '14px 16px', borderRadius: '0 0 12px 12px' }}>
+              <div style={{ fontSize: 15, fontWeight: 800, color: '#065f46' }}>Group Net Profit</div>
+              <div style={{ fontSize: 18, fontWeight: 800, color: groupNet >= 0 ? '#065f46' : '#b91c1c', fontFamily: 'ui-monospace, "SF Mono", Consolas, monospace' }}>
+                {fmtSign(groupNet)}{fmtUsd(Math.abs(groupNet))}
+              </div>
+            </div>
           </div>
 
           <div style={{ marginTop: 10, fontSize: 11, color: '#6b7280', lineHeight: 1.55 }}>
-            Click a branch row to expand daily rows. Daily net (USD) shows the FX rate applied for that day next to the figure. Days with no activity are hidden inside the drilldown.
+            Each branch shows its own P&amp;L in its local currency; the group figures at the top and Group Net Profit at the bottom are consolidated in USD using Kassumbalesa's daily K/USD rate.
           </div>
         </>
       )}
@@ -302,9 +237,12 @@ function Field({ label, children }) {
 }
 
 // KpiCard — visual twin of the branch Profit Report's StatCard, styled
-// inline so we don't have to import the branch component. Always $USD.
-function KpiCard({ label, value, color, bg, border }) {
+// inline so we don't have to import the branch component. Currency-aware:
+// pass `symbol` ($ for USD, K for Kwacha, etc.). K uses 0 decimals to
+// match the branch layout; other symbols keep 2.
+function KpiCard({ label, value, color, bg, border, symbol = '$' }) {
   const v = parseFloat(value || 0);
+  const decimals = symbol === 'K' ? 0 : 2;
   return (
     <div style={{
       flex: '1 1 180px', minWidth: 180,
@@ -312,13 +250,98 @@ function KpiCard({ label, value, color, bg, border }) {
     }}>
       <div style={{ fontSize: 10.5, fontWeight: 700, color: '#6b7280', textTransform: 'uppercase', letterSpacing: 0.5 }}>{label}</div>
       <div style={{ fontSize: 20, fontWeight: 800, color, marginTop: 4, fontFamily: 'ui-monospace, "SF Mono", Consolas, monospace' }}>
-        {v < 0 ? '−' : ''}${Math.abs(v).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+        {v < 0 ? '−' : ''}{symbol}{Math.abs(v).toLocaleString(undefined, { minimumFractionDigits: decimals, maximumFractionDigits: decimals })}
+      </div>
+    </div>
+  );
+}
+
+// BranchProfitBlock — one full "mini Profit Report" for a single branch:
+// three rows of KPI cards + a Breakdown table, all in the branch's own
+// local currency. Same visual language as the top group block and the
+// per-branch Profit Report page.
+function BranchProfitBlock({ branch }) {
+  const t = branch.totals;
+  const symbol = branch.currency === 'USD' ? '$' : 'K';
+  const decimals = symbol === 'K' ? 0 : 2;
+  const fmt = (v) => `${symbol}${parseFloat(Math.abs(v || 0)).toLocaleString(undefined, { minimumFractionDigits: decimals, maximumFractionDigits: decimals })}`;
+  const netUsd = parseFloat(t.net_usd || 0);
+  const stockVar = parseFloat(t.stock_variance || 0);
+  const cashVar  = parseFloat(t.cash_variance  || 0);
+  const gross    = parseFloat(t.gross || 0);
+  const netLocal = parseFloat(t.net_local || 0);
+  const tint   = branch.currency === 'USD' ? '#ecfdf5' : '#fef3c7';
+  const tintFg = branch.currency === 'USD' ? '#065f46' : '#92400e';
+  return (
+    <div style={{ background: '#fff', border: '1px solid #e5e7eb', borderRadius: 12, padding: 16, marginBottom: 14 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12, flexWrap: 'wrap', gap: 8 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <div style={{ fontSize: 15, fontWeight: 800, color: '#0f172a' }}>{branch.name}</div>
+          <span style={{ background: tint, color: tintFg, fontSize: 10, fontWeight: 700, padding: '3px 8px', borderRadius: 4, letterSpacing: 0.4 }}>{branch.currency}</span>
+        </div>
+        <div style={{ fontSize: 11, color: '#6b7280', fontFamily: 'ui-monospace, "SF Mono", Consolas, monospace' }}>
+          Net (USD): <span style={{ color: netUsd >= 0 ? '#047857' : '#b91c1c', fontWeight: 700 }}>
+            {netUsd < 0 ? '−' : ''}${Math.abs(netUsd).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+          </span>
+        </div>
+      </div>
+
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, marginBottom: 10 }}>
+        <KpiCard symbol={symbol} label="Revenue"          value={t.revenue}          color="#0369a1" bg="#f0f9ff" border="#38bdf8" />
+        <KpiCard symbol={symbol} label="COGS"             value={t.cogs}             color="#d97706" bg="#fffbeb" border="#fbbf24" />
+        <KpiCard symbol={symbol} label="Damaged"          value={t.damages}          color="#dc2626" bg="#fef2f2" border="#fca5a5" />
+        <KpiCard symbol={symbol} label="Supplier Rebates" value={t.supplier_rebates} color="#16a34a" bg="#f0fdf4" border="#86efac" />
+      </div>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, marginBottom: 10 }}>
+        <KpiCard symbol={symbol} label="Stock Variance" value={stockVar}
+                 color={stockVar < 0 ? '#dc2626' : '#16a34a'}
+                 bg={stockVar < 0 ? '#fef2f2' : '#f0fdf4'}
+                 border={stockVar < 0 ? '#fca5a5' : '#86efac'} />
+        <KpiCard symbol={symbol} label="Cash Variance" value={cashVar}
+                 color={cashVar < 0 ? '#dc2626' : '#16a34a'}
+                 bg={cashVar < 0 ? '#fef2f2' : '#f0fdf4'}
+                 border={cashVar < 0 ? '#fca5a5' : '#86efac'} />
+        <KpiCard symbol={symbol} label="Expenses (PV)" value={t.pv} color="#dc2626" bg="#fef2f2" border="#fca5a5" />
+      </div>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10 }}>
+        <KpiCard symbol={symbol} label="Gross Profit" value={gross}
+                 color={gross >= 0 ? '#16a34a' : '#dc2626'}
+                 bg={gross >= 0 ? '#f0fdf4' : '#fef2f2'}
+                 border={gross >= 0 ? '#86efac' : '#fca5a5'} />
+        <KpiCard symbol={symbol} label="Net Profit" value={netLocal}
+                 color={netLocal >= 0 ? '#7c3aed' : '#dc2626'}
+                 bg={netLocal >= 0 ? '#f5f3ff' : '#fef2f2'}
+                 border={netLocal >= 0 ? '#c4b5fd' : '#fca5a5'} />
+      </div>
+
+      {/* Per-branch breakdown */}
+      <div style={{ backgroundColor: '#fafafa', borderRadius: 10, padding: 14, marginTop: 12, border: '1px solid #f3f4f6' }}>
+        <div style={{ fontSize: 11, fontWeight: 700, color: '#6b7280', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 8 }}>Breakdown</div>
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+          <tbody>
+            {[
+              { label: 'Revenue',                       value: t.revenue,          color: '#0369a1' },
+              { label: '− COGS',                        value: t.cogs,             color: '#d97706' },
+              { label: '− Damaged',                     value: t.damages,          color: '#dc2626' },
+              { label: '+ Supplier Rebates',            value: t.supplier_rebates, color: '#16a34a' },
+              { label: `${stockVar < 0 ? '−' : '+'} Stock Variance`, value: stockVar, color: stockVar < 0 ? '#dc2626' : '#16a34a' },
+              { label: `${cashVar  < 0 ? '−' : '+'} Cash Variance`,  value: cashVar,  color: cashVar  < 0 ? '#dc2626' : '#16a34a' },
+              { label: '= Gross Profit',                value: gross,              color: gross >= 0 ? '#16a34a' : '#dc2626', bold: true },
+              { label: '− Expenses (PV)',               value: t.pv,               color: '#dc2626' },
+              { label: '= Net Profit',                  value: netLocal,           color: netLocal >= 0 ? '#7c3aed' : '#dc2626', bold: true },
+            ].map((row, i) => (
+              <tr key={i} style={{ borderBottom: '1px solid #f3f4f6' }}>
+                <td style={{ padding: '6px 4px', fontWeight: row.bold ? 700 : 400, color: '#374151' }}>{row.label}</td>
+                <td style={{ padding: '6px 4px', textAlign: 'right', fontWeight: row.bold ? 700 : 500, color: row.color, fontFamily: 'ui-monospace, "SF Mono", Consolas, monospace' }}>
+                  {fmt(row.value)}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
       </div>
     </div>
   );
 }
 
 const inp   = { padding: '8px 10px', border: '1px solid #d1d5db', borderRadius: 6, fontSize: 13, background: '#fff', minWidth: 160 };
-const th    = { padding: '10px 12px', fontSize: 11, color: '#64748b', fontWeight: 700, textAlign: 'left', textTransform: 'uppercase', letterSpacing: 0.5 };
-const td    = { padding: '10px 12px', color: '#0f172a' };
-const numTd = { ...td, textAlign: 'right', fontFamily: 'ui-monospace, "SF Mono", Consolas, monospace', fontSize: 12.5 };
