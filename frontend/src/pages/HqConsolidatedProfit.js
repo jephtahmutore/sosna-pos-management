@@ -111,6 +111,75 @@ export default function HqConsolidatedProfit() {
             </div>
           </div>
 
+          {/* Group KPI cards + Breakdown — mirrors the per-branch Profit
+              Report layout so the consolidated page speaks the same visual
+              language. All figures in USD (reporting currency). */}
+          {data.group_totals_usd && (
+            <div style={{ marginBottom: 16 }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: '#6b7280', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 10 }}>
+                {data.from} → {data.to} — Group Total (USD)
+              </div>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, marginBottom: 10 }}>
+                <KpiCard label="Revenue"          value={data.group_totals_usd.revenue}          color="#0369a1" bg="#f0f9ff" border="#38bdf8" />
+                <KpiCard label="COGS"             value={data.group_totals_usd.cogs}             color="#d97706" bg="#fffbeb" border="#fbbf24" />
+                <KpiCard label="Damaged"          value={data.group_totals_usd.damages}          color="#dc2626" bg="#fef2f2" border="#fca5a5" />
+                <KpiCard label="Supplier Rebates" value={data.group_totals_usd.supplier_rebates} color="#16a34a" bg="#f0fdf4" border="#86efac" />
+              </div>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, marginBottom: 10 }}>
+                <KpiCard label="Stock Variance" value={data.group_totals_usd.stock_variance}
+                         color={data.group_totals_usd.stock_variance < 0 ? '#dc2626' : '#16a34a'}
+                         bg={data.group_totals_usd.stock_variance < 0 ? '#fef2f2' : '#f0fdf4'}
+                         border={data.group_totals_usd.stock_variance < 0 ? '#fca5a5' : '#86efac'} />
+                <KpiCard label="Cash Variance" value={data.group_totals_usd.cash_variance}
+                         color={data.group_totals_usd.cash_variance < 0 ? '#dc2626' : '#16a34a'}
+                         bg={data.group_totals_usd.cash_variance < 0 ? '#fef2f2' : '#f0fdf4'}
+                         border={data.group_totals_usd.cash_variance < 0 ? '#fca5a5' : '#86efac'} />
+                <KpiCard label="Expenses (PV + HQ)" value={data.group_totals_usd.pv} color="#dc2626" bg="#fef2f2" border="#fca5a5" />
+              </div>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10 }}>
+                <KpiCard label="Gross Profit" value={data.group_totals_usd.gross}
+                         color={data.group_totals_usd.gross >= 0 ? '#16a34a' : '#dc2626'}
+                         bg={data.group_totals_usd.gross >= 0 ? '#f0fdf4' : '#fef2f2'}
+                         border={data.group_totals_usd.gross >= 0 ? '#86efac' : '#fca5a5'} />
+                <KpiCard label="Net Profit" value={data.group_totals_usd.net}
+                         color={data.group_totals_usd.net >= 0 ? '#7c3aed' : '#dc2626'}
+                         bg={data.group_totals_usd.net >= 0 ? '#f5f3ff' : '#fef2f2'}
+                         border={data.group_totals_usd.net >= 0 ? '#c4b5fd' : '#fca5a5'} />
+              </div>
+
+              {/* Breakdown — line-by-line arithmetic like the branch page */}
+              <div style={{ backgroundColor: '#fff', borderRadius: 10, padding: 16, marginTop: 16, boxShadow: '0 1px 4px rgba(0,0,0,0.06)' }}>
+                <div style={{ fontSize: 11, fontWeight: 700, color: '#6b7280', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 12 }}>Breakdown</div>
+                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+                  <tbody>
+                    {(() => {
+                      const g = data.group_totals_usd;
+                      const rows = [
+                        { label: 'Revenue',                           value: g.revenue,          color: '#0369a1' },
+                        { label: '− COGS',                            value: g.cogs,             color: '#d97706' },
+                        { label: '− Damaged',                         value: g.damages,          color: '#dc2626' },
+                        { label: '+ Supplier Rebates',                value: g.supplier_rebates, color: '#16a34a' },
+                        { label: `${g.stock_variance < 0 ? '−' : '+'} Stock Variance`, value: Math.abs(g.stock_variance), color: g.stock_variance < 0 ? '#dc2626' : '#16a34a' },
+                        { label: `${g.cash_variance  < 0 ? '−' : '+'} Cash Variance`,  value: Math.abs(g.cash_variance),  color: g.cash_variance  < 0 ? '#dc2626' : '#16a34a' },
+                        { label: '= Gross Profit',                    value: g.gross,            color: g.gross >= 0 ? '#16a34a' : '#dc2626', bold: true },
+                        { label: '− Expenses (PV + HQ Overhead)',     value: g.pv,               color: '#dc2626' },
+                        { label: '= Net Profit',                      value: g.net,              color: g.net >= 0 ? '#7c3aed' : '#dc2626', bold: true },
+                      ];
+                      return rows.map((row, i) => (
+                        <tr key={i} style={{ borderBottom: '1px solid #f3f4f6' }}>
+                          <td style={{ padding: '8px 4px', fontWeight: row.bold ? 700 : 400, color: '#374151' }}>{row.label}</td>
+                          <td style={{ padding: '8px 4px', textAlign: 'right', fontWeight: row.bold ? 700 : 500, color: row.color }}>
+                            ${parseFloat(Math.abs(row.value || 0)).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                          </td>
+                        </tr>
+                      ));
+                    })()}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
           {/* Main table */}
           <div style={{ background: '#fff', border: '1px solid #e5e7eb', borderRadius: 10, overflow: 'hidden' }}>
             <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
@@ -121,6 +190,7 @@ export default function HqConsolidatedProfit() {
                   <th style={{ ...th, textAlign: 'right' }}>Revenue</th>
                   <th style={{ ...th, textAlign: 'right' }}>COGS</th>
                   <th style={{ ...th, textAlign: 'right' }}>Gross Profit</th>
+                  <th style={{ ...th, textAlign: 'right' }} title="− Damaged + Stock Variance + Cash Variance">Variance</th>
                   <th style={{ ...th, textAlign: 'right' }}>Expenses (PV)</th>
                   <th style={{ ...th, textAlign: 'right' }}>Net (local)</th>
                   <th style={{ ...th, textAlign: 'right' }}>Net (USD)</th>
@@ -147,12 +217,13 @@ export default function HqConsolidatedProfit() {
                         <td style={numTd}>{localFmt(b.totals.revenue, b.currency)}</td>
                         <td style={numTd}>{localFmt(b.totals.cogs, b.currency)}</td>
                         <td style={{ ...numTd, color: parseFloat(b.totals.gross) >= 0 ? '#047857' : '#b91c1c' }}>{localFmt(b.totals.gross, b.currency)}</td>
+                        <td style={{ ...numTd, color: parseFloat(b.totals.variance) >= 0 ? '#047857' : '#b91c1c' }}>{localFmt(b.totals.variance, b.currency)}</td>
                         <td style={{ ...numTd, color: '#b45309' }}>{localFmt(b.totals.pv, b.currency)}</td>
                         <td style={{ ...numTd, fontWeight: 700 }}>{localFmt(b.totals.net_local, b.currency)}</td>
                         <td style={{ ...numTd, fontWeight: 700, color: b.totals.net_usd >= 0 ? '#047857' : '#b91c1c' }}>{fmtSign(b.totals.net_usd)}{fmtUsd(Math.abs(b.totals.net_usd))}</td>
                       </tr>
                       {isOpen && b.daily
-                        .filter(d => (d.revenue || d.cogs || d.gross || d.pv || d.net_local))
+                        .filter(d => (d.revenue || d.cogs || d.gross || d.variance || d.pv || d.net_local))
                         .map(d => (
                         <tr key={`${b.slug}-${d.date}`} style={{ background: '#fafafa', borderBottom: '1px solid #f3f4f6' }}>
                           <td />
@@ -160,6 +231,7 @@ export default function HqConsolidatedProfit() {
                           <td style={{ ...numTd, color: '#6b7280' }}>{localFmt(d.revenue, b.currency)}</td>
                           <td style={{ ...numTd, color: '#6b7280' }}>{localFmt(d.cogs, b.currency)}</td>
                           <td style={{ ...numTd, color: parseFloat(d.gross) >= 0 ? '#047857' : '#b91c1c' }}>{localFmt(d.gross, b.currency)}</td>
+                          <td style={{ ...numTd, color: parseFloat(d.variance) >= 0 ? '#047857' : '#b91c1c' }}>{localFmt(d.variance, b.currency)}</td>
                           <td style={{ ...numTd, color: '#b45309' }}>{localFmt(d.pv, b.currency)}</td>
                           <td style={{ ...numTd, color: '#374151' }}>{localFmt(d.net_local, b.currency)}</td>
                           <td style={{ ...numTd, color: '#374151' }}>
@@ -179,7 +251,7 @@ export default function HqConsolidatedProfit() {
                 <tr style={{ background: '#f9fafb', borderTop: '2px solid #e5e7eb' }}>
                   <td />
                   <td style={{ ...td, fontWeight: 700, color: '#0f172a' }}>Branch Net Total</td>
-                  <td colSpan={5} />
+                  <td colSpan={6} />
                   <td style={{ ...numTd, fontWeight: 800, color: '#047857' }}>{fmtSign(branchNetUsdTotal)}{fmtUsd(Math.abs(branchNetUsdTotal))}</td>
                 </tr>
                 {/* HQ overhead row — mixed currency, expand to see split */}
@@ -188,7 +260,7 @@ export default function HqConsolidatedProfit() {
                   <td style={{ ...td, color: '#b91c1c', fontWeight: 700 }}>
                     HQ Overhead <span style={{ fontWeight: 400, fontSize: 11, color: '#6b7280' }}>(PVs − LCVs)</span>
                   </td>
-                  <td colSpan={4} />
+                  <td colSpan={5} />
                   <td style={{ ...numTd, color: '#b91c1c', fontSize: 11.5, lineHeight: 1.7 }}>
                     {parseFloat(data.hq_overhead?.total_usd_amount || 0) > 0 && (<div>−{fmtUsd(data.hq_overhead.total_usd_amount)} <span style={{ fontSize: 9, color: '#9ca3af' }}>USD</span></div>)}
                     {parseFloat(data.hq_overhead?.total_fra_amount || 0) > 0 && (<div>−{parseFloat(data.hq_overhead.total_fra_amount).toLocaleString(undefined,{maximumFractionDigits:0})} <span style={{ fontSize: 9, color: '#9ca3af' }}>FRA</span></div>)}
@@ -202,7 +274,7 @@ export default function HqConsolidatedProfit() {
                 <tr style={{ background: '#ecfdf5', borderTop: '2px solid #059669' }}>
                   <td />
                   <td style={{ ...td, fontWeight: 800, fontSize: 15, color: '#065f46' }}>Group Net Profit</td>
-                  <td colSpan={5} />
+                  <td colSpan={6} />
                   <td style={{ ...numTd, fontWeight: 800, fontSize: 16, color: groupNet >= 0 ? '#065f46' : '#b91c1c' }}>
                     {fmtSign(groupNet)}{fmtUsd(Math.abs(groupNet))}
                   </td>
@@ -225,6 +297,23 @@ function Field({ label, children }) {
     <div>
       <label style={{ display: 'block', fontSize: 11, color: '#64748b', fontWeight: 600, marginBottom: 4 }}>{label}</label>
       {children}
+    </div>
+  );
+}
+
+// KpiCard — visual twin of the branch Profit Report's StatCard, styled
+// inline so we don't have to import the branch component. Always $USD.
+function KpiCard({ label, value, color, bg, border }) {
+  const v = parseFloat(value || 0);
+  return (
+    <div style={{
+      flex: '1 1 180px', minWidth: 180,
+      background: bg, border: `1px solid ${border}`, borderRadius: 10, padding: '10px 14px',
+    }}>
+      <div style={{ fontSize: 10.5, fontWeight: 700, color: '#6b7280', textTransform: 'uppercase', letterSpacing: 0.5 }}>{label}</div>
+      <div style={{ fontSize: 20, fontWeight: 800, color, marginTop: 4, fontFamily: 'ui-monospace, "SF Mono", Consolas, monospace' }}>
+        {v < 0 ? '−' : ''}${Math.abs(v).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+      </div>
     </div>
   );
 }

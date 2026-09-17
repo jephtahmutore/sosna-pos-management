@@ -1007,7 +1007,9 @@ router.get('/consolidated-profit', hqAuth, requirePagePerm('HqConsolidatedProfit
         const currency = isUsdBase ? 'USD' : 'K';
 
         const dailyRows = db.prepare(`
-          SELECT date, revenue, cogs, damages, gross_profit, pv_total, net_profit
+          SELECT date, revenue, cogs, damages, supplier_rebates,
+                 diff_value, cash_difference,
+                 gross_profit, pv_total, net_profit
             FROM daily_profit_summary
            WHERE date BETWEEN ? AND ?
         ORDER BY date
@@ -1015,7 +1017,12 @@ router.get('/consolidated-profit', hqAuth, requirePagePerm('HqConsolidatedProfit
         const byDate = new Map(dailyRows.map(r => [r.date, r]));
 
         const daily = [];
+        // Local-currency sums for the per-branch table
         let sumRev = 0, sumCogs = 0, sumGross = 0, sumPv = 0, sumNetL = 0, sumNetU = 0;
+        let sumVar = 0;
+        let sumDamages = 0, sumRebates = 0, sumStockVar = 0, sumCashVar = 0;
+        // USD-converted sums so the group KPIs + Breakdown can render in one currency
+        let uRev = 0, uCogs = 0, uDamages = 0, uRebates = 0, uStockVar = 0, uCashVar = 0, uPv = 0, uGross = 0;
         for (const d of dates) {
           const r = byDate.get(d);
           const revenue  = parseFloat(r?.revenue      || 0);
@@ -1023,16 +1030,40 @@ router.get('/consolidated-profit', hqAuth, requirePagePerm('HqConsolidatedProfit
           const gross    = parseFloat(r?.gross_profit || 0);
           const pv       = parseFloat(r?.pv_total     || 0);
           const netLocal = parseFloat(r?.net_profit   || 0);
+          // Variance = −Damaged + Stock Variance + Cash Variance
+          // (same components profitHelper adds between Revenue−COGS and Gross Profit,
+          // supplier rebates intentionally excluded — those are other-income, not variance)
+          const damages   = parseFloat(r?.damages          || 0);
+          const rebates   = parseFloat(r?.supplier_rebates || 0);
+          const stockVar  = parseFloat(r?.diff_value       || 0);
+          const cashVar   = parseFloat(r?.cash_difference  || 0);
+          const variance  = -damages + stockVar + cashVar;
           const fx = isUsdBase ? null : effectiveRate[d];
-          const netUsd = isUsdBase ? netLocal : (fx ? netLocal / fx : 0);
-          daily.push({ date: d, revenue, cogs, gross, pv, net_local: netLocal, net_usd: netUsd, fx_rate: fx });
-          sumRev += revenue; sumCogs += cogs; sumGross += gross; sumPv += pv;
+          const toUsd = v => isUsdBase ? v : (fx ? v / fx : 0);
+          const netUsd = toUsd(netLocal);
+          daily.push({ date: d, revenue, cogs, gross, variance, pv, net_local: netLocal, net_usd: netUsd, fx_rate: fx });
+          sumRev += revenue; sumCogs += cogs; sumGross += gross; sumVar += variance; sumPv += pv;
           sumNetL += netLocal; sumNetU += netUsd;
+          sumDamages += damages; sumRebates += rebates; sumStockVar += stockVar; sumCashVar += cashVar;
+          uRev += toUsd(revenue); uCogs += toUsd(cogs); uGross += toUsd(gross); uPv += toUsd(pv);
+          uDamages += toUsd(damages); uRebates += toUsd(rebates);
+          uStockVar += toUsd(stockVar); uCashVar += toUsd(cashVar);
         }
 
         branches.push({
           slug: t.slug, name, currency,
-          totals: { revenue: sumRev, cogs: sumCogs, gross: sumGross, pv: sumPv, net_local: sumNetL, net_usd: sumNetU },
+          totals: {
+            revenue: sumRev, cogs: sumCogs, gross: sumGross,
+            damages: sumDamages, supplier_rebates: sumRebates,
+            stock_variance: sumStockVar, cash_variance: sumCashVar,
+            variance: sumVar, pv: sumPv,
+            net_local: sumNetL, net_usd: sumNetU,
+          },
+          totals_usd: {
+            revenue: uRev, cogs: uCogs, damages: uDamages,
+            supplier_rebates: uRebates, stock_variance: uStockVar,
+            cash_variance: uCashVar, pv: uPv, gross: uGross,
+          },
           daily,
         });
       } catch (e) {
@@ -1146,6 +1177,27 @@ router.get('/consolidated-profit', hqAuth, requirePagePerm('HqConsolidatedProfit
     const branchNetUsd = branches.reduce((s, b) => s + b.totals.net_usd, 0);
     const groupNetUsd  = branchNetUsd - hqSumUsd;
 
+    // Group-level KPIs in USD — sums across all branches (plus HQ overhead
+    // in Expenses (PV)), for the top card row + Breakdown section on the
+    // consolidated page. Mirrors the branch Profit Report layout.
+    const g = branches.reduce((acc, b) => {
+      acc.revenue          += b.totals_usd.revenue          || 0;
+      acc.cogs             += b.totals_usd.cogs             || 0;
+      acc.damages          += b.totals_usd.damages          || 0;
+      acc.supplier_rebates += b.totals_usd.supplier_rebates || 0;
+      acc.stock_variance   += b.totals_usd.stock_variance   || 0;
+      acc.cash_variance    += b.totals_usd.cash_variance    || 0;
+      acc.pv               += b.totals_usd.pv               || 0;
+      acc.gross            += b.totals_usd.gross            || 0;
+      return acc;
+    }, {
+      revenue: 0, cogs: 0, damages: 0, supplier_rebates: 0,
+      stock_variance: 0, cash_variance: 0, pv: 0, gross: 0,
+    });
+    // Expenses (PV) on the group P&L includes HQ overhead.
+    g.pv        += hqSumUsd;
+    g.net       = g.gross - g.pv;
+
     res.json({
       from, to,
       reporting_currency: 'USD',
@@ -1159,7 +1211,8 @@ router.get('/consolidated-profit', hqAuth, requirePagePerm('HqConsolidatedProfit
         total_usd:        hqSumUsd,
         daily:            hqDaily,
       },
-      group_net_usd: groupNetUsd,
+      group_totals_usd: g,
+      group_net_usd:    groupNetUsd,
     });
   } catch (error) {
     console.error('[hq.consolidated-profit] failed:', error.message);
