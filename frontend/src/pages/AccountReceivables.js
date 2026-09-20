@@ -81,8 +81,13 @@ const AccountReceivables = () => {
   const _today = new Date();
   const _firstOfMonth = `${_today.getFullYear()}-${String(_today.getMonth() + 1).padStart(2, '0')}-01`;
   const _todayStr = _today.toISOString().split('T')[0];
-  const [filterFrom, setFilterFrom] = useState(_firstOfMonth);
-  const [filterTo, setFilterTo] = useState(_todayStr);
+  // Default to All Time so the outstanding + customer credit cards
+  // reflect true cumulative totals (Balance Sheet uses cumulative as-at
+  // asOf; This Month can hide old unpaid invoices under the This Month
+  // window). Users can still narrow with the From/To pickers or the
+  // "This Month" chip.
+  const [filterFrom, setFilterFrom] = useState('');
+  const [filterTo, setFilterTo] = useState('');
 
   const showToast = (msg, type = 'success') => { setToast({ msg, type }); setTimeout(() => setToast(null), 3500); };
 
