@@ -27,7 +27,7 @@ const { listTenants, masterDb } = require('../config/masterDb');
 const { requirePagePerm } = require('../middleware/auth');
 const { getTenantDb, getTenantSyncIds } = require('../config/tenantDb');
 const { computeBranchCashPosition } = require('../utils/branchCashPosition');
-const { defaultDb }   = require('../config/database');
+const { defaultDb, runWithDb } = require('../config/database');
 const { mirrorAllHqToBranches } = require('../middleware/hqPush');
 const { recalculateDailyProfit } = require('../config/profitHelper');
 
@@ -1542,17 +1542,23 @@ router.get('/balance-sheet', hqAuth, requirePagePerm('HqFinancialStatements'), (
         const isUsd = typeof settings.currency_mode === 'string' && settings.currency_mode.includes('USD');
         const toK = v => isUsd ? usdToK(parseFloat(v || 0)) : parseFloat(v || 0);
 
-        // Cash & Bank — via shared helper in utils/branchCashPosition.js.
-        // Reads per-currency sub-drawers (USD + FRA + K) from cash_book,
-        // opening seeds + net receipt/payment deltas up to asOf, then
-        // converts each to K using this endpoint's FX rates.
+        // Cash & Bank — reuse the exact per-currency logic the Cash Book
+        // /stats endpoint uses. computeBranchCashPosition wraps the
+        // exported getOpeningByCurrency + ccyReceiptsPayments from
+        // routes/cashBook.js. Those helpers read from the request-scoped
+        // db proxy, so we must runWithDb(branchDb, ...) before calling.
         let bCash = 0, bCashBreakdown = null;
         try {
           const syncIds = getTenantSyncIds(db);
-          const pos = computeBranchCashPosition(db, syncIds.tenant_id || null, asOf);
-          bCashBreakdown = pos;
-          bCash = pos.k + usdToK(pos.usd) + fraToK(pos.fra);
-          console.log(`[hq.balance-sheet] ${t.slug} tid=${syncIds.tenant_id || 'NULL'} usd=${pos.usd} fra=${pos.fra} k=${pos.k} → K${bCash.toFixed(2)} (fx K/USD=${effKUsd} FRA/USD=${effFraUsd})`);
+          const tenantId = syncIds.tenant_id;
+          if (tenantId) {
+            const pos = runWithDb(db, () => computeBranchCashPosition(tenantId, t.slug, asOf));
+            bCashBreakdown = pos;
+            bCash = pos.k + usdToK(pos.usd) + fraToK(pos.fra);
+            console.log(`[hq.balance-sheet] ${t.slug} tid=${tenantId} usd=${pos.usd} fra=${pos.fra} k=${pos.k} → K${bCash.toFixed(2)}`);
+          } else {
+            console.log(`[hq.balance-sheet] ${t.slug} — no tenant_id in sync_config, skipping cash`);
+          }
         } catch (e) {
           console.error(`[hq.balance-sheet] cash ${t.slug}:`, e.message);
         }
@@ -1659,25 +1665,35 @@ router.get('/balance-sheet', hqAuth, requirePagePerm('HqFinancialStatements'), (
       capital = parseFloat(r?.total || 0);
     } catch (e) { console.error('[hq.balance-sheet] capital:', e.message); }
 
-    // v1.10.315 — HQ cash lives in defaultDb (backend/sosna.db), NOT in
-    // tenants/hq.db (which is empty). listTenants() may or may not include
-    // an 'hq' entry; either way its file is blank. Query defaultDb
-    // separately with no tenant_id filter (HQ's sync_config doesn't set
-    // one; cash_book rows there are HQ-only by construction).
+    // HQ cash lives in defaultDb (backend/sosna.db). HQ's sync_config
+    // has no tenant_id; ccyReceiptsPayments' source-table queries need
+    // a tenant_id though. On Sosna, HQ rows use a well-known tenant_id
+    // — read it from any row on the tables. Fallback: try 'hq' as the
+    // slug for HQ deposit direction detection.
     try {
-      const hqPos = computeBranchCashPosition(defaultDb, null, asOf);
-      const hqCashK = hqPos.k + usdToK(hqPos.usd) + fraToK(hqPos.fra);
-      cash += hqCashK;
-      perBranch.push({
-        slug: 'hq',
-        name: 'Head Office',
-        currency: 'K',
-        cash: hqCashK,
-        cash_breakdown: hqPos,
-        inventory: 0,
-        accounts_receivable: 0,
-        customer_advances: 0,
-      });
+      const hqTid = tryGet(defaultDb, `
+        SELECT tenant_id FROM cash_receipts WHERE tenant_id IS NOT NULL LIMIT 1
+        UNION ALL SELECT tenant_id FROM payment_vouchers WHERE tenant_id IS NOT NULL LIMIT 1
+        LIMIT 1
+      `)?.tenant_id;
+      if (hqTid) {
+        const hqPos = runWithDb(defaultDb, () => computeBranchCashPosition(hqTid, 'hq', asOf));
+        const hqCashK = hqPos.k + usdToK(hqPos.usd) + fraToK(hqPos.fra);
+        cash += hqCashK;
+        console.log(`[hq.balance-sheet] HQ tid=${hqTid} usd=${hqPos.usd} fra=${hqPos.fra} k=${hqPos.k} → K${hqCashK.toFixed(2)}`);
+        perBranch.push({
+          slug: 'hq',
+          name: 'Head Office',
+          currency: 'K',
+          cash: hqCashK,
+          cash_breakdown: hqPos,
+          inventory: 0,
+          accounts_receivable: 0,
+          customer_advances: 0,
+        });
+      } else {
+        console.log('[hq.balance-sheet] HQ — no tenant_id found in defaultDb source tables, skipping');
+      }
     } catch (e) {
       console.error('[hq.balance-sheet] HQ cash:', e.message);
     }

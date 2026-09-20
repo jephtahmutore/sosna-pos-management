@@ -1456,4 +1456,13 @@ router.get('/pool', auth, readOnlyGuard, (req, res) => {
   }
 });
 
+// v1.10.320 — exports for backend/routes/hq.js Balance Sheet
+// (utils/branchCashPosition.js needs the per-currency cash position
+// helpers that already handle every edge case: opening seeds, source-
+// table aggregation, currency-exchange swaps, HQ deposits). Rather
+// than duplicate ~300 lines of currency logic, use the same functions
+// the /stats endpoint uses. Callers must set up runWithDb to point db
+// at the target branch's tenant DB before invoking.
 module.exports = router;
+module.exports.getOpeningByCurrency = getOpeningByCurrency;
+module.exports.ccyReceiptsPayments  = ccyReceiptsPayments;
