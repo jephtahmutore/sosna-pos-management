@@ -377,45 +377,72 @@ function BranchBreakdown({ perBranch }) {
   return (
     <div className="fs-screen" style={{ marginTop: 24 }}>
       <div style={{ fontSize: 13, fontWeight: 600, color: '#0f172a', marginBottom: 8 }}>Per-branch breakdown</div>
-      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12, background: '#fff', border: '1px solid #e5e7eb', borderRadius: 6, overflow: 'hidden' }}>
-        <thead style={{ background: '#f8fafc' }}>
-          <tr>
-            <th style={th}>Branch</th>
-            <th style={th}>Curr.</th>
-            <th style={{ ...th, textAlign: 'right' }}>Revenue</th>
-            <th style={{ ...th, textAlign: 'right' }}>COGS</th>
-            <th style={{ ...th, textAlign: 'right' }}>Gross</th>
-            <th style={{ ...th, textAlign: 'right' }}>PV</th>
-            <th style={{ ...th, textAlign: 'right' }}>Net</th>
-          </tr>
-        </thead>
-        <tbody>
-          {perBranch.map(b => (
-            <tr key={b.slug} style={{ borderTop: '1px solid #f1f5f9' }}>
-              <td style={td}>{b.name}</td>
-              <td style={td}>{b.currency}</td>
-              <td style={tdNum}>{fmtK(b.revenue)}</td>
-              <td style={tdNum}>{fmtK(b.cogs)}</td>
-              <td style={tdNum}>{fmtK(b.gross_profit)}</td>
-              <td style={tdNum}>{fmtK(b.branch_pv)}</td>
-              <td style={{ ...tdNum, fontWeight: 700 }}>{fmtK(b.net_local)}</td>
+
+      {/* Desktop: proper table. Hidden on narrow screens via CSS below. */}
+      <div className="fs-breakdown-table">
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12, background: '#fff', border: '1px solid #e5e7eb', borderRadius: 6, overflow: 'hidden' }}>
+          <thead style={{ background: '#f8fafc' }}>
+            <tr>
+              <th style={th}>Branch</th>
+              <th style={th}>Curr.</th>
+              <th style={{ ...th, textAlign: 'right' }}>Revenue</th>
+              <th style={{ ...th, textAlign: 'right' }}>COGS</th>
+              <th style={{ ...th, textAlign: 'right' }}>Gross</th>
+              <th style={{ ...th, textAlign: 'right' }}>PV</th>
+              <th style={{ ...th, textAlign: 'right' }}>Net</th>
             </tr>
-          ))}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {perBranch.map(b => (
+              <tr key={b.slug} style={{ borderTop: '1px solid #f1f5f9' }}>
+                <td style={td}>{b.name}</td>
+                <td style={td}>{b.currency}</td>
+                <td style={tdNum}>{fmtK(b.revenue)}</td>
+                <td style={tdNum}>{fmtK(b.cogs)}</td>
+                <td style={tdNum}>{fmtK(b.gross_profit)}</td>
+                <td style={tdNum}>{fmtK(b.branch_pv)}</td>
+                <td style={{ ...tdNum, fontWeight: 700 }}>{fmtK(b.net_local)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      {/* Mobile: stacked cards — nothing gets clipped off the right edge. */}
+      <div className="fs-breakdown-cards" style={{ display: 'none', flexDirection: 'column', gap: 10 }}>
+        {perBranch.map(b => (
+          <div key={b.slug} style={{ background: '#fff', border: '1px solid #e5e7eb', borderRadius: 10, padding: 14 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 10 }}>
+              <div style={{ fontSize: 13, fontWeight: 700, color: '#0f172a', flex: 1, marginRight: 8 }}>{b.name}</div>
+              <span style={{ fontSize: 10, padding: '3px 8px', borderRadius: 99, background: '#e0f2fe', color: '#0369a1', fontWeight: 600, letterSpacing: 0.5 }}>{b.currency}</span>
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px 12px' }}>
+              <MobileStat label="Revenue" value={fmtK(b.revenue)} />
+              <MobileStat label="COGS"    value={fmtK(b.cogs)} />
+              <MobileStat label="Gross"   value={fmtK(b.gross_profit)} />
+              <MobileStat label="PV"      value={fmtK(b.branch_pv)} />
+            </div>
+            <div style={{ marginTop: 12, paddingTop: 10, borderTop: '1px dashed #e5e7eb', display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
+              <span style={{ fontSize: 11, color: '#64748b', textTransform: 'uppercase', letterSpacing: 0.6, fontWeight: 600 }}>Net</span>
+              <span style={{ fontSize: 15, fontWeight: 700, color: parseFloat(b.net_local || 0) < 0 ? '#b91c1c' : '#0f172a' }}>{fmtK(b.net_local)}</span>
+            </div>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
 
-function FxFooter({ fx }) {
-  if (!fx) return null;
+function MobileStat({ label, value }) {
   return (
-    <div style={{ marginTop: 14, fontSize: 11, color: '#64748b', textAlign: 'right' }}>
-      FX (K/USD): <b>{fx.k_per_usd ? fx.k_per_usd.toFixed(2) : '—'}</b>
-      &nbsp;&middot;&nbsp; source: <span style={{ fontFamily: 'monospace' }}>{fx.source || fx.avg_k_per_usd ? fx.source : '—'}</span>
+    <div>
+      <div style={{ fontSize: 10, color: '#64748b', textTransform: 'uppercase', letterSpacing: 0.5, fontWeight: 600, marginBottom: 2 }}>{label}</div>
+      <div style={{ fontSize: 13, fontWeight: 600, color: '#0f172a', fontVariantNumeric: 'tabular-nums' }}>{value}</div>
     </div>
   );
 }
+
+function FxFooter() { return null; /* removed on 2026-09-20 — cluttered the view */ }
 function ErrorRow({ msg }) {
   return (
     <div style={{ background: '#fef2f2', border: '1px solid #fecaca', color: '#991b1b', padding: 12, borderRadius: 6, marginTop: 10 }}>
@@ -462,7 +489,7 @@ const th         = { padding: '8px 10px', fontSize: 11, color: '#64748b', textTr
 const td         = { padding: '8px 10px', color: '#0f172a' };
 const tdNum      = { padding: '8px 10px', textAlign: 'right', fontVariantNumeric: 'tabular-nums', color: '#0f172a' };
 
-// Print CSS — hide screen chrome, show print-only header/footer, tighten paper
+// Print CSS + mobile-responsive rules
 const PRINT_CSS = `
   .fs-print-only { display: none; }
   @media print {
@@ -470,5 +497,10 @@ const PRINT_CSS = `
     body, html { background: #fff !important; }
     .fs-screen { display: none !important; }
     .fs-print-only { display: block; }
+  }
+  /* Per-branch breakdown: table on desktop, stacked cards on mobile */
+  @media (max-width: 768px) {
+    .fs-breakdown-table { display: none; }
+    .fs-breakdown-cards { display: flex !important; }
   }
 `;
