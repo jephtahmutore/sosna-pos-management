@@ -187,7 +187,7 @@ function BalanceSheetView() {
               rows={[
                 { label: 'Cash &amp; Bank Balances',          value: data.assets.cash },
                 { label: 'Accounts Receivable',                value: data.assets.accounts_receivable || 0 },
-                { label: 'Inventory (at cost)',                 value: data.assets.inventory },
+                { label: 'Inventory (WAC valuation)',          value: data.assets.inventory },
                 { label: 'Loans Receivable',                   value: data.assets.loans_receivable },
                 { label: 'Total Assets',                       value: data.assets.total, grand: true },
               ]}
