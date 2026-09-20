@@ -1220,4 +1220,239 @@ router.get('/consolidated-profit', hqAuth, requirePagePerm('HqConsolidatedProfit
   }
 });
 
+// ─── GET /api/hq/income-statement?month=YYYY-MM ────────────────────────────
+// Financial Statements → Income Statement, HQ-only, always in Kwacha.
+//
+// Aggregates group-wide P&L for a calendar month by:
+//   1. Enumerating every branch's daily_profit_summary rows for the range
+//   2. Converting USD-native branch rows (Kassumbalesa) to K using that
+//      day's Kassumbalesa selling_rate_k_used (K/USD, forward-filled)
+//   3. Summing HQ payment_vouchers (tri-currency: usd/fra/k), converted
+//      each to K using their own day-of rates; excludes LCVs (already in
+//      inventory WAC via hqGrns absorption)
+//   4. Building the classic P&L structure:
+//        Revenue
+//        − COGS
+//        = Gross Profit
+//        ± Variance (−Damages + Stock Var + Cash Var)
+//        + Supplier Rebates
+//        = Operating Profit
+//        − Operating Expenses (HQ + branch PVs)
+//        = Net Profit Before Tax
+//
+// Delivered to the frontend Financial Statements page and the printed
+// PDF export. Same data spine as /consolidated-profit but reshaped for
+// external accounting use.
+router.get('/income-statement', hqAuth, requirePagePerm('HqFinancialStatements'), (req, res) => {
+  try {
+    const month = String(req.query.month || new Date().toISOString().slice(0, 7));
+    if (!/^\d{4}-\d{2}$/.test(month)) {
+      return res.status(400).json({ error: 'month must be YYYY-MM' });
+    }
+    const [y, m] = month.split('-').map(Number);
+    const from = `${month}-01`;
+    const to   = new Date(Date.UTC(y, m, 0)).toISOString().slice(0, 10); // last day
+
+    const tenants = listTenants();
+    const dates = [];
+    {
+      const start = new Date(from + 'T00:00:00Z');
+      const end   = new Date(to   + 'T00:00:00Z');
+      for (let d = new Date(start); d <= end; d.setUTCDate(d.getUTCDate() + 1)) {
+        dates.push(d.toISOString().slice(0, 10));
+      }
+    }
+
+    // Locate the USD-native branch (Kassumbalesa) — source of both K/USD and FRA/USD rates
+    let kassSlug = null;
+    for (const t of tenants) {
+      try {
+        const db = getTenantDb(t.slug);
+        const cm = tryGet(db, `SELECT currency_mode FROM business_settings LIMIT 1`);
+        if (cm && typeof cm.currency_mode === 'string' && cm.currency_mode.includes('USD')) {
+          kassSlug = t.slug;
+          break;
+        }
+      } catch { /* skip */ }
+    }
+
+    // K/USD rate map (forward-filled) — used to convert Kassumbalesa's USD rows to K
+    const kUsdByDate = {};
+    let priorKUsd = null;
+    if (kassSlug) {
+      try {
+        const kdb = getTenantDb(kassSlug);
+        const rows = kdb.prepare(`
+          SELECT substr(created_at, 1, 10) AS d, AVG(selling_rate_k_used) AS rate
+            FROM orders
+           WHERE deleted_at IS NULL AND selling_rate_k_used > 0
+             AND substr(created_at, 1, 10) BETWEEN ? AND ?
+        GROUP BY substr(created_at, 1, 10)
+        `).all(from, to);
+        for (const r of rows) kUsdByDate[r.d] = parseFloat(r.rate) || null;
+        const prior = tryGet(kdb, `
+          SELECT AVG(selling_rate_k_used) AS rate FROM (
+            SELECT selling_rate_k_used FROM orders
+             WHERE deleted_at IS NULL AND selling_rate_k_used > 0
+               AND substr(created_at, 1, 10) < ?
+          ORDER BY created_at DESC LIMIT 30)
+        `, from);
+        if (prior?.rate) priorKUsd = parseFloat(prior.rate) || null;
+      } catch (e) { console.error('[hq.income-statement] K/USD fx:', e.message); }
+    }
+    const kUsdRate = {};
+    { let last = priorKUsd; for (const d of dates) { if (kUsdByDate[d] != null) last = kUsdByDate[d]; kUsdRate[d] = last; } }
+
+    // FRA/USD from Kassumbalesa fx_rates — for HQ PVs tri-currency conversion
+    const fraUsdByDate = {};
+    let priorFraUsd = null;
+    if (kassSlug) {
+      try {
+        const kdb = getTenantDb(kassSlug);
+        const rows = kdb.prepare(`
+          SELECT effective_date AS d, sell_rate AS rate
+            FROM fx_rates
+           WHERE effective_date BETWEEN ? AND ? AND sell_rate > 0
+        ORDER BY effective_date, id
+        `).all(from, to);
+        for (const r of rows) fraUsdByDate[r.d] = parseFloat(r.rate) || null;
+        const prior = tryGet(kdb, `
+          SELECT sell_rate AS rate FROM fx_rates
+           WHERE effective_date < ? AND sell_rate > 0
+        ORDER BY effective_date DESC, id DESC LIMIT 1
+        `, from);
+        if (prior?.rate) priorFraUsd = parseFloat(prior.rate) || null;
+      } catch (e) { console.error('[hq.income-statement] FRA/USD fx:', e.message); }
+    }
+    const fraUsdRate = {};
+    { let last = priorFraUsd; for (const d of dates) { if (fraUsdByDate[d] != null) last = fraUsdByDate[d]; fraUsdRate[d] = last; } }
+
+    // FRA→K helper: FRA/USD × USD/K = FRA/K, so K = FRA ÷ (FRA/USD) × (K/USD)
+    const fraToK = (fra, d) => {
+      const kusd = kUsdRate[d], fraUsd = fraUsdRate[d];
+      if (!fra || !kusd || !fraUsd) return 0;
+      return (fra / fraUsd) * kusd;
+    };
+    const usdToK = (usd, d) => {
+      const kusd = kUsdRate[d];
+      return (!usd || !kusd) ? 0 : usd * kusd;
+    };
+
+    // ── Per-branch aggregation in K ─────────────────────────────────
+    const perBranch = [];
+    let revenue = 0, cogs = 0, gross = 0, damages = 0, rebates = 0,
+        stockVar = 0, cashVar = 0, branchPv = 0;
+
+    for (const t of tenants) {
+      try {
+        const db = getTenantDb(t.slug);
+        const settings = tryGet(db, `SELECT business_name, currency_mode FROM business_settings LIMIT 1`) || {};
+        const name = settings.business_name || t.business_name || t.slug;
+        const isUsd = typeof settings.currency_mode === 'string' && settings.currency_mode.includes('USD');
+
+        const rows = db.prepare(`
+          SELECT date, revenue, cogs, damages, supplier_rebates,
+                 diff_value, cash_difference, gross_profit, pv_total
+            FROM daily_profit_summary
+           WHERE date BETWEEN ? AND ?
+        `).all(from, to);
+
+        let bRev = 0, bCogs = 0, bGross = 0, bDam = 0, bReb = 0,
+            bStk = 0, bCash = 0, bPv = 0;
+        for (const r of rows) {
+          const toK = v => isUsd ? usdToK(parseFloat(v || 0), r.date) : parseFloat(v || 0);
+          bRev  += toK(r.revenue);
+          bCogs += toK(r.cogs);
+          bGross+= toK(r.gross_profit);
+          bDam  += toK(r.damages);
+          bReb  += toK(r.supplier_rebates);
+          bStk  += toK(r.diff_value);
+          bCash += toK(r.cash_difference);
+          bPv   += toK(r.pv_total);
+        }
+
+        perBranch.push({
+          slug: t.slug, name, currency: isUsd ? 'USD' : 'K',
+          revenue: bRev, cogs: bCogs, gross_profit: bGross,
+          damages: bDam, supplier_rebates: bReb,
+          stock_variance: bStk, cash_variance: bCash,
+          branch_pv: bPv,
+          net_local: bGross - bPv + bReb - bDam + bStk + bCash, // sanity
+        });
+        revenue += bRev; cogs += bCogs; gross += bGross;
+        damages += bDam; rebates += bReb;
+        stockVar += bStk; cashVar += bCash;
+        branchPv += bPv;
+      } catch (e) {
+        console.error(`[hq.income-statement] ${t.slug}:`, e.message);
+      }
+    }
+
+    // ── HQ overhead (payment_vouchers, tri-currency, excl. LCVs) ─────
+    let hqPv = 0;
+    try {
+      const hqDaily = defaultDb.prepare(`
+        SELECT date,
+               COALESCE(SUM(usd_amount), 0) AS u,
+               COALESCE(SUM(fra_amount), 0) AS f,
+               COALESCE(SUM(k_amount),   0) AS k,
+               COALESCE(SUM(amount),     0) AS legacy,
+               COALESCE(SUM(COALESCE(usd_amount,0) + COALESCE(fra_amount,0) + COALESCE(k_amount,0)), 0) AS split
+          FROM payment_vouchers
+         WHERE deleted_at IS NULL
+           AND (is_landed_cost IS NULL OR is_landed_cost = 0)
+           AND date BETWEEN ? AND ?
+      GROUP BY date
+      `).all(from, to);
+      for (const r of hqDaily) {
+        // If tri-currency columns populated → use them; else fall back to legacy amount as K.
+        const inK = (r.split > 0)
+          ? (parseFloat(r.k) + usdToK(parseFloat(r.u), r.date) + fraToK(parseFloat(r.f), r.date))
+          : parseFloat(r.legacy);
+        hqPv += inK;
+      }
+    } catch (e) {
+      console.error('[hq.income-statement] HQ PVs:', e.message);
+    }
+
+    // ── P&L structure ────────────────────────────────────────────────
+    const variance = -damages + stockVar + cashVar;
+    const operatingProfit = gross + variance + rebates;
+    const totalOpex = branchPv + hqPv;
+    const netProfit = operatingProfit - totalOpex;
+
+    // K/USD rate the report displays as the effective FX for the period
+    const rateVals = Object.values(kUsdRate).filter(v => v && v > 0);
+    const avgKUsd = rateVals.length ? (rateVals.reduce((a, b) => a + b, 0) / rateVals.length) : null;
+
+    res.json({
+      period: { month, from, to },
+      currency: 'K',
+      fx: {
+        source: kassSlug ? `${kassSlug} orders.selling_rate_k_used (K/USD, per-day AVG, forward-filled)` : 'no USD-native branch found',
+        avg_k_per_usd: avgKUsd,
+      },
+      lines: {
+        revenue,
+        cogs,
+        gross_profit: gross,
+        damages,
+        stock_variance: stockVar,
+        cash_variance: cashVar,
+        supplier_rebates: rebates,
+        variance,
+        operating_profit: operatingProfit,
+        branch_pv: branchPv,
+        hq_pv: hqPv,
+        total_opex: totalOpex,
+        net_profit: netProfit,
+      },
+      per_branch: perBranch,
+    });
+  } catch (error) {
+    console.error('[hq.income-statement] failed:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 module.exports = router;
