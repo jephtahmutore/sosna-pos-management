@@ -372,72 +372,107 @@ function StatementTable({ rows, style }) {
   );
 }
 
+// Per-branch cards — matches HqConsolidatedProfit's BranchProfitBlock
+// visual language (colored KPI cards + breakdown table per branch).
+// All values already in K on this page.
 function BranchBreakdown({ perBranch }) {
   if (!perBranch || !perBranch.length) return null;
   return (
     <div className="fs-screen" style={{ marginTop: 24 }}>
-      <div style={{ fontSize: 13, fontWeight: 600, color: '#0f172a', marginBottom: 8 }}>Per-branch breakdown</div>
+      <div style={{ fontSize: 13, fontWeight: 600, color: '#0f172a', marginBottom: 12 }}>Per-branch breakdown</div>
+      {perBranch.map(b => <BranchIncomeCard key={b.slug} branch={b} />)}
+    </div>
+  );
+}
 
-      {/* Desktop: proper table. Hidden on narrow screens via CSS below. */}
-      <div className="fs-breakdown-table">
-        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12, background: '#fff', border: '1px solid #e5e7eb', borderRadius: 6, overflow: 'hidden' }}>
-          <thead style={{ background: '#f8fafc' }}>
-            <tr>
-              <th style={th}>Branch</th>
-              <th style={th}>Curr.</th>
-              <th style={{ ...th, textAlign: 'right' }}>Revenue</th>
-              <th style={{ ...th, textAlign: 'right' }}>COGS</th>
-              <th style={{ ...th, textAlign: 'right' }}>Gross</th>
-              <th style={{ ...th, textAlign: 'right' }}>PV</th>
-              <th style={{ ...th, textAlign: 'right' }}>Net</th>
-            </tr>
-          </thead>
+function BranchIncomeCard({ branch }) {
+  const b = branch;
+  const stockVar = parseFloat(b.stock_variance || 0);
+  const cashVar  = parseFloat(b.cash_variance  || 0);
+  const gross    = parseFloat(b.gross_profit   || 0);
+  const netLocal = parseFloat(b.net_local      || 0);
+  const damages  = parseFloat(b.damages        || 0);
+  const rebates  = parseFloat(b.supplier_rebates || 0);
+  const pv       = parseFloat(b.branch_pv      || 0);
+  const tint     = branch.currency === 'USD' ? '#ecfdf5' : '#fef3c7';
+  const tintFg   = branch.currency === 'USD' ? '#065f46' : '#92400e';
+  const fmt = (v) => `${v < 0 ? '−' : ''}K${Math.abs(v || 0).toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`;
+
+  return (
+    <div style={{ background: '#fff', border: '1px solid #e5e7eb', borderRadius: 12, padding: 16, marginBottom: 14 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12, flexWrap: 'wrap', gap: 8 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <div style={{ fontSize: 15, fontWeight: 800, color: '#0f172a' }}>{branch.name}</div>
+          <span style={{ background: tint, color: tintFg, fontSize: 10, fontWeight: 700, padding: '3px 8px', borderRadius: 4, letterSpacing: 0.4 }}>{branch.currency}</span>
+        </div>
+      </div>
+
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, marginBottom: 10 }}>
+        <FsKpi label="Revenue"          value={b.revenue} color="#0369a1" bg="#f0f9ff" border="#38bdf8" />
+        <FsKpi label="COGS"             value={b.cogs}    color="#d97706" bg="#fffbeb" border="#fbbf24" />
+        <FsKpi label="Damaged"          value={damages}   color="#dc2626" bg="#fef2f2" border="#fca5a5" />
+        <FsKpi label="Supplier Rebates" value={rebates}   color="#16a34a" bg="#f0fdf4" border="#86efac" />
+      </div>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, marginBottom: 10 }}>
+        <FsKpi label="Stock Variance" value={stockVar}
+               color={stockVar < 0 ? '#dc2626' : '#16a34a'}
+               bg={stockVar < 0 ? '#fef2f2' : '#f0fdf4'}
+               border={stockVar < 0 ? '#fca5a5' : '#86efac'} />
+        <FsKpi label="Cash Variance" value={cashVar}
+               color={cashVar < 0 ? '#dc2626' : '#16a34a'}
+               bg={cashVar < 0 ? '#fef2f2' : '#f0fdf4'}
+               border={cashVar < 0 ? '#fca5a5' : '#86efac'} />
+        <FsKpi label="Expenses (PV)" value={pv} color="#dc2626" bg="#fef2f2" border="#fca5a5" />
+      </div>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10 }}>
+        <FsKpi label="Gross Profit" value={gross}
+               color={gross >= 0 ? '#16a34a' : '#dc2626'}
+               bg={gross >= 0 ? '#f0fdf4' : '#fef2f2'}
+               border={gross >= 0 ? '#86efac' : '#fca5a5'} />
+        <FsKpi label="Net Profit" value={netLocal}
+               color={netLocal >= 0 ? '#7c3aed' : '#dc2626'}
+               bg={netLocal >= 0 ? '#f5f3ff' : '#fef2f2'}
+               border={netLocal >= 0 ? '#c4b5fd' : '#fca5a5'} />
+      </div>
+
+      {/* Breakdown table */}
+      <div style={{ backgroundColor: '#fafafa', borderRadius: 10, padding: 14, marginTop: 12, border: '1px solid #f3f4f6' }}>
+        <div style={{ fontSize: 11, fontWeight: 700, color: '#6b7280', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 8 }}>Breakdown</div>
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
           <tbody>
-            {perBranch.map(b => (
-              <tr key={b.slug} style={{ borderTop: '1px solid #f1f5f9' }}>
-                <td style={td}>{b.name}</td>
-                <td style={td}>{b.currency}</td>
-                <td style={tdNum}>{fmtK(b.revenue)}</td>
-                <td style={tdNum}>{fmtK(b.cogs)}</td>
-                <td style={tdNum}>{fmtK(b.gross_profit)}</td>
-                <td style={tdNum}>{fmtK(b.branch_pv)}</td>
-                <td style={{ ...tdNum, fontWeight: 700 }}>{fmtK(b.net_local)}</td>
+            {[
+              { label: 'Revenue',                       value: b.revenue,          color: '#0369a1' },
+              { label: '− COGS',                        value: b.cogs,             color: '#d97706' },
+              { label: '− Damaged',                     value: damages,            color: '#dc2626' },
+              { label: '+ Supplier Rebates',            value: rebates,            color: '#16a34a' },
+              { label: `${stockVar < 0 ? '−' : '+'} Stock Variance`, value: stockVar, color: stockVar < 0 ? '#dc2626' : '#16a34a' },
+              { label: `${cashVar  < 0 ? '−' : '+'} Cash Variance`,  value: cashVar,  color: cashVar  < 0 ? '#dc2626' : '#16a34a' },
+              { label: '= Gross Profit',                value: gross,              color: gross >= 0 ? '#16a34a' : '#dc2626', bold: true },
+              { label: '− Expenses (PV)',               value: pv,                 color: '#dc2626' },
+              { label: '= Net Profit',                  value: netLocal,           color: netLocal >= 0 ? '#7c3aed' : '#dc2626', bold: true },
+            ].map((row, i) => (
+              <tr key={i} style={{ borderBottom: '1px solid #f3f4f6' }}>
+                <td style={{ padding: '6px 4px', fontWeight: row.bold ? 700 : 400, color: '#374151' }}>{row.label}</td>
+                <td style={{ padding: '6px 4px', textAlign: 'right', fontWeight: row.bold ? 700 : 500, color: row.color, fontFamily: 'ui-monospace, "SF Mono", Consolas, monospace' }}>
+                  {fmt(row.value)}
+                </td>
               </tr>
             ))}
           </tbody>
         </table>
       </div>
-
-      {/* Mobile: stacked cards — nothing gets clipped off the right edge. */}
-      <div className="fs-breakdown-cards" style={{ display: 'none', flexDirection: 'column', gap: 10 }}>
-        {perBranch.map(b => (
-          <div key={b.slug} style={{ background: '#fff', border: '1px solid #e5e7eb', borderRadius: 10, padding: 14 }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 10 }}>
-              <div style={{ fontSize: 13, fontWeight: 700, color: '#0f172a', flex: 1, marginRight: 8 }}>{b.name}</div>
-              <span style={{ fontSize: 10, padding: '3px 8px', borderRadius: 99, background: '#e0f2fe', color: '#0369a1', fontWeight: 600, letterSpacing: 0.5 }}>{b.currency}</span>
-            </div>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px 12px' }}>
-              <MobileStat label="Revenue" value={fmtK(b.revenue)} />
-              <MobileStat label="COGS"    value={fmtK(b.cogs)} />
-              <MobileStat label="Gross"   value={fmtK(b.gross_profit)} />
-              <MobileStat label="PV"      value={fmtK(b.branch_pv)} />
-            </div>
-            <div style={{ marginTop: 12, paddingTop: 10, borderTop: '1px dashed #e5e7eb', display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
-              <span style={{ fontSize: 11, color: '#64748b', textTransform: 'uppercase', letterSpacing: 0.6, fontWeight: 600 }}>Net</span>
-              <span style={{ fontSize: 15, fontWeight: 700, color: parseFloat(b.net_local || 0) < 0 ? '#b91c1c' : '#0f172a' }}>{fmtK(b.net_local)}</span>
-            </div>
-          </div>
-        ))}
-      </div>
     </div>
   );
 }
 
-function MobileStat({ label, value }) {
+function FsKpi({ label, value, color, bg, border }) {
+  const v = parseFloat(value || 0);
   return (
-    <div>
-      <div style={{ fontSize: 10, color: '#64748b', textTransform: 'uppercase', letterSpacing: 0.5, fontWeight: 600, marginBottom: 2 }}>{label}</div>
-      <div style={{ fontSize: 13, fontWeight: 600, color: '#0f172a', fontVariantNumeric: 'tabular-nums' }}>{value}</div>
+    <div style={{ flex: '1 1 180px', minWidth: 140, background: bg, border: `1px solid ${border}`, borderRadius: 10, padding: '10px 14px' }}>
+      <div style={{ fontSize: 10.5, fontWeight: 700, color: '#6b7280', textTransform: 'uppercase', letterSpacing: 0.5 }}>{label}</div>
+      <div style={{ fontSize: 20, fontWeight: 800, color, marginTop: 4, fontFamily: 'ui-monospace, "SF Mono", Consolas, monospace' }}>
+        {v < 0 ? '−' : ''}K{Math.abs(v).toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}
+      </div>
     </div>
   );
 }
@@ -498,9 +533,7 @@ const PRINT_CSS = `
     .fs-screen { display: none !important; }
     .fs-print-only { display: block; }
   }
-  /* Per-branch breakdown: table on desktop, stacked cards on mobile */
-  @media (max-width: 768px) {
-    .fs-breakdown-table { display: none; }
-    .fs-breakdown-cards { display: flex !important; }
-  }
+  /* Per-branch KPI cards wrap naturally — nothing to override for mobile.
+     The FsKpi flex-basis: 180px + min-width: 140px means cards line up
+     two-per-row on phones and 4-per-row on desktop. */
 `;
