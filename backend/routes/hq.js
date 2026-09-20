@@ -1660,6 +1660,29 @@ router.get('/balance-sheet', hqAuth, requirePagePerm('HqFinancialStatements'), (
       capital = parseFloat(r?.total || 0);
     } catch (e) { console.error('[hq.balance-sheet] capital:', e.message); }
 
+    // v1.10.315 — HQ cash lives in defaultDb (backend/sosna.db), NOT in
+    // tenants/hq.db (which is empty). listTenants() may or may not include
+    // an 'hq' entry; either way its file is blank. Query defaultDb
+    // separately with no tenant_id filter (HQ's sync_config doesn't set
+    // one; cash_book rows there are HQ-only by construction).
+    try {
+      const hqPos = computeBranchCashPosition(defaultDb, null, asOf);
+      const hqCashK = hqPos.k + usdToK(hqPos.usd) + fraToK(hqPos.fra);
+      cash += hqCashK;
+      perBranch.push({
+        slug: 'hq',
+        name: 'Head Office',
+        currency: 'K',
+        cash: hqCashK,
+        cash_breakdown: hqPos,
+        inventory: 0,
+        accounts_receivable: 0,
+        customer_advances: 0,
+      });
+    } catch (e) {
+      console.error('[hq.balance-sheet] HQ cash:', e.message);
+    }
+
     const totalAssets = cash + accountsReceivable + inventory + loansReceivable;
     const totalLiabilities = customerAdvances + loansPayable + hqPayables;
     // Retained earnings falls out so Assets = Liabilities + Equity

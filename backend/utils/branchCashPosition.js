@@ -26,12 +26,17 @@
  */
 
 function computeBranchCashPosition(db, tenantId, asOf) {
-  // Opening balances per currency drawer
+  // Opening balances per currency drawer.
+  // tenantId is optional — HQ (defaultDb) doesn't set it in sync_config,
+  // and cash_book rows in a per-branch DB are already scoped to that
+  // tenant by construction, so we only filter by tenant_id when we have one.
+  const opWhere = tenantId ? 'AND tenant_id = ?' : '';
+  const opArgs  = tenantId ? [tenantId] : [];
   const openings = db.prepare(`
     SELECT reference, COALESCE(receipt_amount, 0) AS amount
       FROM cash_book
-     WHERE type = 'opening' AND tenant_id = ?
-  `).all(tenantId);
+     WHERE type = 'opening' ${opWhere}
+  `).all(...opArgs);
 
   let openUsd = 0, openFra = 0, openK = 0;
   for (const r of openings) {
@@ -65,10 +70,10 @@ function computeBranchCashPosition(db, tenantId, asOf) {
                         ELSE 0 END), 0)
       AS k_method_net
     FROM cash_book
-   WHERE tenant_id = ?
-     AND date <= ?
+   WHERE date <= ?
+     ${tenantId ? 'AND tenant_id = ?' : ''}
      AND (type IS NULL OR type != 'opening')
-  `).get(tenantId, asOf);
+  `).get(...(tenantId ? [asOf, tenantId] : [asOf]));
 
   const usdDelta = parseFloat(d?.usd_net || 0);
   const fraDelta = parseFloat(d?.fra_net || 0);
