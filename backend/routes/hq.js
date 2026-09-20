@@ -433,9 +433,14 @@ router.get('/inventory-report', hqAuth, requirePagePerm('HqInventoryReport'), (r
         // v1.10.149 — also read units_json so the frontend can convert the
         // raw base-unit current_stock into the largest unit + remainder
         // (e.g. 14,046 Bottle → 585 Box + 6 Bottle when 1 Box = 24 Bottles).
+        // v1.10.316 — use WAC valuation (avg_cost_price with fallback to
+        // cost_price) so this report agrees with the Sales Stock Card and
+        // the Balance Sheet. Previously used raw cost_price only, which
+        // understated group inventory by ~K2.2M vs the WAC value the
+        // Sales Stock Card page shows on each depot.
         let sql = `
           SELECT p.id, p.name, p.unit, p.current_stock, p.min_stock,
-                 p.cost_price, p.selling_price, p.status, p.units_json,
+                 p.cost_price, p.avg_cost_price, p.selling_price, p.status, p.units_json,
                  c.name AS category_name
             FROM products p
             LEFT JOIN categories c ON c.id = p.category_id
@@ -443,13 +448,16 @@ router.get('/inventory-report', hqAuth, requirePagePerm('HqInventoryReport'), (r
         const params = [];
         if (lowOnly) sql += ' AND p.current_stock <= p.min_stock';
         if (q)       { sql += ' AND LOWER(p.name) LIKE ?'; params.push(`%${q}%`); }
-        sql += ' ORDER BY (p.current_stock * p.cost_price) DESC';
+        sql += ' ORDER BY (p.current_stock * COALESCE(p.avg_cost_price, p.cost_price, 0)) DESC';
         const products = db.prepare(sql).all(...params);
 
         for (const p of products) {
           const stock = parseFloat(p.current_stock || 0);
           const min   = parseFloat(p.min_stock || 0);
-          const cost  = parseFloat(p.cost_price || 0);
+          // WAC (weighted average) with fallback to cost_price when no GRN
+          // activity has computed avg_cost_price yet.
+          const avgCost  = parseFloat(p.avg_cost_price || 0);
+          const cost     = avgCost > 0 ? avgCost : parseFloat(p.cost_price || 0);
           const value = stock * cost;
           const isLow = stock <= min;
           byBranch[t.slug].products    += 1;
