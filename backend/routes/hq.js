@@ -1549,11 +1549,10 @@ router.get('/balance-sheet', hqAuth, requirePagePerm('HqFinancialStatements'), (
         let bCash = 0, bCashBreakdown = null;
         try {
           const syncIds = getTenantSyncIds(db);
-          if (syncIds.tenant_id) {
-            const pos = computeBranchCashPosition(db, syncIds.tenant_id, asOf);
-            bCashBreakdown = pos;
-            bCash = pos.k + usdToK(pos.usd) + fraToK(pos.fra);
-          }
+          const pos = computeBranchCashPosition(db, syncIds.tenant_id || null, asOf);
+          bCashBreakdown = pos;
+          bCash = pos.k + usdToK(pos.usd) + fraToK(pos.fra);
+          console.log(`[hq.balance-sheet] ${t.slug} tid=${syncIds.tenant_id || 'NULL'} usd=${pos.usd} fra=${pos.fra} k=${pos.k} → K${bCash.toFixed(2)} (fx K/USD=${effKUsd} FRA/USD=${effFraUsd})`);
         } catch (e) {
           console.error(`[hq.balance-sheet] cash ${t.slug}:`, e.message);
         }
