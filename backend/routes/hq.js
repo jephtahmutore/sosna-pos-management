@@ -1552,7 +1552,7 @@ router.get('/balance-sheet', hqAuth, requirePagePerm('HqFinancialStatements'), (
           const syncIds = getTenantSyncIds(db);
           const tenantId = syncIds.tenant_id;
           if (tenantId) {
-            const pos = runWithDb(db, () => computeBranchCashPosition(tenantId, t.slug, asOf));
+            const pos = runWithDb(db, () => computeBranchCashPosition(db, tenantId, t.slug, asOf));
             bCashBreakdown = pos;
             bCash = pos.k + usdToK(pos.usd) + fraToK(pos.fra);
             console.log(`[hq.balance-sheet] ${t.slug} tid=${tenantId} usd=${pos.usd} fra=${pos.fra} k=${pos.k} → K${bCash.toFixed(2)}`);
@@ -1671,13 +1671,19 @@ router.get('/balance-sheet', hqAuth, requirePagePerm('HqFinancialStatements'), (
     // — read it from any row on the tables. Fallback: try 'hq' as the
     // slug for HQ deposit direction detection.
     try {
-      const hqTid = tryGet(defaultDb, `
-        SELECT tenant_id FROM cash_receipts WHERE tenant_id IS NOT NULL LIMIT 1
-        UNION ALL SELECT tenant_id FROM payment_vouchers WHERE tenant_id IS NOT NULL LIMIT 1
-        LIMIT 1
-      `)?.tenant_id;
+      // HQ tenant_id is stored on cash_receipts / payment_vouchers rows
+      // (typically the literal string 'local-only' on Sosna HQ, per the
+      // diagnostic on 2026-09-20). Try each table in turn.
+      let hqTid = tryGet(defaultDb,
+        "SELECT tenant_id FROM cash_receipts WHERE tenant_id IS NOT NULL LIMIT 1"
+      )?.tenant_id;
+      if (!hqTid) {
+        hqTid = tryGet(defaultDb,
+          "SELECT tenant_id FROM payment_vouchers WHERE tenant_id IS NOT NULL LIMIT 1"
+        )?.tenant_id;
+      }
       if (hqTid) {
-        const hqPos = runWithDb(defaultDb, () => computeBranchCashPosition(hqTid, 'hq', asOf));
+        const hqPos = runWithDb(defaultDb, () => computeBranchCashPosition(defaultDb, hqTid, 'hq', asOf));
         const hqCashK = hqPos.k + usdToK(hqPos.usd) + fraToK(hqPos.fra);
         cash += hqCashK;
         console.log(`[hq.balance-sheet] HQ tid=${hqTid} usd=${hqPos.usd} fra=${hqPos.fra} k=${hqPos.k} → K${hqCashK.toFixed(2)}`);
