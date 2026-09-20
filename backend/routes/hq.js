@@ -1563,11 +1563,18 @@ router.get('/balance-sheet', hqAuth, requirePagePerm('HqFinancialStatements'), (
           console.error(`[hq.balance-sheet] cash ${t.slug}:`, e.message);
         }
 
-        // Inventory — snapshot NOW (no historical stock)
+        // Inventory — snapshot NOW (no historical stock). Uses cost_price
+        // (NOT avg_cost_price) so this number matches the HQ Inventory
+        // Report figure the customer sees on /hq/inventory-report. Both
+        // pages read from the same products row and same formula, so no
+        // "Balance Sheet doesn't match Inventory Report" surprises. WAC
+        // valuation (avg_cost_price) would be technically more accurate
+        // for a formal balance sheet but the two would diverge — that's
+        // a separate reconciliation to run before ever adopting WAC here.
         let bInv = 0;
         try {
           const row = tryGet(db, `
-            SELECT COALESCE(SUM(current_stock * COALESCE(avg_cost_price, cost_price, 0)), 0) AS total
+            SELECT COALESCE(SUM(current_stock * COALESCE(cost_price, 0)), 0) AS total
               FROM products
              WHERE deleted_at IS NULL
           `);
