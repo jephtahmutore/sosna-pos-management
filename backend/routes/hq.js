@@ -1519,7 +1519,7 @@ router.get('/balance-sheet', hqAuth, requirePagePerm('HqFinancialStatements'), (
     const usdToK = v => effKUsd ? (v * effKUsd) : 0;
 
     // ── Assets per branch ────────────────────────────────────────────
-    let cash = 0, inventory = 0;
+    let cash = 0, inventory = 0, accountsReceivable = 0, customerAdvances = 0;
     const perBranch = [];
     for (const t of tenants) {
       try {
@@ -1551,14 +1551,60 @@ router.get('/balance-sheet', hqAuth, requirePagePerm('HqFinancialStatements'), (
           bInv = toK(row?.total || 0);
         } catch {}
 
+        // v1.10.313 — Accounts Receivable + Customer Advances (standard
+        // balance sheet items — missing from the initial cut on 2026-09-06).
+        // AR per customer = total_sold − cash_at_sale − manual AR payments.
+        // Positive = customer owes us (asset), negative = we owe customer
+        // (liability shown as Customer Advances). Same formula the
+        // AccountReceivables screen uses; here we split by sign.
+        let bAr = 0, bAdv = 0;
+        try {
+          const rows = db.prepare(`
+            SELECT
+              c.sync_id,
+              COALESCE(orders_agg.total_sold, 0)
+                - COALESCE(orders_agg.cash_at_sale, 0)
+                - COALESCE(payments_agg.total_paid, 0) AS outstanding
+            FROM customers c
+            LEFT JOIN (
+              SELECT customer_sync_id,
+                SUM(total_amount)                                            AS total_sold,
+                SUM(CASE WHEN COALESCE(amount_received, 0) > total_amount
+                         THEN total_amount
+                         ELSE COALESCE(amount_received, 0) END)              AS cash_at_sale
+              FROM orders
+              WHERE deleted_at IS NULL AND (status IS NULL OR status != 'Reversed')
+                AND customer_sync_id IS NOT NULL
+                AND substr(created_at, 1, 10) <= ?
+              GROUP BY customer_sync_id
+            ) orders_agg ON orders_agg.customer_sync_id = c.sync_id
+            LEFT JOIN (
+              SELECT customer_sync_id, SUM(amount) AS total_paid
+              FROM customer_payments
+              WHERE deleted_at IS NULL AND customer_sync_id IS NOT NULL
+                AND payment_date <= ?
+              GROUP BY customer_sync_id
+            ) payments_agg ON payments_agg.customer_sync_id = c.sync_id
+            WHERE c.deleted_at IS NULL
+          `).all(asOf, asOf);
+          for (const r of rows) {
+            const out = parseFloat(r.outstanding || 0);
+            if (out > 0.01)      bAr  += toK(out);          // customer owes us
+            else if (out < -0.01) bAdv += toK(-out);         // we owe customer
+          }
+        } catch (e) { console.error(`[hq.balance-sheet] AR ${t.slug}:`, e.message); }
+
         perBranch.push({
           slug: t.slug,
           name: settings.business_name || t.business_name || t.slug,
           currency: isUsd ? 'USD' : 'K',
           cash: bCash,
           inventory: bInv,
+          accounts_receivable: bAr,
+          customer_advances: bAdv,
         });
         cash += bCash; inventory += bInv;
+        accountsReceivable += bAr; customerAdvances += bAdv;
       } catch (e) {
         console.error(`[hq.balance-sheet] ${t.slug}:`, e.message);
       }
@@ -1595,8 +1641,8 @@ router.get('/balance-sheet', hqAuth, requirePagePerm('HqFinancialStatements'), (
       capital = parseFloat(r?.total || 0);
     } catch (e) { console.error('[hq.balance-sheet] capital:', e.message); }
 
-    const totalAssets = cash + inventory + loansReceivable;
-    const totalLiabilities = loansPayable + hqPayables;
+    const totalAssets = cash + accountsReceivable + inventory + loansReceivable;
+    const totalLiabilities = customerAdvances + loansPayable + hqPayables;
     // Retained earnings falls out so Assets = Liabilities + Equity
     const retainedEarnings = totalAssets - totalLiabilities - capital;
     const totalEquity = capital + retainedEarnings;
@@ -1610,11 +1656,13 @@ router.get('/balance-sheet', hqAuth, requirePagePerm('HqFinancialStatements'), (
       },
       assets: {
         cash,
+        accounts_receivable: accountsReceivable,
         inventory,
         loans_receivable: loansReceivable,
         total: totalAssets,
       },
       liabilities: {
+        customer_advances: customerAdvances,
         loans_payable: loansPayable,
         hq_payables: hqPayables,
         total: totalLiabilities,

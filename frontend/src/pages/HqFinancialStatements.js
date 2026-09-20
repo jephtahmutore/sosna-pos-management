@@ -186,6 +186,7 @@ function BalanceSheetView() {
             <StatementTable
               rows={[
                 { label: 'Cash &amp; Bank Balances',          value: data.assets.cash },
+                { label: 'Accounts Receivable',                value: data.assets.accounts_receivable || 0 },
                 { label: 'Inventory (WAC valuation)',          value: data.assets.inventory },
                 { label: 'Loans Receivable',                   value: data.assets.loans_receivable },
                 { label: 'Total Assets',                       value: data.assets.total, grand: true },
@@ -194,6 +195,7 @@ function BalanceSheetView() {
             <SectionHeading style={{ marginTop: 24 }}>LIABILITIES</SectionHeading>
             <StatementTable
               rows={[
+                { label: 'Customer Advances',                  value: data.liabilities.customer_advances || 0 },
                 { label: 'Loans Payable',                      value: data.liabilities.loans_payable },
                 { label: 'HQ Payables',                        value: data.liabilities.hq_payables },
                 { label: 'Total Liabilities',                  value: data.liabilities.total, subtotal: true },
