@@ -1352,34 +1352,42 @@ router.get('/income-statement', hqAuth, requirePagePerm('HqFinancialStatements')
 
         const rows = db.prepare(`
           SELECT date, revenue, cogs, damages, supplier_rebates,
-                 diff_value, cash_difference, gross_profit, pv_total
+                 diff_value, cash_difference, pv_total
             FROM daily_profit_summary
            WHERE date BETWEEN ? AND ?
         `).all(from, to);
 
-        let bRev = 0, bCogs = 0, bGross = 0, bDam = 0, bReb = 0,
+        // v1.10.312 — DO NOT read gross_profit from daily_profit_summary:
+        // that column is already the ADJUSTED value (Revenue − COGS − Damages
+        // + Rebates + StockVar + CashVar per profitHelper), so summing it
+        // AND then adding Damages/Rebates/StockVar/CashVar downstream would
+        // double-count variance. Compute raw Gross = Revenue − COGS here
+        // and let the caller apply variance exactly once.
+        let bRev = 0, bCogs = 0, bDam = 0, bReb = 0,
             bStk = 0, bCash = 0, bPv = 0;
         for (const r of rows) {
           const toK = v => isUsd ? usdToK(parseFloat(v || 0), r.date) : parseFloat(v || 0);
           bRev  += toK(r.revenue);
           bCogs += toK(r.cogs);
-          bGross+= toK(r.gross_profit);
           bDam  += toK(r.damages);
           bReb  += toK(r.supplier_rebates);
           bStk  += toK(r.diff_value);
           bCash += toK(r.cash_difference);
           bPv   += toK(r.pv_total);
         }
+        const bGrossRaw = bRev - bCogs;
+        const bOperating = bGrossRaw - bDam + bReb + bStk + bCash;
+        const bNet = bOperating - bPv;
 
         perBranch.push({
           slug: t.slug, name, currency: isUsd ? 'USD' : 'K',
-          revenue: bRev, cogs: bCogs, gross_profit: bGross,
+          revenue: bRev, cogs: bCogs, gross_profit: bGrossRaw,
           damages: bDam, supplier_rebates: bReb,
           stock_variance: bStk, cash_variance: bCash,
           branch_pv: bPv,
-          net_local: bGross - bPv + bReb - bDam + bStk + bCash, // sanity
+          net_local: bNet,
         });
-        revenue += bRev; cogs += bCogs; gross += bGross;
+        revenue += bRev; cogs += bCogs; gross += bGrossRaw;
         damages += bDam; rebates += bReb;
         stockVar += bStk; cashVar += bCash;
         branchPv += bPv;
