@@ -29,15 +29,13 @@ export default function HqFinancialStatements() {
   const [tab, setTab] = useState('income'); // 'income' | 'balance' | 'cashflow'
 
   return (
-    <div style={outer}>
+    <div className="page-content">
       <style>{PRINT_CSS}</style>
       <div className="fs-screen">
-        <div style={headerRow}>
+        <div className="page-header">
           <div>
-            <h1 style={{ margin: 0, fontSize: 22 }}>Financial Statements</h1>
-            <div style={{ color: '#6b7280', fontSize: 13, marginTop: 4 }}>
-              Group-wide P&amp;L, Balance Sheet, and Cash Flow &mdash; always in Kwacha (K)
-            </div>
+            <h1>Financial Statements</h1>
+            <p>Group-wide P&amp;L, Balance Sheet, and Cash Flow &mdash; always in Kwacha (K)</p>
           </div>
         </div>
 
@@ -53,6 +51,27 @@ export default function HqFinancialStatements() {
           {tab === 'cashflow' && <CashFlowView />}
         </div>
       </div>
+    </div>
+  );
+}
+
+// Filter card wrapper — matches HqConsolidatedProfit's filter card look
+function FilterCard({ children }) {
+  return (
+    <div className="fs-screen" style={{
+      background: '#fff', border: '1px solid #e5e7eb', borderRadius: 10,
+      padding: 14, marginBottom: 14, display: 'flex', flexWrap: 'wrap',
+      gap: 12, alignItems: 'flex-end',
+    }}>
+      {children}
+    </div>
+  );
+}
+function Field({ label, children }) {
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+      <label style={{ fontSize: 11, color: '#6b7280', textTransform: 'uppercase', letterSpacing: 0.5, fontWeight: 600 }}>{label}</label>
+      {children}
     </div>
   );
 }
@@ -79,18 +98,16 @@ function IncomeStatementView() {
 
   return (
     <>
-      <div className="fs-screen" style={controls}>
-        <label style={ctrlLabel}>Month
-          <input type="month" value={month} onChange={e => setMonth(e.target.value)} style={inp} />
-        </label>
+      <FilterCard>
+        <Field label="Month"><input type="month" value={month} onChange={e => setMonth(e.target.value)} style={inp} /></Field>
+        <div style={{ flex: 1 }} />
         <button onClick={load} disabled={loading} style={btnPrimary}>
-          <FiRefreshCw style={{ verticalAlign: 'middle', marginRight: 4 }} />
-          {loading ? 'Loading…' : 'View'}
+          <FiRefreshCw /> {loading ? 'Loading…' : 'View'}
         </button>
         <button onClick={() => window.print()} disabled={!data || loading} style={btnGhost}>
-          <FiPrinter style={{ verticalAlign: 'middle', marginRight: 4 }} /> Export PDF
+          <FiPrinter /> Export PDF
         </button>
-      </div>
+      </FilterCard>
 
       {error && <ErrorRow msg={error} />}
       {!data && !error && !loading && <div style={emptyState}>Pick a month and click <b>View</b>.</div>}
@@ -147,18 +164,16 @@ function BalanceSheetView() {
 
   return (
     <>
-      <div className="fs-screen" style={controls}>
-        <label style={ctrlLabel}>As at
-          <input type="date" value={asOf} onChange={e => setAsOf(e.target.value)} style={inp} />
-        </label>
+      <FilterCard>
+        <Field label="As at"><input type="date" value={asOf} onChange={e => setAsOf(e.target.value)} style={inp} /></Field>
+        <div style={{ flex: 1 }} />
         <button onClick={load} disabled={loading} style={btnPrimary}>
-          <FiRefreshCw style={{ verticalAlign: 'middle', marginRight: 4 }} />
-          {loading ? 'Loading…' : 'View'}
+          <FiRefreshCw /> {loading ? 'Loading…' : 'View'}
         </button>
         <button onClick={() => window.print()} disabled={!data || loading} style={btnGhost}>
-          <FiPrinter style={{ verticalAlign: 'middle', marginRight: 4 }} /> Export PDF
+          <FiPrinter /> Export PDF
         </button>
-      </div>
+      </FilterCard>
 
       {error && <ErrorRow msg={error} />}
       {!data && !error && !loading && <div style={emptyState}>Pick a date and click <b>View</b>.</div>}
@@ -228,18 +243,16 @@ function CashFlowView() {
 
   return (
     <>
-      <div className="fs-screen" style={controls}>
-        <label style={ctrlLabel}>Month
-          <input type="month" value={month} onChange={e => setMonth(e.target.value)} style={inp} />
-        </label>
+      <FilterCard>
+        <Field label="Month"><input type="month" value={month} onChange={e => setMonth(e.target.value)} style={inp} /></Field>
+        <div style={{ flex: 1 }} />
         <button onClick={load} disabled={loading} style={btnPrimary}>
-          <FiRefreshCw style={{ verticalAlign: 'middle', marginRight: 4 }} />
-          {loading ? 'Loading…' : 'View'}
+          <FiRefreshCw /> {loading ? 'Loading…' : 'View'}
         </button>
         <button onClick={() => window.print()} disabled={!data || loading} style={btnGhost}>
-          <FiPrinter style={{ verticalAlign: 'middle', marginRight: 4 }} /> Export PDF
+          <FiPrinter /> Export PDF
         </button>
-      </div>
+      </FilterCard>
 
       {error && <ErrorRow msg={error} />}
       {!data && !error && !loading && <div style={emptyState}>Pick a month and click <b>View</b>.</div>}
@@ -414,10 +427,11 @@ function ErrorRow({ msg }) {
 function TabBtn({ active, onClick, children }) {
   return (
     <button onClick={onClick} style={{
-      padding: '9px 16px', border: 'none', cursor: 'pointer', fontSize: 13, fontWeight: 600,
-      background: active ? '#0f172a' : '#f1f5f9',
-      color: active ? '#fff' : '#334155',
-      borderRadius: 6, marginRight: 8,
+      padding: '10px 18px', border: 'none', cursor: 'pointer', fontSize: 13, fontWeight: 600,
+      background: active ? '#0ea5e9' : 'transparent',
+      color:      active ? '#fff'    : '#64748b',
+      borderRadius: '6px 6px 0 0', marginRight: 2,
+      borderBottom: active ? '3px solid #0ea5e9' : '3px solid transparent',
     }}>{children}</button>
   );
 }
@@ -434,15 +448,11 @@ function niceDate(d) {
 // ═════════════════════════════════════════════════════════════════════
 //  Styles
 // ═════════════════════════════════════════════════════════════════════
-const outer      = { padding: 24, background: '#f8fafc', minHeight: '100vh' };
-const headerRow  = { display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', marginBottom: 16 };
-const tabBar     = { display: 'flex', gap: 4, borderBottom: '1px solid #e5e7eb', paddingBottom: 0 };
-const controls   = { display: 'flex', gap: 12, alignItems: 'flex-end', marginBottom: 14, flexWrap: 'wrap' };
-const ctrlLabel  = { display: 'flex', flexDirection: 'column', fontSize: 11, color: '#6b7280', gap: 4, textTransform: 'uppercase', letterSpacing: 1 };
+const tabBar     = { display: 'flex', gap: 4, borderBottom: '1px solid #e5e7eb', paddingBottom: 0, marginBottom: 4 };
 const inp        = { padding: '8px 10px', border: '1px solid #d1d5db', borderRadius: 6, fontSize: 13, background: '#fff', minWidth: 180 };
-const btnPrimary = { padding: '9px 14px', background: '#0f172a', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer', fontSize: 13, fontWeight: 600 };
-const btnGhost   = { padding: '9px 14px', background: '#fff', color: '#0f172a', border: '1px solid #cbd5e1', borderRadius: 6, cursor: 'pointer', fontSize: 13, fontWeight: 600 };
-const emptyState = { padding: 40, textAlign: 'center', color: '#94a3b8', background: '#fff', border: '1px dashed #e5e7eb', borderRadius: 6 };
+const btnPrimary = { padding: '9px 16px', background: '#0ea5e9', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer', fontSize: 13, fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: 6 };
+const btnGhost   = { padding: '9px 16px', background: '#fff', color: '#0f172a', border: '1px solid #cbd5e1', borderRadius: 6, cursor: 'pointer', fontSize: 13, fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: 6 };
+const emptyState = { padding: 40, textAlign: 'center', color: '#94a3b8', background: '#fff', border: '1px dashed #e5e7eb', borderRadius: 10 };
 const statementCard = { background: '#fff', border: '1px solid #e5e7eb', borderRadius: 8, padding: '20px 24px', marginTop: 12 };
 const plugNote   = { marginTop: 12, padding: 12, background: '#fffbeb', border: '1px solid #fef3c7', borderRadius: 6, fontSize: 12, color: '#78350f', lineHeight: 1.5 };
 const printHeader = { textAlign: 'center', marginBottom: 20 };
