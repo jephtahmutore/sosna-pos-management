@@ -680,7 +680,7 @@ const Layout = () => {
             'CashReceipt', 'PaymentVoucher', 'PvTypes', 'CashBook', 'HQDeposits',
             'FxRates', 'AccountPayables', 'AccountReceivables', 'ProfitReport',
             'CapitalAccount', 'DividendAccount', 'Shareholders', 'LoanAccount',
-            'HqCashPosition', 'HqConsolidatedProfit'
+            'HqCashPosition', 'HqConsolidatedProfit', 'HqFinancialStatements'
           ) && (
             <>
               <div className={`nav-group-header ${isGroupActive(['/accounting']) ? 'active' : ''}`} onClick={() => toggleGroup('accounting')}>
@@ -795,6 +795,13 @@ const Layout = () => {
                   {hq && hasPageAccess('HqConsolidatedProfit') && (
                     <div className={`nav-item ${isActive('/hq/consolidated-profit') ? 'active' : ''}`} onClick={() => navigate('/hq/consolidated-profit')}>
                       <FiTrendingUp className="nav-icon" /> <span>HQ Consolidated Profit</span>
+                    </div>
+                  )}
+                  {/* Financial Statements — Income Statement, Balance Sheet,
+                      Cash Flow Statement. Group-wide, K only, HQ-only. */}
+                  {hq && hasPageAccess('HqFinancialStatements') && (
+                    <div className={`nav-item ${isActive('/hq/financial-statements') ? 'active' : ''}`} onClick={() => navigate('/hq/financial-statements')}>
+                      <FiTrendingUp className="nav-icon" /> <span>Financial Statements</span>
                     </div>
                   )}
                 </div>

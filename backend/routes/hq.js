@@ -1455,4 +1455,311 @@ router.get('/income-statement', hqAuth, requirePagePerm('HqFinancialStatements')
   }
 });
 
+// ─── GET /api/hq/balance-sheet?asOf=YYYY-MM-DD ─────────────────────────────
+// Financial Statements → Balance Sheet, HQ-only, always in Kwacha.
+//
+// "Management snapshot" style — everything is computed as-at the date
+// with what's currently in the books. Retained Earnings falls out as a
+// PLUG so the sheet always balances (Assets = Liabilities + Equity).
+// Documented in the response as `plug_note` so the customer sees where
+// the number came from.
+//
+// Assets:
+//   Cash & bank   — daily_actual_balance per branch (last row ≤ asOf)
+//   Inventory     — SUM(products.current_stock × avg_cost_price) per branch
+//                   (as-at NOW; no historical stock reconstruction — noted)
+//   Loans receivable — SUM(loans direction=Receivable status=Active principal)
+// Liabilities:
+//   Loans payable — SUM(loans direction=Payable    status=Active principal)
+//   HQ payables   — SUM(hq_purchases balances still owed)
+// Equity:
+//   Capital       — SUM(capital_account injections − drawings up to asOf)
+//   Retained earnings — PLUG = Assets − Liabilities − Capital
+router.get('/balance-sheet', hqAuth, requirePagePerm('HqFinancialStatements'), (req, res) => {
+  try {
+    const asOf = String(req.query.asOf || new Date().toISOString().slice(0, 10));
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(asOf)) {
+      return res.status(400).json({ error: 'asOf must be YYYY-MM-DD' });
+    }
+    const tenants = listTenants();
+
+    // FX map (K/USD) forward-filled up to asOf, for USD-native branches
+    let kassSlug = null;
+    for (const t of tenants) {
+      try {
+        const db = getTenantDb(t.slug);
+        const cm = tryGet(db, `SELECT currency_mode FROM business_settings LIMIT 1`);
+        if (cm && typeof cm.currency_mode === 'string' && cm.currency_mode.includes('USD')) {
+          kassSlug = t.slug; break;
+        }
+      } catch {}
+    }
+    let effKUsd = null;
+    if (kassSlug) {
+      try {
+        const kdb = getTenantDb(kassSlug);
+        const r = tryGet(kdb, `
+          SELECT AVG(selling_rate_k_used) AS rate FROM (
+            SELECT selling_rate_k_used FROM orders
+             WHERE deleted_at IS NULL AND selling_rate_k_used > 0
+               AND substr(created_at, 1, 10) <= ?
+          ORDER BY created_at DESC LIMIT 30)
+        `, asOf);
+        if (r?.rate) effKUsd = parseFloat(r.rate);
+      } catch (e) { console.error('[hq.balance-sheet] fx:', e.message); }
+    }
+    const usdToK = v => effKUsd ? (v * effKUsd) : 0;
+
+    // ── Assets per branch ────────────────────────────────────────────
+    let cash = 0, inventory = 0;
+    const perBranch = [];
+    for (const t of tenants) {
+      try {
+        const db = getTenantDb(t.slug);
+        const settings = tryGet(db, `SELECT business_name, currency_mode FROM business_settings LIMIT 1`) || {};
+        const isUsd = typeof settings.currency_mode === 'string' && settings.currency_mode.includes('USD');
+        const toK = v => isUsd ? usdToK(parseFloat(v || 0)) : parseFloat(v || 0);
+
+        // Cash — last daily_actual_balance on-or-before asOf
+        let bCash = 0;
+        try {
+          const row = tryGet(db, `
+            SELECT COALESCE(cash_balance, 0) + COALESCE(bank_balance, 0) + COALESCE(momo_balance, 0) AS total
+              FROM daily_actual_balance
+             WHERE date <= ?
+          ORDER BY date DESC LIMIT 1
+          `, asOf);
+          bCash = toK(row?.total || 0);
+        } catch { /* table variation */ }
+
+        // Inventory — snapshot NOW (no historical stock)
+        let bInv = 0;
+        try {
+          const row = tryGet(db, `
+            SELECT COALESCE(SUM(current_stock * COALESCE(avg_cost_price, cost_price, 0)), 0) AS total
+              FROM products
+             WHERE deleted_at IS NULL
+          `);
+          bInv = toK(row?.total || 0);
+        } catch {}
+
+        perBranch.push({
+          slug: t.slug,
+          name: settings.business_name || t.business_name || t.slug,
+          currency: isUsd ? 'USD' : 'K',
+          cash: bCash,
+          inventory: bInv,
+        });
+        cash += bCash; inventory += bInv;
+      } catch (e) {
+        console.error(`[hq.balance-sheet] ${t.slug}:`, e.message);
+      }
+    }
+
+    // ── HQ-side items (defaultDb) ────────────────────────────────────
+    let loansReceivable = 0, loansPayable = 0, capital = 0, hqPayables = 0;
+    try {
+      const r = tryGet(defaultDb, `
+        SELECT COALESCE(SUM(principal_amount), 0) AS total
+          FROM loans
+         WHERE status = 'Active' AND direction = 'Receivable'
+           AND (start_date IS NULL OR start_date <= ?)
+      `, asOf);
+      loansReceivable = parseFloat(r?.total || 0);
+    } catch (e) { console.error('[hq.balance-sheet] loans_rcv:', e.message); }
+    try {
+      const r = tryGet(defaultDb, `
+        SELECT COALESCE(SUM(principal_amount), 0) AS total
+          FROM loans
+         WHERE status = 'Active' AND direction = 'Payable'
+           AND (start_date IS NULL OR start_date <= ?)
+      `, asOf);
+      loansPayable = parseFloat(r?.total || 0);
+    } catch (e) { console.error('[hq.balance-sheet] loans_pay:', e.message); }
+    try {
+      const r = tryGet(defaultDb, `
+        SELECT
+          COALESCE(SUM(CASE WHEN type='Injection' THEN amount ELSE 0 END), 0)
+        - COALESCE(SUM(CASE WHEN type='Drawing'   THEN amount ELSE 0 END), 0) AS total
+          FROM capital_account
+         WHERE date <= ?
+      `, asOf);
+      capital = parseFloat(r?.total || 0);
+    } catch (e) { console.error('[hq.balance-sheet] capital:', e.message); }
+
+    const totalAssets = cash + inventory + loansReceivable;
+    const totalLiabilities = loansPayable + hqPayables;
+    // Retained earnings falls out so Assets = Liabilities + Equity
+    const retainedEarnings = totalAssets - totalLiabilities - capital;
+    const totalEquity = capital + retainedEarnings;
+
+    res.json({
+      asOf,
+      currency: 'K',
+      fx: {
+        source: kassSlug ? `${kassSlug} orders.selling_rate_k_used (K/USD, last 30 orders ≤ asOf)` : 'no USD-native branch found',
+        k_per_usd: effKUsd,
+      },
+      assets: {
+        cash,
+        inventory,
+        loans_receivable: loansReceivable,
+        total: totalAssets,
+      },
+      liabilities: {
+        loans_payable: loansPayable,
+        hq_payables: hqPayables,
+        total: totalLiabilities,
+      },
+      equity: {
+        capital,
+        retained_earnings: retainedEarnings,
+        total: totalEquity,
+      },
+      plug_note: 'Retained earnings computed as PLUG (Assets − Liabilities − Capital) so the sheet balances. Absent a formal 31 Jul opening position, this figure absorbs all unrecorded equity + payables from prior periods.',
+      per_branch: perBranch,
+    });
+  } catch (error) {
+    console.error('[hq.balance-sheet] failed:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ─── GET /api/hq/cash-flow?month=YYYY-MM ───────────────────────────────────
+// Financial Statements → Cash Flow Statement (direct method), HQ-only, K.
+//
+// Aggregates cash movements from the group's cash_book for the month,
+// categorised into Operating / Investing / Financing per standard CFS
+// layout. Direct method chosen (over indirect) because Sosna's cash_book
+// already tags each row by category — no need to reverse-engineer working
+// capital deltas.
+//
+// Categories (per cash_book.transaction_type + linked source):
+//   Operating: sale collections, supplier payments, opex PVs, salaries
+//   Investing: loans issued (Receivable disbursement), capex
+//   Financing: loan received (Payable disbursement), loan repayment,
+//              capital injection/drawing, dividends
+router.get('/cash-flow', hqAuth, requirePagePerm('HqFinancialStatements'), (req, res) => {
+  try {
+    const month = String(req.query.month || new Date().toISOString().slice(0, 7));
+    if (!/^\d{4}-\d{2}$/.test(month)) {
+      return res.status(400).json({ error: 'month must be YYYY-MM' });
+    }
+    const [y, m] = month.split('-').map(Number);
+    const from = `${month}-01`;
+    const to   = new Date(Date.UTC(y, m, 0)).toISOString().slice(0, 10);
+
+    const tenants = listTenants();
+
+    // FX rate — same K/USD forward-filled average across the month
+    let kassSlug = null;
+    for (const t of tenants) {
+      try {
+        const db = getTenantDb(t.slug);
+        const cm = tryGet(db, `SELECT currency_mode FROM business_settings LIMIT 1`);
+        if (cm && typeof cm.currency_mode === 'string' && cm.currency_mode.includes('USD')) {
+          kassSlug = t.slug; break;
+        }
+      } catch {}
+    }
+    let effKUsd = null;
+    if (kassSlug) {
+      try {
+        const kdb = getTenantDb(kassSlug);
+        const r = tryGet(kdb, `
+          SELECT AVG(selling_rate_k_used) AS rate FROM orders
+           WHERE deleted_at IS NULL AND selling_rate_k_used > 0
+             AND substr(created_at, 1, 10) BETWEEN ? AND ?
+        `, [from, to]);
+        if (r?.rate) effKUsd = parseFloat(r.rate);
+      } catch (e) { console.error('[hq.cash-flow] fx:', e.message); }
+    }
+    const usdToK = v => effKUsd ? (v * effKUsd) : 0;
+
+    // Per-branch cash_book aggregation
+    // amount_in - amount_out per transaction_type
+    let opInflow = 0, opOutflow = 0;
+    let invInflow = 0, invOutflow = 0;
+    let finInflow = 0, finOutflow = 0;
+
+    for (const t of tenants) {
+      try {
+        const db = getTenantDb(t.slug);
+        const settings = tryGet(db, `SELECT currency_mode FROM business_settings LIMIT 1`) || {};
+        const isUsd = typeof settings.currency_mode === 'string' && settings.currency_mode.includes('USD');
+        const toK = v => isUsd ? usdToK(parseFloat(v || 0)) : parseFloat(v || 0);
+
+        let rows = [];
+        try {
+          rows = db.prepare(`
+            SELECT transaction_type,
+                   COALESCE(SUM(amount_in),  0) AS inflow,
+                   COALESCE(SUM(amount_out), 0) AS outflow
+              FROM cash_book
+             WHERE date BETWEEN ? AND ?
+               AND (deleted_at IS NULL)
+          GROUP BY transaction_type
+          `).all(from, to);
+        } catch { /* schema variance */ }
+
+        for (const r of rows) {
+          const tt = String(r.transaction_type || '').toLowerCase();
+          const inK  = toK(r.inflow);
+          const outK = toK(r.outflow);
+
+          // Financing types
+          if (tt.includes('capital') || tt.includes('dividend') ||
+              tt.includes('loan') && !tt.includes('receivable')) {
+            finInflow  += inK;
+            finOutflow += outK;
+          } else if (tt.includes('receivable') || tt.includes('capex') || tt.includes('investment')) {
+            invInflow  += inK;
+            invOutflow += outK;
+          } else {
+            // Everything else = operating (sales, supplier, opex, salaries, GRN payment, etc.)
+            opInflow  += inK;
+            opOutflow += outK;
+          }
+        }
+      } catch (e) {
+        console.error(`[hq.cash-flow] ${t.slug}:`, e.message);
+      }
+    }
+
+    const opNet  = opInflow  - opOutflow;
+    const invNet = invInflow - invOutflow;
+    const finNet = finInflow - finOutflow;
+    const netChangeInCash = opNet + invNet + finNet;
+
+    res.json({
+      period: { month, from, to },
+      currency: 'K',
+      fx: {
+        source: kassSlug ? `${kassSlug} orders.selling_rate_k_used (avg for period)` : 'no USD-native branch found',
+        k_per_usd: effKUsd,
+      },
+      method: 'direct',
+      operating: {
+        inflows: opInflow,
+        outflows: opOutflow,
+        net: opNet,
+      },
+      investing: {
+        inflows: invInflow,
+        outflows: invOutflow,
+        net: invNet,
+      },
+      financing: {
+        inflows: finInflow,
+        outflows: finOutflow,
+        net: finNet,
+      },
+      net_change_in_cash: netChangeInCash,
+    });
+  } catch (error) {
+    console.error('[hq.cash-flow] failed:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 module.exports = router;

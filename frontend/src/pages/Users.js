@@ -103,6 +103,7 @@ const PAGE_GROUPS_HQ = [
       { key: 'HqInventoryReport',    label: 'HQ Inventory' },
       { key: 'HqCashPosition',       label: 'HQ Cash Position' },
       { key: 'HqConsolidatedProfit', label: 'HQ Consolidated Profit' },
+      { key: 'HqFinancialStatements', label: 'Financial Statements' },
     ],
   },
   {
@@ -165,7 +166,7 @@ const LEGACY_EXPAND = {
   // v1.10.245 — HQ umbrella key implies every HQ-only page. Grants
   // admins a one-click way to give an HQ manager full HQ access without
   // ticking 13 boxes.
-  HQ:         ['HqOverview', 'HqSalesReport', 'HqInventoryReport', 'HqCashPosition', 'HqConsolidatedProfit', 'HqProducts', 'HqPurchases', 'HqCostOfDelivery', 'HqConfirmGrn', 'HqGrnArchive', 'HqVariances', 'HqConfirmDamages', 'HqSuppliers'],
+  HQ:         ['HqOverview', 'HqSalesReport', 'HqInventoryReport', 'HqCashPosition', 'HqConsolidatedProfit', 'HqFinancialStatements', 'HqProducts', 'HqPurchases', 'HqCostOfDelivery', 'HqConfirmGrn', 'HqGrnArchive', 'HqVariances', 'HqConfirmDamages', 'HqSuppliers'],
 };
 
 const expandOldPerms = (perms) => {

@@ -218,6 +218,11 @@ export const getHqCashPosition = () => api.get('/hq/cash-position');
 // excluding LCVs. Returns per-branch totals + daily rows for drilldown.
 export const getHqConsolidatedProfit = (params) => api.get('/hq/consolidated-profit', { params });
 
+// Financial Statements — HQ-only, always in Kwacha
+export const getHqIncomeStatement = (params) => api.get('/hq/income-statement', { params });
+export const getHqBalanceSheet    = (params) => api.get('/hq/balance-sheet',    { params });
+export const getHqCashFlow        = (params) => api.get('/hq/cash-flow',        { params });
+
 // HQ — v1.9.0 Layer 3: manual mirror of all HQ-owned entities (main_categories,
 // categories, units, products) to every registered branch. Optional { slug }
 // targets a single branch instead of all of them. Returns per-branch counts of
