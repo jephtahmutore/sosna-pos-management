@@ -25,7 +25,8 @@ const { listTenants, masterDb } = require('../config/masterDb');
 // hqAuth verifies the JWT. Non-admin HQ users need explicit HqXxx perms
 // from Users → Permissions; admin bypasses (isAllAccess pattern).
 const { requirePagePerm } = require('../middleware/auth');
-const { getTenantDb } = require('../config/tenantDb');
+const { getTenantDb, getTenantSyncIds } = require('../config/tenantDb');
+const { computeBranchCashPosition } = require('../utils/branchCashPosition');
 const { defaultDb }   = require('../config/database');
 const { mirrorAllHqToBranches } = require('../middleware/hqPush');
 const { recalculateDailyProfit } = require('../config/profitHelper');
@@ -1502,7 +1503,7 @@ router.get('/balance-sheet', hqAuth, requirePagePerm('HqFinancialStatements'), (
         }
       } catch {}
     }
-    let effKUsd = null;
+    let effKUsd = null, effFraUsd = null;
     if (kassSlug) {
       try {
         const kdb = getTenantDb(kassSlug);
@@ -1514,9 +1515,22 @@ router.get('/balance-sheet', hqAuth, requirePagePerm('HqFinancialStatements'), (
           ORDER BY created_at DESC LIMIT 30)
         `, asOf);
         if (r?.rate) effKUsd = parseFloat(r.rate);
-      } catch (e) { console.error('[hq.balance-sheet] fx:', e.message); }
+      } catch (e) { console.error('[hq.balance-sheet] K/USD fx:', e.message); }
+      try {
+        const kdb = getTenantDb(kassSlug);
+        const r = tryGet(kdb, `
+          SELECT sell_rate AS rate FROM fx_rates
+           WHERE effective_date <= ? AND sell_rate > 0
+        ORDER BY effective_date DESC, id DESC LIMIT 1
+        `, asOf);
+        if (r?.rate) effFraUsd = parseFloat(r.rate);
+      } catch (e) { console.error('[hq.balance-sheet] FRA/USD fx:', e.message); }
     }
     const usdToK = v => effKUsd ? (v * effKUsd) : 0;
+    // FRA → K: (fra / FRA/USD) × K/USD
+    const fraToK = v => (effFraUsd && effKUsd)
+      ? (parseFloat(v || 0) / effFraUsd) * effKUsd
+      : 0;
 
     // ── Assets per branch ────────────────────────────────────────────
     let cash = 0, inventory = 0, accountsReceivable = 0, customerAdvances = 0;
@@ -1528,14 +1542,21 @@ router.get('/balance-sheet', hqAuth, requirePagePerm('HqFinancialStatements'), (
         const isUsd = typeof settings.currency_mode === 'string' && settings.currency_mode.includes('USD');
         const toK = v => isUsd ? usdToK(parseFloat(v || 0)) : parseFloat(v || 0);
 
-        // Cash & Bank: TODO — reuse the Cash Book /stats currency logic
-        // (~700 lines of per-currency + per-method + tenant-family
-        // handling in routes/cashBook.js). Blindly summing receipt_amount
-        // − payment_amount mixes USD/FRA/K on multi-currency branches
-        // (HQ, Kassumbalesa) and inflates the total. Leaving as 0 with
-        // a warning until we can call each branch's /stats endpoint
-        // internally or extract the shared helper to a util.
-        let bCash = 0;
+        // Cash & Bank — via shared helper in utils/branchCashPosition.js.
+        // Reads per-currency sub-drawers (USD + FRA + K) from cash_book,
+        // opening seeds + net receipt/payment deltas up to asOf, then
+        // converts each to K using this endpoint's FX rates.
+        let bCash = 0, bCashBreakdown = null;
+        try {
+          const syncIds = getTenantSyncIds(db);
+          if (syncIds.tenant_id) {
+            const pos = computeBranchCashPosition(db, syncIds.tenant_id, asOf);
+            bCashBreakdown = pos;
+            bCash = pos.k + usdToK(pos.usd) + fraToK(pos.fra);
+          }
+        } catch (e) {
+          console.error(`[hq.balance-sheet] cash ${t.slug}:`, e.message);
+        }
 
         // Inventory — snapshot NOW (no historical stock)
         let bInv = 0;
@@ -1596,6 +1617,7 @@ router.get('/balance-sheet', hqAuth, requirePagePerm('HqFinancialStatements'), (
           name: settings.business_name || t.business_name || t.slug,
           currency: isUsd ? 'USD' : 'K',
           cash: bCash,
+          cash_breakdown: bCashBreakdown,  // { usd, fra, k } in native
           inventory: bInv,
           accounts_receivable: bAr,
           customer_advances: bAdv,
