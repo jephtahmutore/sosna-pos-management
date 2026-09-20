@@ -1528,17 +1528,32 @@ router.get('/balance-sheet', hqAuth, requirePagePerm('HqFinancialStatements'), (
         const isUsd = typeof settings.currency_mode === 'string' && settings.currency_mode.includes('USD');
         const toK = v => isUsd ? usdToK(parseFloat(v || 0)) : parseFloat(v || 0);
 
-        // Cash — last daily_actual_balance on-or-before asOf
+        // v1.10.313 — Cash & Bank position at asOf = running balance of
+        // the branch's cash_book up to that date. Was reading the last
+        // daily_actual_balance row, but that table is only populated when
+        // the operator hits "Save Actual Balances" on Sales Inventory —
+        // rarely done every day, so most branches read 0. The cash_book
+        // running balance is authoritative (every till in/out is a row).
         let bCash = 0;
         try {
           const row = tryGet(db, `
-            SELECT COALESCE(cash_balance, 0) + COALESCE(bank_balance, 0) + COALESCE(momo_balance, 0) AS total
-              FROM daily_actual_balance
+            SELECT COALESCE(SUM(COALESCE(receipt_amount, 0) - COALESCE(payment_amount, 0)), 0) AS total
+              FROM cash_book
              WHERE date <= ?
-          ORDER BY date DESC LIMIT 1
+               AND (deleted_at IS NULL)
           `, asOf);
           bCash = toK(row?.total || 0);
-        } catch { /* table variation */ }
+        } catch {
+          // Fallback for tenants without deleted_at column
+          try {
+            const row = tryGet(db, `
+              SELECT COALESCE(SUM(COALESCE(receipt_amount, 0) - COALESCE(payment_amount, 0)), 0) AS total
+                FROM cash_book
+               WHERE date <= ?
+            `, asOf);
+            bCash = toK(row?.total || 0);
+          } catch (e) { console.error(`[hq.balance-sheet] cash ${t.slug}:`, e.message); }
+        }
 
         // Inventory — snapshot NOW (no historical stock)
         let bInv = 0;
