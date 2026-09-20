@@ -1571,16 +1571,31 @@ router.get('/balance-sheet', hqAuth, requirePagePerm('HqFinancialStatements'), (
           console.error(`[hq.balance-sheet] cash ${t.slug}:`, e.message);
         }
 
-        // Inventory — snapshot NOW (no historical stock)
+        // Inventory — sum stock_movements (authoritative ledger) across
+        // BOTH store and sales locations, valued at WAC (avg_cost_price
+        // with fallback). Not products.current_stock — that cache drifts
+        // from the movement ledger (~1-2% typical) and misses one of the
+        // two locations depending on how it's maintained. Store + sales
+        // together = total inventory the business owns at this depot.
         let bInv = 0;
         try {
           const row = tryGet(db, `
-            SELECT COALESCE(SUM(current_stock * COALESCE(avg_cost_price, cost_price, 0)), 0) AS total
-              FROM products
-             WHERE deleted_at IS NULL
+            SELECT COALESCE(SUM(bal * COALESCE(p.avg_cost_price, p.cost_price, 0)), 0) AS total
+              FROM products p
+              JOIN (
+                SELECT product_sync_id, SUM(quantity) AS bal
+                  FROM stock_movements
+                 WHERE deleted_at IS NULL
+                   AND location IN ('store', 'sales')
+                   AND product_sync_id IS NOT NULL
+              GROUP BY product_sync_id
+              ) bal_agg ON bal_agg.product_sync_id = p.sync_id
+             WHERE p.deleted_at IS NULL
           `);
           bInv = toK(row?.total || 0);
-        } catch {}
+        } catch (e) {
+          console.error(`[hq.balance-sheet] inventory ${t.slug}:`, e.message);
+        }
 
         // v1.10.313 — Accounts Receivable + Customer Advances (standard
         // balance sheet items — missing from the initial cut on 2026-09-06).
