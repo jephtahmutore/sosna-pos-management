@@ -675,6 +675,8 @@ function initTenantDb(db) {
       -- change_reason captures the cashier's text (required, min 3 chars).
       new_price         REAL,
       change_reason     TEXT,
+      -- Customer typed on the POS when the request was raised (NULL = walk-in).
+      customer_name     TEXT,
       status            TEXT NOT NULL DEFAULT 'pending', -- 'pending' | 'approved' | 'rejected'
       approver_id       INTEGER REFERENCES users(id),
       approver_name     TEXT,
@@ -844,6 +846,8 @@ function initTenantDb(db) {
   // v1.8.98 — Change Price feature on existing DBs.
   addCol('discount_requests',  'new_price',         'REAL');
   addCol('discount_requests',  'change_reason',     'TEXT');
+  // Customer name snapshot shown on the Approvals card.
+  addCol('discount_requests',  'customer_name',     'TEXT');
 
   addCol('stock_movements',    'reference_sync_id', 'TEXT');
   addCol('stock_movements',    'product_sync_id',   'TEXT');

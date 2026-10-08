@@ -218,6 +218,9 @@ const PendingApprovals = () => {
                 <div style={{ marginTop: 8, fontWeight: 800, color: '#111827', fontSize: 15 }}>
                   {isCart ? 'Whole sale' : (r.product_name || 'Item')}
                 </div>
+                <div style={{ marginTop: 4, fontSize: 12, color: '#374151', display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <FiUser size={12} color="#6b7280" /> Customer <strong>{r.customer_name || 'Walk-in'}</strong>
+                </div>
 
                 {/* Per-unit price math — only for line targets */}
                 {!isCart && (

@@ -33,6 +33,8 @@ router.post('/', auth, (req, res) => {
       // (unit_price - new_price) * quantity (signed: + when shop loses,
       // − when shop gains from a surcharge). change_reason is required.
       new_price, change_reason,
+      // Customer on the POS sale at request time (blank = walk-in).
+      customer_name,
     } = req.body;
     if (!['line', 'cart'].includes(target)) return res.status(400).json({ error: 'target must be "line" or "cart".' });
 
@@ -65,9 +67,9 @@ router.post('/', auth, (req, res) => {
       INSERT INTO discount_requests
       (requested_by, requester_name, target, product_name, product_sync_id, unit,
        quantity, unit_price, subtotal, discount_amount,
-       new_price, change_reason, status,
+       new_price, change_reason, customer_name, status,
        sync_id, tenant_id, branch_id, device_id, synced)
-      VALUES (?,?,?,?,?,?, ?,?,?,?, ?,?, 'pending', ?,?,?,?, 0)
+      VALUES (?,?,?,?,?,?, ?,?,?,?, ?,?,?, 'pending', ?,?,?,?, 0)
     `).run(
       req.user.id, requesterName, target,
       target === 'cart' ? null : (product_name || null),
@@ -79,6 +81,7 @@ router.post('/', auth, (req, res) => {
       amt,
       hasNewPrice ? parseFloat(new_price) : null,
       hasNewPrice ? (change_reason || '').trim() : null,
+      (customer_name || '').toString().trim() || null,
       syncId, tenantId, branchId, deviceId
     );
     const row = db.prepare('SELECT * FROM discount_requests WHERE id = ?').get(info.lastInsertRowid);

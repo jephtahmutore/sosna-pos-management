@@ -2889,6 +2889,7 @@ const POS = () => {
                   new_price:       draftNum,
                   change_reason:   (discountModal.reason || '').trim(),
                 };
+            payload.customer_name = (customerName || '').trim();
             const res = await createDiscountRequest(payload);
             setDiscountModal(d => d ? { ...d, submitting: false, pendingSyncId: res.data?.sync_id, verdict: null, rejectionReason: '' } : d);
             // v1.9.4 — kick a sync cycle right after the row is inserted so
