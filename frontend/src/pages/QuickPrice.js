@@ -1,14 +1,11 @@
 // v1.8.34 — Quick Price Update.
-// v1.10.26 — Mirrors the Item Details pricing rule (v1.8.71):
-//   • Editing the DEFAULT unit cascades to every packaging (base_price =
-//     entered / conv, siblings re-derive from base × their conv) and
-//     clears all per-unit overrides for that product.
-//   • Editing a NON-DEFAULT unit stores a per-unit override — base and
-//     other cells stay put. This is what lets a shop sell Six Pack at
-//     an unequal price without wrecking the Box price.
-// Previously every edit back-solved basePrice from that cell's conv, so
-// editing Six Pack changed Bottle AND Box in lockstep — the bug the user
-// hit when trying to reprice Heineken Ordinary Six Pack.
+// Every unit price is edited on its own — changing one cell never
+// recalculates the others. (Until v1.10.332 the default / base unit
+// cascaded base × conv to every packaging; shops that price Box, Six
+// Pack and Pcs independently kept having their other prices rewritten.)
+// The backend still wants a base price plus per-unit prices, so on save
+// the base unit goes up as base_price and every other unit as an
+// explicit unit_prices entry.
 import React, { useEffect, useMemo, useState } from 'react';
 import { getProducts, bulkUpdatePrices } from '../services/api';
 import { useAuth } from '../context/AuthContext';
@@ -18,13 +15,17 @@ import { matchTokens } from '../utils/tokenSearch';
 
 const fmt2 = (n) => Number(n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
-// Which packaging is treated as the DEFAULT for cascade purposes.
-// Falls back to the base unit (conv=1) when product has no default_unit set.
+// Base unit = the one flagged is_base, else the smallest packaging
+// (units are sorted biggest conv first, so that's the last one).
+const baseUnitOf = (product) =>
+  product._units.find(u => u.is_base) || product._units[product._units.length - 1];
+
+// Which packaging gets the DEFAULT badge. Falls back to the base unit
+// when the product has no default_unit set.
 const defaultUnitName = (product) => {
   const dflt = (product.default_unit || '').trim();
   if (dflt) return dflt;
-  const baseUnit = product._units.find(u => u.is_base) || product._units[product._units.length - 1];
-  return baseUnit?.name || '';
+  return baseUnitOf(product)?.name || '';
 };
 
 const QuickPrice = () => {
@@ -34,16 +35,9 @@ const QuickPrice = () => {
   const [loading, setLoading]   = useState(true);
   const [saving, setSaving]     = useState(false);
   const [search, setSearch]     = useState('');
-  // Map<productId, basePricePerBaseUnit>. Drives every cell whose unit
-  // does NOT have an override in unitPrices[productId].
-  const [basePrices, setBasePrices] = useState({});
-  const [initialBase, setInitialBase] = useState({});
-  // v1.10.26 — Map<productId, Map<unitName, overridePrice>>. Present only
-  // for non-default cells the user edited independently. Cells NOT in this
-  // map render as basePrice × conv. Editing the default unit CLEARS this
-  // whole product's map.
-  const [unitPrices, setUnitPrices] = useState({});
-  const [initialUnitPrices, setInitialUnitPrices] = useState({});
+  // Map<productId, Map<unitName, price>> — one independent price per unit.
+  const [prices, setPrices] = useState({});
+  const [initialPrices, setInitialPrices] = useState({});
   // Track which cell is currently focused + its raw text. The focused cell
   // shows verbatim so "3" doesn't reformat to "3.00" mid-typing.
   const [editingKey, setEditingKey] = useState(null);   // e.g. "12:Box"
@@ -69,36 +63,24 @@ const QuickPrice = () => {
         return { ...p, _units: units };
       }).filter(p => p._units.length > 0);
       setProducts(enriched);
-      // basePrice per product = price of the base unit (conv=1) or the
-      // stored selling_price fallback. Non-base units get compared against
-      // basePrice × conv — mismatches become overrides.
-      const base = {};
-      const overrides = {};
+      // Each cell starts at its stored price. Units that never had a
+      // price saved fall back to base × conv so the cell isn't blank.
+      const loaded = {};
       for (const p of enriched) {
-        const baseUnit = p._units.find(u => u.is_base) || p._units[p._units.length - 1];
+        const baseUnit = baseUnitOf(p);
         const v = parseFloat(baseUnit?.price);
         const bp = isNaN(v) || v <= 0 ? parseFloat(p.selling_price || 0) || 0 : v;
-        base[p.id] = bp;
-        const productOverrides = {};
+        const forProduct = {};
         for (const u of p._units) {
-          if (u.is_base) continue;
           const stored = parseFloat(u.price);
-          const derived = bp * (parseFloat(u.conv) || 0);
-          // Treat any stored price that differs from the derived by more
-          // than 1 cent as an intentional override. Rounds well against
-          // the toFixed(4) precision the backend saves at.
-          if (stored > 0 && Math.abs(stored - derived) > 0.01) {
-            productOverrides[u.name] = stored;
-          }
+          forProduct[u.name] = u === baseUnit ? bp
+            : stored > 0 ? stored
+            : bp * (parseFloat(u.conv) || 0);
         }
-        if (Object.keys(productOverrides).length > 0) {
-          overrides[p.id] = productOverrides;
-        }
+        loaded[p.id] = forProduct;
       }
-      setBasePrices(base);
-      setInitialBase({ ...base });
-      setUnitPrices(overrides);
-      setInitialUnitPrices(JSON.parse(JSON.stringify(overrides)));
+      setPrices(loaded);
+      setInitialPrices(JSON.parse(JSON.stringify(loaded)));
     } catch (e) {
       showToast('Failed to load products: ' + (e?.response?.data?.error || e.message), 'error');
     } finally {
@@ -108,116 +90,71 @@ const QuickPrice = () => {
 
   useEffect(() => { load(); }, []);
 
-  // Edit handler. Two paths:
-  //   • Default unit → cascade (base = entered/conv, clear all overrides).
-  //   • Non-default   → store override for that unit only.
+  // Edit handler — only the edited cell changes.
   const handleCellChange = (product, unit, newDisplayValue) => {
     const cellKey = `${product.id}:${unit.name}`;
     setEditingKey(cellKey);
     setEditingRaw(newDisplayValue);
     const v = parseFloat(newDisplayValue);
     const safe = isNaN(v) || v < 0 ? 0 : v;
-    const conv = parseFloat(unit.conv) || 1;
-    const dfltName = defaultUnitName(product);
-    const isDefault = (unit.name || '').trim() === dfltName;
-    // v1.10.299 — treat "base unit edited" the same as "default unit edited".
-    // Backend's bulk-update-prices refuses to store overrides on the base unit
-    // (products.js:897 short-circuits on !unit.is_base), so if we routed a
-    // base-unit edit through the override branch, the typed value was silently
-    // dropped and the row reverted to base_price × 1 on next load.
-    // Real report 2026-08-06 on mansa1: 4TH STREET RED 750ML Bottle
-    // (base=Bottle, default=Box) edited from 110 → 105 saved OK per the toast
-    // but reloaded as 110 every time. Cascade path already does exactly the
-    // right thing here — for a base unit conv=1, safe/conv = safe.
-    if (isDefault || unit.is_base) {
-      setBasePrices(prev => ({ ...prev, [product.id]: safe / conv }));
-      setUnitPrices(prev => {
-        if (!prev[product.id]) return prev;
-        const next = { ...prev };
-        delete next[product.id];
-        return next;
-      });
-    } else {
-      setUnitPrices(prev => {
-        const forProduct = { ...(prev[product.id] || {}) };
-        if (newDisplayValue === '' || safe === 0) {
-          delete forProduct[unit.name];
-        } else {
-          forProduct[unit.name] = safe;
-        }
-        const next = { ...prev };
-        if (Object.keys(forProduct).length === 0) delete next[product.id];
-        else next[product.id] = forProduct;
-        return next;
-      });
-    }
+    setPrices(prev => ({
+      ...prev,
+      [product.id]: { ...(prev[product.id] || {}), [unit.name]: safe },
+    }));
   };
 
-  // Visible value for a cell: override if present, else basePrice × conv.
-  const cellValue = (productId, unit) => {
-    const override = unitPrices[productId]?.[unit.name];
-    if (override !== undefined && override !== null) return override;
-    const base = basePrices[productId] || 0;
-    const c = parseFloat(unit.conv) || 1;
-    return base * c;
-  };
+  const cellValue = (productId, unit) => parseFloat(prices[productId]?.[unit.name]) || 0;
 
   const filteredProducts = useMemo(() => {
     return products.filter(p => matchTokens(search, p.name, p.code, p.barcode));
   }, [products, search]);
 
-  // Dirty when basePrice differs OR any unit override differs from initial.
+  // Dirty when any unit price differs from what was loaded / last saved.
   const dirtyIds = useMemo(() => {
     const out = new Set();
-    const check = (id) => {
-      const a = parseFloat(basePrices[id] || 0);
-      const b = parseFloat(initialBase[id] || 0);
-      if (Math.abs(a - b) > 0.00001) return true;
-      const cur = unitPrices[id] || {};
-      const init = initialUnitPrices[id] || {};
-      const keys = new Set([...Object.keys(cur), ...Object.keys(init)]);
-      for (const k of keys) {
-        const cv = parseFloat(cur[k] || 0);
-        const iv = parseFloat(init[k] || 0);
-        if (Math.abs(cv - iv) > 0.01) return true;
-      }
-      return false;
-    };
-    for (const id of Object.keys(basePrices)) {
-      if (check(id)) out.add(parseInt(id, 10));
-    }
-    // Also catch products whose base didn't change but overrides did.
-    for (const id of Object.keys(unitPrices)) {
-      if (out.has(parseInt(id, 10))) continue;
-      if (check(id)) out.add(parseInt(id, 10));
+    for (const id of Object.keys(prices)) {
+      const cur = prices[id] || {};
+      const init = initialPrices[id] || {};
+      const changed = Object.keys(cur).some(k =>
+        Math.abs((parseFloat(cur[k]) || 0) - (parseFloat(init[k]) || 0)) > 0.005);
+      if (changed) out.add(parseInt(id, 10));
     }
     return out;
-  }, [basePrices, initialBase, unitPrices, initialUnitPrices]);
+  }, [prices, initialPrices]);
 
   const handleSaveAll = async () => {
     if (dirtyIds.size === 0) return;
     if (!window.confirm(`Save ${dirtyIds.size} price change${dirtyIds.size > 1 ? 's' : ''}?`)) return;
     setSaving(true);
     try {
-      // Payload: base_price for the cascade + unit_prices for per-unit
-      // overrides. Backend applies base × conv to every unit, then
-      // overlays unit_prices on top.
+      // Payload: base_price = the base unit's own price; every other unit
+      // goes up as an explicit unit_prices entry so the backend stores it
+      // as typed instead of deriving base × conv. A unit left blank has no
+      // entry — the backend then falls back to base × conv for it, and we
+      // mirror that value locally so the screen matches what was saved.
+      const saved = {};
       const updates = Array.from(dirtyIds).map(id => {
-        const payload = { id, base_price: basePrices[id] };
-        const overrides = unitPrices[id];
-        if (overrides && Object.keys(overrides).length > 0) {
-          payload.unit_prices = overrides;
+        const product = products.find(p => p.id === id);
+        const baseUnit = baseUnitOf(product);
+        const cur = prices[id] || {};
+        const basePrice = (parseFloat(cur[baseUnit.name]) || 0) / (parseFloat(baseUnit.conv) || 1);
+        const unitPrices = {};
+        const after = {};
+        for (const u of product._units) {
+          const val = parseFloat(cur[u.name]) || 0;
+          if (u === baseUnit) { after[u.name] = val; continue; }
+          if (val > 0) { unitPrices[u.name] = val; after[u.name] = val; }
+          else after[u.name] = basePrice * (parseFloat(u.conv) || 1);
         }
+        saved[id] = after;
+        const payload = { id, base_price: basePrice };
+        if (Object.keys(unitPrices).length > 0) payload.unit_prices = unitPrices;
         return payload;
       });
       await bulkUpdatePrices(updates);
       showToast(`${updates.length} product${updates.length > 1 ? 's' : ''} updated.`);
-      setInitialBase(prev => {
-        const next = { ...prev };
-        for (const u of updates) next[u.id] = u.base_price;
-        return next;
-      });
-      setInitialUnitPrices(JSON.parse(JSON.stringify(unitPrices)));
+      setPrices(prev => ({ ...prev, ...saved }));
+      setInitialPrices(prev => ({ ...prev, ...JSON.parse(JSON.stringify(saved)) }));
     } catch (e) {
       showToast('Save failed: ' + (e?.response?.data?.error || e.message), 'error');
     } finally {
@@ -228,8 +165,7 @@ const QuickPrice = () => {
   const handleDiscard = () => {
     if (dirtyIds.size === 0) return;
     if (!window.confirm(`Discard ${dirtyIds.size} unsaved change${dirtyIds.size > 1 ? 's' : ''}?`)) return;
-    setBasePrices({ ...initialBase });
-    setUnitPrices(JSON.parse(JSON.stringify(initialUnitPrices)));
+    setPrices(JSON.parse(JSON.stringify(initialPrices)));
   };
 
   if (!hasPermission('Items:Edit') && !hasPermission('Items:QuickPrice')) {
@@ -241,7 +177,7 @@ const QuickPrice = () => {
       <div className="page-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <div>
           <h1>Quick Price Update</h1>
-          <p>Editing the <strong>default</strong> unit cascades to the rest. Editing another unit stores a per-unit override. {dirtyIds.size > 0 && <strong style={{ color: '#d97706' }}>{dirtyIds.size} unsaved change{dirtyIds.size > 1 ? 's' : ''}</strong>}</p>
+          <p>Each unit price is set on its own — changing one does not recalculate the others. {dirtyIds.size > 0 && <strong style={{ color: '#d97706' }}>{dirtyIds.size} unsaved change{dirtyIds.size > 1 ? 's' : ''}</strong>}</p>
         </div>
         <div style={{ display: 'flex', gap: 8 }}>
           {dirtyIds.size > 0 && (
@@ -292,14 +228,12 @@ const QuickPrice = () => {
                 </div>
 
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                  {p._units.map((u, i) => {
+                  {p._units.map((u) => {
                     const cellKey = `${p.id}:${u.name}`;
                     const isEditing = editingKey === cellKey;
                     const derived = cellValue(p.id, u);
                     const displayValue = isEditing ? editingRaw : (derived === 0 ? '' : derived.toFixed(2));
-                    const isLast = i === p._units.length - 1;
                     const isDefault = (u.name || '').trim() === dfltName;
-                    const hasOverride = unitPrices[p.id]?.[u.name] !== undefined;
                     return (
                       <React.Fragment key={u.name}>
                         <div>
@@ -307,9 +241,6 @@ const QuickPrice = () => {
                             <span>{u.name}{u.is_base && parseFloat(u.conv) === 1 ? '' : ` (1 ${u.name} = ${u.conv} ${p._units[p._units.length - 1].name})`}</span>
                             {isDefault && (
                               <span style={{ background: '#dbeafe', color: '#1d4ed8', padding: '1px 6px', borderRadius: 4, fontSize: 9, letterSpacing: 0.4 }}>DEFAULT</span>
-                            )}
-                            {hasOverride && !isDefault && (
-                              <span style={{ background: '#fef3c7', color: '#b45309', padding: '1px 6px', borderRadius: 4, fontSize: 9, letterSpacing: 0.4 }}>OVERRIDE</span>
                             )}
                           </label>
                           <div style={{ position: 'relative' }}>
@@ -333,9 +264,6 @@ const QuickPrice = () => {
                               }} />
                           </div>
                         </div>
-                        {!isLast && (
-                          <div style={{ textAlign: 'center', color: '#cbd5e1', fontSize: 14, lineHeight: 1 }}>↓</div>
-                        )}
                       </React.Fragment>
                     );
                   })}
