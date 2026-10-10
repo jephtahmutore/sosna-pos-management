@@ -839,7 +839,7 @@ const ItemDetails = () => {
             }}>
               <span style={{ color: s.color, fontWeight: 700 }}>{s.name}:</span>
               <span style={{ marginLeft: 6, color: '#374151', fontWeight: 600 }}>
-                {s.count} item{s.count !== 1 ? 's' : ''} · avg ${s.count > 0 ? (s.totalSell / s.count).toFixed(2) : '0.00'}
+                {s.count} item{s.count !== 1 ? 's' : ''}{!isHq && ` · avg $${s.count > 0 ? (s.totalSell / s.count).toFixed(2) : '0.00'}`}
               </span>
             </div>
           ))}
@@ -856,10 +856,12 @@ const ItemDetails = () => {
               <th>{t('name')}</th>
               <th>{t('category')}</th>
               <th>{t('units')}</th>
-              <th>{t('avgCostPrice')}</th>
-              <th>{t('sellingPrice')}</th>
-              <th>{t('marginPct')}</th>
-              <th>{t('minStock')}</th>
+              {/* HQ doesn't price or hold stock — cost / selling / margin /
+                  min stock are per-branch, so the HQ catalogue hides them. */}
+              {!isHq && <th>{t('avgCostPrice')}</th>}
+              {!isHq && <th>{t('sellingPrice')}</th>}
+              {!isHq && <th>{t('marginPct')}</th>}
+              {!isHq && <th>{t('minStock')}</th>}
               <th>{t('actions')}</th>
             </tr>
           </thead>
@@ -901,9 +903,9 @@ const ItemDetails = () => {
                     );
                   })()}
                 </td>
-                <td>{curSym}{(parseFloat(displayPriceInDefaultUnit(item.avg_cost_price || item.cost_price || 0, item).price)||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</td>
-                <td>{curSym}{(parseFloat(displayPriceInDefaultUnit(item.selling_price, item).price)||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</td>
-                <td>
+                {!isHq && <td>{curSym}{(parseFloat(displayPriceInDefaultUnit(item.avg_cost_price || item.cost_price || 0, item).price)||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</td>}
+                {!isHq && <td>{curSym}{(parseFloat(displayPriceInDefaultUnit(item.selling_price, item).price)||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</td>}
+                {!isHq && <td>
                   {(() => {
                     const cost = parseFloat(item.avg_cost_price || item.cost_price || 0);
                     const sell = parseFloat(item.selling_price || 0);
@@ -917,13 +919,13 @@ const ItemDetails = () => {
                       </span>
                     );
                   })()}
-                </td>
-                <td>
+                </td>}
+                {!isHq && <td>
                   {(() => {
                     const m = displayInDefaultUnit(item.min_stock || 0, item);
                     return `${m.qty.toLocaleString(undefined, { maximumFractionDigits: 2 })} ${m.unit}`;
                   })()}
-                </td>
+                </td>}
                 <td>
                   <div className="action-btns">
                     {hasPermission('Items:Edit') && <button className="action-btn edit" onClick={() => openEdit(item)} title="Edit item"><FiEdit2 /></button>}
