@@ -60,6 +60,7 @@ const AccountPayables = () => {
   const [modalTo,   setModalTo]   = useState('');
 
   const { hasPermission, user: authUser } = useAuth();
+  const canDeletePayment = hasPermission('AccountPayables:Delete');
 
   const showToast = (msg, type = 'success') => {
     setToast({ msg, type });
@@ -167,6 +168,25 @@ const AccountPayables = () => {
           showToast('Payment deleted.', 'error');
         } catch (err) {
           alert(err.response?.data?.error || 'Failed to delete payment.');
+        }
+      },
+    });
+  };
+
+  // Payments tab delete — same two-step guard as Account Receivables:
+  // "are you sure?" first, then the admin password prompt.
+  const handleDeleteListPayment = (p) => {
+    const supplier = p.supplier_name_resolved || p.supplier_name || 'supplier';
+    if (!window.confirm('Are you sure you want to delete this payment?')) return;
+    setPendingDelete({
+      subject: `Payment K${parseFloat(p.amount || 0).toLocaleString()} to ${supplier}${p.payment_number ? ` (${p.payment_number})` : ''}`,
+      perform: async () => {
+        try {
+          await deleteApPayment(p.id);
+          await fetchData();
+          showToast('Payment deleted.', 'error');
+        } catch (err) {
+          showToast(err.response?.data?.error || 'Failed to delete payment.', 'error');
         }
       },
     });
@@ -669,6 +689,7 @@ const AccountPayables = () => {
                   <th>{t('date')}</th><th>{t('reference')}</th><th>{t('supplier')}</th>
                   <th>{t('paidFrom')}</th><th>{t('description')}</th>
                   <th style={{ textAlign: 'right' }}>{t('amount')}</th>
+                  {canDeletePayment && <th style={{ textAlign: 'right' }}>{t('action')}</th>}
                 </tr>
               </thead>
               <tbody>
@@ -679,7 +700,7 @@ const AccountPayables = () => {
                     p.payment_number, p.description
                   ));
                   if (rows.length === 0) {
-                    return <tr><td colSpan="6" style={{ textAlign: 'center', color: '#9ca3af', padding: 40 }}>No payments recorded.</td></tr>;
+                    return <tr><td colSpan={canDeletePayment ? 7 : 6} style={{ textAlign: 'center', color: '#9ca3af', padding: 40 }}>No payments recorded.</td></tr>;
                   }
                   const total = rows.reduce((s, p) => s + parseFloat(p.amount || 0), 0);
                   return <>
@@ -691,11 +712,20 @@ const AccountPayables = () => {
                         <td style={{ color: '#6b7280' }}>{p.paid_from || '—'}</td>
                         <td style={{ color: '#6b7280' }}>{p.description || '—'}</td>
                         <td style={{ textAlign: 'right', fontWeight: 700, color: '#16a34a' }}>K{parseFloat(p.amount).toLocaleString()}</td>
+                        {canDeletePayment && (
+                          <td style={{ textAlign: 'right' }}>
+                            <button onClick={() => handleDeleteListPayment(p)} title="Delete payment"
+                              style={{ width: 26, height: 26, background: '#fee2e2', color: '#b91c1c', border: 'none', borderRadius: 6, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}>
+                              <FiTrash2 size={12} />
+                            </button>
+                          </td>
+                        )}
                       </tr>
                     ))}
                     <tr style={{ background: '#f9fafb', fontWeight: 700 }}>
                       <td colSpan="5">TOTAL — {rows.length} payment(s)</td>
                       <td style={{ textAlign: 'right', color: '#16a34a' }}>K{total.toLocaleString()}</td>
+                      {canDeletePayment && <td></td>}
                     </tr>
                   </>;
                 })()}
