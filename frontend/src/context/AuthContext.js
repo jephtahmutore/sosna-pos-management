@@ -41,6 +41,7 @@ const LEGACY_MAP = {
   HqInventoryReport:    'HQ',
   HqCashPosition:       'HQ',
   HqConsolidatedProfit: 'HQ',
+  HqAccountReceivables: 'HQ',
   HqProducts:           'HQ',
   HqPurchases:          'HQ',
   HqCostOfDelivery:     'HQ',

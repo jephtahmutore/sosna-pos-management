@@ -31,6 +31,7 @@ import HqConsolidatedProfit from './pages/HqConsolidatedProfit';
 import HqFinancialStatements from './pages/HqFinancialStatements';
 import HqInventoryReport from './pages/HqInventoryReport';
 import HqCashPosition from './pages/HqCashPosition';
+import HqAccountReceivables from './pages/HqAccountReceivables';
 import StockTransfers from './pages/StockTransfers';
 import HqPurchases from './pages/HqPurchases';
 import CostOfDelivery from './pages/CostOfDelivery';
@@ -290,6 +291,7 @@ function AppRoutes() {
         <Route path="hq/financial-statements" element={<HqRoute><HqFinancialStatements /></HqRoute>} />
         <Route path="hq/inventory-report" element={<HqRoute><HqInventoryReport /></HqRoute>} />
         <Route path="hq/cash-position"    element={<HqRoute><HqCashPosition /></HqRoute>} />
+        <Route path="hq/account-receivables" element={<HqRoute><HqAccountReceivables /></HqRoute>} />
         <Route path="hq/purchases"        element={<HqRoute><HqPurchases /></HqRoute>} />
         <Route path="hq/cost-of-delivery" element={<HqRoute><CostOfDelivery /></HqRoute>} />
         <Route path="hq/transfers-awaiting" element={<HqRoute><HqTransfersAwaiting /></HqRoute>} />

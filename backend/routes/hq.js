@@ -27,6 +27,7 @@ const { listTenants, masterDb } = require('../config/masterDb');
 const { requirePagePerm } = require('../middleware/auth');
 const { getTenantDb, getTenantSyncIds } = require('../config/tenantDb');
 const { computeBranchCashPosition } = require('../utils/branchCashPosition');
+const { listCustomersWithBalances, buildCustomerStatement } = require('./customers');
 const { defaultDb, runWithDb } = require('../config/database');
 const { mirrorAllHqToBranches } = require('../middleware/hqPush');
 const { recalculateDailyProfit } = require('../config/profitHelper');
@@ -1915,6 +1916,66 @@ router.get('/cash-flow', hqAuth, requirePagePerm('HqFinancialStatements'), (req,
   } catch (error) {
     console.error('[hq.cash-flow] failed:', error.message);
     res.status(500).json({ error: error.message });
+  }
+});
+
+// ─── HQ Account Receivables — every branch's customer ledger ────────────────
+// Read-only. Runs the SAME query the branch's own Account Receivables page
+// uses (routes/customers.js listCustomersWithBalances) against each branch
+// DB, so an HQ figure always matches what the branch sees. Amounts stay in
+// the branch's own currency — USD-base branches (Kassumbalesa) and K-base
+// branches (Mansa, Lusaka) are never summed together here.
+//
+// Query: from / to (YYYY-MM-DD, optional — empty = all time), branch (slug | 'all')
+function branchArContext(t) {
+  const db = getTenantDb(t.slug);
+  const settings = tryGet(db, `SELECT business_name, currency_mode FROM business_settings ORDER BY id ASC LIMIT 1`) || {};
+  const isUsdBase = typeof settings.currency_mode === 'string' && settings.currency_mode.includes('USD');
+  return {
+    db,
+    tenantId: getTenantSyncIds(db).tenant_id,
+    name: settings.business_name || t.business_name || t.slug,
+    currency: isUsdBase ? 'USD' : 'K',
+  };
+}
+
+router.get('/account-receivables', hqAuth, requirePagePerm('HqAccountReceivables'), (req, res) => {
+  try {
+    const from   = (req.query.from || '').toString().trim() || undefined;
+    const to     = (req.query.to   || '').toString().trim() || undefined;
+    const branch = (req.query.branch || 'all').toString().toLowerCase();
+    const tenants = listTenants().filter(t => branch === 'all' || t.slug === branch);
+    const branches = [];
+    const errors = [];
+    for (const t of tenants) {
+      try {
+        const ctx = branchArContext(t);
+        if (!ctx.tenantId) { errors.push({ slug: t.slug, error: 'Branch has no tenant id yet.' }); continue; }
+        const customers = runWithDb(ctx.db, () => listCustomersWithBalances({ tenantId: ctx.tenantId, from, to }));
+        branches.push({ slug: t.slug, name: ctx.name, currency: ctx.currency, customers });
+      } catch (e) {
+        console.error(`[hq.account-receivables] ${t.slug}:`, e.message);
+        errors.push({ slug: t.slug, error: e.message });
+      }
+    }
+    res.json({ from: from || null, to: to || null, branches, errors });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// One customer's statement at one branch — same payload as the branch's
+// GET /customers/:id/statement, plus the branch name + currency.
+router.get('/account-receivables/:slug/:customerId/statement', hqAuth, requirePagePerm('HqAccountReceivables'), (req, res) => {
+  try {
+    const t = listTenants().find(x => x.slug === String(req.params.slug).toLowerCase());
+    if (!t) return res.status(404).json({ error: 'Branch not found' });
+    const ctx = branchArContext(t);
+    const statement = runWithDb(ctx.db, () => buildCustomerStatement(req.params.customerId, ctx.tenantId));
+    if (!statement) return res.status(404).json({ error: 'Customer not found' });
+    res.json({ ...statement, branch: { slug: t.slug, name: ctx.name, currency: ctx.currency } });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
   }
 });
 

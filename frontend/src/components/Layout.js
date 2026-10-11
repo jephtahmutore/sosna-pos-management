@@ -309,6 +309,7 @@ const Layout = () => {
       '/hq/sales-report': 'HQ Sales Report',
       '/hq/inventory-report': 'HQ Inventory Report',
       '/hq/cash-position': 'HQ Cash Position',
+      '/hq/account-receivables': 'Account Receivables',
       '/hq/consolidated-profit': 'HQ Consolidated Profit',
       '/hq/products': 'HQ Products',
       '/hq/purchases': 'HQ Purchases',
@@ -680,7 +681,8 @@ const Layout = () => {
             'CashReceipt', 'PaymentVoucher', 'PvTypes', 'CashBook', 'HQDeposits',
             'FxRates', 'AccountPayables', 'AccountReceivables', 'ProfitReport',
             'CapitalAccount', 'DividendAccount', 'Shareholders', 'LoanAccount',
-            'HqCashPosition', 'HqConsolidatedProfit', 'HqFinancialStatements'
+            'HqCashPosition', 'HqConsolidatedProfit', 'HqFinancialStatements',
+            'HqAccountReceivables'
           ) && (
             <>
               <div className={`nav-group-header ${isGroupActive(['/accounting']) ? 'active' : ''}`} onClick={() => toggleGroup('accounting')}>
@@ -753,6 +755,12 @@ const Layout = () => {
                   {hq && showLegacyProcurement && hasPageAccess('AccountPayables') && (
                     <div className={`nav-item ${isActive('/accounting/account-payables') ? 'active' : ''}`} onClick={() => navigate('/accounting/account-payables')}>
                       <FiFileText className="nav-icon" /> <span>{t('accountPayables')}</span>
+                    </div>
+                  )}
+                  {/* HQ sees every branch's receivables on one read-only page. */}
+                  {hq && hasPageAccess('HqAccountReceivables') && (
+                    <div className={`nav-item ${isActive('/hq/account-receivables') ? 'active' : ''}`} onClick={() => navigate('/hq/account-receivables')}>
+                      <FiFileText className="nav-icon" /> <span>Account Receivables</span>
                     </div>
                   )}
                   {!hq && hasPageAccess('AccountReceivables') && (

@@ -7,93 +7,100 @@ const { randomUUID } = require('crypto');
 // ── Customer list with outstanding balance + credit usage info ───────────────
 // from/to (optional): restrict orders and customer_payments to a date range.
 // Used by the AR page when the cashier wants a period view (totals = period activity).
+// Shared by GET / below and by HQ's cross-branch Account Receivables
+// (routes/hq.js runs it inside runWithDb(branchDb, …) so both screens
+// use the exact same balance maths).
+function listCustomersWithBalances({ tenantId, type, search, from, to }) {
+  // Order rows are filtered by DATE(created_at); payments by payment_date.
+  const orderDateClause = (from ? ' AND DATE(created_at) >= ?' : '') + (to ? ' AND DATE(created_at) <= ?' : '');
+  const payDateClause   = (from ? ' AND payment_date >= ?' : '') + (to ? ' AND payment_date <= ?' : '');
+  const dateArgsOrders  = [...(from ? [from] : []), ...(to ? [to] : [])];
+  const dateArgsPay     = [...(from ? [from] : []), ...(to ? [to] : [])];
+
+  let query = `
+    SELECT c.*,
+      COALESCE(orders_agg.total_sold, 0)       AS total_sold,
+      COALESCE(orders_agg.cash_at_sale, 0)     AS cash_at_sale,
+      COALESCE(payments_agg.total_paid, 0)     AS total_paid,
+      -- AR owed = full sales − cash paid at till − later AR payments
+      COALESCE(orders_agg.total_sold, 0)
+        - COALESCE(orders_agg.cash_at_sale, 0)
+        - COALESCE(payments_agg.total_paid, 0) AS outstanding,
+      -- v1.8.57 — FRA / K equivalents of the outstanding, computed
+      -- using the FX rate captured at each order's sale time. Per
+      -- order: unpaid_usd × selling_rate_used. Then scaled by the
+      -- ratio of (current outstanding) / (sum of order unpaids before
+      -- AR payments) so AR payments reduce all three views together.
+      COALESCE(orders_agg.unpaid_fra_at_sale, 0) AS unpaid_fra_at_sale,
+      COALESCE(orders_agg.unpaid_k_at_sale, 0)   AS unpaid_k_at_sale,
+      COALESCE(orders_agg.unpaid_usd_for_ratio, 0) AS unpaid_usd_for_ratio,
+      oldest_unpaid.oldest_order_date AS oldest_unpaid_date
+    FROM customers c
+    LEFT JOIN (
+      SELECT customer_sync_id,
+        SUM(total_amount)                  AS total_sold,
+        -- cap each line's cash_at_sale at the order total — over-tender came back as change
+        SUM(CASE WHEN COALESCE(amount_received, 0) > total_amount
+                 THEN total_amount
+                 ELSE COALESCE(amount_received, 0) END)  AS cash_at_sale,
+        -- Per-order unpaid at sale time, valued in FRA and K using
+        -- the rate snapshot from when the order was placed.
+        SUM(CASE WHEN total_amount > COALESCE(amount_received, 0)
+                 THEN (total_amount - COALESCE(amount_received, 0)) * COALESCE(selling_rate_used, 0)
+                 ELSE 0 END) AS unpaid_fra_at_sale,
+        SUM(CASE WHEN total_amount > COALESCE(amount_received, 0)
+                 THEN (total_amount - COALESCE(amount_received, 0)) * COALESCE(selling_rate_k_used, 0)
+                 ELSE 0 END) AS unpaid_k_at_sale,
+        SUM(CASE WHEN total_amount > COALESCE(amount_received, 0)
+                 THEN (total_amount - COALESCE(amount_received, 0))
+                 ELSE 0 END) AS unpaid_usd_for_ratio
+      FROM orders
+      WHERE deleted_at IS NULL AND (status IS NULL OR status != 'Reversed')
+        AND customer_sync_id IS NOT NULL${orderDateClause}
+      GROUP BY customer_sync_id
+    ) orders_agg ON orders_agg.customer_sync_id = c.sync_id
+    LEFT JOIN (
+      SELECT customer_sync_id, SUM(amount) AS total_paid
+      FROM customer_payments
+      WHERE deleted_at IS NULL AND customer_sync_id IS NOT NULL${payDateClause}
+      GROUP BY customer_sync_id
+    ) payments_agg ON payments_agg.customer_sync_id = c.sync_id
+    LEFT JOIN (
+      SELECT customer_sync_id, MIN(DATE(created_at)) AS oldest_order_date
+      FROM orders
+      WHERE deleted_at IS NULL AND (status IS NULL OR status != 'Reversed')
+        AND customer_sync_id IS NOT NULL${orderDateClause}
+      GROUP BY customer_sync_id
+    ) oldest_unpaid ON oldest_unpaid.customer_sync_id = c.sync_id
+    WHERE c.deleted_at IS NULL AND c.tenant_id = ?`;
+  const params = [...dateArgsOrders, ...dateArgsPay, ...dateArgsOrders, tenantId];
+  if (type && type !== 'All Types') {
+    params.push(type);
+    query += ` AND c.type = ?`;
+  }
+  if (search) {
+    params.push(`%${search}%`, `%${search}%`);
+    query += ` AND (c.name LIKE ? OR c.phone LIKE ?)`;
+  }
+  query += ' ORDER BY c.name';
+  const rows = db.prepare(query).all(...params);
+  // v1.8.57 — scale per-currency unpaid totals by ratio of
+  // current_outstanding / sum_of_order_unpaids_at_sale, so AR
+  // payments reduce FRA/K equivalents in lockstep with USD.
+  for (const r of rows) {
+    const ratioDenom = parseFloat(r.unpaid_usd_for_ratio || 0);
+    const outstanding = Math.max(0, parseFloat(r.outstanding || 0));
+    const ratio = ratioDenom > 0 ? Math.min(1, outstanding / ratioDenom) : 0;
+    r.outstanding_fra = parseFloat(r.unpaid_fra_at_sale || 0) * ratio;
+    r.outstanding_k   = parseFloat(r.unpaid_k_at_sale   || 0) * ratio;
+  }
+  return rows;
+}
+
 router.get('/', auth, readOnlyGuard, (req, res) => {
   try {
     const { type, search, from, to } = req.query;
-    // Order rows are filtered by DATE(created_at); payments by payment_date.
-    const orderDateClause = (from ? ' AND DATE(created_at) >= ?' : '') + (to ? ' AND DATE(created_at) <= ?' : '');
-    const payDateClause   = (from ? ' AND payment_date >= ?' : '') + (to ? ' AND payment_date <= ?' : '');
-    const dateArgsOrders  = [...(from ? [from] : []), ...(to ? [to] : [])];
-    const dateArgsPay     = [...(from ? [from] : []), ...(to ? [to] : [])];
-
-    let query = `
-      SELECT c.*,
-        COALESCE(orders_agg.total_sold, 0)       AS total_sold,
-        COALESCE(orders_agg.cash_at_sale, 0)     AS cash_at_sale,
-        COALESCE(payments_agg.total_paid, 0)     AS total_paid,
-        -- AR owed = full sales − cash paid at till − later AR payments
-        COALESCE(orders_agg.total_sold, 0)
-          - COALESCE(orders_agg.cash_at_sale, 0)
-          - COALESCE(payments_agg.total_paid, 0) AS outstanding,
-        -- v1.8.57 — FRA / K equivalents of the outstanding, computed
-        -- using the FX rate captured at each order's sale time. Per
-        -- order: unpaid_usd × selling_rate_used. Then scaled by the
-        -- ratio of (current outstanding) / (sum of order unpaids before
-        -- AR payments) so AR payments reduce all three views together.
-        COALESCE(orders_agg.unpaid_fra_at_sale, 0) AS unpaid_fra_at_sale,
-        COALESCE(orders_agg.unpaid_k_at_sale, 0)   AS unpaid_k_at_sale,
-        COALESCE(orders_agg.unpaid_usd_for_ratio, 0) AS unpaid_usd_for_ratio,
-        oldest_unpaid.oldest_order_date AS oldest_unpaid_date
-      FROM customers c
-      LEFT JOIN (
-        SELECT customer_sync_id,
-          SUM(total_amount)                  AS total_sold,
-          -- cap each line's cash_at_sale at the order total — over-tender came back as change
-          SUM(CASE WHEN COALESCE(amount_received, 0) > total_amount
-                   THEN total_amount
-                   ELSE COALESCE(amount_received, 0) END)  AS cash_at_sale,
-          -- Per-order unpaid at sale time, valued in FRA and K using
-          -- the rate snapshot from when the order was placed.
-          SUM(CASE WHEN total_amount > COALESCE(amount_received, 0)
-                   THEN (total_amount - COALESCE(amount_received, 0)) * COALESCE(selling_rate_used, 0)
-                   ELSE 0 END) AS unpaid_fra_at_sale,
-          SUM(CASE WHEN total_amount > COALESCE(amount_received, 0)
-                   THEN (total_amount - COALESCE(amount_received, 0)) * COALESCE(selling_rate_k_used, 0)
-                   ELSE 0 END) AS unpaid_k_at_sale,
-          SUM(CASE WHEN total_amount > COALESCE(amount_received, 0)
-                   THEN (total_amount - COALESCE(amount_received, 0))
-                   ELSE 0 END) AS unpaid_usd_for_ratio
-        FROM orders
-        WHERE deleted_at IS NULL AND (status IS NULL OR status != 'Reversed')
-          AND customer_sync_id IS NOT NULL${orderDateClause}
-        GROUP BY customer_sync_id
-      ) orders_agg ON orders_agg.customer_sync_id = c.sync_id
-      LEFT JOIN (
-        SELECT customer_sync_id, SUM(amount) AS total_paid
-        FROM customer_payments
-        WHERE deleted_at IS NULL AND customer_sync_id IS NOT NULL${payDateClause}
-        GROUP BY customer_sync_id
-      ) payments_agg ON payments_agg.customer_sync_id = c.sync_id
-      LEFT JOIN (
-        SELECT customer_sync_id, MIN(DATE(created_at)) AS oldest_order_date
-        FROM orders
-        WHERE deleted_at IS NULL AND (status IS NULL OR status != 'Reversed')
-          AND customer_sync_id IS NOT NULL${orderDateClause}
-        GROUP BY customer_sync_id
-      ) oldest_unpaid ON oldest_unpaid.customer_sync_id = c.sync_id
-      WHERE c.deleted_at IS NULL AND c.tenant_id = ?`;
-    const params = [...dateArgsOrders, ...dateArgsPay, ...dateArgsOrders, req.user.tenantId];
-    if (type && type !== 'All Types') {
-      params.push(type);
-      query += ` AND c.type = ?`;
-    }
-    if (search) {
-      params.push(`%${search}%`, `%${search}%`);
-      query += ` AND (c.name LIKE ? OR c.phone LIKE ?)`;
-    }
-    query += ' ORDER BY c.name';
-    const rows = db.prepare(query).all(...params);
-    // v1.8.57 — scale per-currency unpaid totals by ratio of
-    // current_outstanding / sum_of_order_unpaids_at_sale, so AR
-    // payments reduce FRA/K equivalents in lockstep with USD.
-    for (const r of rows) {
-      const ratioDenom = parseFloat(r.unpaid_usd_for_ratio || 0);
-      const outstanding = Math.max(0, parseFloat(r.outstanding || 0));
-      const ratio = ratioDenom > 0 ? Math.min(1, outstanding / ratioDenom) : 0;
-      r.outstanding_fra = parseFloat(r.unpaid_fra_at_sale || 0) * ratio;
-      r.outstanding_k   = parseFloat(r.unpaid_k_at_sale   || 0) * ratio;
-    }
-    res.json(rows);
+    res.json(listCustomersWithBalances({ tenantId: req.user.tenantId, type, search, from, to }));
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -371,77 +378,85 @@ router.get('/:id/insights', auth, readOnlyGuard, (req, res) => {
 });
 
 // ── Customer statement — orders + payments + running balance for one customer
+// Shared by GET /:id/statement below and by HQ's cross-branch Account
+// Receivables. Returns null when the customer doesn't exist.
+function buildCustomerStatement(customerId, tenantId) {
+  const customer = db.prepare('SELECT * FROM customers WHERE id = ? AND deleted_at IS NULL AND tenant_id = ?').get(customerId, tenantId);
+  if (!customer) return null;
+
+  // Every credit sale for this customer — full total goes on the statement so it can be
+  // paired with both the POS-time cash payment and any later AR payment. Fully-paid sales
+  // still appear (they net to zero after the synthetic POS payment cancels them out).
+  const orders = db.prepare(`
+    SELECT id, order_number,
+           total_amount AS amount,
+           total_amount, COALESCE(amount_received, 0) AS cash_at_sale,
+           COALESCE(cash_received, 0)  AS cash_received,
+           COALESCE(momo_received, 0)  AS momo_received,
+           COALESCE(bank_received, 0)  AS bank_received,
+           created_at AS date, 'order' AS type
+    FROM orders
+    WHERE deleted_at IS NULL AND (status IS NULL OR status != 'Reversed')
+      AND customer_sync_id = ? AND tenant_id = ?
+  `).all(customer.sync_id, tenantId);
+
+  // Manual AR payments (from the Pay modal).
+  const arPayments = db.prepare(`
+    SELECT id, NULL AS order_number, -amount AS amount, payment_date AS date, 'payment' AS type,
+           payment_method, reference, notes, 'manual' AS source
+    FROM customer_payments
+    WHERE deleted_at IS NULL AND customer_sync_id = ?
+  `).all(customer.sync_id);
+
+  // POS-time cash collected during a credit sale — synthesize a payment per order so the
+  // breakdown shows what the customer paid at the till, not just what they still owe.
+  // Amount is capped at the sale total (over-tender came back as change).
+  const posPayments = orders
+    .filter(o => parseFloat(o.cash_at_sale) > 0.001)
+    .map(o => {
+      const methods = ['cash_received', 'momo_received', 'bank_received'].filter(k => parseFloat(o[k]) > 0);
+      const method = methods.length > 1 ? 'Mixed'
+        : methods[0] === 'cash_received' ? 'Cash'
+        : methods[0] === 'momo_received' ? 'Mobile Money'
+        : methods[0] === 'bank_received' ? 'Bank Transfer'
+        : 'Cash';
+      const cappedAmount = Math.min(parseFloat(o.cash_at_sale), parseFloat(o.total_amount));
+      return {
+        id: -o.id,
+        order_id: o.id,                             // for "click to view order" in the frontend
+        order_number: null,
+        amount: -cappedAmount,                      // negative because payments offset orders
+        date: (o.date || '').slice(0, 10),
+        type: 'payment',
+        payment_method: method,
+        reference: o.order_number,
+        notes: 'Paid at sale',
+        // Per-method breakdown so the modal can show "Cash $30 · MoMo $20" instead of just "Mixed"
+        cash_amount: parseFloat(o.cash_received || 0),
+        bank_amount: parseFloat(o.bank_received || 0),
+        momo_amount: parseFloat(o.momo_received || 0),
+        source: 'pos',
+      };
+    });
+
+  // Strip the helper columns from orders before sending (used above to derive POS payments).
+  // eslint-disable-next-line no-unused-vars
+  const ordersClean = orders.map(({ cash_received, momo_received, bank_received, ...rest }) => rest);
+
+  const combined = [...ordersClean, ...arPayments, ...posPayments]
+    .sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+
+  let running = 0;
+  combined.forEach(row => { running += parseFloat(row.amount); row.running_balance = running; });
+
+  return { customer, entries: combined, outstanding: running };
+}
+
 router.get('/:id/statement', auth, readOnlyGuard, (req, res) => {
   try {
-    const customer = db.prepare('SELECT * FROM customers WHERE id = ? AND deleted_at IS NULL AND tenant_id = ?').get(req.params.id, req.user.tenantId);
-    if (!customer) return res.status(404).json({ error: 'Customer not found' });
-
-    // Every credit sale for this customer — full total goes on the statement so it can be
-    // paired with both the POS-time cash payment and any later AR payment. Fully-paid sales
-    // still appear (they net to zero after the synthetic POS payment cancels them out).
-    const orders = db.prepare(`
-      SELECT id, order_number,
-             total_amount AS amount,
-             total_amount, COALESCE(amount_received, 0) AS cash_at_sale,
-             COALESCE(cash_received, 0)  AS cash_received,
-             COALESCE(momo_received, 0)  AS momo_received,
-             COALESCE(bank_received, 0)  AS bank_received,
-             created_at AS date, 'order' AS type
-      FROM orders
-      WHERE deleted_at IS NULL AND (status IS NULL OR status != 'Reversed')
-        AND customer_sync_id = ? AND tenant_id = ?
-    `).all(customer.sync_id, req.user.tenantId);
-
-    // Manual AR payments (from the Pay modal).
-    const arPayments = db.prepare(`
-      SELECT id, NULL AS order_number, -amount AS amount, payment_date AS date, 'payment' AS type,
-             payment_method, reference, notes, 'manual' AS source
-      FROM customer_payments
-      WHERE deleted_at IS NULL AND customer_sync_id = ?
-    `).all(customer.sync_id);
-
-    // POS-time cash collected during a credit sale — synthesize a payment per order so the
-    // breakdown shows what the customer paid at the till, not just what they still owe.
-    // Amount is capped at the sale total (over-tender came back as change).
-    const posPayments = orders
-      .filter(o => parseFloat(o.cash_at_sale) > 0.001)
-      .map(o => {
-        const methods = ['cash_received', 'momo_received', 'bank_received'].filter(k => parseFloat(o[k]) > 0);
-        const method = methods.length > 1 ? 'Mixed'
-          : methods[0] === 'cash_received' ? 'Cash'
-          : methods[0] === 'momo_received' ? 'Mobile Money'
-          : methods[0] === 'bank_received' ? 'Bank Transfer'
-          : 'Cash';
-        const cappedAmount = Math.min(parseFloat(o.cash_at_sale), parseFloat(o.total_amount));
-        return {
-          id: -o.id,
-          order_id: o.id,                             // for "click to view order" in the frontend
-          order_number: null,
-          amount: -cappedAmount,                      // negative because payments offset orders
-          date: (o.date || '').slice(0, 10),
-          type: 'payment',
-          payment_method: method,
-          reference: o.order_number,
-          notes: 'Paid at sale',
-          // Per-method breakdown so the modal can show "Cash $30 · MoMo $20" instead of just "Mixed"
-          cash_amount: parseFloat(o.cash_received || 0),
-          bank_amount: parseFloat(o.bank_received || 0),
-          momo_amount: parseFloat(o.momo_received || 0),
-          source: 'pos',
-        };
-      });
-
-    // Strip the helper columns from orders before sending (used above to derive POS payments).
-    // eslint-disable-next-line no-unused-vars
-    const ordersClean = orders.map(({ cash_received, momo_received, bank_received, ...rest }) => rest);
-
-    const combined = [...ordersClean, ...arPayments, ...posPayments]
-      .sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
-
-    let running = 0;
-    combined.forEach(row => { running += parseFloat(row.amount); row.running_balance = running; });
-
-    res.json({ customer, entries: combined, outstanding: running });
+    const statement = buildCustomerStatement(req.params.id, req.user.tenantId);
+    if (!statement) return res.status(404).json({ error: 'Customer not found' });
+    res.json(statement);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -581,3 +596,5 @@ router.post('/:id/claim-orphan-orders', auth, (req, res) => {
 });
 
 module.exports = router;
+module.exports.listCustomersWithBalances = listCustomersWithBalances;
+module.exports.buildCustomerStatement    = buildCustomerStatement;

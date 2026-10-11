@@ -213,6 +213,10 @@ export const getHqSalesReport = (params) => api.get('/hq/sales-report', { params
 export const getHqInventoryReport = (params) => api.get('/hq/inventory-report', { params });
 // HQ — per-branch cash IN/OUT/Net per method (Cash/Bank/MoMo), today + MTD.
 export const getHqCashPosition = () => api.get('/hq/cash-position');
+// Account Receivables across every branch (read-only, per-branch currency)
+export const getHqAccountReceivables = (params) => api.get('/hq/account-receivables', { params });
+export const getHqCustomerStatement  = (slug, customerId) =>
+  api.get(`/hq/account-receivables/${encodeURIComponent(slug)}/${customerId}/statement`);
 // HQ — Group net profit rolled up across every branch, converted to USD
 // per-day using Kassumbalesa's selling_rate_k_used. HQ overhead = PVs
 // excluding LCVs. Returns per-branch totals + daily rows for drilldown.
