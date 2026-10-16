@@ -1693,15 +1693,51 @@ router.get('/balance-sheet', hqAuth, requirePagePerm('HqFinancialStatements'), (
       loansPayable = parseFloat(r?.total || 0);
     } catch (e) { console.error('[hq.balance-sheet] loans_pay:', e.message); }
     try {
+      // 2026-10-17 — added deleted_at IS NULL filter so soft-deleted
+      // Injection/Drawing rows don't inflate equity. The write-path
+      // helpers in routes/capitalAccount.js already filter this way;
+      // the balance sheet was reading past them.
       const r = tryGet(defaultDb, `
         SELECT
           COALESCE(SUM(CASE WHEN type='Injection' THEN amount ELSE 0 END), 0)
         - COALESCE(SUM(CASE WHEN type='Drawing'   THEN amount ELSE 0 END), 0) AS total
           FROM capital_account
-         WHERE date <= ?
+         WHERE deleted_at IS NULL AND date <= ?
       `, asOf);
       capital = parseFloat(r?.total || 0);
     } catch (e) { console.error('[hq.balance-sheet] capital:', e.message); }
+
+    // 2026-10-17 — HQ Payables was declared = 0 and never written to,
+    // so the balance sheet always reported K0 for AP. Compute it from
+    // backend/sosna.db (HQ default DB) using the same live formula the
+    // suppliers list uses: Σ(GRN total_amount) − Σ(ap_payments amount)
+    // per supplier, keeping only positive balances (true payables).
+    // Negative values (we overpaid) are supplier advances, not AP.
+    try {
+      const row = tryGet(defaultDb, `
+        SELECT COALESCE(SUM(CASE WHEN bal > 0 THEN bal ELSE 0 END), 0) AS total
+          FROM (
+            SELECT COALESCE(g.total_purchases, 0) - COALESCE(a.total_paid, 0) AS bal
+              FROM suppliers s
+              LEFT JOIN (
+                SELECT supplier_sync_id, SUM(total_amount) AS total_purchases
+                  FROM grn
+                 WHERE deleted_at IS NULL
+                   AND substr(date, 1, 10) <= ?
+              GROUP BY supplier_sync_id
+              ) g ON s.sync_id = g.supplier_sync_id
+              LEFT JOIN (
+                SELECT supplier_sync_id, SUM(amount) AS total_paid
+                  FROM ap_payments
+                 WHERE deleted_at IS NULL
+                   AND substr(date, 1, 10) <= ?
+              GROUP BY supplier_sync_id
+              ) a ON s.sync_id = a.supplier_sync_id
+             WHERE s.deleted_at IS NULL
+          )
+      `, [asOf, asOf]);
+      hqPayables = parseFloat(row?.total || 0);
+    } catch (e) { console.error('[hq.balance-sheet] hq_payables:', e.message); }
 
     // HQ cash lives in defaultDb (backend/sosna.db). HQ's sync_config
     // has no tenant_id; ccyReceiptsPayments' source-table queries need
