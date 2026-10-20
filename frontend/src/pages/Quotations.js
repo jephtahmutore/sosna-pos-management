@@ -248,6 +248,39 @@ export default function Quotations() {
     ...prev, items: prev.items.map((row, idx) => idx === i ? { ...row, [k]: v } : row),
   }));
   const addItem = () => setCurrent(prev => ({ ...prev, items: [...prev.items, { ...EMPTY_ITEM }] }));
+  // v1.10.260 — "Add All Products" bulk-loads every active product in this
+  // branch into the line-items table, each pre-filled with its display unit +
+  // that unit's price (same math `pickProduct` uses for a single pick). Any
+  // row already in `current.items` with a product_id is kept; any blank
+  // starter row is dropped. Quantity is left empty so the user fills it per
+  // item — the quotation only saves rows with quantity > 0 (see `save`).
+  const addAllItems = () => {
+    if (!products || products.length === 0) { showToast('No products loaded', 'error'); return; }
+    const existingIds = new Set((current.items || []).filter(i => i.product_id).map(i => i.product_id));
+    const newRows = products
+      .filter(p => !existingIds.has(p.id))
+      .map(p => {
+        const chosen = pickDisplayUnit(p);
+        return {
+          product_id: p.id,
+          product_name: p.name,
+          unit: chosen?.name || p.unit || 'pcs',
+          quantity: '',
+          unit_price: String(chosen?.price || p.selling_price || 0),
+          discount_amount: '0',
+        };
+      });
+    if (newRows.length === 0) { showToast('All products are already in the list'); return; }
+    setCurrent(prev => ({
+      ...prev,
+      items: [
+        // keep rows that already picked a product
+        ...(prev.items || []).filter(i => i.product_id),
+        ...newRows,
+      ],
+    }));
+    showToast(`Added ${newRows.length} product${newRows.length === 1 ? '' : 's'}`);
+  };
   const removeItem = (i) => setCurrent(prev => ({
     ...prev, items: prev.items.filter((_, idx) => idx !== i),
   }));
@@ -482,7 +515,10 @@ export default function Quotations() {
                       <div style={{ fontSize: 14, fontWeight: 700, color: '#1d4ed8' }}>Line Items</div>
                       <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 2 }}>Products the customer is quoting for</div>
                     </div>
-                    <button onClick={addItem} style={{ ...btnRow, background: '#eff6ff', color: '#1d4ed8', borderColor: '#bfdbfe' }}><FiPlus size={12} /> Add Item</button>
+                    <div style={{ display: 'flex', gap: 6 }}>
+                      <button onClick={addAllItems} style={{ ...btnRow, background: '#ecfdf5', color: '#047857', borderColor: '#a7f3d0' }} title="Load every product into the list — fill quantities you need, rest stay blank and are skipped on save"><FiPlus size={12} /> Add All Products</button>
+                      <button onClick={addItem} style={{ ...btnRow, background: '#eff6ff', color: '#1d4ed8', borderColor: '#bfdbfe' }}><FiPlus size={12} /> Add Item</button>
+                    </div>
                   </div>
                   <div style={{ background: '#f0f9ff', borderRadius: 10, border: '1px solid #bae6fd', overflow: 'hidden' }}>
                     <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
