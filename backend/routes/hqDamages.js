@@ -58,8 +58,12 @@ router.get('/awaiting', hqAuth, requirePagePerm('HqConfirmDamages'), (req, res) 
     for (const t of tenants) {
       try {
         const db = getTenantDb(t.slug);
-        const settings = (() => { try { return db.prepare(`SELECT business_name FROM business_settings ORDER BY id ASC LIMIT 1`).get(); } catch { return {}; } })();
+        const settings = (() => { try { return db.prepare(`SELECT business_name, currency_mode FROM business_settings ORDER BY id ASC LIMIT 1`).get(); } catch { return {}; } })();
         const branchName = settings?.business_name || t.business_name || t.slug;
+        // 2026-10-29 — carry the branch's own currency so HQ Confirm Damages
+        // doesn't hard-code $. Lusaka1/Mansa1 are K-only; Kassumbalesa1 is
+        // USD-based. Without this, HQ shows $431.23 for a K-only branch.
+        const branchCurrency = (settings?.currency_mode && String(settings.currency_mode).includes('USD')) ? 'USD' : 'K';
         const headers = safeAll(() => db.prepare(`
           SELECT id, return_number, date, notes, total_items, created_by, sync_id, created_at,
                  status, confirmed_by_name, confirmed_at, confirm_notes,
@@ -96,6 +100,7 @@ router.get('/awaiting', hqAuth, requirePagePerm('HqConfirmDamages'), (req, res) 
             ...h,
             branch_slug: t.slug,
             branch_name: branchName,
+            branch_currency: branchCurrency,
             items: enriched,
             est_value: estValue,
           });

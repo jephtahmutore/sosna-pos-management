@@ -9,7 +9,13 @@ import {
   getHqDamagesAwaiting, confirmHqDamage, rejectHqDamage,
 } from '../services/api';
 
-const fmtMoney = (n) => `$${parseFloat(n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+// 2026-10-29 — honours the branch's currency instead of hard-coding $.
+// Pass the row's branch_currency ('K' or 'USD'); defaults to '$' for
+// legacy callers that don't yet pass the arg.
+const fmtMoney = (n, ccy) => {
+  const sym = ccy === 'K' ? 'K ' : '$';
+  return `${sym}${parseFloat(n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+};
 const fmtQty   = (n) => parseFloat(n || 0).toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 });
 
 export default function HqConfirmDamages() {
@@ -155,7 +161,7 @@ export default function HqConfirmDamages() {
                   </div>
                   <div style={{ textAlign: 'right' }}>
                     <div style={{ fontSize: 11, color: accentColor, fontWeight: 700, textTransform: 'uppercase' }}>Est. value</div>
-                    <div style={{ fontSize: 18, fontWeight: 800, color: accentColor }}>{fmtMoney(r.est_value)}</div>
+                    <div style={{ fontSize: 18, fontWeight: 800, color: accentColor }}>{fmtMoney(r.est_value, r.branch_currency)}</div>
                   </div>
                 </div>
                 {r.notes && (
@@ -188,8 +194,8 @@ export default function HqConfirmDamages() {
                         <tr key={it.id} style={{ borderTop: '1px solid #f1f5f9' }}>
                           <td style={td}>{it.product_name || it.product_sync_id}</td>
                           <td style={{ ...td, textAlign: 'right' }}>{fmtQty(it.quantity)} {it.unit || it.product_unit || ''}</td>
-                          <td style={{ ...td, textAlign: 'right' }}>{fmtMoney(lineCost)}</td>
-                          <td style={{ ...td, textAlign: 'right', fontWeight: 700 }}>{fmtMoney(lineValue)}</td>
+                          <td style={{ ...td, textAlign: 'right' }}>{fmtMoney(lineCost, r.branch_currency)}</td>
+                          <td style={{ ...td, textAlign: 'right', fontWeight: 700 }}>{fmtMoney(lineValue, r.branch_currency)}</td>
                         </tr>
                       );
                     })}
@@ -231,7 +237,7 @@ function ActModal({ state, setState, onCancel, onSubmit }) {
         </p>
         <div style={{ marginTop: 12, padding: '10px 12px', background: '#f8fafc', borderRadius: 8, fontSize: 13 }}>
           <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>Items</span><strong>{(row.items || []).length}</strong></div>
-          <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>Estimated value</span><strong>{fmtMoney(row.est_value)}</strong></div>
+          <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>Estimated value</span><strong>{fmtMoney(row.est_value, row.branch_currency)}</strong></div>
         </div>
         {isConfirm ? (
           <div style={{ marginTop: 12, padding: '10px 12px', background: '#ecfdf5', border: '1px solid #a7f3d0', borderRadius: 6, fontSize: 12, color: '#065f46' }}>
