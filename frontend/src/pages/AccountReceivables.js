@@ -16,6 +16,7 @@ import Portal from '../utils/Portal';
 import useModalScrollLock from '../utils/useModalScrollLock';
 import AdminPasswordPrompt from '../components/AdminPasswordPrompt';
 import { matchTokens } from '../utils/tokenSearch';
+import { printOrderReceipt } from '../utils/orderReceipt';
 
 const todayStr = () => new Date().toISOString().slice(0, 10);
 // fmt() is defined inside the component now so it can read the tenant's primary currency symbol.
@@ -1281,7 +1282,20 @@ const AccountReceivables = () => {
                 );
               })()}
             </div>
-            <div style={{ padding: '12px 22px', borderTop: '1px solid #e5e7eb', display: 'flex', justifyContent: 'flex-end' }}>
+            <div style={{ padding: '12px 22px', borderTop: '1px solid #e5e7eb', display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+              {/* Same receipt the Sales Report prints for this order. */}
+              {orderDetail.data && (
+                <button
+                  onClick={() => printOrderReceipt(orderDetail.data, {
+                    curSym, isLiquorStyle,
+                    businessName: businessInfo.business_name || 'Sosna',
+                    businessAddress: businessInfo.business_address || '',
+                    businessPhone: businessInfo.business_phone || '',
+                  })}
+                  style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '8px 18px', background: '#dc2626', color: '#fff', border: 'none', borderRadius: 7, cursor: 'pointer', fontWeight: 600 }}>
+                  <FiPrinter size={14} /> Print Receipt
+                </button>
+              )}
               <button onClick={() => setOrderDetail(null)} style={{ padding: '8px 18px', background: '#fff', color: '#374151', border: '1px solid #d1d5db', borderRadius: 7, cursor: 'pointer', fontWeight: 600 }}>Close</button>
             </div>
           </div>
