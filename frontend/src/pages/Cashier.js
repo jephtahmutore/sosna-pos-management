@@ -1471,29 +1471,37 @@ function renderCashierReceipt({ biz, order, calc, cashierName, when, sellRate: _
   // v1.10.59 — Liquor style shows per-item PRICE + TOTAL in the 2-line
   // format ESC/POS already prints; Sosna stays Name + Qty only per the
   // dual-currency redesign.
-  const itemsRows = (order.items || []).map(it => {
+  // v1.10.338 — Customer receipt hides discount: per-line discount baked
+  // into the printed unit price, cart-level discount distributed pro-rata.
+  const cartDiscCR = parseFloat(order.discount || 0);
+  const stage1CR = (order.items || []).map(it => {
     const qty = parseFloat(it.quantity || 0);
-    const safeName = String(it.product_name).replace(/</g, '&lt;');
-    const qtyStr = qty % 1 === 0 ? qty.toFixed(0) : qty.toFixed(2);
+    const unitPx = parseFloat(it.unit_price || 0);
+    const lineDisc = parseFloat(it.discount || 0);
+    const netUnit = Math.max(0, unitPx - lineDisc);
+    return { it, qty, netUnit, lineTotal: qty * netUnit };
+  });
+  const postLineSubCR = stage1CR.reduce((s, x) => s + x.lineTotal, 0);
+  const itemsRows = stage1CR.map(x => {
+    if (cartDiscCR > 0 && postLineSubCR > 0) {
+      const share = (x.lineTotal / postLineSubCR) * cartDiscCR;
+      x.lineTotal = Math.max(0, x.lineTotal - share);
+      x.netUnit = x.qty > 0 ? x.lineTotal / x.qty : 0;
+    }
+    const safeName = String(x.it.product_name).replace(/</g, '&lt;');
+    const qtyStr = x.qty % 1 === 0 ? x.qty.toFixed(0) : x.qty.toFixed(2);
     if (isLiquorStyle) {
-      const unitPx = parseFloat(it.unit_price || 0);
-      const gross  = qty * unitPx;
-      const lineDisc = parseFloat(it.discount || 0);
-      const lineDiscTotal = qty * lineDisc;
-      const discRow = lineDisc > 0
-        ? `<tr><td colspan="4" style="padding-left:6px;font-size:10px;">discount ${qtyStr} x -${curSym}${fmt(lineDisc)}<span style="float:right;">-${curSym}${fmt(lineDiscTotal)}</span></td></tr>`
-        : '';
       return `<tr><td colspan="4" style="font-weight:700;padding-top:2px;">${safeName}</td></tr>
         <tr>
           <td></td>
-          <td style="text-align:right;white-space:nowrap;padding-left:8px;">${qtyStr} ${it.unit || ''}</td>
-          <td style="text-align:right;white-space:nowrap;">${curSym}${fmt(unitPx)}</td>
-          <td style="text-align:right;white-space:nowrap;">${curSym}${fmt(gross)}</td>
-        </tr>${discRow}`;
+          <td style="text-align:right;white-space:nowrap;padding-left:8px;">${qtyStr} ${x.it.unit || ''}</td>
+          <td style="text-align:right;white-space:nowrap;">${curSym}${fmt(x.netUnit)}</td>
+          <td style="text-align:right;white-space:nowrap;">${curSym}${fmt(x.lineTotal)}</td>
+        </tr>`;
     }
     return `<tr>
               <td>${safeName}</td>
-              <td style="text-align:right; white-space:nowrap;">${qtyStr} ${it.unit || ''}</td>
+              <td style="text-align:right; white-space:nowrap;">${qtyStr} ${x.it.unit || ''}</td>
             </tr>`;
   }).join('');
   const usedFra = (calc.paidFRA > 0.0001) || (calc.givenFRA > 0.0001);
@@ -1541,11 +1549,6 @@ function renderCashierReceipt({ biz, order, calc, cashierName, when, sellRate: _
     ${itemsRows}
   </table>
   <div class="divider">${da}</div>
-  <table>
-    <tr><td>Subtotal</td><td></td><td></td><td style="text-align:right;">$${fmt(order.subtotal)}</td></tr>
-    ${parseFloat(order.discount || 0) > 0 ? `<tr><td>Discount</td><td></td><td></td><td style="text-align:right;">-$${fmt(order.discount)}</td></tr>` : ''}
-  </table>
-  <div class="divider">${div}</div>
   <table>
     <tr class="grand"><td>TOTAL DUE</td><td></td><td></td><td style="text-align:right;">$${fmt(calc.totalDue)}</td></tr>
   </table>

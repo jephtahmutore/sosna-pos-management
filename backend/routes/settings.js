@@ -283,47 +283,43 @@ router.post('/print-receipt', async (req, res) => {
     lines.push(cols('Served by:',  servedBy     || 'Staff'));
     lines.push(eq);
 
-    // ── Items: gross line totals + per-line discount sub-row ──
-    // Lines sold in a non-default unit are flagged with ` **` after the
-    // product name and a single explanatory legend is appended at the
-    // very bottom of the receipt (only if at least one line carries the
-    // flag — receipts with all default-unit lines stay clean).
-    let grossSubtotal = 0;
-    let lineDiscSum   = 0;
-    let hasAltUnit    = false;
-    (items || []).forEach(item => {
+    // ── Items: NET unit price + net line total (discount baked in) ──
+    // v1.10.338 — The customer receipt hides discounts entirely. Per-line
+    // `item.discount` is subtracted from the unit price before printing,
+    // and any cart-level `req.body.discount` is distributed pro-rata so
+    // the printed line totals still add up to TOTAL. No "discount X x -K"
+    // sub-row and no Subtotal/Discount summary rows are printed. The
+    // underlying order records keep the true discount, so internal
+    // reports (Sales Report, Z-Report, Profit) are unaffected.
+    const cartDisc  = parseFloat(req.body.discount || 0);
+    const stage1 = (items || []).map(item => {
       const qty       = parseFloat(item.quantity)    || 0;
       const unitPrice = parseFloat(item.unit_price)  || 0;
-      const lineDisc  = parseFloat(item.discount)    || 0;       // per-unit discount
-      const gross     = qty * unitPrice;
-      const discTotal = qty * lineDisc;
-      grossSubtotal += gross;
-      lineDiscSum   += discTotal;
-      const isAlt = !!item.is_alt_unit;
-      if (isAlt) hasAltUnit = true;
-
-      const nameLine = String(item.product_name) + (isAlt ? ' **' : '');
-      lines.push(nameLine.substring(0, W));
-      const qtyStr = `  ${qty.toFixed(2)} ${item.unit || ''}`;
-      const right  = `${cur}${fmt(unitPrice)}  ${cur}${fmt(gross)}`;
-      lines.push(qtyStr + ' '.repeat(Math.max(1, W - qtyStr.length - right.length)) + right);
-      if (lineDisc > 0) {
-        // Indented sub-row showing the discount math, signed total on the right.
-        const left  = `    discount ${qty.toFixed(2)} x -${cur}${fmt(lineDisc)}`;
-        const r     = `-${cur}${fmt(discTotal)}`;
-        lines.push(left + ' '.repeat(Math.max(1, W - left.length - r.length)) + r);
+      const lineDisc  = parseFloat(item.discount)    || 0;
+      const netUnit   = Math.max(0, unitPrice - lineDisc);
+      return { item, qty, netUnit, lineTotal: qty * netUnit };
+    });
+    const postLineSub = stage1.reduce((s, x) => s + x.lineTotal, 0);
+    let hasAltUnit = false;
+    stage1.forEach(x => {
+      if (cartDisc > 0 && postLineSub > 0) {
+        const share = (x.lineTotal / postLineSub) * cartDisc;
+        x.lineTotal = Math.max(0, x.lineTotal - share);
+        x.netUnit   = x.qty > 0 ? x.lineTotal / x.qty : 0;
       }
+      const isAlt = !!x.item.is_alt_unit;
+      if (isAlt) hasAltUnit = true;
+      const nameLine = String(x.item.product_name) + (isAlt ? ' **' : '');
+      lines.push(nameLine.substring(0, W));
+      const qtyStr = `  ${x.qty.toFixed(2)} ${x.item.unit || ''}`;
+      const right  = `${cur}${fmt(x.netUnit)}  ${cur}${fmt(x.lineTotal)}`;
+      lines.push(qtyStr + ' '.repeat(Math.max(1, W - qtyStr.length - right.length)) + right);
     });
 
     lines.push(da);
 
-    // Cart-level discount (e.g. a manager applies a flat extra discount in addition to per-line ones).
-    const cartDisc  = parseFloat(req.body.discount || 0);
-    const totalDisc = lineDiscSum + cartDisc;
-
-    lines.push(cols('Subtotal:', `${cur}${fmt(grossSubtotal)}`));
-    if (totalDisc > 0) lines.push(cols('Discount:', `-${cur}${fmt(totalDisc)}`));
-    lines.push(eq);
+    // Subtotal / Discount rows intentionally omitted — receipt jumps
+    // straight from the line block to TOTAL.
     lines.push(cols('TOTAL:', `${cur}${fmt(total)}`));
     lines.push(eq);
 

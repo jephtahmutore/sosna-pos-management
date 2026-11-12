@@ -1161,43 +1161,45 @@ const POS = () => {
     //     qty unit                     UNITPX   GROSS
     // Sosna style stays Name + Qty only per the earlier redesign — customer
     // sees the amount owed only via Subtotal / TOTAL.
-    let fallbackHasAltUnit = false;
-    const itemsRows = data.items.map(item => {
-      const isAltUnit = isNonDefaultUnit(item);
-      if (isAltUnit) fallbackHasAltUnit = true;
-      const nameLabel = item.product_name + (isAltUnit ? ' **' : '');
+    // v1.10.338 — Customer receipt hides discount. Per-line discount is
+    // baked into the printed unit price; cart-level discount is
+    // distributed pro-rata so the line totals still sum to TOTAL. The
+    // "discount X x -K..." sub-row and the Subtotal/Discount summary
+    // rows are no longer printed.
+    const cartDisc = parseFloat(data.discount || 0);
+    const stage1 = data.items.map(item => {
       const qty = parseFloat(item.quantity || 0);
-      const qtyStr = qty % 1 === 0 ? qty.toFixed(0) : qty.toFixed(2);
+      const unitPx = parseFloat(item.unit_price || 0);
+      const lineDisc = parseFloat(item.discount || 0);
+      const netUnit = Math.max(0, unitPx - lineDisc);
+      return { item, qty, netUnit, lineTotal: qty * netUnit };
+    });
+    const postLineSub = stage1.reduce((s, x) => s + x.lineTotal, 0);
+    let fallbackHasAltUnit = false;
+    const itemsRows = stage1.map(x => {
+      if (cartDisc > 0 && postLineSub > 0) {
+        const share = (x.lineTotal / postLineSub) * cartDisc;
+        x.lineTotal = Math.max(0, x.lineTotal - share);
+        x.netUnit = x.qty > 0 ? x.lineTotal / x.qty : 0;
+      }
+      const isAltUnit = isNonDefaultUnit(x.item);
+      if (isAltUnit) fallbackHasAltUnit = true;
+      const nameLabel = x.item.product_name + (isAltUnit ? ' **' : '');
+      const qtyStr = x.qty % 1 === 0 ? x.qty.toFixed(0) : x.qty.toFixed(2);
       if (isLiquorStyle) {
-        const unitPx = parseFloat(item.unit_price || 0);
-        const gross  = qty * unitPx;
-        const lineDisc = parseFloat(item.discount || 0);
-        const lineDiscTotal = qty * lineDisc;
-        const discRow = lineDisc > 0
-          ? `<tr><td colspan="4" style="padding-left:6px;font-size:10px;">discount ${qtyStr} x -${curSym}${fmt(lineDisc)}<span style="float:right;">-${curSym}${fmt(lineDiscTotal)}</span></td></tr>`
-          : '';
         return `<tr><td colspan="4" style="font-weight:700;padding-top:2px;">${nameLabel}</td></tr>
           <tr>
             <td></td>
-            <td style="text-align:right;white-space:nowrap;padding-left:8px;">${qtyStr} ${item.unit || ''}</td>
-            <td style="text-align:right;white-space:nowrap;">${curSym}${fmt(unitPx)}</td>
-            <td style="text-align:right;white-space:nowrap;">${curSym}${fmt(gross)}</td>
-          </tr>${discRow}`;
+            <td style="text-align:right;white-space:nowrap;padding-left:8px;">${qtyStr} ${x.item.unit || ''}</td>
+            <td style="text-align:right;white-space:nowrap;">${curSym}${fmt(x.netUnit)}</td>
+            <td style="text-align:right;white-space:nowrap;">${curSym}${fmt(x.lineTotal)}</td>
+          </tr>`;
       }
       return `<tr>
         <td>${nameLabel}</td>
-        <td style="text-align:right; white-space:nowrap;">${qtyStr} ${item.unit || ''}</td>
+        <td style="text-align:right; white-space:nowrap;">${qtyStr} ${x.item.unit || ''}</td>
       </tr>`;
     }).join('');
-
-    // Total discount on the receipt = line discounts + cart-level discount
-    const lineDiscSum = data.items.reduce((s, it) => s + parseFloat(it.quantity) * parseFloat(it.discount || 0), 0);
-    const cartDisc = parseFloat(data.discount || 0);
-    const totalDisc = lineDiscSum + cartDisc;
-    const grossSubtotal = data.items.reduce((s, it) => s + parseFloat(it.quantity) * parseFloat(it.unit_price), 0);
-    const discountRow = totalDisc > 0
-      ? `<tr><td>Discount</td><td></td><td></td><td style="text-align:right;">-${curSym}${fmt(totalDisc)}</td></tr>`
-      : '';
 
     // Redesign: BALANCE DUE removed from print. CHANGE stays so the
     // customer sees what they get back. If underpaid, nothing prints
@@ -1266,12 +1268,6 @@ const POS = () => {
     ${itemsRows}
   </table>
   <div class="divider">${div42da}</div>
-
-  <table>
-    <tr><td>Subtotal</td><td></td><td></td><td style="text-align:right;">${curSym}${fmt(grossSubtotal)}</td></tr>
-    ${discountRow}
-  </table>
-  <div class="divider">${div42eq}</div>
 
   <table>
     <tr class="grand"><td>TOTAL</td><td></td><td></td><td style="text-align:right;">${curSym}${fmt(data.total)}</td></tr>
@@ -2480,33 +2476,42 @@ const POS = () => {
             </div>
 
             {/* ── SCROLLABLE ITEMS ── */}
+            {/* v1.10.338 — customer-facing panel: discount baked into the
+                unit price + line total (cart discount distributed pro-rata),
+                matching the printed receipt. No per-line discount sub-row. */}
             <div style={{ flex: 1, overflowY: 'auto', padding: '0 28px', fontFamily: 'monospace' }}>
-              {receiptData.items.map((item, idx) => {
-                const isAltUnit = isNonDefaultUnit(item);
-                // Show GROSS line (qty × original unit_price) and the line discount
-                // separately so the math on the receipt adds up to the customer.
-                const lineDisc = parseFloat(item.discount || 0);
-                const grossLineTotal = parseFloat(item.quantity) * parseFloat(item.unit_price);
-                const lineDiscTotal = parseFloat(item.quantity) * lineDisc;
-                return (
-                <div key={idx} style={{ marginBottom: 4 }}>
-                  <div style={{ fontSize: 12, fontWeight: 600 }}>{item.product_name}{isAltUnit ? ' **' : ''}</div>
-                  <div style={{ display: 'flex', fontSize: 11 }}>
-                    <span style={{ flex: 3 }} />
-                    <span style={{ textAlign: 'center', flex: 1 }}>{item.quantity} {item.unit || ''}</span>
-                    <span style={{ textAlign: 'right', flex: 1 }}>{money(item.unit_price)}</span>
-                    <span style={{ textAlign: 'right', flex: 1 }}>{money(grossLineTotal)}</span>
-                  </div>
-                  {lineDisc > 0 && (
-                    <div style={{ display: 'flex', fontSize: 10, color: '#dc2626' }}>
-                      <span style={{ flex: 3 }} />
-                      <span style={{ textAlign: 'right', flex: 2 }}>discount {item.quantity} × −{money(lineDisc)}</span>
-                      <span style={{ textAlign: 'right', flex: 1 }}>−{money(lineDiscTotal)}</span>
+              {(() => {
+                const cartDisc = parseFloat(receiptData.discount || 0);
+                const stage1 = (receiptData.items || []).map(item => {
+                  const qty = parseFloat(item.quantity || 0);
+                  const unitPx = parseFloat(item.unit_price || 0);
+                  const lineDisc = parseFloat(item.discount || 0);
+                  const netUnit = Math.max(0, unitPx - lineDisc);
+                  return { item, qty, netUnit, lineTotal: qty * netUnit };
+                });
+                const postLineSub = stage1.reduce((s, x) => s + x.lineTotal, 0);
+                stage1.forEach(x => {
+                  if (cartDisc > 0 && postLineSub > 0) {
+                    const share = (x.lineTotal / postLineSub) * cartDisc;
+                    x.lineTotal = Math.max(0, x.lineTotal - share);
+                    x.netUnit = x.qty > 0 ? x.lineTotal / x.qty : 0;
+                  }
+                });
+                return stage1.map((x, idx) => {
+                  const isAltUnit = isNonDefaultUnit(x.item);
+                  return (
+                    <div key={idx} style={{ marginBottom: 4 }}>
+                      <div style={{ fontSize: 12, fontWeight: 600 }}>{x.item.product_name}{isAltUnit ? ' **' : ''}</div>
+                      <div style={{ display: 'flex', fontSize: 11 }}>
+                        <span style={{ flex: 3 }} />
+                        <span style={{ textAlign: 'center', flex: 1 }}>{x.item.quantity} {x.item.unit || ''}</span>
+                        <span style={{ textAlign: 'right', flex: 1 }}>{money(x.netUnit)}</span>
+                        <span style={{ textAlign: 'right', flex: 1 }}>{money(x.lineTotal)}</span>
+                      </div>
                     </div>
-                  )}
-                </div>
-                );
-              })}
+                  );
+                });
+              })()}
             </div>
 
             {/* ── FIXED FOOTER ── */}
@@ -2514,33 +2519,10 @@ const POS = () => {
               <div style={{ borderTop: '1px dashed #d1d5db', margin: '10px 0' }} />
 
               <div style={{ fontSize: 12 }}>
-                {(() => {
-                  // Re-derive gross totals so the receipt math reads cleanly:
-                  //   Gross Subtotal = Σ qty × unit_price
-                  //   Line discounts = Σ qty × line.discount
-                  //   Cart discount  = receiptData.discount
-                  //   TOTAL = Gross Subtotal − Line discounts − Cart discount
-                  const grossSubtotal = (receiptData.items || []).reduce(
-                    (s, it) => s + parseFloat(it.quantity) * parseFloat(it.unit_price), 0);
-                  const lineDiscSum = (receiptData.items || []).reduce(
-                    (s, it) => s + parseFloat(it.quantity) * parseFloat(it.discount || 0), 0);
-                  const cartDisc = parseFloat(receiptData.discount || 0);
-                  const totalDisc = lineDiscSum + cartDisc;
-                  return (
-                    <>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 3 }}>
-                        <span style={{ color: '#6b7280' }}>Subtotal</span>
-                        <span>{money(grossSubtotal)}</span>
-                      </div>
-                      {totalDisc > 0 && (
-                        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 3 }}>
-                          <span style={{ color: '#dc2626' }}>Discount{lineDiscSum > 0 && cartDisc > 0 ? ` (line ${money(lineDiscSum)} + cart ${money(cartDisc)})` : ''}</span>
-                          <span style={{ color: '#dc2626' }}>−{money(totalDisc)}</span>
-                        </div>
-                      )}
-                    </>
-                  );
-                })()}
+                {/* v1.10.338 — Subtotal / Discount rows intentionally hidden
+                    on the customer-facing panel. Discount is baked into the
+                    per-line unit price above, so the receipt goes straight
+                    to TOTAL. */}
                 <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6, paddingTop: 5, borderTop: '1px solid #e5e7eb', fontWeight: 800, fontSize: 18 }}>
                   <span>TOTAL</span>
                   <span>{money(receiptData.total)}</span>

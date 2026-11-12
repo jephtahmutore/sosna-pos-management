@@ -20,13 +20,36 @@ export const buildReceiptHtml = (order, { curSym, isLiquorStyle, businessName, b
   // v1.10.59/63 — Liquor keeps its 2-line format with PRICE and TOTAL
   // columns (matches ESC/POS backend and POS.js till receipt). Sosna
   // renders Name + Qty only per the dual-currency redesign.
-  const itemRows = (order.items || []).map(item => {
+  // v1.10.338 — Customer receipt hides discount: per-line `item.discount`
+  // is baked into the printed unit price and cart-level `order.discount`
+  // is distributed pro-rata so the printed line totals still sum to the
+  // TOTAL. The Subtotal / Discount summary rows are suppressed below.
+  const cartDiscAll = parseFloat(order.discount || 0);
+  const _tmpStage = (order.items || []).map(it => {
+    const q = parseFloat(it.quantity || 0);
+    const rq = parseFloat(it.reversed_quantity || 0);
+    const partial = !it.reversed && rq > 0;
+    const netQ = partial ? Math.max(0, q - rq) : q;
+    const u = parseFloat(it.unit_price || 0);
+    const d = parseFloat(it.discount || 0);
+    const netU = Math.max(0, u - d);
+    return { lineTotal: netQ * netU };
+  });
+  const postLineSubAll = _tmpStage.reduce((s, x) => s + x.lineTotal, 0);
+  const itemRows = (order.items || []).map((item, _idx) => {
     const origQty = parseFloat(item.quantity || 0);
     const rq      = parseFloat(item.reversed_quantity || 0);
     const partial = !item.reversed && rq > 0;
     const netQty  = partial ? Math.max(0, origQty - rq) : origQty;
     const unitPx  = parseFloat(item.unit_price || 0);
-    const netTotal = partial ? unitPx * netQty : parseFloat(item.total_price || 0);
+    const lineDisc = parseFloat(item.discount || 0);
+    let netUnit   = Math.max(0, unitPx - lineDisc);
+    let netTotal  = netQty * netUnit;
+    if (cartDiscAll > 0 && postLineSubAll > 0) {
+      const share = (netTotal / postLineSubAll) * cartDiscAll;
+      netTotal = Math.max(0, netTotal - share);
+      netUnit = netQty > 0 ? netTotal / netQty : 0;
+    }
     // Same non-default-unit flag as the on-page receipt.
     const dispUnit = pickDisplayUnit(item);
     let hasMultiUnits = false;
@@ -50,16 +73,17 @@ export const buildReceiptHtml = (order, { curSym, isLiquorStyle, businessName, b
       </tr>
       ${partialNoteSosna}`;
     }
-    // Liquor: 2-line format — name on line 1, indented qty + unit_price + gross on line 2.
-    // v1.10.63 — unit_price and gross now prefixed with curSym so the
-    // paper matches the POS till receipt.
+    // Liquor: 2-line format — name on line 1, indented qty + NET unit_price + line total on line 2.
+    // v1.10.338 — unit_price shown is NET (unit_price − line.discount, with
+    // cart-level discount distributed pro-rata), so the discount never
+    // appears on the customer receipt.
     const partialNote = partial ? `<tr><td colspan="4" style="font-size:9px;color:#b45309;padding-left:6px">was ${origQty} ${item.unit || ''} — reversed ${rq}</td></tr>` : '';
     return `
     <tr><td colspan="4" style="font-weight:700;padding-top:4px;${item.reversed ? 'text-decoration:line-through;color:#999;' : ''}">${nameLabel}</td></tr>
     <tr style="${rowWeight}${item.reversed ? 'color:#999;' : ''}">
       <td></td>
       <td style="text-align:right;padding-left:8px;${partial ? 'font-weight:700' : ''}">${netQty} ${item.unit || ''}</td>
-      <td style="text-align:right;white-space:nowrap;">${curSym}${fmt2(unitPx)}</td>
+      <td style="text-align:right;white-space:nowrap;">${curSym}${fmt2(netUnit)}</td>
       <td style="text-align:right;white-space:nowrap;${partial ? 'font-weight:700' : ''}">${curSym}${fmt2(netTotal)}</td>
     </tr>
     ${partialNote}`;
@@ -143,11 +167,6 @@ export const buildReceiptHtml = (order, { curSym, isLiquorStyle, businessName, b
     ${itemRows}
   </table>
   <div class="div">${'-'.repeat(42)}</div>
-  <table>
-    <tr><td>Subtotal</td><td></td><td></td><td style="text-align:right;white-space:nowrap;">${curSym}${fmt2(order.subtotal)}</td></tr>
-    ${parseFloat(order.discount) > 0 ? `<tr><td>Discount</td><td></td><td></td><td style="text-align:right;white-space:nowrap;">-${curSym}${fmt2(order.discount)}</td></tr>` : ''}
-  </table>
-  <div class="div">${div}</div>
   <table>
     <tr class="grand"><td>TOTAL</td><td></td><td></td><td style="text-align:right;white-space:nowrap;">${curSym}${fmt2(order.total_amount)}</td></tr>
   </table>
