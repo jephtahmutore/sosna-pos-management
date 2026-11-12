@@ -194,36 +194,6 @@ const AccountPayables = () => {
 
   const formatDate = (d) => d ? new Date(d).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' }) : '—';
 
-  // v1.10.338 — Collapse CN rows that share a date into a single ledger
-  // row. Doc #s are comma-joined (de-duplicated); References are joined
-  // with " + "; `credit` is summed. INV / PAY rows pass through
-  // untouched. Used by both the Supplier Breakdown modal and its Print
-  // output so screen and paper agree on one row per CN date.
-  const mergeCnByDate = (events) => {
-    const out = [];
-    const byDate = new Map();
-    const joinCsv = (a, b) => {
-      const s = new Set();
-      String(a || '').split(/\s*,\s*/).filter(Boolean).forEach(x => s.add(x));
-      String(b || '').split(/\s*,\s*/).filter(Boolean).forEach(x => s.add(x));
-      return [...s].join(', ');
-    };
-    const joinPlus = (a, b) => [a, b].filter(Boolean).join(' + ');
-    for (const ev of events) {
-      if (ev.kind !== 'CN') { out.push(ev); continue; }
-      if (!byDate.has(ev.date)) { byDate.set(ev.date, out.length); out.push({ ...ev }); continue; }
-      const i = byDate.get(ev.date);
-      const prev = out[i];
-      out[i] = {
-        ...prev,
-        doc: joinCsv(prev.doc, ev.doc),
-        reference: joinPlus(prev.reference, ev.reference),
-        credit: (prev.credit || 0) + (ev.credit || 0),
-      };
-    }
-    return out;
-  };
-
   const handleBreakdownPrint = () => {
     if (!breakdown) return;
     const printedAt = new Date().toLocaleString('en-US', { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
@@ -260,13 +230,10 @@ const AccountPayables = () => {
         sortKey: cn.date + ' 2',
       })),
     ].sort((a, b) => String(a.sortKey).localeCompare(String(b.sortKey)));
-    // v1.10.338 — Merge same-date CN rows into one line for Print, so
-    // paper matches the on-screen statement view.
-    const allEvsMerged = mergeCnByDate(allEvs);
 
     const inRange = (d) => (!modalFrom || d >= modalFrom) && (!modalTo || d <= modalTo);
-    const preWindow = allEvsMerged.filter(e => modalFrom && e.date < modalFrom);
-    const evs = allEvsMerged.filter(e => inRange(e.date));
+    const preWindow = allEvs.filter(e => modalFrom && e.date < modalFrom);
+    const evs = allEvs.filter(e => inRange(e.date));
     const openingBalance = preWindow.reduce((s, e) => s + e.debit + e.credit, 0);
     let running = openingBalance;
     const rows = evs.map(ev => { running += ev.debit + ev.credit; return { ...ev, balance: running }; });
@@ -832,17 +799,13 @@ const AccountPayables = () => {
                         sortKey: cn.date + ' 2',
                       })),
                     ].sort((a, b) => String(a.sortKey).localeCompare(String(b.sortKey)));
-                    // v1.10.338 — Merge same-date CN rows into one ledger
-                    // line. Pure front-end roll-up (backend untouched);
-                    // the Print view applies the same rule so both agree.
-                    const allEvsMerged = mergeCnByDate(allEvs);
 
                     // v1.10.310 — apply per-modal date filter. Everything BEFORE
                     // modalFrom becomes the opening balance for the window; only
                     // rows within [modalFrom, modalTo] appear in the table.
                     const inRange = (d) => (!modalFrom || d >= modalFrom) && (!modalTo || d <= modalTo);
-                    const preWindow = allEvsMerged.filter(e => modalFrom && e.date < modalFrom);
-                    const evs = allEvsMerged.filter(e => inRange(e.date));
+                    const preWindow = allEvs.filter(e => modalFrom && e.date < modalFrom);
+                    const evs = allEvs.filter(e => inRange(e.date));
                     const openingBalance = preWindow.reduce((s, e) => s + e.debit + e.credit, 0);
 
                     // Walk with running balance starting from opening
