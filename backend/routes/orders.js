@@ -6,6 +6,29 @@ const { randomUUID } = require('crypto');
 const { recalculateDailyProfit } = require('../config/profitHelper');
 const { conversionToBase, baseQtyExpr } = require('../config/unitsHelper');
 
+// v1.10.339 — Books-close guard. Once a cash report has been SAVED for a date,
+// that day's cash drawer is reconciled; any later order edit/reverse would
+// retroactively change the cash-expected total and desync the frozen history
+// row. Block the mutation and tell the admin to reopen the Cash Report (Delete
+// saved) first — then they can re-run the fix and re-save. No block when no
+// cash_report row exists for that date.
+function assertDateNotClosed(db, orderCreatedAt) {
+  const date = (orderCreatedAt || '').slice(0, 10);
+  if (!date) return;
+  const row = db.prepare(
+    `SELECT id FROM cash_reports WHERE date = ? LIMIT 1`
+  ).get(date);
+  if (row) {
+    const err = new Error(
+      `Books closed: a Cash Report has been saved for ${date}. ` +
+      `Open Cash Report, pick ${date}, click "Delete saved" to reopen the day, ` +
+      `then redo this edit/reversal and save the Cash Report again.`
+    );
+    err.status = 409;
+    throw err;
+  }
+}
+
 // Get distinct users that have orders (for filter dropdown).
 // v1.9.1 — JOIN by sync_id (with fallback to local id for legacy rows whose
 // backfill couldn't run, e.g. user later deleted from this DB).
@@ -82,6 +105,7 @@ router.put('/:id/edit-payment', auth, (req, res) => {
       .get(req.params.id, req.user.tenantId);
     if (!order) return res.status(404).json({ error: 'Order not found' });
     if (!order.paid_at) return res.status(400).json({ error: 'Order has no payment to edit.' });
+    try { assertDateNotClosed(db, order.created_at); } catch (e) { return res.status(e.status || 500).json({ error: e.message }); }
     const paidAtMs = new Date(order.paid_at + (order.paid_at.includes('T') ? '' : 'Z')).getTime();
     const daysSince = (Date.now() - paidAtMs) / (1000 * 60 * 60 * 24);
     if (daysSince > 7) {
@@ -1131,6 +1155,7 @@ router.put('/:id/reverse', auth, (req, res) => {
       const order = db.prepare('SELECT * FROM orders WHERE id = ? AND deleted_at IS NULL').get(req.params.id);
       if (!order) throw Object.assign(new Error('Order not found'), { status: 404 });
       if (order.status === 'Reversed') throw Object.assign(new Error('Order already reversed'), { status: 400 });
+      assertDateNotClosed(db, order.created_at);
 
       // v1.10.21 — before soft-deleting the movements, roll their net effect
       // back on products.current_stock so the cache stays consistent with
@@ -1202,6 +1227,7 @@ router.put('/:id/items/:itemId/reverse', auth, (req, res) => {
       const order = db.prepare('SELECT * FROM orders WHERE id = ? AND deleted_at IS NULL').get(req.params.id);
       if (!order) throw Object.assign(new Error('Order not found'), { status: 404 });
       if (order.status === 'Reversed') throw Object.assign(new Error('Order already fully reversed'), { status: 400 });
+      assertDateNotClosed(db, order.created_at);
 
       const item = db.prepare('SELECT * FROM order_items WHERE id = ? AND order_sync_id = ? AND deleted_at IS NULL').get(req.params.itemId, order.sync_id);
       if (!item) throw Object.assign(new Error('Item not found in this order'), { status: 404 });
