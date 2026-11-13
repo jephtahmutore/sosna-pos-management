@@ -171,17 +171,27 @@ const SalesReport = () => {
   // (not cash / momo / bank). On Sosna branches these same columns hold
   // the USD/FRA-equivalent breakdown, but isLiquorStyle gates the reads
   // so they only matter on K-only multi-method branches.
-  // v1.10.101 — subtract change_amount from Cash total on Liquor so the
-  // per-method Cash card matches the ≈ total footer (both settle to the
-  // capped-at-total_amount value). Change on Liquor always comes out of
-  // Cash drawer, never from MoMo/Bank. These variables are only rendered
-  // on isLiquorStyle branches (line 878), so Kassumbalesa is untouched.
-  const totalCashReceived = activeOrders.reduce((s, o) =>
-    s + parseFloat(o.cash_received || 0) - parseFloat(o.change_amount || 0), 0);
+  // v1.10.339 — Liquor-style per-method rollup. MoMo and Bank are "exact"
+  // (customer types the amount), so any over-tender comes back as CASH change
+  // from the drawer — even when the over-tender arrived via MoMo/Bank. Model
+  // each order as:
+  //   revenue = min(amount_received, total_amount)
+  //   momo    = momo_received    (as-is)
+  //   bank    = bank_received    (as-is)
+  //   cash    = revenue − momo − bank    (may go NEGATIVE when change had to
+  //                                       come out of the cash drawer)
+  // Guarantees per-method cash+momo+bank always sums to revenue — no phantom
+  // inflation from kept over-tender. Prior formula (cash_received −
+  // change_amount) inflated Cash when cashier kept over-tender (K1,150 gap
+  // seen 2026-11-13 Lusaka1). Mirrors backend cashReport.js.
   const totalMomoReceived = activeOrders.reduce((s, o) =>
     s + parseFloat(o.momo_received || 0), 0);
   const totalBankReceived = activeOrders.reduce((s, o) =>
     s + parseFloat(o.bank_received || 0), 0);
+  const totalCashReceived = activeOrders.reduce((s, o) =>
+    s + Math.min(parseFloat(o.amount_received || 0), parseFloat(o.total_amount || 0))
+      - parseFloat(o.momo_received || 0)
+      - parseFloat(o.bank_received || 0), 0);
   const totalCreditByMethod = activeOrders.reduce((s, o) =>
     s + Math.max(0, parseFloat(o.total_amount || 0) - parseFloat(o.amount_received || 0)), 0);
 

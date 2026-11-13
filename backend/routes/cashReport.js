@@ -171,18 +171,32 @@ router.get('/daily', auth, readOnlyGuard, (req, res) => {
     // right Expected value. On Sosna branches these columns are 0 (the
     // walk-in modal isn't used), so the sums are 0 — harmless.
     //
-    // v1.10.101 — subtract change_amount from Cash bucket (mirrors the
-    // reference Liquor project's cashReport.js:105). When a Liquor customer
-    // overpays via MoMo/Bank, the cashier hands back Cash change from the
-    // drawer — so the till's Cash bucket must be NET of the change dispensed.
-    // Without this, Expected Cash inflates by the over-collection amount
-    // (K2,330 gap on 2026-07-04 Lusaka1). MoMo/Bank don't need subtraction
-    // because change never comes back through those methods on Liquor.
-    // Kassumbalesa (tri-currency) is unaffected — its UI reads usdNet/fraNet/
-    // kNet (lines 123-125) which already subtract per-currency change_given.
-    const cashNet = parseFloat(sumOrders('cash_received')) - parseFloat(sumOrders('change_amount'));
+    // v1.10.339 — Liquor-style per-method rollup. MoMo and Bank are "exact"
+    // (customer types the amount), so any over-tender comes back as CASH
+    // change from the drawer — even when the over-tender arrived via MoMo/
+    // Bank. Model each order as:
+    //     revenue = MIN(amount_received, total_amount)      capped at sale
+    //     momoNet += momo_received                          as-is
+    //     bankNet += bank_received                          as-is
+    //     cashNet += revenue − momo_received − bank_received (may go NEGATIVE
+    //                                                        when change had
+    //                                                        to come out of
+    //                                                        the cash drawer)
+    // Guarantees: per-method cash+momo+bank always sums to revenue (no
+    // phantom inflation from kept over-tender), and Partial-Credit sales
+    // contribute only what was actually paid at the till (not total_amount).
+    // Prior formula (cash_received − change_amount) inflated Cash whenever
+    // the cashier kept an over-tender (change_amount = 0), causing the K1,150
+    // gap seen 2026-11-13 Lusaka1.
+    const sumOrderExpr = (expr) => db.prepare(
+      `SELECT COALESCE(SUM(${expr}), 0) AS total
+       FROM orders WHERE ${orderDateClause} AND deleted_at IS NULL AND tenant_id = ?
+       AND (status IS NULL OR status != 'Reversed')${userFilter}`
+    ).get(...baseParams).total;
+    const paidRevenue = parseFloat(sumOrderExpr('MIN(amount_received, total_amount)'));
     const momoNet = parseFloat(sumOrders('momo_received'));
     const bankNet = parseFloat(sumOrders('bank_received'));
+    const cashNet = paidRevenue - momoNet - bankNet;
 
     // v1.8.68 — over-collections breakdown. When customer overpays and cashier
     // keeps the surplus, the over-payment lives in the drawer of the currency

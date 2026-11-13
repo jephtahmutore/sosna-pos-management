@@ -904,7 +904,7 @@ const ItemDetails = () => {
                   })()}
                 </td>
                 {!isHq && <td>{curSym}{(parseFloat(displayPriceInDefaultUnit(item.avg_cost_price || item.cost_price || 0, item).price)||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</td>}
-                {!isHq && <td>{curSym}{(parseFloat(displayPriceInDefaultUnit(item.selling_price, item).price)||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</td>}
+                {!isHq && <td>{curSym}{(parseFloat(pickDisplayUnit(item).price)||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</td>}
                 {!isHq && <td>
                   {(() => {
                     const cost = parseFloat(item.avg_cost_price || item.cost_price || 0);
