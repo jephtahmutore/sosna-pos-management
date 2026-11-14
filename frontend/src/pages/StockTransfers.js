@@ -681,7 +681,7 @@ function CreateTransferModal({ sourceSlug, branches, onClose, onCreated, onError
                       // use the product's configured default unit (e.g. Box).
                       const displayQty = formatStockForProduct(p.current_stock, p, {
                         showBaseInParens: true, decimals: 0,
-                        allowNegative: true, preferDefaultUnit: true,
+                        allowNegative: true, preferDefaultUnit: false,
                       });
                       const dispUnit = getDisplayUnit(p);
                       return (
