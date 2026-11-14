@@ -16,7 +16,7 @@ function assertDateNotClosed(db, orderCreatedAt) {
   const date = (orderCreatedAt || '').slice(0, 10);
   if (!date) return;
   const row = db.prepare(
-    `SELECT id FROM cash_reports WHERE date = ? LIMIT 1`
+    `SELECT id FROM cash_reports WHERE date = ? AND deleted_at IS NULL LIMIT 1`
   ).get(date);
   if (row) {
     const err = new Error(
