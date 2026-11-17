@@ -1119,6 +1119,13 @@ function initTenantDb(db) {
   addCol('cash_receipts',      'usd_amount',  'REAL NOT NULL DEFAULT 0');
   addCol('cash_receipts',      'fra_amount',  'REAL NOT NULL DEFAULT 0');
   addCol('cash_receipts',      'k_amount',    'REAL NOT NULL DEFAULT 0');
+  // v1.10.342 — audit "who deleted this CR" so money that disappears from the
+  // Cash Book can be traced. Historical deletes stay NULL (can't reconstruct);
+  // all future soft-deletes stamp deleted_by + deleted_by_sync_id. The sync_id
+  // column makes the identity survive device swaps — same pattern as
+  // created_by_sync_id (v1.10.277).
+  addCol('cash_receipts',      'deleted_by',          'INTEGER');
+  addCol('cash_receipts',      'deleted_by_sync_id',  'TEXT');
   addCol('payment_vouchers',   'cash_amount', 'REAL NOT NULL DEFAULT 0');
   addCol('payment_vouchers',   'bank_amount', 'REAL NOT NULL DEFAULT 0');
   addCol('payment_vouchers',   'momo_amount', 'REAL NOT NULL DEFAULT 0');

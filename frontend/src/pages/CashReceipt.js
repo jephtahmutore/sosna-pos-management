@@ -78,9 +78,17 @@ const CashReceipt = () => {
     date: todayStr,
   });
 
-  const fetchData = async () => {
+  // v1.10.342 — "Show deleted" toggle lets admins audit soft-deleted CRs
+  // (red strikethrough row with "Deleted by X on Y").
+  const [showDeleted, setShowDeleted] = useState(false);
+
+  const fetchData = async (opts = {}) => {
+    const wantDeleted = opts.includeDeleted ?? showDeleted;
     try {
-      const [statsRes, receiptsRes] = await Promise.all([getCashReceiptStats(), getCashReceipts()]);
+      const [statsRes, receiptsRes] = await Promise.all([
+        getCashReceiptStats(),
+        getCashReceipts({ includeDeleted: wantDeleted }),
+      ]);
       if (statsRes.data) setStats(statsRes.data);
       setReceipts(receiptsRes.data || []);
     } catch (err) { /* use defaults */ }
@@ -89,7 +97,10 @@ const CashReceipt = () => {
   useEffect(() => {
     fetchData();
     getSettings().then(r => setBusinessInfo(r.data?.business || {})).catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+  // Refetch when the toggle flips.
+  useEffect(() => { fetchData({ includeDeleted: showDeleted }); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [showDeleted]);
 
   // Client-side filter
   const filteredReceipts = receipts.filter(r => {
@@ -397,6 +408,13 @@ const CashReceipt = () => {
           </button>
         )}
 
+        {/* v1.10.342 — Show deleted toggle. When on, soft-deleted CRs appear
+            in the list with a red strikethrough + "Deleted by X on …" line. */}
+        <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '5px 10px', borderRadius: 7, border: `1px solid ${showDeleted ? '#fecaca' : '#e5e7eb'}`, background: showDeleted ? '#fef2f2' : '#fff', color: showDeleted ? '#991b1b' : '#6b7280', fontSize: 12, cursor: 'pointer', fontWeight: 600 }}>
+          <input type="checkbox" checked={showDeleted} onChange={e => setShowDeleted(e.target.checked)} style={{ margin: 0, cursor: 'pointer' }} />
+          Show deleted
+        </label>
+
         <span style={{ marginLeft: 'auto', fontSize: 12, color: '#9ca3af' }}>
           {filteredReceipts.length} receipt{filteredReceipts.length !== 1 ? 's' : ''}
           <> &nbsp;·&nbsp; Total: <strong style={{ color: '#16a34a' }}>{curSym}{fmt2(filteredTotal)}</strong></>
@@ -460,13 +478,34 @@ const CashReceipt = () => {
                 const dash = <span style={{ color: '#cbd5e1' }}>—</span>;
                 // v1.10.45 — Liquor total = sum of the three slots (all K).
                 const liquorTotal = ru + rf + rk;
+                // v1.10.342 — soft-deleted rows render with a red strikethrough
+                // and a subtitle line that names the deletor + timestamp, so
+                // audits can see what disappeared from the Cash Book and when.
+                const isDeleted = !!r.deleted_at;
+                const rowStyle = isDeleted
+                  ? { background: '#fef2f2', color: '#991b1b', textDecoration: 'line-through' }
+                  : undefined;
+                const cellTintBase = isDeleted ? { color: '#991b1b', textDecoration: 'line-through' } : {};
+                const fmtDeletedAt = (s) => {
+                  if (!s) return '';
+                  const d = new Date(s.replace(' ', 'T'));
+                  if (isNaN(d.getTime())) return s;
+                  return d.toLocaleString(undefined, { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+                };
                 return (
-                <tr key={r.id}>
-                  <td style={{ fontWeight: 500 }}>{r.receipt_number}</td>
-                  <td>{formatDate(r.date)}</td>
-                  <td>{r.received_from}</td>
-                  <td style={{ color: '#6b7280' }}>{r.description || '—'}</td>
-                  <td><span className={`badge ${getPaymentColor(r.payment_method)}`}>{r.payment_method}</span></td>
+                <tr key={r.id} style={rowStyle}>
+                  <td style={{ fontWeight: 500, ...cellTintBase }}>
+                    {r.receipt_number}
+                    {isDeleted && (
+                      <div style={{ fontSize: 10.5, color: '#991b1b', fontWeight: 600, marginTop: 3, textDecoration: 'none' }}>
+                        Deleted {r.deleted_by_name ? `by ${r.deleted_by_name} ` : ''}on {fmtDeletedAt(r.deleted_at)}
+                      </div>
+                    )}
+                  </td>
+                  <td style={cellTintBase}>{formatDate(r.date)}</td>
+                  <td style={cellTintBase}>{r.received_from}</td>
+                  <td style={{ color: isDeleted ? '#991b1b' : '#6b7280', ...(isDeleted ? { textDecoration: 'line-through' } : {}) }}>{r.description || '—'}</td>
+                  <td><span className={`badge ${getPaymentColor(r.payment_method)}`} style={isDeleted ? { textDecoration: 'line-through', opacity: 0.7 } : {}}>{r.payment_method}</span></td>
                   {/* v1.10.277 — Created By column reads created_by_name
                       the backend now returns via LEFT JOIN users on
                       cr.created_by_sync_id. Cross-device stable. */}
@@ -496,7 +535,7 @@ const CashReceipt = () => {
                       >
                         <FiEye size={12} /> View
                       </button>
-                      {hasPermission('CashReceipt:Edit') && (
+                      {!isDeleted && hasPermission('CashReceipt:Edit') && (
                         <button
                           onClick={() => openEdit(r)}
                           title="Edit Receipt"
@@ -687,7 +726,7 @@ const CashReceipt = () => {
                 <FiPrinter size={14} /> Print
               </button>
               <div style={{ display: 'flex', gap: 10 }}>
-                {hasPermission('CashReceipt:Edit') && (
+                {!viewReceipt.deleted_at && hasPermission('CashReceipt:Edit') && (
                   <button
                     onClick={() => { openEdit(viewReceipt); setViewReceipt(null); }}
                     style={{ display: 'inline-flex', alignItems: 'center', gap: 7, padding: '9px 18px', borderRadius: 8, border: '1px solid #e5e7eb', background: '#fff', color: '#374151', cursor: 'pointer', fontSize: 13, fontWeight: 500 }}
@@ -695,7 +734,7 @@ const CashReceipt = () => {
                     <FiEdit2 size={13} /> Edit
                   </button>
                 )}
-                {hasPermission('CashReceipt:Delete') && (
+                {!viewReceipt.deleted_at && hasPermission('CashReceipt:Delete') && (
                   <button
                     onClick={() => handleDelete(viewReceipt)}
                     style={{ display: 'inline-flex', alignItems: 'center', gap: 7, padding: '9px 18px', borderRadius: 8, border: 'none', background: '#dc2626', color: '#fff', cursor: 'pointer', fontSize: 13, fontWeight: 600 }}

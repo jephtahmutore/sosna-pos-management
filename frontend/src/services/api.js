@@ -504,7 +504,11 @@ export const deleteSIV = (id) => api.delete(`/siv/${id}`);
 export const getSIVItemBreakdown = (product_id, from, to) => api.get('/siv/item-breakdown', { params: { product_id, from, to } });
 
 // Cash Receipts
-export const getCashReceipts = () => api.get('/cash-receipts');
+// v1.10.342 — optional { includeDeleted: true } to also return soft-deleted
+// rows (used by the Cash Receipt page's "Show deleted" toggle; rows come
+// back with deleted_at + deleted_by_name for the audit-strike row style).
+export const getCashReceipts = ({ includeDeleted = false } = {}) =>
+  api.get('/cash-receipts', { params: includeDeleted ? { include_deleted: 1 } : {} });
 export const getCashReceiptStats = () => api.get('/cash-receipts/stats');
 export const checkSalesCashReceipt = (date, received_from) => api.get('/cash-receipts/check-sales', { params: { date, received_from } });
 export const createCashReceipt = (data) => api.post('/cash-receipts', data);

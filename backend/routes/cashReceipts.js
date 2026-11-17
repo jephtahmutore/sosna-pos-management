@@ -23,12 +23,19 @@ router.get('/', auth, readOnlyGuard, (req, res) => {
     // list can render a "Created By" column. Cross-device stable —
     // same pattern payment_vouchers already uses (see paymentVouchers.js
     // v1.10.264).
+    // v1.10.342 — second LEFT JOIN resolves deleted_by_sync_id → name,
+    // and ?include_deleted=1 opens the list to soft-deleted rows so the
+    // UI can render them with a red strike + "Deleted by X on Y".
+    const includeDeleted = req.query.include_deleted === '1' || req.query.include_deleted === 'true';
     const rows = db.prepare(`
       SELECT cr.*,
-             (u.first_name || ' ' || u.last_name) AS created_by_name
+             (uc.first_name || ' ' || uc.last_name) AS created_by_name,
+             (ud.first_name || ' ' || ud.last_name) AS deleted_by_name
         FROM cash_receipts cr
-        LEFT JOIN users u ON u.sync_id = cr.created_by_sync_id
-       WHERE cr.deleted_at IS NULL AND cr.tenant_id = ?
+        LEFT JOIN users uc ON uc.sync_id = cr.created_by_sync_id
+        LEFT JOIN users ud ON ud.sync_id = cr.deleted_by_sync_id
+       WHERE cr.tenant_id = ?
+         ${includeDeleted ? '' : 'AND cr.deleted_at IS NULL'}
        ORDER BY cr.date DESC
     `).all(req.user.tenantId);
     res.json(rows);
@@ -216,8 +223,20 @@ router.delete('/:id', auth, (req, res) => {
     // recorded. Drain the K amount from the pool (pro-rata across native
     // and exchange, same as any K outflow).
     const kAmt = parseFloat(row.k_amount) || 0;
+    // v1.10.342 — stamp deleted_by + deleted_by_sync_id so the Cash Book can
+    // surface who removed the receipt (red strikethrough row + "Deleted by X").
+    // auth middleware guarantees req.user.id; sync_id is resolved for cross-
+    // device consistency (users table).
+    const userSyncRow = db.prepare('SELECT sync_id FROM users WHERE id = ?').get(req.user.id);
+    const deletedBySyncId = userSyncRow?.sync_id || null;
     db.transaction(() => {
-      db.prepare("UPDATE cash_receipts SET deleted_at=datetime('now'), updated_at=datetime('now'), synced=0 WHERE id=?").run(req.params.id);
+      db.prepare(`UPDATE cash_receipts
+                     SET deleted_at = datetime('now'),
+                         deleted_by = ?,
+                         deleted_by_sync_id = ?,
+                         updated_at = datetime('now'),
+                         synced = 0
+                   WHERE id = ?`).run(req.user.id, deletedBySyncId, req.params.id);
       if (kAmt > 0) poolDrainK(db, kAmt);
     })();
     res.json({ message: 'Receipt deleted.' });
