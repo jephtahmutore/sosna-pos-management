@@ -97,10 +97,9 @@ const CashReceipt = () => {
   useEffect(() => {
     fetchData();
     getSettings().then(r => setBusinessInfo(r.data?.business || {})).catch(() => {});
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   // Refetch when the toggle flips.
-  useEffect(() => { fetchData({ includeDeleted: showDeleted }); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [showDeleted]);
+  useEffect(() => { fetchData({ includeDeleted: showDeleted }); }, [showDeleted]);
 
   // Client-side filter
   const filteredReceipts = receipts.filter(r => {
