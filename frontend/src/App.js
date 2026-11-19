@@ -3,17 +3,13 @@ import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-d
 import { AuthProvider, useAuth } from './context/AuthContext';
 import { LanguageProvider } from './context/LanguageContext';
 import { CurrencyProvider } from './context/CurrencyContext';
-import { isHqHost, setBranchSlug } from './services/api';
+import { isElectronApp, isHqHost, setBranchSlug } from './services/api';
 
-// HQ-only route gate. Every /hq/* page assumes a multi-branch HQ context
-// (master.db queries, branch picker, cross-branch reports). On a branch
-// install (per-branch subdomain OR Electron desktop) those queries
-// either fail or return empty + the UI is meaningless. So if the host
-// isn't HQ we redirect anywhere a /hq/* URL is hit. Sidebar entries are
-// already hidden by Layout.js — this catches direct URL navigation +
-// retained-from-prior-session URLs after a v1.3.12 update.
+// Most /hq/* pages require HQ mode. Administrators may open them from
+// Management System mode so they can work across all available pages.
 const HqRoute = ({ children }) => {
-  if (!isHqHost()) return <Navigate to="/" replace />;
+  const { user } = useAuth();
+  if (!isHqHost() && user?.role !== 'Administrator') return <Navigate to="/" replace />;
   return children;
 };
 import Layout from './components/Layout';
@@ -81,7 +77,7 @@ import ExpiryReport from './pages/ExpiryReport';
 import StockCount from './pages/StockCount';
 import CustomerDisplay from './pages/CustomerDisplay';
 
-const isWeb = !navigator.userAgent.toLowerCase().includes('electron');
+const isWeb = !isElectronApp();
 
 const PrivateRoute = ({ children }) => {
   const { isAuthenticated, loading } = useAuth();
@@ -288,7 +284,7 @@ function AppRoutes() {
         <Route path="hq/overview"         element={<HqRoute><HqOverview /></HqRoute>} />
         <Route path="hq/sales-report"     element={<HqRoute><HqSalesReport /></HqRoute>} />
         <Route path="hq/consolidated-profit" element={<HqRoute><HqConsolidatedProfit /></HqRoute>} />
-        <Route path="hq/financial-statements" element={<HqRoute><HqFinancialStatements /></HqRoute>} />
+        <Route path="hq/financial-statements" element={<PermRoute perms={['HqFinancialStatements:View', 'HqFinancialStatements']}><HqFinancialStatements /></PermRoute>} />
         <Route path="hq/inventory-report" element={<HqRoute><HqInventoryReport /></HqRoute>} />
         <Route path="hq/cash-position"    element={<HqRoute><HqCashPosition /></HqRoute>} />
         <Route path="hq/account-receivables" element={<HqRoute><HqAccountReceivables /></HqRoute>} />

@@ -6,6 +6,26 @@ const syncConfig = require('../config/syncConfig');
 const { randomUUID } = require('crypto');
 
 const parsePerms = (u) => ({ ...u, permissions: JSON.parse(u.permissions || '[]') });
+const emailValidationError = (email) => (
+  typeof email === 'string' && /^[^\s@]+@[^\s@]+\.com$/i.test(email.trim())
+    ? null
+    : 'Enter a valid email address ending in .com.'
+);
+const userValidationError = ({ firstName, lastName, email, phone }) => {
+  if (typeof firstName !== 'string' || !firstName.trim()
+      || typeof lastName !== 'string' || !lastName.trim()) {
+    return 'First name and last name are required.';
+  }
+  if (/\p{N}/u.test(firstName) || /\p{N}/u.test(lastName)) {
+    return 'Names cannot contain numbers.';
+  }
+  const emailError = emailValidationError(email);
+  if (emailError) return emailError;
+  if (phone != null && phone !== '' && !/^[0-9+().\s-]+$/.test(String(phone))) {
+    return 'Phone number can contain digits and common phone punctuation only.';
+  }
+  return null;
+};
 
 router.get('/', auth, readOnlyGuard, (req, res) => {
   try {
@@ -39,6 +59,11 @@ router.get('/stats', auth, readOnlyGuard, (req, res) => {
 router.post('/', auth, adminOnly, async (req, res) => {
   try {
     const { firstName, lastName, email, password, phone, role, permissions } = req.body;
+    const validationError = userValidationError(req.body);
+    if (validationError) return res.status(400).json({ error: validationError });
+    if (typeof password !== 'string' || !password.trim()) {
+      return res.status(400).json({ error: 'Password is required.' });
+    }
     const hashedPassword = await bcrypt.hash(password, 10);
     const tenantId = syncConfig.getTenantId(req);
     const { branchId, deviceId } = syncConfig.getConfig();
@@ -59,6 +84,8 @@ router.post('/', auth, adminOnly, async (req, res) => {
 router.put('/:id', auth, async (req, res) => {
   try {
     const { firstName, lastName, email, phone, role, permissions, status, password } = req.body;
+    const validationError = emailValidationError(email);
+    if (validationError) return res.status(400).json({ error: validationError });
     if (password) {
       const hashedPassword = await bcrypt.hash(password, 10);
       db.prepare(

@@ -7,26 +7,24 @@ const api = axios.create({
   headers: { 'Content-Type': 'application/json' }
 });
 
-// HQ mode = the React app is being served from the bare sosnazm.com (or
-// localhost in dev) where there's no per-tenant subdomain. The branch
+// HQ mode = the React app is being served from the bare sosnazm.com domain
+// where there's no per-tenant subdomain. Local browser development stays in
+// Management System mode so it can exercise branch pages. At HQ the branch
 // is chosen by the user via a sidebar dropdown / login picker and
 // stored in localStorage as 'hq.branch'. Every API call adds an
 // X-Branch header so the backend routes to the right tenant DB
 // (see backend/middleware/tenant.js — HQ branch-switch).
-export const HQ_HOSTS = new Set(['sosnazm.com', 'www.sosnazm.com', 'localhost', '127.0.0.1']);
-// Electron always runs on localhost but its identity is fixed at
-// install-time (Setup screen) — it IS a branch, not HQ. Without this
-// guard the localhost entry above made the login screen ask "pick a
-// branch" + the sidebar surfaced HQ-only entries (HQ Products etc.)
-// inside the desktop app. Detect Electron via its UA so dev `npm start`
-// in a normal browser still gets HQ treatment.
-const isElectronUa = () => {
-  try { return /electron/i.test((typeof navigator !== 'undefined' && navigator.userAgent) || ''); }
+export const HQ_HOSTS = new Set(['sosnazm.com', 'www.sosnazm.com']);
+// Electron always runs on localhost but its installed identity is a
+// branch, not HQ. Use the preload bridge as the Electron marker: VS Code's
+// embedded browser also has an Electron user agent but no `electronAPI`.
+export const isElectronApp = () => {
+  try { return typeof window !== 'undefined' && Boolean(window.electronAPI); }
   catch { return false; }
 };
 export const isHqHost = () => {
   try {
-    if (isElectronUa()) return false;
+    if (isElectronApp()) return false;
     return HQ_HOSTS.has(window.location.hostname);
   } catch { return false; }
 };

@@ -31,15 +31,15 @@ export default function HqFinancialStatements() {
   return (
     <div className="page-content">
       <style>{PRINT_CSS}</style>
-      <div className="fs-screen">
-        <div className="page-header">
+      <div>
+        <div className="page-header fs-screen">
           <div>
             <h1>Financial Statements</h1>
             <p>Group-wide P&amp;L, Balance Sheet, and Cash Flow &mdash; always in Kwacha (K)</p>
           </div>
         </div>
 
-        <div style={tabBar}>
+        <div className="fs-screen" style={tabBar}>
           <TabBtn active={tab === 'income'}   onClick={() => setTab('income')}>Income Statement</TabBtn>
           <TabBtn active={tab === 'balance'}  onClick={() => setTab('balance')}>Balance Sheet</TabBtn>
           <TabBtn active={tab === 'cashflow'} onClick={() => setTab('cashflow')}>Cash Flow Statement</TabBtn>
@@ -129,6 +129,9 @@ function IncomeStatementView() {
                 { label: 'Branch Operating Expenses (PVs)',     value: -data.lines.branch_pv                    },
                 { label: 'HQ Operating Expenses (PVs)',         value: -data.lines.hq_pv                        },
                 { label: 'Total Operating Expenses',            value: -data.lines.total_opex,       subtotal: true },
+                { label: 'Interest Income (loans given)',       value: data.lines.interest_income || 0,   indent: 1 },
+                { label: 'Interest Expense (loans taken)',      value: -(data.lines.interest_expense || 0), indent: 1 },
+                { label: 'Net Finance Cost',                    value: data.lines.net_finance || 0,  subtotal: true },
                 { label: 'Net Profit',                          value: data.lines.net_profit,        grand: true },
               ]}
             />
@@ -266,31 +269,54 @@ function CashFlowView() {
             <SectionHeading>OPERATING ACTIVITIES</SectionHeading>
             <StatementTable
               rows={[
-                { label: 'Cash Inflows (Sales, Collections, …)',  value: data.operating.inflows },
-                { label: 'Cash Outflows (Suppliers, Opex, …)',    value: -data.operating.outflows },
+                { label: 'Receipts from Customers',               value: data.operating.receipts_from_customers ?? data.operating.inflows },
+                { label: 'Paid to Suppliers (AP + Landed Cost)',  value: data.operating.paid_to_suppliers ?? 0 },
+                { label: 'Operating Expenses Paid (PVs)',         value: data.operating.operating_expenses ?? 0 },
+                { label: 'Interest Paid',                         value: data.operating.interest_paid ?? 0 },
+                { label: 'Interest Received',                     value: data.operating.interest_received ?? 0 },
                 { label: 'Net Cash from Operating Activities',    value: data.operating.net, subtotal: true },
               ]}
             />
             <SectionHeading style={{ marginTop: 24 }}>INVESTING ACTIVITIES</SectionHeading>
             <StatementTable
               rows={[
-                { label: 'Cash Inflows',                          value: data.investing.inflows },
-                { label: 'Cash Outflows (Loans Issued, Capex)',   value: -data.investing.outflows },
+                { label: 'Loans Given',                           value: data.investing.loans_given ?? -data.investing.outflows },
+                { label: 'Loan Repayments Received',              value: data.investing.loan_repayments_received ?? data.investing.inflows },
                 { label: 'Net Cash from Investing Activities',    value: data.investing.net, subtotal: true },
               ]}
             />
             <SectionHeading style={{ marginTop: 24 }}>FINANCING ACTIVITIES</SectionHeading>
             <StatementTable
               rows={[
-                { label: 'Cash Inflows (Loans Received, Capital)', value: data.financing.inflows },
-                { label: 'Cash Outflows (Repayments, Dividends)',  value: -data.financing.outflows },
-                { label: 'Net Cash from Financing Activities',     value: data.financing.net, subtotal: true },
+                { label: 'Loans Received',                        value: data.financing.loans_received ?? 0 },
+                { label: 'Loan Principal Repaid',                 value: data.financing.loan_repayments ?? 0 },
+                { label: 'Capital Injections',                    value: data.financing.capital_injections ?? 0 },
+                { label: 'Drawings',                              value: data.financing.drawings ?? 0 },
+                { label: 'Dividends Paid',                        value: data.financing.dividends_paid ?? 0 },
+                { label: 'Net Cash from Financing Activities',    value: data.financing.net, subtotal: true },
               ]}
             />
+            {data.internal && Math.abs(data.internal.net) > 0.005 && (
+              <>
+                <SectionHeading style={{ marginTop: 24 }}>INTERNAL MOVEMENTS</SectionHeading>
+                <StatementTable
+                  rows={[
+                    { label: 'Deposits in Transit (Branch → HQ)',  value: data.internal.deposits_in_transit },
+                    { label: 'Currency Exchange Gains / Losses',   value: data.internal.currency_exchanges },
+                    { label: 'Net Internal Movements',             value: data.internal.net, subtotal: true },
+                  ]}
+                />
+              </>
+            )}
             <StatementTable
               style={{ marginTop: 20 }}
               rows={[
-                { label: 'Net Change in Cash', value: data.net_change_in_cash, grand: true },
+                { label: 'Net Change in Cash',                    value: data.net_change_in_cash, grand: true },
+                ...(data.opening_cash !== undefined ? [
+                  { label: 'Cash at Start of Month',              value: data.opening_cash },
+                  { label: 'Effect of Exchange Rate Changes',     value: data.fx_effect_on_cash },
+                  { label: 'Cash at End of Month',                value: data.closing_cash, total: true },
+                ] : []),
               ]}
             />
           </StatementCard>

@@ -46,7 +46,24 @@ function isKOnlyBranch(db) {
   } catch (_) { return false; }
 }
 
-function computeBranchCashPosition(db, tenantId, slug, asOf) {
+// 2026-11-19 — Capital Account (Injection / Drawing) and Dividend Account
+// rows move cash (the Cash Book ledger lists them as CAP-IN / CAP-OUT / DIV)
+// but ccyReceiptsPayments does not read those tables, so the Balance Sheet
+// cash line silently excluded them. Neither table has currency columns;
+// `amount` is in the book's own currency, passed in as capitalCcy
+// ('k' for K branches and HQ, 'usd' for the USD-native branch).
+function capitalDividendCash(db, tenantId, asOf) {
+  const one = (sql) => {
+    try { return parseFloat(db.prepare(sql).get(tenantId, asOf)?.t || 0) || 0; }
+    catch (_) { return 0; }
+  };
+  const injections = one(`SELECT COALESCE(SUM(amount),0) AS t FROM capital_account  WHERE deleted_at IS NULL AND tenant_id = ? AND type = 'Injection' AND date <= ?`);
+  const drawings   = one(`SELECT COALESCE(SUM(amount),0) AS t FROM capital_account  WHERE deleted_at IS NULL AND tenant_id = ? AND type = 'Drawing'   AND date <= ?`);
+  const dividends  = one(`SELECT COALESCE(SUM(amount),0) AS t FROM dividend_account WHERE deleted_at IS NULL AND tenant_id = ? AND date <= ?`);
+  return { injections, drawings, dividends, net: injections - drawings - dividends };
+}
+
+function computeBranchCashPosition(db, tenantId, slug, asOf, opts = {}) {
   const kOnly = isKOnlyBranch(db);
 
   let opening;
@@ -64,11 +81,19 @@ function computeBranchCashPosition(db, tenantId, slug, asOf) {
   const dateParams = [asOf];
   const rp = ccyReceiptsPayments(tenantId, slug, dateClause, dateParams);
 
-  return {
+  const pos = {
     usd: (opening.usd || 0) + (rp.receipts.usd || 0) - (rp.payments.usd || 0),
     fra: (opening.fra || 0) + (rp.receipts.fra || 0) - (rp.payments.fra || 0),
     k:   (opening.k   || 0) + (rp.receipts.k   || 0) - (rp.payments.k   || 0),
   };
+
+  // Capital / dividends — opt-in so any other caller keeps the old numbers.
+  if (opts.includeCapital) {
+    const cap = capitalDividendCash(db, tenantId, asOf);
+    const key = opts.capitalCcy === 'usd' ? 'usd' : opts.capitalCcy === 'fra' ? 'fra' : 'k';
+    pos[key] += cap.net;
+  }
+  return pos;
 }
 
-module.exports = { computeBranchCashPosition };
+module.exports = { computeBranchCashPosition, capitalDividendCash };

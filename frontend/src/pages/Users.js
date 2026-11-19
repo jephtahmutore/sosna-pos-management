@@ -78,6 +78,7 @@ const PAGE_GROUPS_BRANCH = [
       { key: 'HQDeposits',         label: 'HQ Deposits' },
       { key: 'AccountReceivables', label: 'Account Receivables' },
       { key: 'ProfitReport',       label: 'Profit Report' },
+      { key: 'HqFinancialStatements', label: 'Financial Statements (all branches)' },
     ],
   },
   {
@@ -186,6 +187,8 @@ const expandOldPerms = (perms) => {
 
 const emptyForm = { firstName: '', lastName: '', email: '', password: '', phone: '', role: 'Cashier', status: 'Active' };
 const getInitials = (first, last) => `${(first || '')[0] || ''}${(last || '')[0] || ''}`.toUpperCase() || '?';
+const emailEndsInCom = (email) => /^[^\s@]+@[^\s@]+\.com$/i.test(email.trim());
+const phoneCharactersOnly = (phone) => /^[0-9+().\s-]*$/.test(phone);
 
 const Users = () => {
   const [stats, setStats] = useState({ totalUsers: 0, active: 0, inactive: 0, administrators: 0 });
@@ -279,6 +282,20 @@ const Users = () => {
       setError('First name, last name, and email are required.');
       return;
     }
+    if (!emailEndsInCom(form.email)) {
+      setError('Enter a valid email address ending in .com.');
+      return;
+    }
+    if (modal === 'add') {
+      if (/\p{N}/u.test(form.firstName) || /\p{N}/u.test(form.lastName)) {
+        setError('Names cannot contain numbers.');
+        return;
+      }
+      if (!phoneCharactersOnly(form.phone)) {
+        setError('Phone number can contain digits and common phone punctuation only.');
+        return;
+      }
+    }
     if (modal === 'add' && !form.password.trim()) {
       setError('Password is required for new users.');
       return;
@@ -368,8 +385,8 @@ const Users = () => {
       await fetchAll();
       setPermModal(false);
       showToast('Permissions saved successfully.');
-    } catch {
-      showToast('Failed to save permissions.', 'error');
+    } catch (err) {
+      showToast(err.response?.data?.error || 'Failed to save permissions.', 'error');
     }
     setSavingPerms(false);
   };
@@ -523,23 +540,23 @@ const Users = () => {
                   <label style={labelStyle}>First Name *</label>
                   <div style={inputWrap}>
                     <FiUser size={14} style={iconStyle} />
-                    <input style={inputStyle} placeholder="First name" value={form.firstName} onChange={e => setForm(f => ({ ...f, firstName: e.target.value }))} />
+                    <input style={inputStyle} placeholder="First name" value={form.firstName} onChange={e => setForm(f => ({ ...f, firstName: modal === 'add' ? e.target.value.replace(/\p{N}/gu, '') : e.target.value }))} />
                   </div>
                 </div>
                 <div>
                   <label style={labelStyle}>Last Name *</label>
                   <div style={inputWrap}>
                     <FiUser size={14} style={iconStyle} />
-                    <input style={inputStyle} placeholder="Last name" value={form.lastName} onChange={e => setForm(f => ({ ...f, lastName: e.target.value }))} />
+                    <input style={inputStyle} placeholder="Last name" value={form.lastName} onChange={e => setForm(f => ({ ...f, lastName: modal === 'add' ? e.target.value.replace(/\p{N}/gu, '') : e.target.value }))} />
                   </div>
                 </div>
               </div>
 
               <div style={{ marginBottom: 14 }}>
-                <label style={labelStyle}>Username *</label>
+                <label style={labelStyle}>Email *</label>
                 <div style={inputWrap}>
                   <FiMail size={14} style={iconStyle} />
-                  <input style={inputStyle} placeholder="Username" autoComplete="off" value={form.email} onChange={e => setForm(f => ({ ...f, email: e.target.value }))} />
+                  <input style={inputStyle} type="email" placeholder="name@example.com" autoComplete="email" value={form.email} onChange={e => setForm(f => ({ ...f, email: e.target.value }))} />
                 </div>
               </div>
 
@@ -547,7 +564,7 @@ const Users = () => {
                 <label style={labelStyle}>Phone</label>
                 <div style={inputWrap}>
                   <FiPhone size={14} style={iconStyle} />
-                  <input style={inputStyle} placeholder="Phone number" autoComplete="tel" value={form.phone} onChange={e => setForm(f => ({ ...f, phone: e.target.value }))} />
+                  <input style={inputStyle} type="tel" inputMode="tel" placeholder="Phone number" autoComplete="tel" value={form.phone} onChange={e => setForm(f => ({ ...f, phone: modal === 'add' ? e.target.value.replace(/[^0-9+().\s-]/g, '') : e.target.value }))} />
                 </div>
               </div>
 
